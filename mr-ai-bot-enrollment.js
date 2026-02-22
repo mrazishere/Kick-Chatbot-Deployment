@@ -24,7 +24,7 @@ const oauthDomain = process.env.OAUTH_DOMAIN || 'localhost';
 const protocol = oauthDomain.includes('localhost') ? 'http' : 'https';
 const redirectUri = `${protocol}://${oauthDomain}/kick-bot-enroll/callback`;
 const authServer = 'https://id.kick.com';
-const KICK_BASE_PATH = '/home/user/Kick-Chatbot-Deployment';
+const KICK_BASE_PATH = __dirname;
 
 // Manage ecosystem.config.js
 function addToEcosystem(username) {
