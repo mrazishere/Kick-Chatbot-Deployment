@@ -1,9 +1,11 @@
+const path = require('path');
+
 module.exports = {
   apps: [
     {
       name: 'Kick-Bot-Enrollment',
-      script: '/home/user/Kick-Chatbot-Deployment/mr-ai-bot-enrollment.js',
-      cwd: '/home/user/Kick-Chatbot-Deployment',
+      script: path.join(__dirname, 'mr-ai-bot-enrollment.js'),
+      cwd: __dirname,
       instances: 1,
       exec_mode: 'fork',
       autorestart: true,
@@ -14,8 +16,8 @@ module.exports = {
       },
       log_date_format: 'YYYY-MM-DD HH:mm:ss',
       merge_logs: true,
-      out_file: '/home/user/Kick-Chatbot-Deployment/logs/Kick-Bot-Enrollment-out.log',
-      error_file: '/home/user/Kick-Chatbot-Deployment/logs/Kick-Bot-Enrollment-err.log'
+      out_file: path.join(__dirname, 'logs', 'Kick-Bot-Enrollment-out.log'),
+      error_file: path.join(__dirname, 'logs', 'Kick-Bot-Enrollment-err.log')
     }
   ]
 };

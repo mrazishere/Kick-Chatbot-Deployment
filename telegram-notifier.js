@@ -1,5 +1,8 @@
 require('dotenv').config();
 const axios = require('axios');
+const path = require('path');
+
+const DEPLOY_PATH = __dirname;
 
 class TelegramNotifier {
   constructor() {
@@ -45,7 +48,7 @@ class TelegramNotifier {
 The bot's refresh token has been revoked by Kick. Automatic renewal is not possible.
 
 SSH into the server and run:
-<code>cd /home/user/Kick-Chatbot-Deployment && node authenticate.js</code>
+<code>cd ${DEPLOY_PATH} && node authenticate.js</code>
 
 Then open the browser link shown in the terminal to re-authorize the bot.
     `.trim();
@@ -67,7 +70,7 @@ ${emoji} <b>Kick Bot Token Expiry ${urgency}</b>
 <b>Time Remaining:</b> ~${hoursLeft} hour(s)
 
 Auto-refresh is being attempted. If the bot goes offline, manual re-auth may be required:
-<code>cd /home/user/Kick-Chatbot-Deployment && node authenticate.js</code>
+<code>cd ${DEPLOY_PATH} && node authenticate.js</code>
     `.trim();
 
     return await this.sendMessage(message, hoursLeft > 6);
