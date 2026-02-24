@@ -10,3 +10,8 @@ logs/
 # Channel files (keep only template)
 channels/*.js
 !channels/template-kick-bot.js
+
+# Custom command configurations (exclude all except template)
+bot-commands/custom/*
+!bot-commands/custom/mrazishere.json
+!bot-commands/custom/sukasblood.json
