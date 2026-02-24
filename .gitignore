@@ -11,5 +11,5 @@ logs/
 channels/*.js
 !channels/template-kick-bot.js
 
-# Custom command configurations
-bot-commands/custom/
+# Custom command configurations (exclude all except template)
+bot-commands/custom/*
