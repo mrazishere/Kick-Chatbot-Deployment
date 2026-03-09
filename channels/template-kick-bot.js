@@ -23,6 +23,20 @@ class KickChatBot {
     this.setupCommands();
   }
 
+  saveChatroomId(realId) {
+    try {
+      const configPath = path.join(__dirname, '..', 'channel-configs', `${this.channelName}.json`);
+      if (fs.existsSync(configPath)) {
+        const config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+        config.chatroomId = realId;
+        fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+        console.log(`[INFO] Corrected chatroom ID saved to config: ${realId}`);
+      }
+    } catch (e) {
+      console.error('[ERROR] Failed to save corrected chatroom ID:', e.message);
+    }
+  }
+
   loadConfig() {
     try {
       const configPath = path.join(__dirname, '..', 'channel-configs', `${this.channelName}.json`);
@@ -246,6 +260,16 @@ class KickChatBot {
 
     // Handle chat events - data field is a JSON string that needs parsing
     if (message.event === 'App\\Events\\ChatMessageEvent') {
+      // Self-correct chatroom ID from real Pusher channel name on first message
+      const chatroomMatch = message.channel?.match(/chatrooms\.(\d+)/);
+      if (chatroomMatch) {
+        const realId = parseInt(chatroomMatch[1]);
+        if (realId !== this.chatroomId) {
+          console.log(`[INFO] Correcting chatroom ID: ${this.chatroomId} → ${realId}`);
+          this.chatroomId = realId;
+          this.saveChatroomId(realId);
+        }
+      }
       const eventData = typeof message.data === 'string' ? JSON.parse(message.data) : message.data;
       this.handleChatMessage(eventData);
     } else if (message.event === 'App\\Events\\SubscriptionEvent') {
