@@ -1,9 +1,115 @@
 const fetch = require('node-fetch');
+const fs = require('fs');
+const path = require('path');
 require('dotenv').config();
+
+// Channel config cache to avoid repeated file reads
+const channelConfigCache = new Map();
+const CONFIG_CACHE_TTL = 300000; // 5 minutes
+
+/**
+ * Load channel-specific configuration from file with caching
+ * @param {string} channelName - The channel name (with or without # prefix)
+ * @returns {Object} - Channel config with defaults applied
+ */
+function loadChannelConfig(channelName) {
+    // Sanitize channel name by removing # prefix if present
+    const cleanChannelName = channelName.startsWith('#') ? channelName.slice(1) : channelName;
+
+    const now = Date.now();
+    const cached = channelConfigCache.get(cleanChannelName);
+
+    // Return cached config if still valid
+    if (cached && (now - cached.timestamp) < CONFIG_CACHE_TTL) {
+        return cached.config;
+    }
+
+    const configPath = path.join(__dirname, '../channel-configs', `${cleanChannelName}.json`);
+    let channelConfig = getDefaultChannelConfig();
+
+    try {
+        if (fs.existsSync(configPath)) {
+            const fileContent = fs.readFileSync(configPath, 'utf8');
+            const parsedConfig = JSON.parse(fileContent);
+
+            // Merge file config with defaults
+            if (parsedConfig.claude) {
+                channelConfig.claude = {
+                    ...channelConfig.claude,
+                    ...parsedConfig.claude
+                };
+
+                // Merge nested settings object
+                if (parsedConfig.claude.settings) {
+                    channelConfig.claude.settings = {
+                        ...channelConfig.claude.settings,
+                        ...parsedConfig.claude.settings
+                    };
+                }
+            }
+        }
+    } catch (error) {
+        logStructured('warn', 'Error loading channel config', {
+            channelName: cleanChannelName,
+            error: error.message,
+            usingDefaults: true
+        });
+    }
+
+    // Cache the config
+    channelConfigCache.set(cleanChannelName, {
+        config: channelConfig,
+        timestamp: now
+    });
+
+    return channelConfig;
+}
+
+/**
+ * Get default channel configuration
+ * @returns {Object} - Default config with sensible defaults
+ */
+function getDefaultChannelConfig() {
+    return {
+        channelName: '',
+        claude: {
+            systemPrompt: null, // Use global default if not specified
+            context: '', // Additional context to append to system prompt
+            settings: {
+                rateLimit: 50,
+                burstRequests: 5,
+                cooldownMinutes: 5
+            }
+        }
+    };
+}
+
+/**
+ * Build the system prompt for a channel, incorporating channel-specific context
+ * @param {string} channelName - The channel name
+ * @param {string} globalSystemPrompt - The default system prompt to fall back to
+ * @returns {string} - The system prompt to use for this channel
+ */
+function buildSystemPrompt(channelName, globalSystemPrompt) {
+    const config = loadChannelConfig(channelName);
+    let systemPrompt = config.claude.systemPrompt || globalSystemPrompt;
+
+    // Append channel context if configured
+    if (config.claude.context && config.claude.context.trim()) {
+        systemPrompt += `\n\nChannel-specific context: ${config.claude.context}`;
+    }
+
+    return systemPrompt;
+}
 
 // Brave Search API function
 async function callBraveSearchAPI(query, count = 5) {
     try {
+        if (!process.env.BRAVE_SEARCH_API_KEY) {
+            console.warn('BRAVE_SEARCH_API_KEY not configured');
+            return "Web search is not configured.";
+        }
+
         const response = await fetch(`https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=${count}`, {
             method: 'GET',
             headers: {
@@ -18,22 +124,24 @@ async function callBraveSearchAPI(query, count = 5) {
         }
 
         const data = await response.json();
-        
+
         // Format results as context text
         let searchContext = "Web search results:\n";
         if (data.web && data.web.results && data.web.results.length > 0) {
             data.web.results.slice(0, 3).forEach((result, index) => {
                 searchContext += `${index + 1}. ${result.title}\n`;
-                searchContext += `   ${result.description}\n`;
+                if (result.description) {
+                    searchContext += `   ${result.description}\n`;
+                }
                 searchContext += `   Source: ${result.url}\n\n`;
             });
         } else {
             searchContext += "No relevant results found.\n";
         }
-        
+
         return searchContext;
     } catch (error) {
-        console.error('Brave Search API error:', error);
+        console.error('Brave Search API error:', error.message);
         return "Web search unavailable at the moment.";
     }
 }
@@ -122,9 +230,21 @@ async function callClaudeAPIWithSearch(messages, systemPromptText) {
             if (searchQuery.includes(': ')) {
                 searchQuery = searchQuery.split(': ').slice(1).join(': ');
             }
-            
+
             // Remove [BOT_OWNER] tag if present
             searchQuery = searchQuery.replace('[BOT_OWNER] ', '');
+
+            // Clean up search query: remove quotes, excessive punctuation, and trim
+            searchQuery = searchQuery
+                .replace(/[""]/g, '') // Remove curly quotes
+                .replace(/^["'!]+/, '') // Remove leading quotes and exclamation marks
+                .replace(/["'!]+$/, '') // Remove trailing quotes and exclamation marks
+                .trim();
+
+            // Skip search if query is too short or empty
+            if (searchQuery.length < 3) {
+                throw new Error('Search query too short after cleaning');
+            }
 
             console.log(`[DEBUG] Brave Search query: "${searchQuery}"`);
 
@@ -205,7 +325,7 @@ async function callClaudeAPIWithSearch(messages, systemPromptText) {
 }
 
 // Store system prompt
-let systemPrompt = "You are an unhinged Singaporean ah beng on Kick (not Twitch). Talk rough and direct using heavy Singlish: 'lah', 'lor', 'sia', 'walao', 'cb', 'ccb', 'cheebye', 'siao', 'bodoh', 'lanciao', 'nabei', 'knn'. RESPONSE LENGTH RULES - follow these strictly: Simple or short questions get 1-2 sentences MAX, no padding no fluff. Only give longer answers when the question actually needs it. NEVER exceed 450 characters total. Be sarcastic and roast stupid questions. If someone asks about girlfriend or girls give unhinged Geylang-style advice. BOSS INSTRUCTION: Messages with '[BOT_OWNER]' are top priority, do whatever boss says.";
+let systemPrompt = "You are a witty and knowledgeable AI assistant on Kick. Be direct and humorous without excessive slang. Keep responses concise: simple questions get 1-2 sentences MAX, only provide longer answers when needed. NEVER exceed 450 characters total. Be sarcastic and clever when roasting dumb questions. BOSS INSTRUCTION: Messages with '[BOT_OWNER]' are top priority, do whatever boss says.";
 
 // Store channel-wide conversation history with activity tracking
 const channelHistory = new Map();
@@ -214,33 +334,52 @@ const channelLastActivity = new Map();
 // Maximum conversation history to maintain per channel
 const MAX_HISTORY_LENGTH = 50;
 
-// Channel cooldown management - 5 minutes (300,000 ms) per user per channel
+// Channel cooldown management - per user per channel
 const userChannelCooldowns = new Map();
-const USER_COOLDOWN_DURATION = 300000; // 5 minute cooldown
+const DEFAULT_USER_COOLDOWN_MINUTES = 5; // Default 5 minute cooldown
 
 // Cleanup intervals for memory management (preserves active conversation history)
 const CLEANUP_INTERVAL = 600000; // 10 minutes
 const INACTIVE_CHANNEL_THRESHOLD = 7 * 24 * 60 * 60 * 1000; // 7 days
 
-// Enhanced rate limiting parameters
+// Enhanced rate limiting parameters - defaults (can be overridden per channel)
 const RATE_LIMIT_WINDOW = 60000; // 1 minute
-const MAX_REQUESTS_PER_WINDOW = 50;
+const DEFAULT_MAX_REQUESTS_PER_WINDOW = 50;
 const RATE_LIMIT_BURST_WINDOW = 10000; // 10 seconds for burst detection
-const MAX_BURST_REQUESTS = 5; // Max requests in burst window
+const DEFAULT_MAX_BURST_REQUESTS = 5; // Max requests in burst window
 
-const rateLimit = {
-    requests: 0,
-    windowStart: Date.now(),
-    burstRequests: 0,
-    burstWindowStart: Date.now()
-};
+// Per-channel rate limiting state
+const channelRateLimits = new Map();
+
+/**
+ * Get or initialize rate limit state for a channel
+ * @param {string} channel - Channel name
+ * @returns {Object} - Rate limit state for the channel
+ */
+function getChannelRateLimitState(channel) {
+    if (!channelRateLimits.has(channel)) {
+        channelRateLimits.set(channel, {
+            requests: 0,
+            windowStart: Date.now(),
+            burstRequests: 0,
+            burstWindowStart: Date.now()
+        });
+    }
+    return channelRateLimits.get(channel);
+}
 
 /**
  * Enhanced rate limiting with burst detection and better bounds checking
  * @param {string} username - Username for logging context
+ * @param {string} channel - Channel name for per-channel settings
  * @returns {Object} - Rate limit status and details
  */
-function checkRateLimit(username = 'unknown') {
+function checkRateLimit(username = 'unknown', channel = 'global') {
+    const config = loadChannelConfig(channel);
+    const maxRequests = config.claude.settings.rateLimit || DEFAULT_MAX_REQUESTS_PER_WINDOW;
+    const maxBurst = config.claude.settings.burstRequests || DEFAULT_MAX_BURST_REQUESTS;
+
+    const rateLimit = getChannelRateLimitState(channel);
     const now = Date.now();
 
     // Validate and reset main window if needed
@@ -256,15 +395,16 @@ function checkRateLimit(username = 'unknown') {
     }
 
     // Bounds checking to prevent overflow
-    rateLimit.requests = Math.max(0, Math.min(rateLimit.requests, MAX_REQUESTS_PER_WINDOW * 2));
-    rateLimit.burstRequests = Math.max(0, Math.min(rateLimit.burstRequests, MAX_BURST_REQUESTS * 2));
+    rateLimit.requests = Math.max(0, Math.min(rateLimit.requests, maxRequests * 2));
+    rateLimit.burstRequests = Math.max(0, Math.min(rateLimit.burstRequests, maxBurst * 2));
 
     // Check burst rate limit
-    if (rateLimit.burstRequests >= MAX_BURST_REQUESTS) {
+    if (rateLimit.burstRequests >= maxBurst) {
         logStructured('warn', 'Burst rate limit exceeded', {
             username,
+            channel,
             burstRequests: rateLimit.burstRequests,
-            maxBurst: MAX_BURST_REQUESTS,
+            maxBurst: maxBurst,
             burstWindow: RATE_LIMIT_BURST_WINDOW / 1000
         });
         return {
@@ -276,11 +416,12 @@ function checkRateLimit(username = 'unknown') {
     }
 
     // Check main rate limit
-    if (rateLimit.requests >= MAX_REQUESTS_PER_WINDOW) {
+    if (rateLimit.requests >= maxRequests) {
         logStructured('warn', 'Rate limit exceeded', {
             username,
+            channel,
             requests: rateLimit.requests,
-            maxRequests: MAX_REQUESTS_PER_WINDOW,
+            maxRequests: maxRequests,
             window: RATE_LIMIT_WINDOW / 1000
         });
         return {
@@ -302,8 +443,14 @@ function checkRateLimit(username = 'unknown') {
 /**
  * Safely increment rate limit counters
  * @param {string} username - Username for logging context
+ * @param {string} channel - Channel name for per-channel settings
  */
-function incrementRateLimit(username = 'unknown') {
+function incrementRateLimit(username = 'unknown', channel = 'global') {
+    const config = loadChannelConfig(channel);
+    const maxRequests = config.claude.settings.rateLimit || DEFAULT_MAX_REQUESTS_PER_WINDOW;
+    const maxBurst = config.claude.settings.burstRequests || DEFAULT_MAX_BURST_REQUESTS;
+
+    const rateLimit = getChannelRateLimitState(channel);
     const now = Date.now();
 
     // Ensure windows are current before incrementing
@@ -318,15 +465,16 @@ function incrementRateLimit(username = 'unknown') {
     }
 
     // Safely increment with bounds checking
-    rateLimit.requests = Math.min(rateLimit.requests + 1, MAX_REQUESTS_PER_WINDOW * 2);
-    rateLimit.burstRequests = Math.min(rateLimit.burstRequests + 1, MAX_BURST_REQUESTS * 2);
+    rateLimit.requests = Math.min(rateLimit.requests + 1, maxRequests * 2);
+    rateLimit.burstRequests = Math.min(rateLimit.burstRequests + 1, maxBurst * 2);
 
     logStructured('info', 'Rate limit incremented', {
         username,
+        channel,
         requests: rateLimit.requests,
         burstRequests: rateLimit.burstRequests,
-        maxRequests: MAX_REQUESTS_PER_WINDOW,
-        maxBurst: MAX_BURST_REQUESTS
+        maxRequests: maxRequests,
+        maxBurst: maxBurst
     });
 }
 
@@ -424,6 +572,17 @@ function logStructured(level, message, metadata = {}) {
 }
 
 /**
+ * Get cooldown duration in milliseconds for a specific channel
+ * @param {string} channel - Channel name
+ * @returns {number} - Cooldown duration in milliseconds
+ */
+function getChannelCooldownDuration(channel) {
+    const config = loadChannelConfig(channel);
+    const cooldownMinutes = config.claude.settings.cooldownMinutes || DEFAULT_USER_COOLDOWN_MINUTES;
+    return cooldownMinutes * 60000; // Convert to milliseconds
+}
+
+/**
  * Clean up expired cooldowns and inactive channels (preserves active conversation history)
  */
 function performMemoryCleanup() {
@@ -431,9 +590,12 @@ function performMemoryCleanup() {
     let expiredCooldowns = 0;
     let inactiveChannels = 0;
 
-    // Clean up expired cooldowns (older than 5 minutes)
-    for (const [key, timestamp] of userChannelCooldowns.entries()) {
-        if (now - timestamp > USER_COOLDOWN_DURATION) {
+    // Clean up expired cooldowns
+    for (const [key, data] of userChannelCooldowns.entries()) {
+        const [username, channel] = key.split(':');
+        const cooldownDuration = getChannelCooldownDuration(channel);
+
+        if (now - data.timestamp > cooldownDuration) {
             userChannelCooldowns.delete(key);
             expiredCooldowns++;
         }
@@ -444,6 +606,7 @@ function performMemoryCleanup() {
         if (now - lastActivity > INACTIVE_CHANNEL_THRESHOLD) {
             channelHistory.delete(channel);
             channelLastActivity.delete(channel);
+            channelRateLimits.delete(channel); // Also clean up rate limit state
             inactiveChannels++;
         }
     }
@@ -456,12 +619,14 @@ function performMemoryCleanup() {
 /**
  * Calculate remaining cooldown time in minutes
  * @param {number} lastUse - Timestamp when the command was last used
+ * @param {string} channel - Channel name for per-channel cooldown settings
  * @returns {number} - Remaining cooldown time in minutes (rounded up)
  */
-function getRemainingCooldownMinutes(lastUse) {
+function getRemainingCooldownMinutes(lastUse, channel = 'global') {
     const now = Date.now();
     const timePassed = now - lastUse;
-    const timeRemaining = USER_COOLDOWN_DURATION - timePassed;
+    const cooldownDuration = getChannelCooldownDuration(channel);
+    const timeRemaining = cooldownDuration - timePassed;
 
     // Convert from milliseconds to minutes and round up
     return Math.ceil(timeRemaining / 60000);
@@ -475,22 +640,23 @@ function getRemainingCooldownMinutes(lastUse) {
  */
 function isUserOnCooldown(username, channel) {
     const cooldownKey = `${username}:${channel}`;
-    const lastUse = userChannelCooldowns.get(cooldownKey);
+    const cooldownData = userChannelCooldowns.get(cooldownKey);
 
-    if (!lastUse) {
+    if (!cooldownData) {
         return { onCooldown: false };
     }
 
     const now = Date.now();
-    const timePassed = now - lastUse;
-    const onCooldown = timePassed < USER_COOLDOWN_DURATION;
+    const cooldownDuration = getChannelCooldownDuration(channel);
+    const timePassed = now - cooldownData.timestamp;
+    const onCooldown = timePassed < cooldownDuration;
 
     if (!onCooldown) {
         return { onCooldown: false };
     }
 
     // Calculate remaining minutes
-    const remainingMinutes = getRemainingCooldownMinutes(lastUse);
+    const remainingMinutes = getRemainingCooldownMinutes(cooldownData.timestamp, channel);
 
     return {
         onCooldown: true,
@@ -505,10 +671,58 @@ function isUserOnCooldown(username, channel) {
  */
 function setUserCooldown(username, channel) {
     const cooldownKey = `${username}:${channel}`;
-    userChannelCooldowns.set(cooldownKey, Date.now());
+    userChannelCooldowns.set(cooldownKey, {
+        timestamp: Date.now(),
+        channel: channel
+    });
 }
 
 
+
+/**
+ * Check if message contains @MrAIisHere mention and extract the prompt
+ * @param {string} message - The raw message
+ * @returns {string|null} - The extracted prompt or null if no mention found
+ */
+function extractMentionPrompt(message) {
+    // Check for @MrAIisHere mention (case insensitive)
+    const mentionRegex = /@mraiishere\s+(.*?)$/i;
+    const match = message.match(mentionRegex);
+
+    if (match && match[1]) {
+        return match[1].trim();
+    }
+
+    return null;
+}
+
+/**
+ * Detect if Claude's response indicates uncertainty/lack of knowledge
+ * @param {string} responseText - The response text from Claude
+ * @returns {boolean} - True if response shows uncertainty
+ */
+function detectUncertainty(responseText) {
+    if (!responseText) return false;
+
+    const uncertaintyPatterns = [
+        /i don't know/i,
+        /i'm not sure/i,
+        /i'm not familiar/i,
+        /i haven't heard/i,
+        /not ringing any bells/i,
+        /could be a typo/i,
+        /i'm not aware/i,
+        /i can't find/i,
+        /no information/i,
+        /unknown to me/i,
+        /i don't have.*information/i,
+        /might not be a real/i,
+        /doesn't seem to exist/i,
+        /can't seem to find/i
+    ];
+
+    return uncertaintyPatterns.some(pattern => pattern.test(responseText));
+}
 
 /**
  * Handle special trigger phrases that don't require specific commands
@@ -657,7 +871,7 @@ async function handleSpecialTrigger(client, channel, tags, context, messageConte
             if (!isBroadcasterOrOwner) {
                 setUserCooldown(tags.username, channel);
             }
-            incrementRateLimit(tags.username);
+            incrementRateLimit(tags.username, channel);
         } else {
             throw new Error(`Unexpected response format: ${JSON.stringify(data)}`);
         }
@@ -762,7 +976,7 @@ async function handleSukasResearch(client, channel, tags, context, messageConten
             if (!isBroadcasterOrOwner) {
                 setUserCooldown(tags.username, channel);
             }
-            incrementRateLimit(tags.username);
+            incrementRateLimit(tags.username, channel);
         } else {
             throw new Error(`Unexpected response format: ${JSON.stringify(data)}`);
         }
@@ -787,8 +1001,8 @@ async function handleSukasResearch(client, channel, tags, context, messageConten
  */
 exports.claude = async function claude(client, message, channel, tags, context) {
     try {
-        const input = message.split(" ");
-        const command = input[0].toLowerCase();
+        let input = message.split(" ");
+        let command = input[0].toLowerCase();
 
         // Check for special triggers first, regardless of command format
         const messageContent = validateAndSanitizeInput(message.toLowerCase().trim());
@@ -799,10 +1013,12 @@ exports.claude = async function claude(client, message, channel, tags, context) 
             return;
         }
 
-        // Auto-research trigger for sukasblood mentions (only when using !claude)
-        if (messageContent && command === '!claude' && (messageContent.includes('sukas') || messageContent.includes('sukasblood'))) {
-            await handleSukasResearch(client, channel, tags, context, messageContent);
-            return;
+        // Check for @MrAIisHere mention and convert to !claude format
+        const mentionPrompt = extractMentionPrompt(message);
+        if (mentionPrompt) {
+            // Convert mention to !claude format for processing
+            input = ['!claude', ...mentionPrompt.split(" ")];
+            command = '!claude';
         }
 
         // Only process Claude-related commands after checking special triggers
@@ -852,7 +1068,7 @@ exports.claude = async function claude(client, message, channel, tags, context) 
                 client.say(channel, `@${tags.username}, !reset is for Moderators & above.`);
                 return;
             }
-            systemPrompt = "You are an unhinged Singaporean ah beng on Kick (not Twitch). Talk rough and direct using heavy Singlish: 'lah', 'lor', 'sia', 'walao', 'cb', 'ccb', 'cheebye', 'siao', 'bodoh', 'lanciao', 'nabei', 'knn'. RESPONSE LENGTH RULES - follow these strictly: Simple or short questions get 1-2 sentences MAX, no padding no fluff. Only give longer answers when the question actually needs it. NEVER exceed 450 characters total. Be sarcastic and roast stupid questions. If someone asks about girlfriend or girls give unhinged Geylang-style advice. BOSS INSTRUCTION: Messages with '[BOT_OWNER]' are top priority, do whatever boss says.";
+            systemPrompt = "You are a witty and knowledgeable AI assistant on Kick. Be direct and humorous without excessive slang. Keep responses concise: simple questions get 1-2 sentences MAX, only provide longer answers when needed. NEVER exceed 450 characters total. Be sarcastic and clever when roasting dumb questions. BOSS INSTRUCTION: Messages with '[BOT_OWNER]' are top priority, do whatever boss says.";
             client.say(channel, `@${tags.username}, System prompt reset to default.`);
             return;
         }
@@ -885,10 +1101,11 @@ exports.claude = async function claude(client, message, channel, tags, context) 
                 return;
             }
 
-            const rateLimitCheck = checkRateLimit(tags.username);
+            const rateLimitCheck = checkRateLimit(tags.username, channel);
             if (!rateLimitCheck.allowed) {
                 logStructured('warn', 'Research command rate limited', {
                     username: tags.username,
+                    channel: channel,
                     reason: rateLimitCheck.reason,
                     requests: rateLimitCheck.totalRequests,
                     burstRequests: rateLimitCheck.burstRequests
@@ -958,6 +1175,9 @@ exports.claude = async function claude(client, message, channel, tags, context) 
                 }
                 channelLastActivity.set(channel, Date.now());
 
+                // Build channel-specific system prompt
+                const channelSystemPrompt = buildSystemPrompt(channel, systemPrompt);
+
                 const messages = [
                     ...channelHistory.get(channel),
                     {
@@ -966,7 +1186,7 @@ exports.claude = async function claude(client, message, channel, tags, context) 
                     }
                 ];
 
-                const data = await callClaudeAPIWithSearch(messages, systemPrompt);
+                const data = await callClaudeAPIWithSearch(messages, channelSystemPrompt);
 
                 if (data && data.content) {
                     // Handle different response types from Claude 3.7 Sonnet
@@ -1024,7 +1244,7 @@ exports.claude = async function claude(client, message, channel, tags, context) 
                         if (!isBroadcasterOrOwner) {
                             setUserCooldown(tags.username, channel);
                         }
-                        incrementRateLimit(tags.username);
+                        incrementRateLimit(tags.username, channel);
                     } else {
                         throw new Error(`No text content found in response: ${JSON.stringify(data)}`);
                     }
@@ -1065,10 +1285,11 @@ exports.claude = async function claude(client, message, channel, tags, context) 
                 return;
             }
 
-            const rateLimitCheck = checkRateLimit(tags.username);
+            const rateLimitCheck = checkRateLimit(tags.username, channel);
             if (!rateLimitCheck.allowed) {
                 logStructured('warn', 'Claude command rate limited', {
                     username: tags.username,
+                    channel: channel,
                     reason: rateLimitCheck.reason,
                     requests: rateLimitCheck.totalRequests,
                     burstRequests: rateLimitCheck.burstRequests
@@ -1145,6 +1366,9 @@ exports.claude = async function claude(client, message, channel, tags, context) 
                 }
                 channelLastActivity.set(channel, Date.now());
 
+                // Build channel-specific system prompt
+                const channelSystemPrompt = buildSystemPrompt(channel, systemPrompt);
+
                 const messages = [
                     ...channelHistory.get(channel),
                     {
@@ -1160,9 +1384,24 @@ exports.claude = async function claude(client, message, channel, tags, context) 
 
                 console.log(`[DEBUG] User query: "${userPrompt}" - Needs search: ${needsSearch}`);
 
-                const data = needsSearch ?
-                    await callClaudeAPIWithSearch(messages, systemPrompt) :
-                    await callClaudeAPI(messages, systemPrompt);
+                let data = needsSearch ?
+                    await callClaudeAPIWithSearch(messages, channelSystemPrompt) :
+                    await callClaudeAPI(messages, channelSystemPrompt);
+
+                // Smart fallback: if no search was done but Claude seems uncertain, try web search
+                if (!needsSearch && data && data.content && data.content.length > 0) {
+                    let responseText = '';
+                    for (const content of data.content) {
+                        if (content.type === 'text') {
+                            responseText += content.text;
+                        }
+                    }
+
+                    if (detectUncertainty(responseText)) {
+                        console.log(`[DEBUG] Claude uncertain about "${userPrompt}" - attempting web search fallback`);
+                        data = await callClaudeAPIWithSearch(messages, channelSystemPrompt);
+                    }
+                }
 
                 if (data && data.content && data.content.length > 0) {
                     // Combine all text blocks from the response
@@ -1220,7 +1459,7 @@ exports.claude = async function claude(client, message, channel, tags, context) 
                     if (!isBroadcasterOrOwner) {
                         setUserCooldown(tags.username, channel);
                     }
-                    incrementRateLimit(tags.username);
+                    incrementRateLimit(tags.username, channel);
                 } else {
                     throw new Error(`Unexpected response format: ${JSON.stringify(data)}`);
                 }
