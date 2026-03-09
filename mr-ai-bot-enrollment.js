@@ -527,7 +527,7 @@ app.get('/kick-bot-enroll/callback', async (req, res) => {
       }
     });
 
-    const channelData = channelResponse.data?.data?.[0];
+    const channelData = channelResponse.data.data[0];
     const broadcasterUserId = channelData?.broadcaster_user_id || userId;
 
     // Get chatroom ID using Kick v2 API

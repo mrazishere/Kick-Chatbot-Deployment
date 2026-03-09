@@ -277,7 +277,7 @@ exports.customC = async function customC(client, message, channel, tags) {
             return;
         }
 
-        const commandCounter = Array.isArray(customCommands[sanitizedName]) ? (customCommands[sanitizedName][2] ?? 0) : 0;
+        const commandCounter = customCommands[sanitizedName][2];
 
         // Edit the command (validation happens inside editCommand)
         try {

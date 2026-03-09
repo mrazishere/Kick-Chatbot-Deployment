@@ -245,25 +245,20 @@ class KickChatBot {
     }
 
     // Handle chat events - data field is a JSON string that needs parsing
-    try {
-      if (message.event === 'App\\Events\\ChatMessageEvent') {
-        const eventData = typeof message.data === 'string' ? JSON.parse(message.data) : message.data;
-        this.handleChatMessage(eventData);
-      } else if (message.event === 'App\\Events\\SubscriptionEvent') {
-        const eventData = typeof message.data === 'string' ? JSON.parse(message.data) : message.data;
-        console.log(`[EVENT] ${eventData.username} just subscribed!`);
-      } else if (message.event === 'App\\Events\\GiftedSubscriptionsEvent') {
-        const eventData = typeof message.data === 'string' ? JSON.parse(message.data) : message.data;
-        const count = eventData.gifted_usernames?.length ?? '?';
-        console.log(`[EVENT] ${eventData.gifter_username} gifted ${count} subs!`);
-      } else {
-        // Log unknown events to see what we're missing
-        if (message.event && !message.event.startsWith('pusher')) {
-          console.log('[UNKNOWN EVENT]', message.event, 'Channel:', message.channel);
-        }
+    if (message.event === 'App\\Events\\ChatMessageEvent') {
+      const eventData = typeof message.data === 'string' ? JSON.parse(message.data) : message.data;
+      this.handleChatMessage(eventData);
+    } else if (message.event === 'App\\Events\\SubscriptionEvent') {
+      const eventData = typeof message.data === 'string' ? JSON.parse(message.data) : message.data;
+      console.log(`[EVENT] ${eventData.username} just subscribed!`);
+    } else if (message.event === 'App\\Events\\GiftedSubscriptionsEvent') {
+      const eventData = typeof message.data === 'string' ? JSON.parse(message.data) : message.data;
+      console.log(`[EVENT] ${eventData.gifter_username} gifted ${eventData.gifted_usernames.length} subs!`);
+    } else {
+      // Log unknown events to see what we're missing
+      if (message.event && !message.event.startsWith('pusher')) {
+        console.log('[UNKNOWN EVENT]', message.event, 'Channel:', message.channel);
       }
-    } catch (err) {
-      console.error('[ERROR] Failed to parse WebSocket event data:', err.message, 'Event:', message.event);
     }
   }
 
