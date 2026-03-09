@@ -408,9 +408,21 @@ class KickChatBot {
         { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
       );
 
-      this.config.oauth.accessToken = response.data.access_token;
-      this.config.oauth.refreshToken = response.data.refresh_token;
-      this.config.oauth.expiresAt = Date.now() + (response.data.expires_in * 1000);
+      const newAccessToken = response.data.access_token;
+      const newRefreshToken = response.data.refresh_token;
+      const newExpiresIn = response.data.expires_in;
+
+      if (typeof newAccessToken !== 'string' || newAccessToken.length === 0) {
+        console.error('[AUTH] Token refresh response missing valid access_token — retaining existing token. Response:', JSON.stringify(response.data).substring(0, 200));
+        return;
+      }
+
+      this.config.oauth.accessToken = newAccessToken;
+      // Only update refresh_token if the response provided one (some flows omit it)
+      if (typeof newRefreshToken === 'string' && newRefreshToken.length > 0) {
+        this.config.oauth.refreshToken = newRefreshToken;
+      }
+      this.config.oauth.expiresAt = Date.now() + ((typeof newExpiresIn === 'number' ? newExpiresIn : 3600) * 1000);
       this.config.lastUpdated = new Date().toISOString();
 
       // Save updated config
