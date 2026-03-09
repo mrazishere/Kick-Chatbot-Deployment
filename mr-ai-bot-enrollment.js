@@ -29,6 +29,12 @@ const redirectUri = `${protocol}://${oauthDomain}/kick-bot-enroll/callback`;
 const authServer = 'https://id.kick.com';
 const KICK_BASE_PATH = __dirname;
 
+// Validate channel name: only lowercase alphanumeric and underscores, 1-30 chars
+function validateChannelName(name) {
+  if (typeof name !== 'string') return false;
+  return /^[a-z0-9_]{1,30}$/.test(name);
+}
+
 // Manage ecosystem.config.js
 function addToEcosystem(username) {
   const ecosystemPath = path.join(KICK_BASE_PATH, 'channels', 'ecosystem.config.js');
@@ -564,7 +570,10 @@ app.get('/kick-bot-enroll/callback', async (req, res) => {
 // Intermediate page: browser fetches chatroom ID from kick.com/api/v2 (not IP-blocked client-side)
 app.get('/kick-bot-enroll/fetch-chatroom', (req, res) => {
   const { token, username } = req.query;
-  if (!token || !username || !pendingEnrollments.has(token)) {
+  if (!username || !validateChannelName(username)) {
+    return res.send(errorPage('Invalid Request', 'Invalid channel name.'));
+  }
+  if (!token || !pendingEnrollments.has(token)) {
     return res.send(errorPage('Session Expired', 'Please start enrollment again.'));
   }
 
@@ -737,6 +746,9 @@ app.get('/kick-bot-enroll/complete', async (req, res) => {
 // Check enrollment status API
 app.get('/kick-bot-enroll/api/status/:username', (req, res) => {
   const username = req.params.username.toLowerCase();
+  if (!validateChannelName(username)) {
+    return res.status(400).json({ error: 'Invalid channel name' });
+  }
   const configPath = path.join(__dirname, 'channel-configs', `${username}.json`);
 
   if (fs.existsSync(configPath)) {
