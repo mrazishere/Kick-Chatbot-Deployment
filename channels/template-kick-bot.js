@@ -186,14 +186,15 @@ class KickChatBot {
         ];
 
         channels.forEach(channelName => {
-          const subscribeMsg = {
+          // Unsubscribe first to prevent duplicate subscriptions on reconnect
+          this.ws.send(JSON.stringify({
+            event: 'pusher:unsubscribe',
+            data: { channel: channelName }
+          }));
+          this.ws.send(JSON.stringify({
             event: 'pusher:subscribe',
-            data: {
-              auth: '',
-              channel: channelName
-            }
-          };
-          this.ws.send(JSON.stringify(subscribeMsg));
+            data: { auth: '', channel: channelName }
+          }));
           console.log(`[INFO] Sent subscription request for ${channelName}`);
         });
 
