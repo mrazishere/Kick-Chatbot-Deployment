@@ -499,7 +499,9 @@ app.get('/kick-bot-enroll/callback', async (req, res) => {
         refreshToken: refresh_token,
         expiresAt: Date.now() + (expires_in * 1000)
       };
-      fs.writeFileSync(path.join(__dirname, '.tokens.json'), JSON.stringify(tokenData, null, 2));
+      const tmpFile = path.join(__dirname, '.tokens.json.tmp');
+      fs.writeFileSync(tmpFile, JSON.stringify(tokenData, null, 2));
+      fs.renameSync(tmpFile, path.join(__dirname, '.tokens.json'));
       console.log('[BOT REAUTH] Tokens saved to .tokens.json');
 
       // Notify via Telegram
