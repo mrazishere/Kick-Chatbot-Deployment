@@ -13,12 +13,47 @@ const PORT = process.env.CHATROOM_FINDER_PORT || 3006;
 // Middleware
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+app.use('/kick-bot-enroll', rateLimiter);
 
 // Store pending OAuth sessions
 const pendingSessions = new Map();
 
 // Store partially-completed enrollments waiting for chatroom ID from browser
 const pendingEnrollments = new Map();
+
+// In-process IP rate limiter — no external dependency
+// Limit: 10 requests per IP per minute across all /kick-bot-enroll/* routes
+const rateLimitStore = new Map(); // ip → [timestamps]
+const RATE_LIMIT_WINDOW_MS = 60 * 1000;
+const RATE_LIMIT_MAX = 10;
+
+function rateLimiter(req, res, next) {
+  const ip = req.ip || req.socket.remoteAddress || 'unknown';
+  const now = Date.now();
+  const windowStart = now - RATE_LIMIT_WINDOW_MS;
+
+  // Get or initialise request history for this IP
+  let timestamps = rateLimitStore.get(ip) || [];
+  // Drop timestamps outside the current window
+  timestamps = timestamps.filter(t => t > windowStart);
+
+  if (timestamps.length >= RATE_LIMIT_MAX) {
+    res.setHeader('Retry-After', '60');
+    return res.status(429).send('Too Many Requests');
+  }
+
+  timestamps.push(now);
+  rateLimitStore.set(ip, timestamps);
+
+  // Periodic cleanup: remove IPs with no recent requests
+  if (rateLimitStore.size > 1000) {
+    for (const [key, ts] of rateLimitStore) {
+      if (!ts.some(t => t > windowStart)) rateLimitStore.delete(key);
+    }
+  }
+
+  next();
+}
 
 // OAuth Configuration
 const clientId = process.env.CLIENT_ID;
