@@ -6,6 +6,9 @@ const path = require('path');
 const crypto = require('crypto');
 const { exec } = require('child_process');
 const WebSocket = require('ws');
+// Lightweight cookie parser — avoids adding cookie-parser dependency
+// 'cookie' is a transitive dep of express already in node_modules
+const cookieLib = require('cookie');
 
 const app = express();
 const PORT = process.env.CHATROOM_FINDER_PORT || 3006;
@@ -605,8 +608,14 @@ app.get('/kick-bot-enroll/callback', async (req, res) => {
 
     console.log(`[ENROLL] OAuth complete for ${username}, redirecting for chatroom ID fetch`);
 
+    // Store token in HttpOnly cookie — not in URL (SEC-04)
+    res.cookie('enrollSession', enrollToken, {
+      httpOnly: true,
+      sameSite: 'lax',
+      maxAge: 600000 // 10 minutes, matches pendingEnrollments TTL
+    });
     // Redirect to intermediate page — browser will fetch chatroom ID from kick.com
-    res.redirect(`/kick-bot-enroll/fetch-chatroom?token=${enrollToken}&username=${encodeURIComponent(username)}`);
+    res.redirect(`/kick-bot-enroll/fetch-chatroom?username=${encodeURIComponent(username)}`);
 
   } catch (error) {
     console.error('[ERROR] Enrollment failed:', error.response?.data || error.message);
@@ -616,7 +625,9 @@ app.get('/kick-bot-enroll/callback', async (req, res) => {
 
 // Intermediate page: browser fetches chatroom ID from kick.com/api/v2 (not IP-blocked client-side)
 app.get('/kick-bot-enroll/fetch-chatroom', (req, res) => {
-  const { token, username } = req.query;
+  const { username } = req.query;
+  const cookies = cookieLib.parse(req.headers.cookie || '');
+  const token = cookies.enrollSession;
   if (!username || !validateChannelName(username)) {
     return res.send(errorPage('Invalid Request', 'Invalid channel name.'));
   }
@@ -670,7 +681,6 @@ app.get('/kick-bot-enroll/fetch-chatroom', (req, res) => {
     <script>
         (async function() {
             const username = ${JSON.stringify(username)};
-            const token = ${JSON.stringify(token)};
             const statusMsg = document.getElementById('status-msg');
             const errorMsg = document.getElementById('error-msg');
             const retryBtn = document.getElementById('retry-btn');
@@ -684,7 +694,7 @@ app.get('/kick-bot-enroll/fetch-chatroom', (req, res) => {
                 if (!chatroomId) throw new Error('Chatroom ID missing from Kick API response');
 
                 statusMsg.textContent = 'Channel detected! Finishing setup...';
-                window.location.href = '/kick-bot-enroll/complete?token=' + encodeURIComponent(token) + '&chatroomId=' + encodeURIComponent(chatroomId);
+                window.location.href = '/kick-bot-enroll/complete?chatroomId=' + encodeURIComponent(chatroomId);
             } catch (e) {
                 spinner.style.display = 'none';
                 statusMsg.style.display = 'none';
@@ -700,7 +710,9 @@ app.get('/kick-bot-enroll/fetch-chatroom', (req, res) => {
 
 // Complete enrollment — called automatically by the browser after chatroom ID is fetched
 app.get('/kick-bot-enroll/complete', async (req, res) => {
-  const { token, chatroomId } = req.query;
+  const { chatroomId } = req.query;
+  const cookies = cookieLib.parse(req.headers.cookie || '');
+  const token = cookies.enrollSession;
 
   if (!token || !chatroomId || !pendingEnrollments.has(token)) {
     return res.send(errorPage('Session Expired', 'Please start enrollment again.'));
@@ -708,6 +720,8 @@ app.get('/kick-bot-enroll/complete', async (req, res) => {
 
   const enroll = pendingEnrollments.get(token);
   pendingEnrollments.delete(token);
+  // Clear the session cookie — token is single-use
+  res.clearCookie('enrollSession');
 
   const { username, userId, broadcasterUserId, access_token, refresh_token, expires_in } = enroll;
   const resolvedChatroomId = parseInt(chatroomId) || broadcasterUserId;
