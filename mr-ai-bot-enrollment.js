@@ -89,6 +89,18 @@ function addToEcosystem(username) {
     const content = `module.exports = ${JSON.stringify(ecosystem, null, 2)}\n`;
     fs.writeFileSync(ecosystemPath, content);
 
+    // Verify the written file is syntactically valid before callers execute pm2
+    try {
+      delete require.cache[require.resolve(ecosystemPath)];
+      const verified = require(ecosystemPath);
+      if (!verified || !Array.isArray(verified.apps)) {
+        throw new Error('Ecosystem config missing apps array after write');
+      }
+    } catch (verifyErr) {
+      console.error(`[ECOSYSTEM ERROR] Written config failed validation: ${verifyErr.message}`);
+      return false;
+    }
+
     return true;
   } catch (error) {
     console.error(`[ECOSYSTEM ERROR] Failed to update ecosystem.config.js: ${error.message}`);
@@ -712,7 +724,12 @@ app.get('/kick-bot-enroll/complete', async (req, res) => {
       console.log(`[DEPLOY] Created bot file for ${username}`);
     }
 
-    addToEcosystem(username);
+    const ecosystemOk = addToEcosystem(username);
+    if (!ecosystemOk) {
+      deployStatus = 'warning';
+      deployMessage = 'Generated PM2 config failed validation. Bot not started. Contact admin.';
+      return res.send(successPage(username, resolvedChatroomId, broadcasterUserId, deployStatus, deployMessage));
+    }
 
     await new Promise((resolve) => {
       exec(`pm2 restart "${pm2Name}"`, (restartErr) => {
