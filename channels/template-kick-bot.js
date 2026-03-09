@@ -156,14 +156,23 @@ class KickChatBot {
     return new Promise((resolve, reject) => {
       const wsUrl = `wss://ws-us2.pusher.com/app/32cbd69e4b950bf97679?protocol=7&client=js&version=8.4.0-rc2&flash=false`;
 
-      console.log('[INFO] Connecting to Kick chat WebSocket...');
-      this.ws = new WebSocket(wsUrl);
-
       // Clear any existing ping interval
       if (this.pingInterval) {
         clearInterval(this.pingInterval);
         this.pingInterval = null;
       }
+
+      // Tear down previous WebSocket before creating a new one
+      if (this.ws) {
+        this.ws.removeAllListeners();
+        if (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING) {
+          this.ws.terminate(); // force-close without waiting for handshake
+        }
+        this.ws = null;
+      }
+
+      console.log('[INFO] Connecting to Kick chat WebSocket...');
+      this.ws = new WebSocket(wsUrl);
 
       this.ws.on('open', () => {
         console.log('[SUCCESS] WebSocket connected!');
@@ -186,6 +195,14 @@ class KickChatBot {
           this.ws.send(JSON.stringify(subscribeMsg));
           console.log(`[INFO] Sent subscription request for ${channelName}`);
         });
+
+        // Handle ping/pong to keep connection alive (started per successful connection)
+        this.pingInterval = setInterval(() => {
+          if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            this.ws.send(JSON.stringify({ event: 'pusher:ping', data: {} }));
+          }
+        }, 30000);
+
         resolve();
       });
 
@@ -218,13 +235,6 @@ class KickChatBot {
           this.connectWebSocket();
         }, 5000);
       });
-
-      // Handle ping/pong to keep connection alive
-      this.pingInterval = setInterval(() => {
-        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-          this.ws.send(JSON.stringify({ event: 'pusher:ping', data: {} }));
-        }
-      }, 30000);
     });
   }
 
