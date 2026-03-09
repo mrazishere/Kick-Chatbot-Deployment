@@ -302,9 +302,13 @@ class KickChatBot {
   }
 
   handleChatMessage(data) {
+    if (!data?.sender?.username || !data?.content) {
+      console.warn('[COMMANDS] Skipping malformed chat message — missing sender or content:', JSON.stringify(data).substring(0, 200));
+      return;
+    }
     const username = data.sender.username;
     const message = data.content;
-    const badges = data.sender.identity?.badges || [];
+    const badges = data.sender?.identity?.badges || [];
 
     // Display the message
     const badgeStr = badges.length > 0 ? `[${badges.map(b => b.type).join(',')}] ` : '';
@@ -351,7 +355,7 @@ class KickChatBot {
       isModUp: isModUp,
       isVIPUp: isVIPUp,
       rawBadges: badges,
-      senderId: data.sender.id
+      senderId: data.sender?.id
     };
 
     // Create client wrapper for commands
