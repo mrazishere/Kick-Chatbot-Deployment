@@ -20,7 +20,10 @@ class KickSessionAuth {
         this._token = data.token;
         this._savedAt = data.savedAt;
       }
-    } catch (e) {}
+    } catch (e) {
+      console.warn('[SESSION] Failed to load session from', SESSION_FILE + ':', e.message);
+      console.warn('[SESSION] Bot will attempt fresh login on next getToken() call');
+    }
   }
 
   _save(token) {
