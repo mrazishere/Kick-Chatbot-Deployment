@@ -84,6 +84,7 @@ class KickChatBot {
         }
       } catch (error) {
         console.error(`[COMMANDS] Failed to load command from ${file}: ${error.message}`);
+        console.error(`[COMMANDS] Command "${path.basename(file, '.js')}" is DISABLED — fix the module and restart to re-enable`);
       }
     });
 
