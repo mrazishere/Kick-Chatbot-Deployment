@@ -17,6 +17,9 @@ app.use(express.urlencoded({ extended: true }));
 // Store pending OAuth sessions
 const pendingSessions = new Map();
 
+// Store partially-completed enrollments waiting for chatroom ID from browser
+const pendingEnrollments = new Map();
+
 // OAuth Configuration
 const clientId = process.env.CLIENT_ID;
 const clientSecret = process.env.CLIENT_SECRET;
@@ -248,55 +251,6 @@ app.get('/kick-bot-enroll', (req, res) => {
             color: #53fc18;
             text-decoration: none;
         }
-
-        .username-input-group {
-            margin-bottom: 20px;
-        }
-
-        .username-input-group label {
-            display: block;
-            color: #ccc;
-            font-size: 14px;
-            margin-bottom: 8px;
-        }
-
-        .username-input-group input {
-            width: 100%;
-            padding: 12px 16px;
-            background: #2a2a2a;
-            border: 1px solid #3a3a3a;
-            border-radius: 8px;
-            color: #e0e0e0;
-            font-size: 16px;
-            outline: none;
-            transition: border-color 0.2s;
-        }
-
-        .username-input-group input:focus {
-            border-color: #53fc18;
-        }
-
-        .username-input-group input::placeholder {
-            color: #666;
-        }
-
-        .status-text {
-            font-size: 13px;
-            margin-top: 6px;
-            min-height: 18px;
-        }
-
-        .status-text.loading { color: #999; }
-        .status-text.found { color: #53fc18; }
-        .status-text.error { color: #ff6b6b; }
-
-        .enroll-btn[disabled] {
-            opacity: 0.4;
-            cursor: not-allowed;
-            pointer-events: none;
-            transform: none !important;
-            box-shadow: none !important;
-        }
     </style>
 </head>
 <body>
@@ -314,13 +268,7 @@ app.get('/kick-bot-enroll', (req, res) => {
             </ul>
         </div>
 
-        <div class="username-input-group">
-            <label for="kick-username">Your Kick username</label>
-            <input type="text" id="kick-username" placeholder="e.g. mrazishere" autocomplete="off" spellcheck="false" />
-            <div class="status-text" id="status-text"></div>
-        </div>
-
-        <a href="#" id="enroll-btn" class="enroll-btn" disabled>
+        <a href="/kick-bot-enroll/start" class="enroll-btn">
             <svg viewBox="0 0 24 24" fill="currentColor">
                 <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
             </svg>
@@ -332,57 +280,6 @@ app.get('/kick-bot-enroll', (req, res) => {
             <p style="margin-top: 8px;">Need help? <a href="https://kick.com/mraiishere">Visit mraiishere</a></p>
         </div>
     </div>
-
-    <script>
-        const input = document.getElementById('kick-username');
-        const btn = document.getElementById('enroll-btn');
-        const statusEl = document.getElementById('status-text');
-        let debounceTimer = null;
-
-        function setStatus(text, cls) {
-            statusEl.textContent = text;
-            statusEl.className = 'status-text ' + (cls || '');
-        }
-
-        function setButtonEnabled(enabled, chatroomId) {
-            if (enabled && chatroomId) {
-                btn.removeAttribute('disabled');
-                btn.href = '/kick-bot-enroll/start?chatroomId=' + chatroomId;
-            } else {
-                btn.setAttribute('disabled', 'disabled');
-                btn.href = '#';
-            }
-        }
-
-        async function lookupChatroomId(username) {
-            setStatus('Looking up channel\u2026', 'loading');
-            setButtonEnabled(false);
-            try {
-                const res = await fetch('https://kick.com/api/v2/channels/' + encodeURIComponent(username));
-                if (!res.ok) throw new Error('not found');
-                const data = await res.json();
-                const chatroomId = data && data.chatroom && data.chatroom.id;
-                if (!chatroomId) throw new Error('no chatroom id');
-                setStatus('Channel found \u2014 Chatroom ID: ' + chatroomId, 'found');
-                setButtonEnabled(true, chatroomId);
-            } catch (e) {
-                setStatus('Channel not found. Check the username and try again.', 'error');
-                setButtonEnabled(false);
-            }
-        }
-
-        input.addEventListener('input', function() {
-            clearTimeout(debounceTimer);
-            var val = input.value.trim().toLowerCase().replace(/[^a-z0-9_]/g, '');
-            if (!val || val.length < 2) {
-                setStatus('', '');
-                setButtonEnabled(false);
-                return;
-            }
-            setStatus('Waiting\u2026', 'loading');
-            debounceTimer = setTimeout(function() { lookupChatroomId(val); }, 600);
-        });
-    </script>
 </body>
 </html>`;
 
@@ -393,12 +290,10 @@ app.get('/kick-bot-enroll', (req, res) => {
 app.get('/kick-bot-enroll/start', (req, res) => {
   const pkce = generatePKCE();
   const state = crypto.randomBytes(16).toString('hex');
-  const chatroomId = req.query.chatroomId ? parseInt(req.query.chatroomId) : null;
 
   pendingSessions.set(state, {
     type: 'channel',
     codeVerifier: pkce.codeVerifier,
-    chatroomId: chatroomId || null,
     createdAt: Date.now()
   });
 
@@ -638,103 +533,205 @@ app.get('/kick-bot-enroll/callback', async (req, res) => {
     const channelData = channelResponse.data?.data?.[0];
     const broadcasterUserId = channelData?.broadcaster_user_id || userId;
 
-    // Get chatroom ID — prefer value passed from browser (v2 API is IP-blocked server-side)
-    let chatroomId = session.chatroomId || broadcasterUserId;
-    if (session.chatroomId) {
-      console.log(`[ENROLL] Using client-provided chatroom ID: ${chatroomId}`);
-    } else {
-      console.log(`[ENROLL] No client chatroom ID, falling back to broadcaster ID: ${chatroomId}`);
+    // Store partial enrollment — chatroom ID will come from the browser on the next step
+    const enrollToken = crypto.randomBytes(16).toString('hex');
+    pendingEnrollments.set(enrollToken, {
+      username,
+      userId,
+      broadcasterUserId,
+      access_token,
+      refresh_token,
+      expires_in,
+      createdAt: Date.now()
+    });
+
+    // Clean up stale pending enrollments (older than 10 minutes)
+    for (const [key, enroll] of pendingEnrollments) {
+      if (Date.now() - enroll.createdAt > 600000) pendingEnrollments.delete(key);
     }
 
-    // Save channel config with OAuth tokens
-    const configDir = path.join(__dirname, 'channel-configs');
-    if (!fs.existsSync(configDir)) {
-      fs.mkdirSync(configDir, { recursive: true });
-    }
+    console.log(`[ENROLL] OAuth complete for ${username}, redirecting for chatroom ID fetch`);
 
-    const config = {
-      channelName: username,
-      chatroomId: chatroomId,
-      broadcasterUserId: broadcasterUserId,
-      userId: userId,
-      chatOnly: false,
-      oauth: {
-        accessToken: access_token,
-        refreshToken: refresh_token,
-        expiresAt: Date.now() + (expires_in * 1000)
-      },
-      enrolledAt: new Date().toISOString(),
-      lastUpdated: new Date().toISOString()
-    };
-
-    const configPath = path.join(configDir, `${username}.json`);
-    fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
-
-    console.log(`[ENROLLED] ${username} - Chatroom: ${chatroomId}, Broadcaster: ${broadcasterUserId}`);
-
-    // Deploy the bot automatically
-    let deployStatus = 'success';
-    let deployMessage = '';
-
-    try {
-      // Check if bot already exists
-      const pm2Name = `kick-${username}`;
-      const channelsDir = path.join(__dirname, 'channels');
-      const botPath = path.join(channelsDir, `${username}.js`);
-      const templatePath = path.join(channelsDir, 'template-kick-bot.js');
-
-      // Create channels directory if it doesn't exist
-      if (!fs.existsSync(channelsDir)) {
-        fs.mkdirSync(channelsDir, { recursive: true });
-      }
-
-      // Create bot file from template if it doesn't exist
-      if (!fs.existsSync(botPath) && fs.existsSync(templatePath)) {
-        let botCode = fs.readFileSync(templatePath, 'utf8');
-        botCode = botCode.replace(/\$\$UPDATEHERE\$\$/g, username);
-        fs.writeFileSync(botPath, botCode);
-        console.log(`[DEPLOY] Created bot file for ${username}`);
-      }
-
-      // Add to ecosystem.config.js
-      addToEcosystem(username);
-
-      // Start or restart the bot with PM2
-      // Try restart first — if the process doesn't exist, fall back to start
-      await new Promise((resolve, reject) => {
-        exec(`pm2 restart "${pm2Name}"`, (restartErr) => {
-          if (!restartErr) {
-            console.log(`[DEPLOY] Restarted bot for ${username}`);
-            resolve();
-            return;
-          }
-
-          // Restart failed — process doesn't exist yet, start it
-          exec(`pm2 start "${botPath}" --name "${pm2Name}" --time`, (err) => {
-            if (err) {
-              console.error(`[DEPLOY ERROR] Failed to start bot: ${err.message}`);
-              deployStatus = 'warning';
-              deployMessage = 'Config saved but bot failed to start. Contact admin.';
-            } else {
-              console.log(`[DEPLOY] Started bot for ${username}`);
-            }
-            resolve();
-          });
-        });
-      });
-    } catch (deployError) {
-      console.error('[DEPLOY ERROR]', deployError.message);
-      deployStatus = 'warning';
-      deployMessage = 'Config saved but deployment had issues.';
-    }
-
-    // Return success page
-    res.send(successPage(username, chatroomId, broadcasterUserId, deployStatus, deployMessage));
+    // Redirect to intermediate page — browser will fetch chatroom ID from kick.com
+    res.redirect(`/kick-bot-enroll/fetch-chatroom?token=${enrollToken}&username=${encodeURIComponent(username)}`);
 
   } catch (error) {
     console.error('[ERROR] Enrollment failed:', error.response?.data || error.message);
     res.send(errorPage('Enrollment Failed', error.response?.data?.message || error.message));
   }
+});
+
+// Intermediate page: browser fetches chatroom ID from kick.com/api/v2 (not IP-blocked client-side)
+app.get('/kick-bot-enroll/fetch-chatroom', (req, res) => {
+  const { token, username } = req.query;
+  if (!token || !username || !pendingEnrollments.has(token)) {
+    return res.send(errorPage('Session Expired', 'Please start enrollment again.'));
+  }
+
+  res.send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Setting up your bot...</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
+            background: linear-gradient(135deg, #0f0f0f 0%, #1a1a1a 100%);
+            color: #e0e0e0; min-height: 100vh;
+            display: flex; justify-content: center; align-items: center; padding: 20px;
+        }
+        .container {
+            background: #1e1e1e; border-radius: 12px; padding: 40px;
+            max-width: 480px; width: 100%; text-align: center;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.5); border: 1px solid #2a2a2a;
+        }
+        h1 { color: #53fc18; margin-bottom: 16px; font-size: 24px; }
+        .spinner {
+            width: 48px; height: 48px; border: 4px solid #2a2a2a;
+            border-top-color: #53fc18; border-radius: 50%;
+            animation: spin 0.8s linear infinite; margin: 0 auto 20px;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        p { color: #999; font-size: 14px; line-height: 1.6; }
+        .error { color: #ff6b6b; margin-top: 12px; display: none; }
+        .retry-btn {
+            display: inline-block; margin-top: 16px; padding: 10px 20px;
+            background: #53fc18; color: #000; text-decoration: none;
+            border-radius: 6px; font-weight: 600; display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="spinner" id="spinner"></div>
+        <h1>Setting up your bot...</h1>
+        <p id="status-msg">Detecting your channel info automatically...</p>
+        <p class="error" id="error-msg"></p>
+        <a href="/kick-bot-enroll" class="retry-btn" id="retry-btn">Try Again</a>
+    </div>
+    <script>
+        (async function() {
+            const username = ${JSON.stringify(username)};
+            const token = ${JSON.stringify(token)};
+            const statusMsg = document.getElementById('status-msg');
+            const errorMsg = document.getElementById('error-msg');
+            const retryBtn = document.getElementById('retry-btn');
+            const spinner = document.getElementById('spinner');
+
+            try {
+                const res = await fetch('https://kick.com/api/v2/channels/' + encodeURIComponent(username));
+                if (!res.ok) throw new Error('Channel not found (HTTP ' + res.status + ')');
+                const data = await res.json();
+                const chatroomId = data && data.chatroom && data.chatroom.id;
+                if (!chatroomId) throw new Error('Chatroom ID missing from Kick API response');
+
+                statusMsg.textContent = 'Channel detected! Finishing setup...';
+                window.location.href = '/kick-bot-enroll/complete?token=' + encodeURIComponent(token) + '&chatroomId=' + encodeURIComponent(chatroomId);
+            } catch (e) {
+                spinner.style.display = 'none';
+                statusMsg.style.display = 'none';
+                errorMsg.style.display = 'block';
+                errorMsg.textContent = 'Could not detect channel info: ' + e.message;
+                retryBtn.style.display = 'inline-block';
+            }
+        })();
+    </script>
+</body>
+</html>`);
+});
+
+// Complete enrollment — called automatically by the browser after chatroom ID is fetched
+app.get('/kick-bot-enroll/complete', async (req, res) => {
+  const { token, chatroomId } = req.query;
+
+  if (!token || !chatroomId || !pendingEnrollments.has(token)) {
+    return res.send(errorPage('Session Expired', 'Please start enrollment again.'));
+  }
+
+  const enroll = pendingEnrollments.get(token);
+  pendingEnrollments.delete(token);
+
+  const { username, userId, broadcasterUserId, access_token, refresh_token, expires_in } = enroll;
+  const resolvedChatroomId = parseInt(chatroomId) || broadcasterUserId;
+
+  console.log(`[ENROLL] Completing enrollment for ${username} - Chatroom: ${resolvedChatroomId}, Broadcaster: ${broadcasterUserId}`);
+
+  // Save channel config with OAuth tokens
+  const configDir = path.join(__dirname, 'channel-configs');
+  if (!fs.existsSync(configDir)) {
+    fs.mkdirSync(configDir, { recursive: true });
+  }
+
+  const config = {
+    channelName: username,
+    chatroomId: resolvedChatroomId,
+    broadcasterUserId: broadcasterUserId,
+    userId: userId,
+    chatOnly: false,
+    oauth: {
+      accessToken: access_token,
+      refreshToken: refresh_token,
+      expiresAt: Date.now() + (expires_in * 1000)
+    },
+    enrolledAt: new Date().toISOString(),
+    lastUpdated: new Date().toISOString()
+  };
+
+  const configPath = path.join(configDir, `${username}.json`);
+  fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+
+  // Deploy the bot automatically
+  let deployStatus = 'success';
+  let deployMessage = '';
+
+  try {
+    const pm2Name = `kick-${username}`;
+    const channelsDir = path.join(__dirname, 'channels');
+    const botPath = path.join(channelsDir, `${username}.js`);
+    const templatePath = path.join(channelsDir, 'template-kick-bot.js');
+
+    if (!fs.existsSync(channelsDir)) {
+      fs.mkdirSync(channelsDir, { recursive: true });
+    }
+
+    if (!fs.existsSync(botPath) && fs.existsSync(templatePath)) {
+      let botCode = fs.readFileSync(templatePath, 'utf8');
+      botCode = botCode.replace(/\$\$UPDATEHERE\$\$/g, username);
+      fs.writeFileSync(botPath, botCode);
+      console.log(`[DEPLOY] Created bot file for ${username}`);
+    }
+
+    addToEcosystem(username);
+
+    await new Promise((resolve) => {
+      exec(`pm2 restart "${pm2Name}"`, (restartErr) => {
+        if (!restartErr) {
+          console.log(`[DEPLOY] Restarted bot for ${username}`);
+          resolve();
+          return;
+        }
+
+        exec(`pm2 start "${botPath}" --name "${pm2Name}" --time`, (err) => {
+          if (err) {
+            console.error(`[DEPLOY ERROR] Failed to start bot: ${err.message}`);
+            deployStatus = 'warning';
+            deployMessage = 'Config saved but bot failed to start. Contact admin.';
+          } else {
+            console.log(`[DEPLOY] Started bot for ${username}`);
+          }
+          resolve();
+        });
+      });
+    });
+  } catch (deployError) {
+    console.error('[DEPLOY ERROR]', deployError.message);
+    deployStatus = 'warning';
+    deployMessage = 'Config saved but deployment had issues.';
+  }
+
+  res.send(successPage(username, resolvedChatroomId, broadcasterUserId, deployStatus, deployMessage));
 });
 
 // Check enrollment status API
