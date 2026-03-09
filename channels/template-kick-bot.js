@@ -428,8 +428,13 @@ class KickChatBot {
     try {
       // Reload config from disk in case it was updated externally
       const configPath = path.join(__dirname, '..', 'channel-configs', `${this.channelName}.json`);
-      if (fs.existsSync(configPath)) {
-        this.config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+      try {
+        const raw = await fs.promises.readFile(configPath, 'utf8');
+        this.config = JSON.parse(raw);
+      } catch (readErr) {
+        if (readErr.code !== 'ENOENT') {
+          console.error('[AUTH] Failed to reload config:', readErr.message);
+        }
       }
 
       // Check if token needs refresh (within 1 hour of expiry)
