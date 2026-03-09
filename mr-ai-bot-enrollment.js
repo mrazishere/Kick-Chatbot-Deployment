@@ -1057,18 +1057,33 @@ async function deployAddChannel(requester, args, badges, sourceChatroomId) {
 
       await sendDeploymentMessage(`@${requester}, enrolling ${sanitized}... (this may take a moment)`, sourceChatroomId);
 
-      // Get chatroom ID using Kick v2 API
-      let chatroomId = null;
+      // Get broadcaster ID first (needed as chatroom fallback)
+      let chatEnrollBroadcasterId = null;
+      try {
+        const KickAuth = require('./auth');
+        const botAuth = new KickAuth();
+        const botToken = await botAuth.getAccessToken();
+        const chResponse = await axios.get(`https://api.kick.com/public/v1/channels?slug=${sanitized}`, {
+          headers: { 'Authorization': `Bearer ${botToken}` }
+        });
+        chatEnrollBroadcasterId = chResponse.data?.data?.[0]?.broadcaster_user_id || null;
+      } catch (e) {
+        console.error('[DEPLOY] Could not get broadcaster ID:', e.message);
+      }
+
+      // Get chatroom ID using Kick v2 API, fall back to broadcaster ID
+      let chatroomId = chatEnrollBroadcasterId;
       try {
         const v2Response = await axios.get(`https://kick.com/api/v2/channels/${sanitized}`);
-        chatroomId = v2Response.data?.chatroom?.id || null;
+        chatroomId = v2Response.data?.chatroom?.id || chatEnrollBroadcasterId;
         console.log(`[DEPLOY] Got chatroom ID via v2 API: ${chatroomId}`);
       } catch (e) {
         console.error('[DEPLOY] Could not get chatroom ID via v2 API:', e.message);
+        console.log(`[DEPLOY] Falling back to broadcaster ID: ${chatroomId}`);
       }
 
       if (!chatroomId) {
-        await sendDeploymentMessage(`@${requester}, failed to detect chatroom ID for ${sanitized}.`, sourceChatroomId);
+        await sendDeploymentMessage(`@${requester}, failed to detect channel info for ${sanitized}.`, sourceChatroomId);
         return;
       }
 
