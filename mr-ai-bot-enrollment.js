@@ -248,6 +248,55 @@ app.get('/kick-bot-enroll', (req, res) => {
             color: #53fc18;
             text-decoration: none;
         }
+
+        .username-input-group {
+            margin-bottom: 20px;
+        }
+
+        .username-input-group label {
+            display: block;
+            color: #ccc;
+            font-size: 14px;
+            margin-bottom: 8px;
+        }
+
+        .username-input-group input {
+            width: 100%;
+            padding: 12px 16px;
+            background: #2a2a2a;
+            border: 1px solid #3a3a3a;
+            border-radius: 8px;
+            color: #e0e0e0;
+            font-size: 16px;
+            outline: none;
+            transition: border-color 0.2s;
+        }
+
+        .username-input-group input:focus {
+            border-color: #53fc18;
+        }
+
+        .username-input-group input::placeholder {
+            color: #666;
+        }
+
+        .status-text {
+            font-size: 13px;
+            margin-top: 6px;
+            min-height: 18px;
+        }
+
+        .status-text.loading { color: #999; }
+        .status-text.found { color: #53fc18; }
+        .status-text.error { color: #ff6b6b; }
+
+        .enroll-btn[disabled] {
+            opacity: 0.4;
+            cursor: not-allowed;
+            pointer-events: none;
+            transform: none !important;
+            box-shadow: none !important;
+        }
     </style>
 </head>
 <body>
@@ -265,7 +314,13 @@ app.get('/kick-bot-enroll', (req, res) => {
             </ul>
         </div>
 
-        <a href="/kick-bot-enroll/start" class="enroll-btn">
+        <div class="username-input-group">
+            <label for="kick-username">Your Kick username</label>
+            <input type="text" id="kick-username" placeholder="e.g. mrazishere" autocomplete="off" spellcheck="false" />
+            <div class="status-text" id="status-text"></div>
+        </div>
+
+        <a href="#" id="enroll-btn" class="enroll-btn" disabled>
             <svg viewBox="0 0 24 24" fill="currentColor">
                 <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
             </svg>
@@ -277,6 +332,57 @@ app.get('/kick-bot-enroll', (req, res) => {
             <p style="margin-top: 8px;">Need help? <a href="https://kick.com/mraiishere">Visit mraiishere</a></p>
         </div>
     </div>
+
+    <script>
+        const input = document.getElementById('kick-username');
+        const btn = document.getElementById('enroll-btn');
+        const statusEl = document.getElementById('status-text');
+        let debounceTimer = null;
+
+        function setStatus(text, cls) {
+            statusEl.textContent = text;
+            statusEl.className = 'status-text ' + (cls || '');
+        }
+
+        function setButtonEnabled(enabled, chatroomId) {
+            if (enabled && chatroomId) {
+                btn.removeAttribute('disabled');
+                btn.href = '/kick-bot-enroll/start?chatroomId=' + chatroomId;
+            } else {
+                btn.setAttribute('disabled', 'disabled');
+                btn.href = '#';
+            }
+        }
+
+        async function lookupChatroomId(username) {
+            setStatus('Looking up channel\u2026', 'loading');
+            setButtonEnabled(false);
+            try {
+                const res = await fetch('https://kick.com/api/v2/channels/' + encodeURIComponent(username));
+                if (!res.ok) throw new Error('not found');
+                const data = await res.json();
+                const chatroomId = data && data.chatroom && data.chatroom.id;
+                if (!chatroomId) throw new Error('no chatroom id');
+                setStatus('Channel found \u2014 Chatroom ID: ' + chatroomId, 'found');
+                setButtonEnabled(true, chatroomId);
+            } catch (e) {
+                setStatus('Channel not found. Check the username and try again.', 'error');
+                setButtonEnabled(false);
+            }
+        }
+
+        input.addEventListener('input', function() {
+            clearTimeout(debounceTimer);
+            var val = input.value.trim().toLowerCase().replace(/[^a-z0-9_]/g, '');
+            if (!val || val.length < 2) {
+                setStatus('', '');
+                setButtonEnabled(false);
+                return;
+            }
+            setStatus('Waiting\u2026', 'loading');
+            debounceTimer = setTimeout(function() { lookupChatroomId(val); }, 600);
+        });
+    </script>
 </body>
 </html>`;
 
@@ -287,10 +393,12 @@ app.get('/kick-bot-enroll', (req, res) => {
 app.get('/kick-bot-enroll/start', (req, res) => {
   const pkce = generatePKCE();
   const state = crypto.randomBytes(16).toString('hex');
+  const chatroomId = req.query.chatroomId ? parseInt(req.query.chatroomId) : null;
 
   pendingSessions.set(state, {
     type: 'channel',
     codeVerifier: pkce.codeVerifier,
+    chatroomId: chatroomId || null,
     createdAt: Date.now()
   });
 
@@ -527,19 +635,15 @@ app.get('/kick-bot-enroll/callback', async (req, res) => {
       }
     });
 
-    const channelData = channelResponse.data.data[0];
+    const channelData = channelResponse.data?.data?.[0];
     const broadcasterUserId = channelData?.broadcaster_user_id || userId;
 
-    // Get chatroom ID using Kick v2 API
-    let chatroomId = broadcasterUserId; // fallback
-    try {
-      const v2Response = await axios.get(`https://kick.com/api/v2/channels/${username}`);
-      if (v2Response.data?.chatroom?.id) {
-        chatroomId = v2Response.data.chatroom.id;
-        console.log(`[ENROLL] Got chatroom ID via v2 API: ${chatroomId}`);
-      }
-    } catch (e) {
-      console.error('[WARN] Could not get chatroom ID via v2 API:', e.message);
+    // Get chatroom ID — prefer value passed from browser (v2 API is IP-blocked server-side)
+    let chatroomId = session.chatroomId || broadcasterUserId;
+    if (session.chatroomId) {
+      console.log(`[ENROLL] Using client-provided chatroom ID: ${chatroomId}`);
+    } else {
+      console.log(`[ENROLL] No client chatroom ID, falling back to broadcaster ID: ${chatroomId}`);
     }
 
     // Save channel config with OAuth tokens
@@ -1008,7 +1112,7 @@ async function handleDeploymentCommand(data, sourceChatroomId) {
   const command = args.shift().toLowerCase();
 
   if (command === 'kickaddme') {
-    await deployAddChannel(username, args, badges, sourceChatroomId);
+    await sendDeploymentMessage(`@${username}, chat enrollment is disabled. Use the web form: https://mr-ai.dev/kick-bot-enroll`, sourceChatroomId);
   } else if (command === 'kickremoveme') {
     await deployRemoveChannel(username, args, badges, sourceChatroomId);
   } else if (command === 'kickstatus') {
