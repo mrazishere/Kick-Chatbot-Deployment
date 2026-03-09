@@ -214,7 +214,9 @@ class KickAuth {
       refreshToken: this.refreshToken,
       expiresAt: this.expiresAt
     };
-    fs.writeFileSync(this.tokenFile, JSON.stringify(data, null, 2));
+    const tmpFile = this.tokenFile + '.tmp';
+    fs.writeFileSync(tmpFile, JSON.stringify(data, null, 2));
+    fs.renameSync(tmpFile, this.tokenFile);
     console.log('[AUTH] Tokens saved to file');
   }
 
