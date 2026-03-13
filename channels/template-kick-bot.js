@@ -1,3 +1,10 @@
+/**
+ * Inline commands (handled directly in this file, not in bot-commands/)
+ *
+ * !location home set <place>     — Set the channel's home currency location (mods only)
+ * !location current set <place>  — Set the channel's current currency location (mods only)
+ */
+
 require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
 const axios = require('axios');
 const WebSocket = require('ws');
