@@ -266,13 +266,6 @@ class KickChatBot {
         // Pusher requests immediate reconnect
         console.log('[INFO] Pusher requested immediate reconnect');
         if (this.ws) this.ws.close();
-      } else if (errData.code === null && typeof errData.message === 'string' && errData.message.includes('No current subscription')) {
-        // Re-subscribe to the missing channel
-        const match = errData.message.match(/channel ([\w.]+)/);
-        if (match && this.ws && this.ws.readyState === WebSocket.OPEN) {
-          console.log(`[INFO] Re-subscribing to ${match[1]}`);
-          this.ws.send(JSON.stringify({ event: 'pusher:subscribe', data: { auth: '', channel: match[1] } }));
-        }
       }
       return;
     }
