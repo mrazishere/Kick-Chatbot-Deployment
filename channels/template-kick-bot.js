@@ -4,11 +4,15 @@
  * !location home set <place>     — Set the channel's home currency location (mods only)
  * !location current set <place>  — Set the channel's current currency location (mods only)
  *
+ * !config exclude add <command>    — Disable a command for this channel (broadcaster only)
+ * !config exclude remove <command> — Re-enable a disabled command (broadcaster only)
+ * !config exclude list             — List all disabled commands (broadcaster only)
+ *
  * Channel config (channel-configs/<channel>.json):
  *
  * excludedCommands: ["fx", "translate"]
- *   — Prevents listed commands from loading or responding in this channel.
- *     Add command names (matching filenames in bot-commands/) to disable them.
+ *   — Managed via !config exclude. Prevents listed commands from loading or
+ *     responding in this channel. Changes take effect immediately (no restart needed).
  */
 
 require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
@@ -107,6 +111,16 @@ class KickChatBot {
     });
 
     console.log(`[COMMANDS] Loaded ${this.commands.size} commands`);
+  }
+
+  reloadCommands() {
+    this.commands.clear();
+    this.setupCommands();
+  }
+
+  saveConfig() {
+    const configPath = path.join(__dirname, '..', 'channel-configs', `${this.channelName}.json`);
+    fs.writeFileSync(configPath, JSON.stringify(this.config, null, 2));
   }
 
   async ensureAuthenticated() {
@@ -373,6 +387,7 @@ class KickChatBot {
         vip: isVip ? '1' : undefined,
         subscriber: isSubscriber ? '1' : undefined
       },
+      isBroadcaster: isBroadcaster,
       isModUp: isModUp,
       isVIPUp: isVIPUp,
       rawBadges: badges,
@@ -400,6 +415,15 @@ class KickChatBot {
     if (isCommand && requestedCommandName === 'location') {
       this.handleLocationCommand(clientWrapper, message, kickTags).catch(err => {
         console.error('[LOCATION] Command error:', err.message);
+      });
+      return;
+    }
+
+    // Inline command: !config (broadcaster only)
+    if (isCommand && requestedCommandName === 'config') {
+      if (!kickTags.isBroadcaster) return;
+      this.handleConfigCommand(clientWrapper, message, kickTags).catch(err => {
+        console.error('[CONFIG] Command error:', err.message);
       });
       return;
     }
@@ -467,6 +491,60 @@ class KickChatBot {
       console.log('[AUTH] Channel token refreshed');
     } catch (error) {
       console.error('[ERROR] Failed to refresh channel token:', error.message);
+    }
+  }
+
+  async handleConfigCommand(clientWrapper, message) {
+    const args = message.trim().split(/\s+/);
+    const subcommand = (args[1] || '').toLowerCase();
+
+    if (subcommand === 'exclude') {
+      const action = (args[2] || '').toLowerCase();
+      const rawCommandName = args[3];
+
+      if (action === 'add' && rawCommandName) {
+        const commandName = rawCommandName.toLowerCase();
+        if (!/^[a-zA-Z0-9_-]{1,30}$/.test(commandName)) {
+          await clientWrapper.say(`#${this.channelName}`, `Invalid command name: ${rawCommandName}`);
+          return;
+        }
+        if (!this.config.excludedCommands.includes(commandName)) {
+          this.config.excludedCommands.push(commandName);
+          this.saveConfig();
+          this.reloadCommands();
+          await clientWrapper.say(`#${this.channelName}`, `Command "${commandName}" disabled for this channel.`);
+        } else {
+          await clientWrapper.say(`#${this.channelName}`, `Command "${commandName}" is already disabled.`);
+        }
+
+      } else if (action === 'remove' && rawCommandName) {
+        const commandName = rawCommandName.toLowerCase();
+        if (!/^[a-zA-Z0-9_-]{1,30}$/.test(commandName)) {
+          await clientWrapper.say(`#${this.channelName}`, `Invalid command name: ${rawCommandName}`);
+          return;
+        }
+        const index = this.config.excludedCommands.indexOf(commandName);
+        if (index > -1) {
+          this.config.excludedCommands.splice(index, 1);
+          this.saveConfig();
+          this.reloadCommands();
+          await clientWrapper.say(`#${this.channelName}`, `Command "${commandName}" re-enabled for this channel.`);
+        } else {
+          await clientWrapper.say(`#${this.channelName}`, `Command "${commandName}" is not currently disabled.`);
+        }
+
+      } else if (action === 'list') {
+        const list = this.config.excludedCommands.length > 0
+          ? this.config.excludedCommands.join(', ')
+          : 'None';
+        await clientWrapper.say(`#${this.channelName}`, `Disabled commands: ${list}`);
+
+      } else {
+        await clientWrapper.say(`#${this.channelName}`, `Usage: !config exclude add/remove/list [commandname]`);
+      }
+
+    } else {
+      await clientWrapper.say(`#${this.channelName}`, `Config commands: !config exclude add/remove/list [commandname]`);
     }
   }
 
