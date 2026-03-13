@@ -387,6 +387,23 @@ class KickChatBot {
       }
     };
 
+    // Intercept numeric replies for pending location clarifications
+    const locationPending = this.pendingLocationClarifications.get(username);
+    if (locationPending && /^\d+$/.test(message.trim()) && Date.now() - locationPending.timestamp < 60000) {
+      this.handleLocationClarificationReply(clientWrapper, username, parseInt(message.trim(), 10), kickTags).catch(err => {
+        console.error('[LOCATION] Clarification reply error:', err.message);
+      });
+      return;
+    }
+
+    // Inline command: !location (handled before plugin dispatch — needs direct config/instance access)
+    if (isCommand && requestedCommandName === 'location') {
+      this.handleLocationCommand(clientWrapper, message, kickTags).catch(err => {
+        console.error('[LOCATION] Command error:', err.message);
+      });
+      return;
+    }
+
     // Execute ALL command functions for ALL messages (they handle their own filtering)
     this.commands.forEach((commandFunction, commandName) => {
       try {
