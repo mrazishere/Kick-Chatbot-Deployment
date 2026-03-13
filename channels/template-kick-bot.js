@@ -499,6 +499,7 @@ class KickChatBot {
     const subcommand = (args[1] || '').toLowerCase();
 
     if (subcommand === 'exclude') {
+      if (!this.config.excludedCommands) this.config.excludedCommands = [];
       const action = (args[2] || '').toLowerCase();
       const rawCommandName = args[3];
 
