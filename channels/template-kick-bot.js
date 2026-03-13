@@ -473,27 +473,28 @@ class KickChatBot {
   async handleLocationCommand(clientWrapper, message, kickTags) {
     const username = kickTags.username;
 
-    // Parse subcommand: "!location set Bangkok" → subcommand="set", rest="Bangkok"
+    // Parse: "!location home set Bangkok" → target="home", subcommand="set", rest="Bangkok"
+    // Parse: "!location current set Paris" → target="current", subcommand="set", rest="Paris"
     const parts = message.trim().split(/\s+/);
-    // parts[0] = "!location", parts[1] = subcommand, parts[2+] = value
-    const subcommand = (parts[1] || '').toLowerCase();
+    // parts[0] = "!location", parts[1] = target (home|current), parts[2] = subcommand (set), parts[3+] = value
+    const target = (parts[1] || '').toLowerCase();
+    const subcommand = (parts[2] || '').toLowerCase();
 
-    if (subcommand === 'set') {
-      // Permission check
+    if ((target === 'home' || target === 'current') && subcommand === 'set') {
+      // Permission check — silent ignore for non-moderators
       if (!kickTags.isModUp) {
-        // Silent ignore for non-moderators
         return;
       }
 
-      const value = parts.slice(2).join(' ').trim();
+      const value = parts.slice(3).join(' ').trim();
       if (!value) {
-        await clientWrapper.say(`#${this.channelName}`, 'Usage: !location set <city, country, state, or region>');
+        await clientWrapper.say(`#${this.channelName}`, `Usage: !location ${target} set <city, country, state, or region>`);
         return;
       }
 
-      await this._resolveAndSetLocation(clientWrapper, username, value);
+      await this._resolveAndSetLocation(clientWrapper, username, value, target);
     }
-    // Future subcommands (clear, show) — designed in, not implemented in v1.1
+    // Future subcommands (clear, show) — designed in, not implemented in v1.2
   }
 
   async _resolveAndSetLocation(clientWrapper, username, value) {
@@ -533,7 +534,8 @@ Rules:
       }
 
       const data = await response.json();
-      const text = data.content?.[0]?.text || '';
+      const raw = data.content?.[0]?.text || '';
+      const text = raw.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim();
       resolved = JSON.parse(text);
     } catch (err) {
       console.error('[LOCATION] Claude API error:', err.message);
