@@ -15,7 +15,7 @@
 
 // ─── Section 1: Module-level constants and Maps ────────────────────────────────
 
-const EXCHANGERATE_API_KEY = 'process.env.EXCHANGERATE_API_KEY';
+const EXCHANGERATE_API_KEY = process.env.EXCHANGERATE_API_KEY;
 const RATE_CACHE = new Map();        // key: 'USD/THB', value: { conversionRate, rateDate, expiresAt }
 const LOCATION_CACHE = new Map();    // key: 'bangkok' (lowercased), value: { isoCode, expiresAt }
 const RATE_LIMIT_MAP = new Map();    // key: username, value: [timestamp, ...]
