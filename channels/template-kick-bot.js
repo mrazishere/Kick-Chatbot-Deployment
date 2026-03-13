@@ -23,7 +23,7 @@ class KickChatBot {
     this.reconnectDelay = 5000;
     this.manualDisconnect = false;
 
-    this.pendingLocationClarifications = new Map(); // username -> { options, timestamp }
+    this.pendingLocationClarifications = new Map(); // username -> { options, timestamp, targetKey }
 
     this.setupCommands();
   }
@@ -497,7 +497,7 @@ class KickChatBot {
     // Future subcommands (clear, show) — designed in, not implemented in v1.2
   }
 
-  async _resolveAndSetLocation(clientWrapper, username, value) {
+  async _resolveAndSetLocation(clientWrapper, username, value, targetKey) {
     const systemPrompt = `You are a geography resolver. Given a place name, return a JSON object with these fields:
 - "status": "resolved" | "ambiguous" | "unknown"
 - "location": { "country": "", "city": "", "state": "", "province": "" }  (only when status=resolved; fill only the fields that apply, leave others as "")
@@ -552,7 +552,8 @@ Rules:
       // Store pending clarification
       this.pendingLocationClarifications.set(username, {
         options: resolved.options,
-        timestamp: Date.now()
+        timestamp: Date.now(),
+        targetKey: targetKey
       });
 
       const optionList = resolved.options
@@ -563,7 +564,7 @@ Rules:
     }
 
     // Resolved — write to config
-    await this._writeLocation(clientWrapper, resolved.location);
+    await this._writeLocation(clientWrapper, resolved.location, targetKey);
   }
 
   async handleLocationClarificationReply(clientWrapper, username, choice, kickTags) {
@@ -582,36 +583,68 @@ Rules:
       return;
     }
 
-    await this._writeLocation(clientWrapper, selected.location);
+    await this._writeLocation(clientWrapper, selected.location, pending.targetKey);
   }
 
-  async _writeLocation(clientWrapper, location) {
-    // Upsert: create location field if absent (LOC-07 — pre-v1.1 configs)
-    if (!this.config.location) {
-      this.config.location = { country: '', city: '', state: '', province: '' };
-    }
+  async _writeLocation(clientWrapper, location, targetKey) {
+    // Migration and upsert logic:
+    //
+    // Case 1 — No location field at all (pre-v1.1 config, LOC-19):
+    //   Create full nested structure from scratch.
+    //
+    // Case 2 — Flat v1.1 location field { country, city, state, province } (LOC-18):
+    //   Migrate: move flat data to location.home, initialize location.current as empty.
+    //   Then write to the requested targetKey as normal.
+    //
+    // Case 3 — Already nested v1.2 structure:
+    //   Write directly to location[targetKey].
 
-    this.config.location.country  = location.country  || '';
-    this.config.location.city     = location.city     || '';
-    this.config.location.state    = location.state    || '';
-    this.config.location.province = location.province || '';
+    if (!this.config.location) {
+      // Case 1: no location field — create full nested structure
+      this.config.location = {
+        home:    { country: '', city: '', state: '', province: '' },
+        current: { country: '', city: '', state: '', province: '' }
+      };
+    } else if (!this.config.location.home && !this.config.location.current) {
+      // Case 2: flat v1.1 shape — migrate flat data to home, initialize current as empty
+      const flat = this.config.location;
+      this.config.location = {
+        home: {
+          country:  flat.country  || '',
+          city:     flat.city     || '',
+          state:    flat.state    || '',
+          province: flat.province || ''
+        },
+        current: { country: '', city: '', state: '', province: '' }
+      };
+    }
+    // Case 3: already nested — no migration needed, fall through
+
+    // Write to the target sub-object
+    this.config.location[targetKey].country  = location.country  || '';
+    this.config.location[targetKey].city     = location.city     || '';
+    this.config.location[targetKey].state    = location.state    || '';
+    this.config.location[targetKey].province = location.province || '';
     this.config.lastUpdated = new Date().toISOString();
 
     // Build human-readable confirmation string (only non-empty fields)
     const parts = [
-      this.config.location.city,
-      this.config.location.state || this.config.location.province,
-      this.config.location.country
+      this.config.location[targetKey].city,
+      this.config.location[targetKey].state || this.config.location[targetKey].province,
+      this.config.location[targetKey].country
     ].filter(Boolean);
     const display = parts.join(', ');
 
-    // Send confirmation BEFORE writing config (bot may restart on PM2 after write)
-    await clientWrapper.say(`#${this.channelName}`, `Location set: ${display}`);
+    // Confirmation label based on target key
+    const label = targetKey === 'home' ? 'Home location set' : 'Current location set';
 
-    // Write config to disk
+    // Send confirmation BEFORE writing config (bot may restart on PM2 after write)
+    await clientWrapper.say(`#${this.channelName}`, `${label}: ${display}`);
+
+    // Write config to disk (non-atomic — matches existing in-bot pattern per project decision)
     const configPath = path.join(__dirname, '..', 'channel-configs', `${this.channelName}.json`);
     fs.writeFileSync(configPath, JSON.stringify(this.config, null, 2));
-    console.log(`[LOCATION] Config written for ${this.channelName}: ${display}`);
+    console.log(`[LOCATION] Config written for ${this.channelName} (${targetKey}): ${display}`);
   }
 
   async checkAndRefreshToken() {
