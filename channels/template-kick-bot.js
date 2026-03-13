@@ -159,16 +159,10 @@ class KickChatBot {
   }
 
   subscribeToChannels() {
-    const channels = [
-      `chatrooms.${this.chatroomId}.v2`,
-      `chatrooms.${this.chatroomId}`,
-      `channel.${this.chatroomId}`
-    ];
-    channels.forEach(channelName => {
-      this.ws.send(JSON.stringify({ event: 'pusher:unsubscribe', data: { channel: channelName } }));
-      this.ws.send(JSON.stringify({ event: 'pusher:subscribe', data: { auth: '', channel: channelName } }));
-      console.log(`[INFO] Sent subscription request for ${channelName}`);
-    });
+    const channel = `chatrooms.${this.chatroomId}.v2`;
+    this.ws.send(JSON.stringify({ event: 'pusher:unsubscribe', data: { channel } }));
+    this.ws.send(JSON.stringify({ event: 'pusher:subscribe', data: { auth: '', channel } }));
+    console.log(`[INFO] Sent subscription request for ${channel}`);
   }
 
   async connectWebSocket() {
