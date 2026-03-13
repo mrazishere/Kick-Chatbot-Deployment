@@ -210,12 +210,19 @@ async function fetchRate(fromCode, toCode) {
     const url = `https://v6.exchangerate-api.com/v6/${EXCHANGERATE_API_KEY}/pair/${fromCode}/${toCode}`;
 
     const response = await fetchFn(url);
+    const data = await response.json();          // parse body first — always
+
+    if (data.result === 'error') {
+        const err = new Error(`[FX] API error: ${data['error-type']} for ${fromCode}`);
+        err.fxErrorType = data['error-type'];
+        err.fxFromCode = fromCode;
+        throw err;
+    }
 
     if (!response.ok) {
         throw new Error(`[FX] API ${response.status}: ${fromCode}→${toCode}`);
     }
 
-    const data = await response.json();
     const rateDate = new Date(data.time_last_update_utc).toISOString().slice(0, 10);
     const entry = { conversionRate: data.conversion_rate, rateDate };
 
@@ -280,7 +287,7 @@ exports.fx = async function fx(client, message, channel, tags, config) {
             const toStr = locationObjToString(config.location?.home);
 
             if (!fromCode) {
-                client.say(channel, `@${username}, could not resolve "${locationStr}" to a currency.`);
+                client.say(channel, `@${username}, could not resolve "${locationStr}" to a supported currency.`);
                 return;
             }
             if (!toStr) {
@@ -312,6 +319,10 @@ exports.fx = async function fx(client, message, channel, tags, config) {
         client.say(channel, `@${username}, ${fromFormatted} ${fromCode} = ${toFormatted} ${toCode} (${rateDate})`);
 
     } catch (err) {
+        if (err.fxErrorType === 'unsupported-code') {
+            client.say(channel, `@${username}, ${err.fxFromCode} is not a supported currency code.`);
+            return;
+        }
         console.error('[FX] Unhandled error:', err.message);
         try {
             client.say(channel, `@${username || 'user'}, exchange rate service temporarily unavailable.`);
