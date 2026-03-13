@@ -394,7 +394,7 @@ class KickChatBot {
     // Execute ALL command functions for ALL messages (they handle their own filtering)
     this.commands.forEach((commandFunction, commandName) => {
       try {
-        commandFunction(clientWrapper, message, `#${this.channelName}`, kickTags);
+        commandFunction(clientWrapper, message, `#${this.channelName}`, kickTags, this.config);
       } catch (error) {
         // Only log actual errors, not "not our command" type messages
         if (error.message && !error.message.includes('Not our command')) {
