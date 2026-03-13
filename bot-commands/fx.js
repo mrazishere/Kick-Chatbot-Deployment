@@ -230,6 +230,10 @@ exports.fx = async function fx(client, message, channel, tags, config) {
     try {
         username = tags.username;
 
+        // 0. Prefix guard — only respond to !fx messages
+        const input = message.trim().split(/\s+/);
+        if (input[0] !== '!fx') return;
+
         // 1. Rate limit check — silent ignore on excess
         if (!checkRateLimit(username)) return;
 
