@@ -748,7 +748,8 @@ app.get('/kick-bot-enroll/complete', async (req, res) => {
       expiresAt: Date.now() + (expires_in * 1000)
     },
     enrolledAt: new Date().toISOString(),
-    lastUpdated: new Date().toISOString()
+    lastUpdated: new Date().toISOString(),
+    location: { country: "", city: "", state: "", province: "" }
   };
 
   const configPath = path.join(configDir, `${username}.json`);
@@ -1292,7 +1293,8 @@ async function deployAddChannel(requester, args, badges, sourceChatroomId) {
         broadcasterUserId: broadcasterUserId,
         chatOnly: false,
         enrolledAt: new Date().toISOString(),
-        lastUpdated: new Date().toISOString()
+        lastUpdated: new Date().toISOString(),
+        location: { country: "", city: "", state: "", province: "" }
       };
 
       const configPath = path.join(configDir, `${sanitized}.json`);
