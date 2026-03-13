@@ -3,6 +3,12 @@
  *
  * !location home set <place>     — Set the channel's home currency location (mods only)
  * !location current set <place>  — Set the channel's current currency location (mods only)
+ *
+ * Channel config (channel-configs/<channel>.json):
+ *
+ * excludedCommands: ["fx", "translate"]
+ *   — Prevents listed commands from loading or responding in this channel.
+ *     Add command names (matching filenames in bot-commands/) to disable them.
  */
 
 require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
