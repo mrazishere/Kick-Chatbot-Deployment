@@ -20,6 +20,11 @@ class KickChatBot {
     this.config = this.loadConfig();
     this.tokenRefreshInterval = null;
 
+    this.reconnectDelay = 5000;
+    this.manualDisconnect = false;
+
+    this.pendingLocationClarifications = new Map(); // username -> { options, timestamp }
+
     this.setupCommands();
   }
 
@@ -153,6 +158,19 @@ class KickChatBot {
     }
   }
 
+  subscribeToChannels() {
+    const channels = [
+      `chatrooms.${this.chatroomId}.v2`,
+      `chatrooms.${this.chatroomId}`,
+      `channel.${this.chatroomId}`
+    ];
+    channels.forEach(channelName => {
+      this.ws.send(JSON.stringify({ event: 'pusher:unsubscribe', data: { channel: channelName } }));
+      this.ws.send(JSON.stringify({ event: 'pusher:subscribe', data: { auth: '', channel: channelName } }));
+      console.log(`[INFO] Sent subscription request for ${channelName}`);
+    });
+  }
+
   async connectWebSocket() {
     return new Promise((resolve, reject) => {
       const wsUrl = `wss://ws-us2.pusher.com/app/32cbd69e4b950bf97679?protocol=7&client=js&version=8.4.0-rc2&flash=false`;
@@ -175,28 +193,12 @@ class KickChatBot {
       console.log('[INFO] Connecting to Kick chat WebSocket...');
       this.ws = new WebSocket(wsUrl);
 
+      let resolved = false;
+
       this.ws.on('open', () => {
         console.log('[SUCCESS] WebSocket connected!');
-
-        // Subscribe to the chatroom channel
-        const channels = [
-          `chatrooms.${this.chatroomId}.v2`,
-          `chatrooms.${this.chatroomId}`,
-          `channel.${this.chatroomId}`
-        ];
-
-        channels.forEach(channelName => {
-          // Unsubscribe first to prevent duplicate subscriptions on reconnect
-          this.ws.send(JSON.stringify({
-            event: 'pusher:unsubscribe',
-            data: { channel: channelName }
-          }));
-          this.ws.send(JSON.stringify({
-            event: 'pusher:subscribe',
-            data: { auth: '', channel: channelName }
-          }));
-          console.log(`[INFO] Sent subscription request for ${channelName}`);
-        });
+        this.reconnectDelay = 5000; // reset backoff on successful connection
+        this.subscribeToChannels();
 
         // Handle ping/pong to keep connection alive (started per successful connection)
         this.pingInterval = setInterval(() => {
@@ -205,6 +207,7 @@ class KickChatBot {
           }
         }, 30000);
 
+        resolved = true;
         resolve();
       });
 
@@ -219,7 +222,7 @@ class KickChatBot {
 
       this.ws.on('error', (error) => {
         console.error('[ERROR] WebSocket error:', error.message);
-        reject(error);
+        if (!resolved) reject(error);
       });
 
       this.ws.on('close', (code, reason) => {
@@ -231,11 +234,14 @@ class KickChatBot {
           this.pingInterval = null;
         }
 
-        // Attempt to reconnect after 5 seconds
+        if (this.manualDisconnect) return;
+
+        // Exponential backoff reconnect (max 60s)
+        console.log(`[INFO] Reconnecting in ${this.reconnectDelay / 1000}s...`);
         setTimeout(() => {
-          console.log('[INFO] Attempting to reconnect...');
-          this.connectWebSocket();
-        }, 5000);
+          this.reconnectDelay = Math.min(this.reconnectDelay * 2, 60000);
+          this.connectWebSocket().catch(() => {});
+        }, this.reconnectDelay);
       });
     });
   }
@@ -254,7 +260,20 @@ class KickChatBot {
     }
 
     if (message.event === 'pusher:error') {
-      console.error('[ERROR] Pusher error:', JSON.stringify(message.data));
+      const errData = message.data;
+      console.error('[ERROR] Pusher error:', JSON.stringify(errData));
+      if (errData.code === 4200) {
+        // Pusher requests immediate reconnect
+        console.log('[INFO] Pusher requested immediate reconnect');
+        if (this.ws) this.ws.close();
+      } else if (errData.code === null && typeof errData.message === 'string' && errData.message.includes('No current subscription')) {
+        // Re-subscribe to the missing channel
+        const match = errData.message.match(/channel ([\w.]+)/);
+        if (match && this.ws && this.ws.readyState === WebSocket.OPEN) {
+          console.log(`[INFO] Re-subscribing to ${match[1]}`);
+          this.ws.send(JSON.stringify({ event: 'pusher:subscribe', data: { auth: '', channel: match[1] } }));
+        }
+      }
       return;
     }
 
@@ -434,6 +453,148 @@ class KickChatBot {
     }
   }
 
+  async handleLocationCommand(clientWrapper, message, kickTags) {
+    const username = kickTags.username;
+
+    // Parse subcommand: "!location set Bangkok" → subcommand="set", rest="Bangkok"
+    const parts = message.trim().split(/\s+/);
+    // parts[0] = "!location", parts[1] = subcommand, parts[2+] = value
+    const subcommand = (parts[1] || '').toLowerCase();
+
+    if (subcommand === 'set') {
+      // Permission check
+      if (!kickTags.isModUp) {
+        // Silent ignore for non-moderators
+        return;
+      }
+
+      const value = parts.slice(2).join(' ').trim();
+      if (!value) {
+        await clientWrapper.say(`#${this.channelName}`, 'Usage: !location set <city, country, state, or region>');
+        return;
+      }
+
+      await this._resolveAndSetLocation(clientWrapper, username, value);
+    }
+    // Future subcommands (clear, show) — designed in, not implemented in v1.1
+  }
+
+  async _resolveAndSetLocation(clientWrapper, username, value) {
+    const systemPrompt = `You are a geography resolver. Given a place name, return a JSON object with these fields:
+- "status": "resolved" | "ambiguous" | "unknown"
+- "location": { "country": "", "city": "", "state": "", "province": "" }  (only when status=resolved; fill only the fields that apply, leave others as "")
+- "options": [ { "label": "...", "location": {...} }, ... ]  (only when status=ambiguous; 2-4 options max)
+
+Rules:
+- If input names a city, infer and fill "country" (e.g. "Bangkok" → city=Bangkok, country=Thailand)
+- If input names a US/Canadian state or province, fill "country" accordingly
+- If input could be multiple different geo-types or locations (e.g. "Georgia" is a country AND a US state), set status=ambiguous and provide options
+- If input is not a real place, set status=unknown
+- Return ONLY valid JSON. No explanation, no markdown fences.`;
+
+    const fetchFn = globalThis.fetch ?? require('node-fetch');
+
+    let resolved;
+    try {
+      const response = await fetchFn('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': process.env.ANTHROPIC_API_KEY,
+          'anthropic-version': '2023-06-01'
+        },
+        body: JSON.stringify({
+          model: 'claude-haiku-4-5',
+          max_tokens: 200,
+          system: systemPrompt,
+          messages: [{ role: 'user', content: value }]
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`API ${response.status}`);
+      }
+
+      const data = await response.json();
+      const text = data.content?.[0]?.text || '';
+      resolved = JSON.parse(text);
+    } catch (err) {
+      console.error('[LOCATION] Claude API error:', err.message);
+      await clientWrapper.say(`#${this.channelName}`, 'Could not resolve location. Try again or use a more specific value.');
+      return;
+    }
+
+    if (resolved.status === 'unknown') {
+      await clientWrapper.say(`#${this.channelName}`, `Unknown location: "${value}". Try a more specific value.`);
+      return;
+    }
+
+    if (resolved.status === 'ambiguous' && Array.isArray(resolved.options) && resolved.options.length > 0) {
+      // Store pending clarification
+      this.pendingLocationClarifications.set(username, {
+        options: resolved.options,
+        timestamp: Date.now()
+      });
+
+      const optionList = resolved.options
+        .map((opt, i) => `${i + 1} for ${opt.label}`)
+        .join(', ');
+      await clientWrapper.say(`#${this.channelName}`, `"${value}" is ambiguous. Reply ${optionList}.`);
+      return;
+    }
+
+    // Resolved — write to config
+    await this._writeLocation(clientWrapper, resolved.location);
+  }
+
+  async handleLocationClarificationReply(clientWrapper, username, choice, kickTags) {
+    const pending = this.pendingLocationClarifications.get(username);
+    if (!pending) return;
+
+    // Clear pending state regardless of outcome
+    this.pendingLocationClarifications.delete(username);
+
+    // Permission check (re-check in case status changed)
+    if (!kickTags.isModUp) return;
+
+    const selected = pending.options[choice - 1];
+    if (!selected) {
+      await clientWrapper.say(`#${this.channelName}`, `Invalid selection. Use !location set again.`);
+      return;
+    }
+
+    await this._writeLocation(clientWrapper, selected.location);
+  }
+
+  async _writeLocation(clientWrapper, location) {
+    // Upsert: create location field if absent (LOC-07 — pre-v1.1 configs)
+    if (!this.config.location) {
+      this.config.location = { country: '', city: '', state: '', province: '' };
+    }
+
+    this.config.location.country  = location.country  || '';
+    this.config.location.city     = location.city     || '';
+    this.config.location.state    = location.state    || '';
+    this.config.location.province = location.province || '';
+    this.config.lastUpdated = new Date().toISOString();
+
+    // Build human-readable confirmation string (only non-empty fields)
+    const parts = [
+      this.config.location.city,
+      this.config.location.state || this.config.location.province,
+      this.config.location.country
+    ].filter(Boolean);
+    const display = parts.join(', ');
+
+    // Send confirmation BEFORE writing config (bot may restart on PM2 after write)
+    await clientWrapper.say(`#${this.channelName}`, `Location set: ${display}`);
+
+    // Write config to disk
+    const configPath = path.join(__dirname, '..', 'channel-configs', `${this.channelName}.json`);
+    fs.writeFileSync(configPath, JSON.stringify(this.config, null, 2));
+    console.log(`[LOCATION] Config written for ${this.channelName}: ${display}`);
+  }
+
   async checkAndRefreshToken() {
     // Only check if we have OAuth configured
     if (!this.config.oauth?.accessToken) return;
@@ -542,26 +703,27 @@ class KickChatBot {
   }
 
   async connect() {
-    try {
-      // Ensure we're authenticated first
-      await this.ensureAuthenticated();
-
-      // Get chatroom ID
-      await this.getChatroomId();
-
-      // Start token refresh scheduler
-      this.startTokenRefreshScheduler();
-
-      // Connect to WebSocket
-      await this.connectWebSocket();
-
-    } catch (error) {
-      console.error('[ERROR] Failed to connect:', error.message);
-      process.exit(1);
+    let attempt = 0;
+    while (true) {
+      try {
+        await this.ensureAuthenticated();
+        await this.getChatroomId();
+        this.startTokenRefreshScheduler();
+        await this.connectWebSocket();
+        return;
+      } catch (error) {
+        attempt++;
+        const delay = Math.min(5000 * Math.pow(2, attempt - 1), 60000);
+        console.error(`[ERROR] Failed to connect (attempt ${attempt}): ${error.message}`);
+        console.log(`[INFO] Retrying in ${delay / 1000}s...`);
+        await new Promise(r => setTimeout(r, delay));
+      }
     }
   }
 
   disconnect() {
+    this.manualDisconnect = true;
+
     // Clear token refresh interval
     if (this.tokenRefreshInterval) {
       clearInterval(this.tokenRefreshInterval);
