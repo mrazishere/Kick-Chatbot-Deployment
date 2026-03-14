@@ -13,3 +13,7 @@ channels/*.js
 
 # Custom command configurations (exclude all except template)
 bot-commands/custom/*
+
+# TypeScript build output
+dist/
+*.tsbuildinfo
