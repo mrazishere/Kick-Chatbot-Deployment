@@ -25,5 +25,13 @@
     "puppeteer-extra-plugin-stealth": "^2.11.2",
     "word-list-json": "^0.2.0",
     "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^20.19.37",
+    "@types/node-fetch": "^2.6.13",
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.21.0",
+    "typescript": "^5.9.3"
   }
 }
