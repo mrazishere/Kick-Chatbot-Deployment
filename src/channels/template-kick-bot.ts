@@ -82,7 +82,7 @@ class KickChatBot {
 
   saveChatroomId(realId: number): void {
     try {
-      const configPath = path.join(__dirname, '..', 'channel-configs', `${this.channelName}.json`);
+      const configPath = path.join(process.cwd(), 'src', 'channel-configs', `${this.channelName}.json`);
       if (fs.existsSync(configPath)) {
         const config = JSON.parse(fs.readFileSync(configPath, 'utf8')) as ChannelConfig;
         config.chatroomId = realId;
@@ -98,7 +98,7 @@ class KickChatBot {
 
   loadConfig(): ChannelConfig {
     try {
-      const configPath = path.join(__dirname, '..', 'channel-configs', `${this.channelName}.json`);
+      const configPath = path.join(process.cwd(), 'src', 'channel-configs', `${this.channelName}.json`);
       if (fs.existsSync(configPath)) {
         const config = JSON.parse(fs.readFileSync(configPath, 'utf8')) as ChannelConfig;
         console.log(`[CONFIG] Loaded config for ${this.channelName}`);
@@ -174,7 +174,7 @@ class KickChatBot {
   }
 
   saveConfig(): void {
-    const configPath = path.join(__dirname, '..', 'channel-configs', `${this.channelName}.json`);
+    const configPath = path.join(process.cwd(), 'src', 'channel-configs', `${this.channelName}.json`);
     fs.writeFileSync(configPath, JSON.stringify(this.config, null, 2));
   }
 
@@ -563,7 +563,7 @@ class KickChatBot {
       this.config.lastUpdated = new Date().toISOString();
 
       // Save updated config
-      const configPath = path.join(__dirname, '..', 'channel-configs', `${this.channelName}.json`);
+      const configPath = path.join(process.cwd(), 'src', 'channel-configs', `${this.channelName}.json`);
       fs.writeFileSync(configPath, JSON.stringify(this.config, null, 2));
       console.log('[AUTH] Channel token refreshed');
     } catch (error) {
@@ -809,7 +809,7 @@ Rules:
     await clientWrapper.say(`#${this.channelName}`, `${label}: ${display}`);
 
     // Write config to disk (non-atomic — matches existing in-bot pattern per project decision)
-    const configPath = path.join(__dirname, '..', 'channel-configs', `${this.channelName}.json`);
+    const configPath = path.join(process.cwd(), 'src', 'channel-configs', `${this.channelName}.json`);
     fs.writeFileSync(configPath, JSON.stringify(this.config, null, 2));
     console.log(`[LOCATION] Config written for ${this.channelName} (${targetKey}): ${display}`);
   }
@@ -820,7 +820,7 @@ Rules:
 
     try {
       // Reload config from disk in case it was updated externally
-      const configPath = path.join(__dirname, '..', 'channel-configs', `${this.channelName}.json`);
+      const configPath = path.join(process.cwd(), 'src', 'channel-configs', `${this.channelName}.json`);
       try {
         const raw = await fs.promises.readFile(configPath, 'utf8');
         this.config = JSON.parse(raw) as ChannelConfig;
