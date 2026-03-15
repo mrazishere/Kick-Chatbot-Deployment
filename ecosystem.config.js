@@ -4,7 +4,7 @@ module.exports = {
   apps: [
     {
       name: 'Kick-Bot-Enrollment',
-      script: path.join(__dirname, 'mr-ai-bot-enrollment.js'),
+      script: path.join(__dirname, 'dist', 'mr-ai-bot-enrollment.js'),
       cwd: __dirname,
       instances: 1,
       exec_mode: 'fork',
