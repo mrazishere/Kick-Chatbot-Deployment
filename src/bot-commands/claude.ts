@@ -134,7 +134,7 @@ function loadChannelConfig(channelName: string): ClaudeChannelConfig {
     return cached.config;
   }
 
-  const configPath = path.join(__dirname, '../channel-configs', `${cleanChannelName}.json`);
+  const configPath = path.join(__dirname, '../../data/channel-configs', `${cleanChannelName}.json`);
   let channelConfig = getDefaultChannelConfig();
 
   try {

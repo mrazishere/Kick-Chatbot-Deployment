@@ -1,7 +1,6 @@
 node_modules/
 .env
 .tokens.json
-channel-configs/
 logs/
 *.log
 .DS_Store
@@ -15,8 +14,8 @@ channels/*.js
 src/channels/*.ts
 !src/channels/template-kick-bot.ts
 
-# Custom command configurations (exclude all except template)
-bot-commands/custom/*
+# Custom command data (runtime JSON files)
+data/
 
 # TypeScript build output
 dist/

@@ -35,8 +35,8 @@ const readFileAsync = promisify(fs.readFile);
 const writeFileAsync = promisify(fs.writeFile);
 
 // CRITICAL: After compilation, __dirname in dist/bot-commands/ resolves to dist/bot-commands/.
-// Custom command JSON files live at bot-commands/custom/ (not dist/). Navigate up two levels.
-const CUSTOM_DIR = path.join(__dirname, '../../bot-commands/custom');
+// Custom command JSON files live at data/custom-commands/ in the project root.
+const CUSTOM_DIR = path.join(__dirname, '../../data/custom-commands');
 
 // Command tuple: [modOnly, response, counter]
 type CommandTuple = [string, string, number];

@@ -94,7 +94,7 @@ const oauthDomain = process.env.OAUTH_DOMAIN || 'localhost';
 const protocol = oauthDomain.includes('localhost') ? 'http' : 'https';
 const redirectUri = `${protocol}://${oauthDomain}/kick-bot-enroll/callback`;
 const authServer = 'https://id.kick.com';
-const KICK_BASE_PATH = __dirname;
+const KICK_BASE_PATH = path.resolve(__dirname, '..');
 
 // Validate channel name: only lowercase alphanumeric and underscores, 1-30 chars
 function validateChannelName(name: string): boolean {
@@ -122,14 +122,15 @@ function addToEcosystem(username: string): boolean {
 
     const appConfig = {
       "name": pm2Name,
-      "script": `${KICK_BASE_PATH}/channels/${username}.js`,
+      "script": `${KICK_BASE_PATH}/dist/channels/${username}.js`,
+      "cwd": KICK_BASE_PATH,
       "node_args": "--expose-gc",
       "log_date_format": "YYYY-MM-DD HH:mm:ss",
       "max_memory_restart": "150M",
       "out_file": `${KICK_BASE_PATH}/logs/${pm2Name}-out.log`,
       "error_file": `${KICK_BASE_PATH}/logs/${pm2Name}-err.log`,
       "watch": [
-        `${KICK_BASE_PATH}/channel-configs/${username}.json`
+        `${KICK_BASE_PATH}/data/channel-configs/${username}.json`
       ],
       "watch_delay": 2000,
       "ignore_watch": [
@@ -1006,7 +1007,7 @@ app.get('/kick-bot-enroll/complete', async (req: express.Request, res: express.R
   console.log(`[ENROLL] Completing enrollment for ${username} - Chatroom: ${resolvedChatroomId}, Broadcaster: ${broadcasterUserId}`);
 
   // Save channel config with OAuth tokens
-  const configDir = path.join(__dirname, 'channel-configs');
+  const configDir = path.join(KICK_BASE_PATH, 'src', 'channel-configs');
   if (!fs.existsSync(configDir)) {
     fs.mkdirSync(configDir, { recursive: true });
   }
@@ -1099,7 +1100,7 @@ app.get('/kick-bot-enroll/api/status/:username', (req: express.Request, res: exp
   if (!validateChannelName(username)) {
     return res.status(400).json({ error: 'Invalid channel name' });
   }
-  const configPath = path.join(__dirname, 'channel-configs', `${username}.json`);
+  const configPath = path.join(KICK_BASE_PATH, 'data', 'channel-configs', `${username}.json`);
 
   if (fs.existsSync(configPath)) {
     try {
@@ -1363,7 +1364,7 @@ async function deployAddChannel(requester: string, args: string[], badges: Array
       }
 
       // Create config WITHOUT OAuth
-      const configDir = path.join(KICK_BASE_PATH, 'channel-configs');
+      const configDir = path.join(KICK_BASE_PATH, 'src', 'channel-configs');
       if (!fs.existsSync(configDir)) {
         fs.mkdirSync(configDir, { recursive: true });
       }
@@ -1438,8 +1439,8 @@ async function deployRemoveChannel(requester: string, args: string[], badges: Ar
       return;
     }
 
-    fs.unlinkSync(path.join(KICK_BASE_PATH, 'channels', `${sanitized}.js`));
-    fs.unlinkSync(path.join(KICK_BASE_PATH, 'channel-configs', `${sanitized}.json`));
+    fs.unlinkSync(path.join(KICK_BASE_PATH, 'dist', 'channels', `${sanitized}.js`));
+    fs.unlinkSync(path.join(KICK_BASE_PATH, 'data', 'channel-configs', `${sanitized}.json`));
     removeFromEcosystem(sanitized);
 
     await sendDeploymentMessage(`@${requester}, bot removed from ${sanitized}.`, sourceChatroomId);
