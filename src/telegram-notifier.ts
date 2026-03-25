@@ -2,7 +2,7 @@ import 'dotenv/config';
 import axios from 'axios';
 import * as path from 'path';
 
-const DEPLOY_PATH: string = __dirname;
+const DEPLOY_PATH: string = process.env.BOT_FULL_PATH || path.resolve(__dirname, '..');
 
 class TelegramNotifier {
   private botToken: string | undefined;
@@ -53,10 +53,8 @@ class TelegramNotifier {
 <b>Action Required:</b>
 The bot's refresh token has been revoked by Kick. Automatic renewal is not possible.
 
-SSH into the server and run:
-<code>cd ${DEPLOY_PATH} && node authenticate.js</code>
-
-Then open the browser link shown in the terminal to re-authorize the bot.
+Re-authorize the bot (log in as the <b>bot account</b> first):
+https://${process.env.OAUTH_DOMAIN || 'mr-ai.dev'}/kick-bot-reauth
     `.trim();
 
     return await this.sendMessage(message, false); // audible — needs immediate action
@@ -75,8 +73,8 @@ ${emoji} <b>Kick Bot Token Expiry ${urgency}</b>
 <b>Bot Account:</b> ${process.env.KICK_USERNAME || 'Unknown'}
 <b>Time Remaining:</b> ~${hoursLeft} hour(s)
 
-Auto-refresh is being attempted. If the bot goes offline, manual re-auth may be required:
-<code>cd ${DEPLOY_PATH} && node authenticate.js</code>
+Auto-refresh is being attempted. If the bot goes offline, re-authorize here:
+https://${process.env.OAUTH_DOMAIN || 'mr-ai.dev'}/kick-bot-reauth
     `.trim();
 
     return await this.sendMessage(message, hoursLeft > 6);

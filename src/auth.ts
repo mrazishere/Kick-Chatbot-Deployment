@@ -29,10 +29,10 @@ class KickAuth {
     this.oauthPort = process.env.OAUTH_PORT || '3004';
 
     // Construct redirect URI: use https for domain, http for localhost
-    // Don't include port in URL (handled by reverse proxy/nginx)
+    // Path must match what's registered in the Kick developer app
     const protocol = this.oauthDomain.includes('localhost') ? 'http' : 'https';
     const portPart = this.oauthDomain.includes('localhost') ? `:${this.oauthPort}` : '';
-    this.redirectUri = `${protocol}://${this.oauthDomain}${portPart}/callback`;
+    this.redirectUri = `${protocol}://${this.oauthDomain}${portPart}/kick-bot-enroll/callback`;
 
     this.tokenFile = path.join(__dirname, '.tokens.json');
     this.accessToken = null;
@@ -268,12 +268,12 @@ class KickAuth {
   }
 
   // Start OAuth flow with local server
-  async startOAuthFlow(): Promise<string | null> {
+  async startOAuthFlow(scopes: string[] = ['chat:write', 'user:read', 'channel:read']): Promise<string | null> {
     return new Promise<string | null>((resolve, reject) => {
       const app = express();
       let server!: http.Server;  // definite assignment assertion: assigned synchronously by app.listen before any callback fires
 
-      app.get('/callback', async (req, res) => {
+      app.get('/kick-bot-enroll/callback', async (req, res) => {
         const code = req.query.code as string | undefined;
         const error = req.query.error as string | undefined;
         const state = req.query.state as string | undefined;
@@ -308,7 +308,7 @@ class KickAuth {
 
       const port = this.oauthPort;
       server = app.listen(port, () => {
-        const authUrl = this.getAuthUrl();
+        const authUrl = this.getAuthUrl(scopes);
         console.log('\n[AUTH] Please authenticate your bot:');
         console.log('[AUTH] Open this URL in your browser:\n');
         console.log(`    ${authUrl}\n`);

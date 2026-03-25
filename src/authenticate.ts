@@ -6,7 +6,7 @@ async function authenticate(): Promise<void> {
   const auth = new KickAuth();
 
   try {
-    await auth.startOAuthFlow();
+    await auth.startOAuthFlow(['chat:write', 'user:read', 'channel:read']);
     console.log('[AUTH] \u2713 Authentication successful!');
     console.log('[AUTH] Tokens saved. You can now run the bot.');
     process.exit(0);
