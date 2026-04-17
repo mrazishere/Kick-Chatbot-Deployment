@@ -14,8 +14,9 @@ channels/*.js
 src/channels/*.ts
 !src/channels/template-kick-bot.ts
 
-# Custom command data (runtime JSON files)
+# Custom command data and runtime channel configs (contain OAuth tokens)
 data/
+src/channel-configs/
 
 # TypeScript build output
 dist/
