@@ -1007,7 +1007,7 @@ app.get('/kick-bot-enroll/complete', async (req: express.Request, res: express.R
   console.log(`[ENROLL] Completing enrollment for ${username} - Chatroom: ${resolvedChatroomId}, Broadcaster: ${broadcasterUserId}`);
 
   // Save channel config with OAuth tokens
-  const configDir = path.join(KICK_BASE_PATH, 'src', 'channel-configs');
+  const configDir = path.join(KICK_BASE_PATH, 'data', 'channel-configs');
   if (!fs.existsSync(configDir)) {
     fs.mkdirSync(configDir, { recursive: true });
   }
@@ -1364,7 +1364,7 @@ async function deployAddChannel(requester: string, args: string[], badges: Array
       }
 
       // Create config WITHOUT OAuth
-      const configDir = path.join(KICK_BASE_PATH, 'src', 'channel-configs');
+      const configDir = path.join(KICK_BASE_PATH, 'data', 'channel-configs');
       if (!fs.existsSync(configDir)) {
         fs.mkdirSync(configDir, { recursive: true });
       }

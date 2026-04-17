@@ -185,6 +185,11 @@ function buildSystemPrompt(channelName: string, globalSystemPrompt: string): str
   const config = loadChannelConfig(channelName);
   let systemPrompt = config.claude.systemPrompt || globalSystemPrompt;
 
+  // Inject current date so Claude has accurate time context
+  const now = new Date();
+  const dateStr = now.toLocaleDateString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+  systemPrompt += `\n\nToday's date is ${dateStr}.`;
+
   // Append channel context if configured
   if (config.claude.context && config.claude.context.trim()) {
     systemPrompt += `\n\nChannel-specific context: ${config.claude.context}`;

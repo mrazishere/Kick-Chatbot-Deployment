@@ -180,8 +180,17 @@ class KickChatBot {
 
   async ensureAuthenticated(): Promise<void> {
     if (!this.auth.isAuthenticated()) {
-      console.log('[AUTH] Not authenticated. Starting OAuth flow...');
-      await this.auth.startOAuthFlow();
+      console.log('[AUTH] Bot token not available — waiting for OAuth Token Manager to authenticate...');
+      // Poll until the token manager provides valid tokens rather than competing on port 3004
+      let attempts = 0;
+      while (!this.auth.isAuthenticated()) {
+        attempts++;
+        if (attempts > 12) {
+          throw new Error('Bot token unavailable after 60s — OAuth Token Manager may need attention');
+        }
+        await new Promise(r => setTimeout(r, 5000));
+      }
+      console.log('[AUTH] Bot token now available');
     } else {
       console.log('[AUTH] Already authenticated');
     }
@@ -518,21 +527,26 @@ class KickChatBot {
     });
   }
 
-  async getChannelAccessToken(): Promise<string> {
+  async getChannelAccessToken(): Promise<{ token: string; isChannelToken: boolean }> {
     // Use channel's own OAuth token if available
     if (this.config.oauth?.accessToken) {
       // Check if token needs refresh
       if (this.config.oauth.expiresAt && this.config.oauth.expiresAt < Date.now() + 300000) {
-        await this.refreshChannelToken();
+        const refreshed = await this.refreshChannelToken();
+        if (!refreshed) {
+          // Refresh failed (token likely fully expired) — fall back to bot token
+          console.log('[AUTH] Channel token refresh failed, falling back to bot token');
+          return { token: await this.auth.getAccessToken() ?? '', isChannelToken: false };
+        }
       }
-      return this.config.oauth.accessToken;
+      return { token: this.config.oauth.accessToken, isChannelToken: true };
     }
     // Fallback to bot's token
-    return await this.auth.getAccessToken() ?? '';
+    return { token: await this.auth.getAccessToken() ?? '', isChannelToken: false };
   }
 
-  async refreshChannelToken(): Promise<void> {
-    if (!this.config.oauth?.refreshToken) return;
+  async refreshChannelToken(): Promise<boolean> {
+    if (!this.config.oauth?.refreshToken) return false;
 
     try {
       const response = await axios.post('https://id.kick.com/oauth/token',
@@ -550,8 +564,8 @@ class KickChatBot {
       const newExpiresIn = response.data.expires_in as unknown;
 
       if (typeof newAccessToken !== 'string' || newAccessToken.length === 0) {
-        console.error('[AUTH] Token refresh response missing valid access_token — retaining existing token. Response:', JSON.stringify(response.data).substring(0, 200));
-        return;
+        console.error('[AUTH] Token refresh response missing valid access_token. Response:', JSON.stringify(response.data).substring(0, 200));
+        return false;
       }
 
       this.config.oauth.accessToken = newAccessToken;
@@ -566,10 +580,12 @@ class KickChatBot {
       const configPath = path.join(process.cwd(), 'data', 'channel-configs', `${this.channelName}.json`);
       fs.writeFileSync(configPath, JSON.stringify(this.config, null, 2));
       console.log('[AUTH] Channel token refreshed');
+      return true;
     } catch (error) {
       if (error instanceof Error) {
         console.error('[ERROR] Failed to refresh channel token:', error.message);
       }
+      return false;
     }
   }
 
@@ -855,8 +871,7 @@ Rules:
 
   async sendMessage(message: string): Promise<unknown> {
     try {
-      const accessToken = await this.getChannelAccessToken();
-      const hasChannelOAuth = !!this.config.oauth?.accessToken;
+      const { token: accessToken, isChannelToken: hasChannelOAuth } = await this.getChannelAccessToken();
 
       // Sanitize message for Kick API - Kick has VERY strict formatting rules
       let sanitized = message
