@@ -130,6 +130,29 @@ export type CommandFn = (
 ) => void | Promise<void>;
 
 // ---------------------------------------------------------------------------
+// EarningsSession — shapes written by EarningsTracker and read by !earnings.
+// Persisted as JSON under data/earnings/<channel>/{current,sessions}.json.
+// Cents stored as integers to avoid float drift over long sessions.
+// ---------------------------------------------------------------------------
+
+export interface CurrentEarningsSession {
+  startedAt: string;          // ISO — when stream went live (Kick's start_time, or first poll if absent)
+  firstObservedAt: string;    // ISO — when our tracker first saw this stream; set once, never updated
+  lastPolledAt: string;       // ISO — last successful poll
+  lastViewerCount: number;    // viewers at last poll (used to prorate the next interval)
+  accumulatedCents: number;   // integer cents earned so far this session
+  peakViewers: number;        // highest viewer count observed this session
+}
+
+export interface FinalizedEarningsSession {
+  startedAt: string;
+  endedAt: string;
+  durationSeconds: number;
+  totalCents: number;
+  peakViewers: number;
+}
+
+// ---------------------------------------------------------------------------
 // FxError — typed error class for the currency exchange plugin.
 // MUST be a class (not interface): catch blocks use `instanceof FxError`.
 // An interface cannot satisfy instanceof — a runtime constructor is required.
