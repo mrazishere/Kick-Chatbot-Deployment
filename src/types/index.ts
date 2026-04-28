@@ -85,6 +85,8 @@ export interface BadgesMap {
   moderator?: string;
   vip?: string;
   subscriber?: string;
+  founder?: string;
+  sub_gifter?: string;
   [key: string]: string | undefined;
 }
 

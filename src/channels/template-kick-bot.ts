@@ -453,6 +453,11 @@ class KickChatBot {
     const isBroadcaster = badges.some(b => b.type === 'broadcaster' || b.type === 'owner');
     const isMod = badges.some(b => b.type === 'moderator') || isBroadcaster;
     const isVip = badges.some(b => b.type === 'vip');
+    const isFounder = badges.some(b => b.type === 'founder');
+    const isSubGifter = badges.some(b => b.type === 'sub_gifter');
+    // Founder is NOT a proxy for active subscription on Kick — the badge
+    // persists after unsub, and the literal subscriber badge is shown alongside
+    // founder when both apply. Treat them as independent signals.
     const isSubscriber = badges.some(b => b.type === 'subscriber');
     const isModUp = isMod || isBroadcaster;
     const isVIPUp = isVip || isModUp;
@@ -465,7 +470,9 @@ class KickChatBot {
         broadcaster: isBroadcaster ? '1' : undefined,
         moderator: isMod ? '1' : undefined,
         vip: isVip ? '1' : undefined,
-        subscriber: isSubscriber ? '1' : undefined
+        subscriber: isSubscriber ? '1' : undefined,
+        founder: isFounder ? '1' : undefined,
+        sub_gifter: isSubGifter ? '1' : undefined
       },
       isBroadcaster: isBroadcaster,
       isModUp: isModUp,
