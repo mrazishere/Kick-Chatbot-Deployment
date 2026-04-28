@@ -114,7 +114,8 @@ function locationObjToString(loc: { city?: string; state?: string; province?: st
 type ParsedArgs =
     | { form: 'implicit'; locationTokens: string[]; amount: number }
     | { form: 'pair'; fromToken: string; toToken: string; amount: number }
-    | { form: 'single'; locationTokens: string[]; amount: number };
+    | { form: 'single'; locationTokens: string[]; amount: number }
+    | { form: 'reversed'; amount: number; currencyToken: string };
 
 function parseArgs(message: string): ParsedArgs {
     const parts = message.trim().split(/\s+/);
@@ -141,6 +142,13 @@ function parseArgs(message: string): ParsedArgs {
 
     if (tokens.length === 0) {
         return { form: 'implicit', locationTokens: [], amount };
+    }
+
+    // Detect reversed input: !fx 450000 THB (number first, currency code last)
+    const firstIsNumber = !isNaN(parseFloat(args[0].replace(/,/g, ''))) && parseFloat(args[0].replace(/,/g, '')) > 0;
+    const lastIsCurrency = /^[A-Z]{3}$/i.test(tokens[tokens.length - 1]);
+    if (firstIsNumber && tokens.length === 1 && lastIsCurrency) {
+        return { form: 'reversed', amount: parseFloat(args[0].replace(/,/g, '')), currencyToken: tokens[0].toUpperCase() };
     }
 
     // Check if exactly 2 tokens and both look like ISO currency codes
@@ -267,6 +275,11 @@ export const fx: CommandFn = async function fx(client, message, channel, tags, c
         // 3. Resolve fromCode and toCode based on form
         let fromCode: string | undefined;
         let toCode: string | undefined;
+
+        if (parsed.form === 'reversed') {
+            client.say(channel, `@${username}, try: !fx ${parsed.currencyToken} ${parsed.amount} — amount goes last. E.g. !fx THB 450000`);
+            return;
+        }
 
         if (parsed.form === 'implicit') {
             const fromStr = locationObjToString(config.location?.current);
