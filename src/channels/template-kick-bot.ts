@@ -349,12 +349,21 @@ class KickChatBot {
     }
 
     if (message.event === 'pusher:error') {
-      const errData = message.data;
+      const errData = message.data as Record<string, unknown> | undefined;
       console.error('[ERROR] Pusher error:', JSON.stringify(errData));
-      if (errData && typeof errData === 'object' && !Array.isArray(errData) && (errData as Record<string, unknown>).code === 4200) {
+
+      const isObj = errData && typeof errData === 'object' && !Array.isArray(errData);
+      const code = isObj ? errData.code : undefined;
+      const errMsg = isObj && typeof errData.message === 'string' ? errData.message : '';
+
+      if (code === 4200) {
         // Pusher requests immediate reconnect
         console.log('[INFO] Pusher requested immediate reconnect');
         if (this.ws) this.ws.close();
+      } else if (/no current subscription|subscription in progress/i.test(errMsg)) {
+        // Subscription was lost server-side — resubscribe on existing WS to self-heal silent deafness
+        console.log('[INFO] Subscription lost — resubscribing');
+        this.subscribeToChannels();
       }
       return;
     }
@@ -367,7 +376,8 @@ class KickChatBot {
     }
 
     if (message.event === 'pusher_internal:subscription_error') {
-      console.error('[ERROR] Subscription failed:', JSON.stringify(message));
+      console.error('[ERROR] Subscription failed, forcing reconnect:', JSON.stringify(message));
+      if (this.ws) this.ws.close();
       return;
     }
 
