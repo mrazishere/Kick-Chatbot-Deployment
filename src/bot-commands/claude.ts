@@ -22,6 +22,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import dotenv from 'dotenv';
 import { CommandFn, ChannelConfig, KickTags } from '../types';
+import { hlsResolver } from '../channels/hls-resolver';
+import { captureFrames, loadReferencePhotos, ImageBlob } from '../channels/live-frames';
 
 dotenv.config();
 
@@ -36,6 +38,9 @@ interface ClaudeChannelConfig {
       rateLimit: number;
       burstRequests: number;
       cooldownMinutes: number;
+    };
+    vision?: {
+      enabled?: boolean;
     };
   };
 }
@@ -425,6 +430,185 @@ async function callClaudeAPIWithSearch(messages: Array<{ role: string; content: 
   }
 
   throw new Error('callClaudeAPIWithSearch exhausted all retries');
+}
+
+// ─── Vision (mention-only) ────────────────────────────────────────────────────
+// When the bot is @-mentioned (not !claude'd directly), we capture live frames
+// from the channel's HLS stream and prepend them — together with reference
+// photos of the streamer — to the user's message. This grounds replies in what
+// is actually on stream right now.
+//
+// Path is opt-in per channel via `claude.vision.enabled` in the channel config.
+// Failures (HLS resolution, ffmpeg, no reference photos) silently fall back to
+// the existing text-only mention reply.
+
+interface VisionContentBlock {
+  type: 'image';
+  source: { type: 'base64'; media_type: string; data: string };
+}
+
+function imageBlobToBlock(blob: ImageBlob): VisionContentBlock {
+  return {
+    type: 'image',
+    source: {
+      type: 'base64',
+      media_type: blob.mediaType,
+      data: blob.buffer.toString('base64')
+    }
+  };
+}
+
+interface VisionContext {
+  refBlocks: VisionContentBlock[];
+  frameBlocks: VisionContentBlock[];
+}
+
+/**
+ * Captures live frames from the channel's HLS stream and loads any reference
+ * photos. Returns null if anything fails (caller should fall back to text-only).
+ */
+async function buildMentionVisionContext(channel: string): Promise<VisionContext | null> {
+  const cleanChannel = channel.startsWith('#') ? channel.slice(1) : channel;
+  const t0 = Date.now();
+  try {
+    const hlsUrl = await hlsResolver.resolve(cleanChannel);
+    let frames: ImageBlob[] = [];
+    try {
+      frames = await captureFrames(hlsUrl, 3, 2);
+    } catch (err) {
+      // Token may have rolled — invalidate cache and retry once
+      if (err instanceof Error && /403|410|forbidden|invalid|expired/i.test(err.message)) {
+        logStructured('warn', 'ffmpeg failed; invalidating HLS cache and retrying', {
+          channel: cleanChannel,
+          error: err.message
+        });
+        hlsResolver.invalidate(cleanChannel);
+        const freshUrl = await hlsResolver.resolve(cleanChannel);
+        frames = await captureFrames(freshUrl, 3, 2);
+      } else {
+        throw err;
+      }
+    }
+    if (frames.length === 0) {
+      throw new Error('no frames captured');
+    }
+
+    const refs = loadReferencePhotos(cleanChannel);
+
+    logStructured('info', 'Mention vision capture succeeded', {
+      channel: cleanChannel,
+      referenceCount: refs.length,
+      frameCount: frames.length,
+      durationMs: Date.now() - t0
+    });
+
+    return {
+      refBlocks: refs.map(imageBlobToBlock),
+      frameBlocks: frames.map(imageBlobToBlock)
+    };
+  } catch (err) {
+    if (err instanceof Error) {
+      logStructured('warn', 'Mention vision capture failed; falling back to text-only', {
+        channel: cleanChannel,
+        error: err.message,
+        durationMs: Date.now() - t0
+      });
+    }
+    return null;
+  }
+}
+
+/**
+ * Calls Claude with vision content prepended to the last user message.
+ * Uses Sonnet 4.6 (better vision than the older Sonnet 4 used for text-only).
+ * Same retry/backoff shape as callClaudeAPI.
+ */
+async function callClaudeAPIWithVision(
+  messages: Array<{ role: string; content: string }>,
+  systemPromptText: string,
+  vision: VisionContext,
+  streamerDisplayName: string
+): Promise<AnthropicResponse> {
+  // Build vision-aware system prompt addendum
+  const refClause = vision.refBlocks.length > 0
+    ? `The FIRST ${vision.refBlocks.length} attached image(s) are reference photos of the streamer "${streamerDisplayName}" — use them as the SOURCE OF TRUTH for who the streamer is. The next ${vision.frameBlocks.length} images are live video frames captured ~2 seconds apart from their current stream.`
+    : `${vision.frameBlocks.length} live video frames captured ~2 seconds apart from "${streamerDisplayName}"'s current stream are attached.`;
+
+  const visionAddendum = `\n\nVISUAL CONTEXT:\n${refClause}\n
+- Use the live frames as YOUR view of what's currently on stream — answer the user's question grounded in what you can see.
+- ${vision.refBlocks.length > 0 ? 'If the on-camera person clearly does NOT match the reference photos, they\'re a guest/collab partner — describe them generically ("their friend", "the guest", etc.), DO NOT call them by the streamer\'s name.' : 'Use camera POV / persistent-subject cues to identify the streamer in the frames — they\'re usually the person being followed by the camera or the consistent subject.'}
+- DO NOT describe the reference photos themselves or compare them to the live frames out loud.
+- If the user's question doesn't relate to what's on stream (e.g. a general question), answer normally — don't force a visual reference.
+- Synthesize across the frames; don't list what's in each one separately.`;
+
+  // Clone messages and inject vision content into the last user message
+  const enhanced: Array<{ role: string; content: unknown }> = messages.map(m => ({
+    role: m.role,
+    content: m.content
+  }));
+  for (let i = enhanced.length - 1; i >= 0; i--) {
+    if (enhanced[i].role === 'user') {
+      const text = enhanced[i].content as string;
+      enhanced[i].content = [
+        ...vision.refBlocks,
+        ...vision.frameBlocks,
+        { type: 'text', text }
+      ];
+      break;
+    }
+  }
+
+  const enhancedSystem = `${systemPromptText}${visionAddendum}`;
+
+  let retries = 0;
+  const maxRetries = 5;
+  while (retries < maxRetries) {
+    try {
+      const response = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': process.env.ANTHROPIC_API_KEY as string,
+          'anthropic-version': '2023-06-01'
+        },
+        body: JSON.stringify({
+          model: 'claude-sonnet-4-6',
+          max_tokens: 400,
+          system: enhancedSystem,
+          messages: enhanced
+        })
+      });
+
+      if (response.status === 529) {
+        const backoffTime = Math.pow(2, retries) * 1000;
+        await new Promise(resolve => setTimeout(resolve, backoffTime));
+        retries++;
+        continue;
+      }
+
+      const data = await response.json() as AnthropicResponse;
+      if (!response.ok) {
+        throw new Error(`Vision API returned ${response.status}: ${JSON.stringify(data).substring(0, 300)}`);
+      }
+      return data;
+    } catch (error) {
+      const isLastRetry = retries === maxRetries - 1;
+      if (error instanceof Error) {
+        logStructured('error', 'Claude vision API call failed', {
+          attempt: retries + 1,
+          maxRetries,
+          isLastRetry,
+          errorType: error.name,
+          errorMessage: error.message
+        });
+      }
+      if (isLastRetry) throw error;
+      retries++;
+      const backoffTime = Math.pow(2, retries) * 1000;
+      await new Promise(resolve => setTimeout(resolve, backoffTime));
+    }
+  }
+  throw new Error('callClaudeAPIWithVision exhausted all retries');
 }
 
 // Store system prompt
@@ -1059,10 +1243,12 @@ export const claude: CommandFn = async function claude(client, message, channel,
 
     // Check for @MrAIisHere mention and convert to !claude format
     const mentionPrompt = extractMentionPrompt(message);
+    let isMention = false;
     if (mentionPrompt) {
       // Convert mention to !claude format for processing
       input = ['!claude', ...mentionPrompt.split(" ")];
       command = '!claude';
+      isMention = true;
     }
 
     // Only process Claude-related commands after checking special triggers
@@ -1457,22 +1643,39 @@ export const claude: CommandFn = async function claude(client, message, channel,
 
         console.log(`[DEBUG] User query: "${userPrompt}" - Needs search: ${needsSearch}`);
 
-        let data = needsSearch ?
-          await callClaudeAPIWithSearch(messages, channelSystemPrompt) :
-          await callClaudeAPI(messages, channelSystemPrompt);
+        // Vision path — only when the bot was @-mentioned (not !claude'd directly)
+        // AND the channel has opted in via claude.vision.enabled. Captures live
+        // frames + reference photos and routes through callClaudeAPIWithVision.
+        // Silent fallback to text-only on any failure.
+        let visionContext: VisionContext | null = null;
+        const channelConfig = loadChannelConfig(channel);
+        const visionEnabled = channelConfig.claude.vision?.enabled === true;
+        if (isMention && visionEnabled) {
+          visionContext = await buildMentionVisionContext(channel);
+        }
 
-        // Smart fallback: if no search was done but Claude seems uncertain, try web search
-        if (!needsSearch && data && data.content && data.content.length > 0) {
-          let responseText = '';
-          for (const content of data.content) {
-            if (content.type === 'text') {
-              responseText += content.text ?? '';
+        let data: AnthropicResponse;
+        if (visionContext) {
+          const cleanChannel = channel.startsWith('#') ? channel.slice(1) : channel;
+          data = await callClaudeAPIWithVision(messages, channelSystemPrompt, visionContext, cleanChannel);
+        } else {
+          data = needsSearch ?
+            await callClaudeAPIWithSearch(messages, channelSystemPrompt) :
+            await callClaudeAPI(messages, channelSystemPrompt);
+
+          // Smart fallback: if no search was done but Claude seems uncertain, try web search
+          if (!needsSearch && data && data.content && data.content.length > 0) {
+            let responseText = '';
+            for (const content of data.content) {
+              if (content.type === 'text') {
+                responseText += content.text ?? '';
+              }
             }
-          }
 
-          if (detectUncertainty(responseText)) {
-            console.log(`[DEBUG] Claude uncertain about "${userPrompt}" - attempting web search fallback`);
-            data = await callClaudeAPIWithSearch(messages, channelSystemPrompt);
+            if (detectUncertainty(responseText)) {
+              console.log(`[DEBUG] Claude uncertain about "${userPrompt}" - attempting web search fallback`);
+              data = await callClaudeAPIWithSearch(messages, channelSystemPrompt);
+            }
           }
         }
 

@@ -13,6 +13,10 @@ channels/*.js
 # TypeScript channel instance files (git-ignored, created from template)
 src/channels/*.ts
 !src/channels/template-kick-bot.ts
+# Shared utility modules under src/channels/ — track these
+!src/channels/earnings-tracker.ts
+!src/channels/hls-resolver.ts
+!src/channels/live-frames.ts
 
 # Custom command data and runtime channel configs (contain OAuth tokens)
 data/
