@@ -1,0 +1,4 @@
+# Inspection artifacts from spike runs — not source
+*.webp
+*.png
+*.jpg
