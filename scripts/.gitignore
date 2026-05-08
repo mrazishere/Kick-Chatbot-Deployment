@@ -2,3 +2,7 @@
 *.webp
 *.png
 *.jpg
+
+# Transient caches and captured frames
+.hls-cache.json
+.frames/
