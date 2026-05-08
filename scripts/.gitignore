@@ -1,8 +1,0 @@
-# Inspection artifacts from spike runs — not source
-*.webp
-*.png
-*.jpg
-
-# Transient caches and captured frames
-.hls-cache.json
-.frames/
