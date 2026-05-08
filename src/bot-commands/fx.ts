@@ -106,7 +106,7 @@ function formatAmount(amount: number, currencyCode: string): string {
 
 function locationObjToString(loc: { city?: string; state?: string; province?: string; country?: string } | null | undefined): string | null {
     if (!loc) return null;
-    return loc.city ?? loc.state ?? loc.province ?? loc.country ?? null;
+    return loc.city || loc.state || loc.province || loc.country || null;
 }
 
 // ─── Section 6: Argument parser ───────────────────────────────────────────────
