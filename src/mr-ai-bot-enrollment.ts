@@ -10,6 +10,7 @@ import * as cookieLib from 'cookie';
 import KickAuth = require('./auth');
 import KickSessionAuth = require('./kick-session-auth');
 import TelegramNotifier = require('./telegram-notifier');
+import { chatroomResolver } from './channels/chatroom-resolver';
 
 // ---------------------------------------------------------------------------
 // Local interfaces
@@ -129,8 +130,14 @@ function addToEcosystem(username: string): boolean {
       "max_memory_restart": "150M",
       "out_file": `${KICK_BASE_PATH}/logs/${pm2Name}-out.log`,
       "error_file": `${KICK_BASE_PATH}/logs/${pm2Name}-err.log`,
+      // Watch a sentinel file rather than the channel config JSON itself.
+      // The bot writes its own JSON during token-refresh rotation; if PM2
+      // watched the JSON directly, every successful refresh would trigger a
+      // restart (slow-motion crash loop on OAuth channels). Deploy code and
+      // admin manual edits explicitly `touch` the .reload sentinel after
+      // their writes; the bot never touches it.
       "watch": [
-        `${KICK_BASE_PATH}/data/channel-configs/${username}.json`
+        `${KICK_BASE_PATH}/data/channel-configs/${username}.reload`
       ],
       "watch_delay": 2000,
       "ignore_watch": [
@@ -1033,6 +1040,11 @@ app.get('/kick-bot-enroll/complete', async (req: express.Request, res: express.R
 
   const configPath = path.join(configDir, `${username}.json`);
   fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+  // Bump the sentinel so PM2 file-watch (if active for this entry) restarts
+  // the bot to pick up the new tokens. The explicit `pm2 restart` below also
+  // covers this; the sentinel is here for symmetry with the chat-command path
+  // and so admins editing the JSON manually can trigger restart via touch.
+  fs.writeFileSync(path.join(configDir, `${username}.reload`), '');
 
   // Deploy the bot automatically
   let deployStatus = 'success';
@@ -1066,6 +1078,8 @@ app.get('/kick-bot-enroll/complete', async (req: express.Request, res: express.R
       exec(`pm2 restart "${pm2Name}"`, (restartErr) => {
         if (!restartErr) {
           console.log(`[DEPLOY] Restarted bot for ${username}`);
+          // No pm2 save needed — restart of an existing entry doesn't change
+          // the process list, so dump.pm2 is already correct.
           resolve();
           return;
         }
@@ -1075,10 +1089,15 @@ app.get('/kick-bot-enroll/complete', async (req: express.Request, res: express.R
             console.error(`[DEPLOY ERROR] Failed to start bot: ${err.message}`);
             deployStatus = 'warning';
             deployMessage = 'Config saved but bot failed to start. Contact admin.';
-          } else {
-            console.log(`[DEPLOY] Started bot for ${username}`);
+            resolve();
+            return;
           }
-          resolve();
+          console.log(`[DEPLOY] Started bot for ${username}`);
+          // Persist new entry so it survives reboots.
+          exec('pm2 save', (saveErr) => {
+            if (saveErr) console.error(`[DEPLOY] pm2 save failed: ${saveErr.message}`);
+            resolve();
+          });
         });
       });
     });
@@ -1182,7 +1201,19 @@ function connectDeploymentWebSocket(): void {
     deploymentPingInterval = null;
   }
 
+  // Connect-timeout watchdog: if `open` doesn't fire within 15s, kill the socket
+  // so the close handler can trigger the reconnect. Without this a TCP-level hang
+  // leaves the listener deaf forever (Kick chat commands silently drop).
+  const ws = deploymentWs;
+  const connectTimeout = setTimeout(() => {
+    if (ws.readyState !== WebSocket.OPEN) {
+      console.error('[DEPLOY BOT] Connect timeout after 15s — terminating socket');
+      ws.terminate();
+    }
+  }, 15000);
+
   deploymentWs.on('open', () => {
+    clearTimeout(connectTimeout);
     console.log('[DEPLOY BOT] WebSocket connected!');
 
     const channels = [
@@ -1219,7 +1250,13 @@ function connectDeploymentWebSocket(): void {
     }
   });
 
+  deploymentWs.on('error', (err: Error) => {
+    console.error('[DEPLOY BOT] WebSocket error:', err.message);
+    // `close` fires after `error`, so reconnect happens there.
+  });
+
   deploymentWs.on('close', () => {
+    clearTimeout(connectTimeout);
     console.log('[DEPLOY BOT] WebSocket disconnected, reconnecting...');
     if (deploymentPingInterval) {
       clearInterval(deploymentPingInterval);
@@ -1266,7 +1303,7 @@ async function handleDeploymentCommand(data: Record<string, unknown>, sourceChat
   const command = (args.shift() ?? '').toLowerCase();
 
   if (command === 'kickaddme') {
-    await sendDeploymentMessage(`@${username}, chat enrollment is disabled. Use the web form: https://mr-ai.dev/kick-bot-enroll`, sourceChatroomId);
+    await deployAddChannel(username, args, badges, sourceChatroomId);
   } else if (command === 'kickremoveme') {
     await deployRemoveChannel(username, args, badges, sourceChatroomId);
   } else if (command === 'kickstatus') {
@@ -1330,15 +1367,17 @@ async function deployAddChannel(requester: string, args: string[], badges: Array
         }
       }
 
-      // Get chatroom ID using Kick v2 API, fall back to broadcaster ID
+      // Get chatroom ID via stealth browser (kick.com/api/v2 is Cloudflare-blocked
+      // from this server's IP; ChatroomResolver bypasses that). Fall back to
+      // broadcaster ID only if the resolver itself fails — broadcaster_user_id
+      // is NOT a valid chatroom_id, but it lets enrollment limp along.
       let chatroomId: number | null = chatEnrollBroadcasterId;
       try {
-        const v2Response = await axios.get(`https://kick.com/api/v2/channels/${sanitized}`);
-        chatroomId = (v2Response.data?.chatroom as { id?: number } | undefined)?.id ?? chatEnrollBroadcasterId;
-        console.log(`[DEPLOY] Got chatroom ID via v2 API: ${chatroomId}`);
+        chatroomId = await chatroomResolver.resolve(sanitized);
+        console.log(`[DEPLOY] Got chatroom ID via stealth resolver: ${chatroomId}`);
       } catch (e) {
         if (e instanceof Error) {
-          console.error('[DEPLOY] Could not get chatroom ID via v2 API:', e.message);
+          console.error('[DEPLOY] Stealth chatroom resolve failed:', e.message);
         }
         console.log(`[DEPLOY] Falling back to broadcaster ID: ${chatroomId}`);
       }
@@ -1384,10 +1423,17 @@ async function deployAddChannel(requester: string, args: string[], badges: Array
 
       const configPath = path.join(configDir, `${sanitized}.json`);
       fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+      // Bump the .reload sentinel so PM2's file-watch picks up the new config.
+      // Bot never touches this file, so refresh-token rotation won't trigger
+      // spurious restarts.
+      fs.writeFileSync(path.join(configDir, `${sanitized}.reload`), '');
 
-      // Create bot file
-      const templatePath = path.join(KICK_BASE_PATH, 'channels', 'template-kick-bot.js');
-      const botPath = path.join(KICK_BASE_PATH, 'channels', `${sanitized}.js`);
+      // Create bot file. MUST clone from dist/channels/ (compiled TS output) —
+      // the legacy /channels/ dir at repo root contains pre-TS-migration files
+      // that import the old auth.js + telegram-notifier.js (with stale "SSH +
+      // node authenticate.js" wording that spams Telegram on token failures).
+      const templatePath = path.join(__dirname, 'channels', 'template-kick-bot.js');
+      const botPath = path.join(__dirname, 'channels', `${sanitized}.js`);
 
       let botCode = fs.readFileSync(templatePath, 'utf8');
       botCode = botCode.replace(/\$\$UPDATEHERE\$\$/g, sanitized);
@@ -1396,12 +1442,17 @@ async function deployAddChannel(requester: string, args: string[], badges: Array
       // Add to ecosystem
       addToEcosystem(sanitized);
 
-      // Start with PM2
+      // Start with PM2, then save the process list so the bot auto-resurrects
+      // on server reboot. Without `pm2 save`, the dump.pm2 stays stale and
+      // newly-deployed channels are lost on reboot.
       exec(`pm2 start "${botPath}" --name "${pm2Name}" --time`, async (startError) => {
         if (startError) {
           await sendDeploymentMessage(`@${requester}, failed to start bot for ${sanitized}.`, sourceChatroomId);
           return;
         }
+        exec('pm2 save', (saveErr) => {
+          if (saveErr) console.error(`[DEPLOY] pm2 save failed: ${saveErr.message}`);
+        });
         await sendDeploymentMessage(`@${requester}, bot deployed to ${sanitized}! (Chatroom: ${chatroomId})`, sourceChatroomId);
       });
 
@@ -1442,6 +1493,11 @@ async function deployRemoveChannel(requester: string, args: string[], badges: Ar
     fs.unlinkSync(path.join(KICK_BASE_PATH, 'dist', 'channels', `${sanitized}.js`));
     fs.unlinkSync(path.join(KICK_BASE_PATH, 'data', 'channel-configs', `${sanitized}.json`));
     removeFromEcosystem(sanitized);
+
+    // Persist removal so the deleted entry doesn't resurrect on reboot.
+    exec('pm2 save', (saveErr) => {
+      if (saveErr) console.error(`[DEPLOY] pm2 save failed: ${saveErr.message}`);
+    });
 
     await sendDeploymentMessage(`@${requester}, bot removed from ${sanitized}.`, sourceChatroomId);
   });
