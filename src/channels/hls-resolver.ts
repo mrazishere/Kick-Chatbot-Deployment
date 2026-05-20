@@ -1,36 +1,87 @@
 /**
- * HlsResolver — resolves Kick channels' master HLS playlist URLs by intercepting
- * the network request from a stealth headless browser visiting kick.com/<slug>.
+ * HlsResolver — resolves Kick channels' master HLS playlist URLs.
  *
- * Why a stealth browser:
- *   Kick's HTML page and v2 API endpoints that expose the playback URL are
- *   Cloudflare-blocked from this server (HTTP 403 with security policy reference).
- *   Puppeteer-extra-plugin-stealth bypasses that block when navigating like a
- *   real Chrome user. The intercepted m3u8 URL itself is hosted on AWS IVS
- *   (playback.live-video.net) which is NOT Cloudflare-fronted, so subsequent
- *   ffmpeg calls work directly without browser involvement.
+ * Mechanism (as of 2026-05-17):
+ *   Kick's website and v2 API are Cloudflare-blocked from this server (HTTP 403).
+ *   Stealth-plugin-style headless Chromium also fails the current Cloudflare
+ *   challenge ("Just a moment..." interstitial). `puppeteer-real-browser` plus
+ *   Xvfb + Chromium with the right flags clears the challenge.
+ *
+ *   Once on the page, Kick's player no longer fetches an m3u8 URL directly.
+ *   It calls `web.kick.com/api/v1/stream/<stream-id>/playback` which returns
+ *   JSON containing the playback URLs. We listen for that response and
+ *   extract `playback_url.live`.
  *
  * Caching:
- *   The intercepted URL contains a JWT token with an `exp` claim (typically
- *   ~2 weeks out). We cache per-channel and re-resolve only when the cached
- *   URL is within 60s of expiry, or when the caller explicitly invalidates
- *   after a 403 from the upstream (e.g. token rolled mid-stream).
+ *   The intercepted URL contains a JWT token with an `exp` claim. We cache
+ *   per-channel and re-resolve only when within 60s of expiry, or when the
+ *   caller explicitly invalidates after a 403 from the upstream.
  *
  * Concurrency:
  *   Multiple simultaneous mention requests for the same channel are coalesced
- *   into a single in-flight resolve to avoid spinning up multiple browsers.
+ *   into a single in-flight resolve.
  */
 
 /* eslint-disable @typescript-eslint/no-var-requires, @typescript-eslint/no-explicit-any */
-const puppeteer = require('puppeteer-extra');
-const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+import * as fs from 'fs';
+import * as path from 'path';
 
-puppeteer.use(StealthPlugin());
+// puppeteer-real-browser launches Chrome via chrome-launcher, which discovers
+// the binary via the CHROME_PATH env var. PM2 won't set that for us, so we
+// resolve the bundled Chromium that puppeteer downloads into the user cache.
+function discoverBundledChrome(): string | null {
+  try {
+    const root = path.join(process.env.HOME || '', '.cache', 'puppeteer', 'chrome');
+    const entries = fs.readdirSync(root).filter(d => d.startsWith('linux-'));
+    if (entries.length === 0) return null;
+    // Sort by version descending so we pick the newest installed Chromium.
+    entries.sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
+    for (const e of entries) {
+      const candidate = path.join(root, e, 'chrome-linux64', 'chrome');
+      if (fs.existsSync(candidate)) return candidate;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+if (!process.env.CHROME_PATH) {
+  const bundled = discoverBundledChrome();
+  if (bundled) {
+    process.env.CHROME_PATH = bundled;
+    console.log(`[HLS] Using bundled Chromium at ${bundled}`);
+  } else {
+    console.warn('[HLS] No bundled Chromium found and CHROME_PATH not set — resolver will likely fail');
+  }
+}
+
+const { connect } = require('puppeteer-real-browser');
+import TelegramNotifier = require('../telegram-notifier');
+const telegram = new TelegramNotifier();
+
+// Alert when the resolver has failed this many times in a row for the same
+// channel. Avoids alerting on single transient failures.
+const ALERT_AFTER_FAILURES = 3;
+// Once we've alerted, wait this long before alerting again on the same channel
+// even if failures continue (prevents spam during sustained outages).
+const ALERT_COOLDOWN_MS = 60 * 60 * 1000; // 1 hour
+
+const failureStreak = new Map<string, number>();
+const lastAlertAt = new Map<string, number>();
+const alertingNow = new Set<string>();
 
 interface CachedHls {
   url: string;
   exp: number; // unix seconds
   resolvedAt: number; // ms
+}
+
+interface PlaybackResponse {
+  playback_url?: {
+    live?: string;
+    dvr?: string;
+  };
 }
 
 function decodeJwtExp(jwt: string): number {
@@ -63,9 +114,41 @@ export class HlsResolver {
     const existing = this.inFlight.get(channel);
     if (existing) return existing;
 
-    const p = this.doResolve(channel).finally(() => {
-      this.inFlight.delete(channel);
-    });
+    const p = this.doResolve(channel)
+      .then(url => {
+        // Success — if we'd been alerting, send the recovery message
+        const prev = failureStreak.get(channel) || 0;
+        if (alertingNow.has(channel)) {
+          alertingNow.delete(channel);
+          telegram.notifyVisionRecovered(channel).catch(() => { /* ignore */ });
+        }
+        if (prev > 0) {
+          console.log(`[HLS] ${channel} recovered after ${prev} consecutive failures`);
+        }
+        failureStreak.set(channel, 0);
+        return url;
+      })
+      .catch(err => {
+        const reason = err instanceof Error ? err.message : String(err);
+        // Don't count "channel is offline" as a real failure — it's expected
+        // when the streamer ends their broadcast.
+        const isOffline = /channel may be offline|No playback URL extracted/i.test(reason);
+        if (!isOffline) {
+          const n = (failureStreak.get(channel) || 0) + 1;
+          failureStreak.set(channel, n);
+          const last = lastAlertAt.get(channel) || 0;
+          if (n >= ALERT_AFTER_FAILURES && Date.now() - last > ALERT_COOLDOWN_MS) {
+            alertingNow.add(channel);
+            lastAlertAt.set(channel, Date.now());
+            telegram.notifyVisionBroken(channel, reason, n).catch(() => { /* ignore */ });
+            console.log(`[HLS] Sent vision-broken telegram for ${channel} (streak=${n})`);
+          }
+        }
+        throw err;
+      })
+      .finally(() => {
+        this.inFlight.delete(channel);
+      });
     this.inFlight.set(channel, p);
     return p;
   }
@@ -79,44 +162,67 @@ export class HlsResolver {
   }
 
   private async doResolve(channel: string): Promise<string> {
-    console.log(`[HLS] Resolving ${channel} via stealth browser...`);
+    console.log(`[HLS] Resolving ${channel} via real browser...`);
     const t0 = Date.now();
-    const browser = await puppeteer.launch({
-      headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
-    });
-    try {
-      const page = await browser.newPage();
-      await page.setUserAgent(
-        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36'
-      );
 
-      const masters: string[] = [];
-      page.on('request', (req: any) => {
-        const u = req.url();
-        // Master playlist is on playback.live-video.net (AWS IVS).
-        // The aps12.playlist.live-video.net URLs are media playlists, not what we want.
-        if (u.includes('.m3u8') && u.includes('playback.live-video.net')) {
-          masters.push(u);
+    let browser: any;
+    let page: any;
+    try {
+      const r = await connect({
+        headless: false,
+        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+        turnstile: true,
+        disableXvfb: false
+      });
+      browser = r.browser;
+      page = r.page;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(`Browser launch failed: ${msg}`);
+    }
+
+    try {
+      let liveUrl: string | null = null;
+
+      page.on('response', async (res: any) => {
+        if (liveUrl) return;
+        const u = res.url();
+        if (!u.includes('/api/v1/stream/') || !u.includes('/playback')) return;
+        try {
+          const body = await res.text();
+          const parsed = JSON.parse(body) as PlaybackResponse;
+          const live = parsed.playback_url?.live;
+          if (typeof live === 'string' && live.includes('playback.live-video.net')) {
+            liveUrl = live;
+          }
+        } catch {
+          // Body unavailable / not JSON — ignore.
         }
       });
 
       await page.goto(`https://kick.com/${channel}`, {
         waitUntil: 'domcontentloaded',
-        timeout: 30000
+        timeout: 45000
       });
 
-      // Poll for up to 12s for the player to request its m3u8
-      const deadline = Date.now() + 12000;
-      while (masters.length === 0 && Date.now() < deadline) {
+      // Poll up to 25s for the playback API response. The real-browser launch
+      // is slower than the old stealth flow because it has to clear Cloudflare.
+      const deadline = Date.now() + 25000;
+      while (!liveUrl && Date.now() < deadline) {
         await new Promise(r => setTimeout(r, 250));
       }
 
-      if (masters.length === 0) {
-        throw new Error(`No master m3u8 intercepted for ${channel} within 12s — channel may be offline`);
+      if (!liveUrl) {
+        // Diagnose: still on Cloudflare interstitial vs page loaded but offline?
+        let title = '';
+        try { title = await page.title(); } catch { /* ignore */ }
+        if (/just a moment|attention required|cloudflare/i.test(title)) {
+          throw new Error(`Cloudflare challenge not cleared for ${channel} (title: "${title}")`);
+        }
+        throw new Error(`No playback URL extracted for ${channel} within 25s — channel may be offline`);
       }
 
-      const url = masters[0];
+      const url: string = liveUrl;
       const tokenMatch = url.match(/[?&]token=([^&]+)/);
       const exp = tokenMatch ? decodeJwtExp(decodeURIComponent(tokenMatch[1])) : Math.floor(Date.now() / 1000) + 3600;
 
@@ -124,7 +230,7 @@ export class HlsResolver {
       console.log(`[HLS] Resolved ${channel} in ${Date.now() - t0}ms (token exp in ${Math.floor((exp - Date.now() / 1000) / 60)}m)`);
       return url;
     } finally {
-      await browser.close().catch(() => {});
+      await browser.close().catch(() => { /* ignore */ });
     }
   }
 }

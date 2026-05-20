@@ -80,6 +80,71 @@ https://${process.env.OAUTH_DOMAIN || 'mr-ai.dev'}/kick-bot-reauth
     return await this.sendMessage(message, hoursLeft > 6);
   }
 
+  // Alert: vision (HLS resolver) has been failing for several attempts.
+  // Distinguishes Cloudflare-block from generic failure so the message is
+  // actionable.
+  async notifyVisionBroken(channel: string, reason: string, failureCount: number): Promise<boolean> {
+    const isCloudflare = /Cloudflare|Just a moment|challenge/i.test(reason);
+    const emoji = isCloudflare ? '🛑' : '⚠️';
+    const headline = isCloudflare
+      ? 'Cloudflare is blocking the vision resolver — likely needs a library/tool update'
+      : 'Vision resolver is failing consistently';
+    const message = `
+${emoji} <b>Kick Bot - Vision Broken</b>
+
+<b>Channel:</b> ${channel}
+<b>Consecutive failures:</b> ${failureCount}
+<b>Last error:</b> <code>${reason.substring(0, 200)}</code>
+
+${headline}.
+
+The bot is still running and will fall back to text-only Claude responses. Investigate <code>src/channels/hls-resolver.ts</code> when convenient.
+    `.trim();
+
+    return await this.sendMessage(message, false); // audible
+  }
+
+  // Informational: vision started working again after being broken.
+  async notifyVisionRecovered(channel: string): Promise<boolean> {
+    const message = `
+✅ <b>Kick Bot - Vision Recovered</b>
+
+<b>Channel:</b> ${channel}
+
+The HLS resolver is working again. No action needed.
+    `.trim();
+    return await this.sendMessage(message, true);
+  }
+
+  // Alert: earnings poller has been failing for several consecutive cycles.
+  // Most likely cause: enrollment service is down and dist/.tokens.json went
+  // stale. Earnings poller only reads tokens, so it can't self-recover.
+  async notifyEarningsBroken(channel: string, reason: string, failureCount: number): Promise<boolean> {
+    const message = `
+⚠️ <b>Kick Bot - Earnings Poller Broken</b>
+
+<b>Channel:</b> ${channel}
+<b>Consecutive failures:</b> ${failureCount}
+<b>Last error:</b> <code>${reason.substring(0, 200)}</code>
+
+Earnings polling has failed repeatedly. Likely cause: the central bot token (<code>dist/.tokens.json</code>) is stale because the enrollment service isn't refreshing it. Check that <code>Kick-Bot-Enrollment</code> is running.
+    `.trim();
+
+    return await this.sendMessage(message, false); // audible
+  }
+
+  // Informational: earnings poller started working again.
+  async notifyEarningsRecovered(channel: string): Promise<boolean> {
+    const message = `
+✅ <b>Kick Bot - Earnings Poller Recovered</b>
+
+<b>Channel:</b> ${channel}
+
+Earnings polling is working again. No action needed.
+    `.trim();
+    return await this.sendMessage(message, true);
+  }
+
   // Informational: token refreshed successfully after a failed attempt
   async notifyRefreshRecovered(): Promise<boolean> {
     const message = `

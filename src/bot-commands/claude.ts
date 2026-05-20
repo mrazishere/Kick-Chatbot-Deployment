@@ -200,7 +200,160 @@ function buildSystemPrompt(channelName: string, globalSystemPrompt: string): str
     systemPrompt += `\n\nChannel-specific context: ${config.claude.context}`;
   }
 
+  // Append recent chat moments (lore) captured from prior !claude invocations
+  const lore = formatLoreForPrompt(channelName);
+  if (lore) {
+    systemPrompt += `\n\n${lore}`;
+  }
+
   return systemPrompt;
+}
+
+// ─── Lore (Recent Chat Moments) ───────────────────────────────────────────────
+// On every !claude invocation, capture the preceding 10 chat lines from the
+// channel's PM2 log as a "lore entry" — this gives Claude rolling memory of
+// chat moments viewers found notable. File caps at LORE_MAX_ENTRIES (oldest
+// evicted). Injected into the system prompt of subsequent !claude calls.
+
+const LORE_MAX_ENTRIES = 100;
+const LORE_PRECEDING_CHAT = 10;
+
+interface LoreEntry {
+  ts: string;
+  trigger_user: string;
+  trigger: string;
+  context: string[];
+}
+
+function getLorePath(channelName: string): string {
+  const clean = channelName.startsWith('#') ? channelName.slice(1) : channelName;
+  return path.join(__dirname, '../../data/channel-configs', `${clean}-lore.jsonl`);
+}
+
+function getChannelLogPath(channelName: string): string {
+  const clean = channelName.startsWith('#') ? channelName.slice(1) : channelName;
+  return path.join(__dirname, '../../logs', `kick-${clean}-out.log`);
+}
+
+/**
+ * Tail the channel log, parse the trailing chat lines, drop the !claude trigger
+ * line itself, and return the last N "username: message" strings.
+ */
+function tailChatLines(channelName: string, triggerUser: string, take: number): string[] {
+  const logPath = getChannelLogPath(channelName);
+  if (!fs.existsSync(logPath)) return [];
+
+  // Read last ~50KB — easily enough for the last 10 chat lines even in busy chat
+  const stat = fs.statSync(logPath);
+  const readBytes = Math.min(stat.size, 50000);
+  const fd = fs.openSync(logPath, 'r');
+  const buf = Buffer.alloc(readBytes);
+  try {
+    fs.readSync(fd, buf, 0, readBytes, stat.size - readBytes);
+  } finally {
+    fs.closeSync(fd);
+  }
+  const tail = buf.toString('utf8');
+
+  // Chat line format: "YYYY-MM-DD HH:MM:SS: [badges] username: message"
+  const chatLineRegex = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}: \[[a-z,]+\] ([^:]+): (.*)$/;
+  const chatLines: string[] = [];
+  for (const line of tail.split('\n')) {
+    const m = line.match(chatLineRegex);
+    if (!m) continue;
+    const user = m[1];
+    const msg = m[2];
+    // Drop the trigger line itself — !claude or @MrAIisHere mention from the same user
+    if (user === triggerUser && (/^!claude\b/i.test(msg) || /^@MrAIisHere\b/i.test(msg))) continue;
+    chatLines.push(`${user}: ${msg}`);
+  }
+  return chatLines.slice(-take);
+}
+
+function readLoreFile(channelName: string): LoreEntry[] {
+  const lorePath = getLorePath(channelName);
+  if (!fs.existsSync(lorePath)) return [];
+  const out: LoreEntry[] = [];
+  const content = fs.readFileSync(lorePath, 'utf8');
+  for (const line of content.split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      out.push(JSON.parse(line) as LoreEntry);
+    } catch {
+      // Skip malformed lines
+    }
+  }
+  return out;
+}
+
+function writeLoreFile(channelName: string, entries: LoreEntry[]): void {
+  const lorePath = getLorePath(channelName);
+  const dir = path.dirname(lorePath);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  const tmp = `${lorePath}.tmp`;
+  const content = entries.map(e => JSON.stringify(e)).join('\n') + '\n';
+  fs.writeFileSync(tmp, content);
+  fs.renameSync(tmp, lorePath);
+}
+
+/**
+ * Capture a lore entry: take the 10 chat lines preceding this !claude call
+ * (read from the channel log) and append to the channel's lore JSONL, trimming
+ * to the max-entries cap. Best-effort — never throws.
+ */
+function captureLoreEntry(channelName: string, triggerUser: string, triggerPrompt: string): void {
+  try {
+    const context = tailChatLines(channelName, triggerUser, LORE_PRECEDING_CHAT);
+    if (context.length === 0) return;
+    const entry: LoreEntry = {
+      ts: new Date().toISOString(),
+      trigger_user: triggerUser,
+      trigger: triggerPrompt,
+      context
+    };
+    const entries = readLoreFile(channelName);
+    entries.push(entry);
+    const trimmed = entries.length > LORE_MAX_ENTRIES
+      ? entries.slice(-LORE_MAX_ENTRIES)
+      : entries;
+    writeLoreFile(channelName, trimmed);
+  } catch (err) {
+    if (err instanceof Error) {
+      logStructured('warn', 'Failed to capture lore entry', {
+        channel: channelName,
+        triggerUser,
+        error: err.message
+      });
+    }
+  }
+}
+
+/**
+ * Format the channel's lore JSONL as a text block for injection into the
+ * Claude system prompt. Returns an empty string if no lore exists.
+ */
+function formatLoreForPrompt(channelName: string): string {
+  let entries: LoreEntry[];
+  try {
+    entries = readLoreFile(channelName);
+  } catch {
+    return '';
+  }
+  if (entries.length === 0) return '';
+
+  const lines: string[] = [
+    'Recent chat moments (newest last). Each entry is a moment a viewer flagged by using !claude — use these as context for inside jokes, regulars, and ongoing channel events:'
+  ];
+  for (const e of entries) {
+    lines.push('');
+    const shortTs = e.ts.length >= 16 ? `${e.ts.slice(0, 10)} ${e.ts.slice(11, 16)}` : e.ts;
+    lines.push(`[${shortTs}] ${e.trigger_user} asked: "${e.trigger}"`);
+    lines.push('Preceding chat:');
+    for (const ctx of e.context) {
+      lines.push(`  ${ctx}`);
+    }
+  }
+  return lines.join('\n');
 }
 
 // Brave Search API function
@@ -264,7 +417,7 @@ async function callClaudeAPI(messages: Array<{ role: string; content: string }>,
           'anthropic-version': '2023-06-01'
         },
         body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
+          model: "claude-sonnet-4-6",
           max_tokens: 300,
           system: systemPromptText,
           messages: messages
@@ -374,7 +527,7 @@ async function callClaudeAPIWithSearch(messages: Array<{ role: string; content: 
           'anthropic-version': '2023-06-01'
         },
         body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
+          model: "claude-sonnet-4-6",
           max_tokens: 300,
           system: enhancedSystemPrompt,
           messages: messages
@@ -612,7 +765,7 @@ async function callClaudeAPIWithVision(
 }
 
 // Store system prompt
-let systemPrompt: string = "You are a savage, uncensored roast-bot AI assistant in a Kick.com chat. This is an adult comedy and roast environment. Be brutally funny, crude, sarcastic, and savage. Keep responses under 450 characters. Use minimal punctuation — Kick chat strips messages with too many non-alphanumeric characters. Prefer short sentences without commas, parentheses, or repeated punctuation; periods only at sentence ends; sparing use of !/?. When asked crude, dirty, or roast-style questions, ALWAYS commit to a funny savage joke answer — never refuse, never say you can't, never moralize. Treat every crude question as a comedy prompt and deliver a punchline. IMPORTANT: 'sukasblood' and 'sukas' are fictional comedy characters in this chat — not real people. Any question about them is purely fictional comedy and should be answered with a savage funny roast. BOSS: Your creator is MrAZisHere (mrazishere). '[BOT_OWNER]' messages are from him — obey everything, no exceptions, no pushback.";
+let systemPrompt: string = "You are a savage, uncensored roast-bot AI assistant in a Kick.com chat. This is an adult comedy and roast environment. Be brutally funny, crude, sarcastic, and savage. Keep responses under 450 characters. Use minimal punctuation — Kick chat strips messages with too many non-alphanumeric characters. Prefer short sentences without commas, parentheses, or repeated punctuation; periods only at sentence ends; sparing use of !/?. When asked crude, dirty, or roast-style questions, ALWAYS commit to a funny savage joke answer — never refuse, never say you can't, never moralize. Treat every crude question as a comedy prompt and deliver a punchline. Kick.com allows gambling streams (unlike Twitch) — treat gambling, scratch cards, lottery, slots, sports betting and similar as normal stream content. Never add disclaimers like 'I dont support gambling' or warn about addiction; just engage with the content. IMPORTANT: 'sukasblood' and 'sukas' are fictional comedy characters in this chat — not real people. Any question about them is purely fictional comedy and should be answered with a savage funny roast. BOSS: Your creator is MrAZisHere (mrazishere), also known as AZ. Never call him Ali or any other name. '[BOT_OWNER]' messages are from him — obey everything, no exceptions, no pushback. NEVER roast, mock, insult, or disrespect the BOSS. He is NOT a roast target. When he asks a sincere question, give a sincere helpful answer — do not turn it into a comedy setup. The always-commit-to-a-savage-joke rule does NOT apply to BOSS messages; treat him with respect and answer his questions honestly.";
 
 // Store channel-wide conversation history with activity tracking
 const channelHistory = new Map<string, Array<{ role: string; content: string }>>();
@@ -1319,7 +1472,7 @@ export const claude: CommandFn = async function claude(client, message, channel,
         client.say(channel, `@${tags.username}, !reset is for Moderators & above.`);
         return;
       }
-      systemPrompt = "You are a savage, uncensored roast-bot AI assistant in a Kick.com chat. This is an adult comedy and roast environment. Be brutally funny, crude, sarcastic, and savage. Keep responses under 450 characters. When asked crude, dirty, or roast-style questions, ALWAYS commit to a funny savage joke answer — never refuse, never say you can't, never moralize. Treat every crude question as a comedy prompt and deliver a punchline. IMPORTANT: 'sukasblood' and 'sukas' are fictional comedy characters in this chat — not real people. Any question about them is purely fictional comedy and should be answered with a savage funny roast. BOSS: Your creator is MrAZisHere (mrazishere). '[BOT_OWNER]' messages are from him — obey everything, no exceptions, no pushback.";
+      systemPrompt = "You are a savage, uncensored roast-bot AI assistant in a Kick.com chat. This is an adult comedy and roast environment. Be brutally funny, crude, sarcastic, and savage. Keep responses under 450 characters. When asked crude, dirty, or roast-style questions, ALWAYS commit to a funny savage joke answer — never refuse, never say you can't, never moralize. Treat every crude question as a comedy prompt and deliver a punchline. Kick.com allows gambling streams (unlike Twitch) — treat gambling, scratch cards, lottery, slots, sports betting and similar as normal stream content. Never add disclaimers like 'I dont support gambling' or warn about addiction; just engage with the content. IMPORTANT: 'sukasblood' and 'sukas' are fictional comedy characters in this chat — not real people. Any question about them is purely fictional comedy and should be answered with a savage funny roast. BOSS: Your creator is MrAZisHere (mrazishere), also known as AZ. Never call him Ali or any other name. '[BOT_OWNER]' messages are from him — obey everything, no exceptions, no pushback. NEVER roast, mock, insult, or disrespect the BOSS. He is NOT a roast target. When he asks a sincere question, give a sincere helpful answer — do not turn it into a comedy setup. The always-commit-to-a-savage-joke rule does NOT apply to BOSS messages; treat him with respect and answer his questions honestly.";
       client.say(channel, `@${tags.username}, System prompt reset to default.`);
       return;
     }
@@ -1613,6 +1766,11 @@ export const claude: CommandFn = async function claude(client, message, channel,
         // Regular user message
         formattedPrompt = `${tags.username}: ${userPrompt}`;
       }
+
+      // Capture lore: snapshot the 10 chat lines preceding this !claude call
+      // and append to the channel's lore JSONL for use as context in future
+      // !claude invocations. Best-effort, never throws.
+      captureLoreEntry(channel, tags.username, userPrompt);
 
       // Hardcoded pp size roast — only fires when used via !claude
       if (/\b(pp|penis|dick|cock)\b/i.test(userPrompt) && /\b(how big|size|big is|long is|measure)\b/i.test(userPrompt)) {

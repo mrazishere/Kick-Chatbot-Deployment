@@ -267,15 +267,22 @@ export const translate: CommandFn = async function translate(client, message, ch
             // Translate text with timeout protection
             const res = await safeTranslate(txt, { to: ll[0] });
 
-            if (cmd === 'pinyin') {
-                // Special handling for pinyin - only show pinyin pronunciation
+            if (cmd === 'pinyin' || cmd === 'romaji') {
+                // !pinyin / !romaji return the romanization (from res.pronunciation,
+                // which is the romanized form of the source text) plus the English
+                // translation, fetched in a second call since pronunciation is empty
+                // when the target is already Latin (en).
                 const pronunciation = res.pronunciation || 'N/A';
-                const responseMsg = truncateMessage(`@${tags.username} | pinyin: ${pronunciation}`);
-                await client.say(channel, responseMsg);
-            } else if (cmd === 'romaji') {
-                // Special handling for romaji - only show romaji pronunciation
-                const pronunciation = res.pronunciation || 'N/A';
-                const responseMsg = truncateMessage(`@${tags.username} | romaji: ${pronunciation}`);
+                let englishPart = '';
+                try {
+                    const enRes = await safeTranslate(txt, { to: 'en' });
+                    if (enRes.text) englishPart = ` | en: ${enRes.text}`;
+                } catch (e) {
+                    if (e instanceof Error) {
+                        console.warn(`[TRANSLATE] ${cmd} English supplement failed: ${e.message}`);
+                    }
+                }
+                const responseMsg = truncateMessage(`@${tags.username} | ${cmd}: ${pronunciation}${englishPart}`);
                 await client.say(channel, responseMsg);
             } else if (lazy === true) {
                 // Lazy mode sentence in english and also in requested language
@@ -283,10 +290,14 @@ export const translate: CommandFn = async function translate(client, message, ch
                 const responseMsg = truncateMessage(`@${tags.username}, ${txt} / ${translation}`);
                 await client.say(channel, responseMsg);
             } else {
-                // Normal translation
-                const pronunciation = res.pronunciation || '';
+                // Normal translation. Pronunciation is suppressed for languages
+                // that have a dedicated pronunciation command (!pinyin for zh*,
+                // !romaji for ja) — otherwise !cn ends up duplicating !pinyin.
                 const translation = res.text || 'Translation unavailable';
                 const connector = ll[1] || 'says';
+                const targetBase = ll[0].split('-')[0];
+                const hasDedicatedPronunciationCmd = targetBase === 'zh' || targetBase === 'ja';
+                const pronunciation = hasDedicatedPronunciationCmd ? '' : (res.pronunciation || '');
 
                 let responseMsg: string;
                 if (pronunciation && pronunciation !== translation) {

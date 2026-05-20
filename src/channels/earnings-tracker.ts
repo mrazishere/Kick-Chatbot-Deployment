@@ -28,11 +28,16 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { CurrentEarningsSession, FinalizedEarningsSession } from '../types';
 import KickAuth = require('../auth');
+import TelegramNotifier = require('../telegram-notifier');
 
 const POLL_INTERVAL_MS = 5 * 60 * 1000;          // 5 minutes
 const CENTS_PER_VIEWER_PER_HOUR = 10;             // $0.10/viewer/hour
 const MAX_BACKFILL_HOURS = 24;                    // cap bogus gaps (e.g. clock skew)
 const MID_STREAM_JOIN_THRESHOLD_MS = 10 * 60 * 1000; // if we joined >10min after start_time, discard on finalize
+// Watchdog: alert after this many consecutive poll failures. 5 polls × 5 min =
+// 25 min of failure — long enough to filter transient blips, short enough to
+// catch real outages (enrollment service down, central token unrecoverable).
+const FAILURE_ALERT_THRESHOLD = 5;
 
 interface KickStream {
   viewer_count?: number;
@@ -51,14 +56,22 @@ interface KickChannelsResponse {
 export class EarningsTracker {
   private channelName: string;
   private auth: InstanceType<typeof KickAuth>;
+  private telegram: TelegramNotifier;
   private dataDir: string;
   private currentFile: string;
   private sessionsFile: string;
   private pollInterval: NodeJS.Timeout | null = null;
+  private consecutiveFailures = 0;
+  private hasAlertedBroken = false;
 
-  constructor(channelName: string, auth: InstanceType<typeof KickAuth>) {
+  constructor(channelName: string, tokenFilePath: string) {
     this.channelName = channelName;
-    this.auth = auth;
+    // Use a dedicated KickAuth pointed at the bot's central token file
+    // (kept fresh by the enrollment service's startTokenMonitor). The poller
+    // only reads the token — it does not refresh — to avoid racing with the
+    // enrollment service on refresh-token rotation.
+    this.auth = new KickAuth(tokenFilePath);
+    this.telegram = new TelegramNotifier();
     this.dataDir = path.join(process.cwd(), 'data', 'earnings', channelName);
     this.currentFile = path.join(this.dataDir, 'current.json');
     this.sessionsFile = path.join(this.dataDir, 'sessions.json');
@@ -91,7 +104,7 @@ export class EarningsTracker {
   }
 
   private async fetchLivestream(): Promise<KickStream | null> {
-    const token = await this.auth.getAccessToken();
+    const token = this.auth.loadAccessToken();
     if (!token) {
       throw new Error('No access token available');
     }
@@ -158,11 +171,23 @@ export class EarningsTracker {
     try {
       stream = await this.fetchLivestream();
     } catch (err) {
-      if (err instanceof Error) {
-        console.error('[EARNINGS] Fetch failed, skipping poll:', err.message);
+      const reason = err instanceof Error ? err.message : String(err);
+      console.error('[EARNINGS] Fetch failed, skipping poll:', reason);
+      this.consecutiveFailures++;
+      if (this.consecutiveFailures >= FAILURE_ALERT_THRESHOLD && !this.hasAlertedBroken) {
+        this.hasAlertedBroken = true;
+        this.telegram
+          .notifyEarningsBroken(this.channelName, reason, this.consecutiveFailures)
+          .catch(() => {});
       }
       return;
     }
+
+    if (this.hasAlertedBroken) {
+      this.telegram.notifyEarningsRecovered(this.channelName).catch(() => {});
+    }
+    this.consecutiveFailures = 0;
+    this.hasAlertedBroken = false;
 
     const isLive = stream?.is_live === true;
     const viewers = stream?.viewer_count ?? 0;

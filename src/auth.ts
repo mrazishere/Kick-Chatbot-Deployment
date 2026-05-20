@@ -9,6 +9,12 @@ import TelegramNotifier = require('./telegram-notifier');
 import { OAuthTokens } from './types';
 
 class KickAuth {
+  // Process-wide rate-limit for the reauth Telegram alert. Multiple KickAuth
+  // instances (e.g. enrollment monitor + channel bots) all hitting invalid_grant
+  // used to fan out into one Telegram message per failed refresh.
+  private static lastReauthAlertAt = 0;
+  private static readonly REAUTH_ALERT_COOLDOWN_MS = 60 * 60 * 1000;
+
   private clientId: string | undefined;
   private clientSecret: string | undefined;
   private oauthDomain: string;
@@ -22,7 +28,7 @@ class KickAuth {
   private codeChallenge: string | null = null;
   private authServer: string;
 
-  constructor() {
+  constructor(tokenFilePath?: string) {
     this.clientId = process.env.CLIENT_ID;
     this.clientSecret = process.env.CLIENT_SECRET;
     this.oauthDomain = process.env.OAUTH_DOMAIN || 'localhost';
@@ -34,7 +40,7 @@ class KickAuth {
     const portPart = this.oauthDomain.includes('localhost') ? `:${this.oauthPort}` : '';
     this.redirectUri = `${protocol}://${this.oauthDomain}${portPart}/kick-bot-enroll/callback`;
 
-    this.tokenFile = path.join(__dirname, '.tokens.json');
+    this.tokenFile = tokenFilePath ?? path.join(__dirname, '.tokens.json');
     this.accessToken = null;
     this.refreshToken = null;
     this.expiresAt = null;
@@ -151,10 +157,16 @@ class KickAuth {
         const errData = error.response?.data as { error?: string } | undefined;
         console.error('[AUTH ERROR] Failed to refresh token:', errData || error.message);
 
-        // Refresh token revoked/expired — cannot auto-recover, alert immediately
+        // Refresh token revoked/expired — cannot auto-recover. Rate-limit the
+        // Telegram alert to once per hour per process so a fast-polling caller
+        // (e.g. EarningsTracker every 5 min) can't fan out into a flood.
         if (errData?.error === 'invalid_grant') {
-          const telegram = new TelegramNotifier();
-          await telegram.notifyReauthRequired('invalid_grant — refresh token was revoked or expired by Kick').catch(() => {});
+          const now = Date.now();
+          if (now - KickAuth.lastReauthAlertAt > KickAuth.REAUTH_ALERT_COOLDOWN_MS) {
+            KickAuth.lastReauthAlertAt = now;
+            const telegram = new TelegramNotifier();
+            await telegram.notifyReauthRequired('invalid_grant — refresh token was revoked or expired by Kick').catch(() => {});
+          }
         }
       }
       throw error;
@@ -211,6 +223,15 @@ class KickAuth {
     const timer: NodeJS.Timeout = setInterval(check, intervalMs);
     console.log(`[AUTH MONITOR] Token monitor started (interval: ${intervalMs / 60000} min)`);
     return { timer, ready: firstCheck };
+  }
+
+  // Read current access token from disk without refreshing. Use this from
+  // callers that share a token file with another process responsible for
+  // refreshing (e.g. EarningsTracker reads the bot token kept fresh by the
+  // enrollment service). Avoids racing on refresh-token rotation.
+  loadAccessToken(): string | null {
+    this.loadTokens();
+    return this.accessToken;
   }
 
   // Get valid access token (refreshes if expired)

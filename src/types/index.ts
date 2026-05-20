@@ -61,6 +61,26 @@ export interface ChannelLocation {
 // `JSON.parse(...) as ChannelConfig` would fail when extra keys are present.
 // ---------------------------------------------------------------------------
 
+export interface AutoTranslateConfig {
+  enabled: boolean;
+  minConfidence?: number;
+  minLength?: number;
+  // Optional per-channel cap; if absent or 0, no internal rate limit is applied
+  // (Google's own scraper-level throttling becomes the only ceiling).
+  rateLimitPerMinute?: number;
+  // Shadow mode: read messages from this channel's chatroom but POST the
+  // translated output to a DIFFERENT broadcaster. Used for debugging where
+  // we want to monitor a noisy channel's translations in our own channel
+  // without polluting the source channel's chat.
+  shadowTargetBroadcasterId?: number;
+  // Label prepended to shadowed output (typically the source channel name)
+  shadowSourceLabel?: string;
+  // Dry-run mode: detect + translate as usual but log the would-be output
+  // instead of sending it. Useful to evaluate translation quality on a live
+  // channel without spamming chat.
+  logOnly?: boolean;
+}
+
 export interface ChannelConfig {
   channelName: string;
   chatroomId?: number;
@@ -72,6 +92,7 @@ export interface ChannelConfig {
   lastUpdated?: string;
   location?: ChannelLocation;
   excludedCommands?: string[];
+  autoTranslate?: AutoTranslateConfig;
   [key: string]: unknown;
 }
 

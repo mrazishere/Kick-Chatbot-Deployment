@@ -23,6 +23,8 @@ import * as path from 'path';
 import fetch from 'node-fetch';
 import KickAuth = require('../auth');
 import { ChannelConfig, CommandFn, KickTags, ClientWrapper, ChannelLocation, LocationSubfields } from '../types';
+import { markBotOutput } from '../recent-bot-outputs';
+import { resolveBotIdentity } from '../bot-identity';
 
 const CHANNEL_NAME = '$$UPDATEHERE$$';
 
@@ -659,8 +661,30 @@ class KickChatBot {
         await clientWrapper.say(`#${this.channelName}`, `Usage: !config exclude add/remove/list [commandname]`);
       }
 
+    } else if (subcommand === 'autotranslate') {
+      const action = (args[2] || '').toLowerCase();
+      const current = this.config.autoTranslate || { enabled: false };
+
+      if (action === 'on') {
+        this.config.autoTranslate = { ...current, enabled: true };
+        this.saveConfig();
+        await clientWrapper.say(`#${this.channelName}`, `Auto-translate enabled — non-English chat will be translated to English.`);
+
+      } else if (action === 'off') {
+        this.config.autoTranslate = { ...current, enabled: false };
+        this.saveConfig();
+        await clientWrapper.say(`#${this.channelName}`, `Auto-translate disabled.`);
+
+      } else if (action === 'status') {
+        const state = current.enabled ? 'ON' : 'OFF';
+        await clientWrapper.say(`#${this.channelName}`, `Auto-translate is ${state}.`);
+
+      } else {
+        await clientWrapper.say(`#${this.channelName}`, `Usage: !config autotranslate on/off/status`);
+      }
+
     } else {
-      await clientWrapper.say(`#${this.channelName}`, `Config commands: !config exclude add/remove/list [commandname]`);
+      await clientWrapper.say(`#${this.channelName}`, `Config commands: !config exclude add/remove/list [commandname] | !config autotranslate on/off/status`);
     }
   }
 
@@ -948,6 +972,7 @@ Rules:
       );
 
       console.log(`[SENT] ${sanitized}`);
+      markBotOutput(this.channelName, sanitized);
       return response.data;
     } catch (error) {
       if (axios.isAxiosError(error)) {
@@ -965,6 +990,8 @@ Rules:
     while (true) {
       try {
         await this.ensureAuthenticated();
+        // Fire-and-forget — handlers degrade gracefully if it's not resolved yet
+        resolveBotIdentity().catch(() => {});
         await this.getChatroomId();
         this.startTokenRefreshScheduler();
         await this.connectWebSocket();
