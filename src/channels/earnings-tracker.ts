@@ -251,10 +251,15 @@ export class EarningsTracker {
       const hoursElapsed = this.hoursBetween(current.lastPolledAt, nowMs);
       const finalCents = Math.round(current.lastViewerCount * CENTS_PER_VIEWER_PER_HOUR * hoursElapsed);
       const totalCents = current.accumulatedCents + finalCents;
-      const durationSeconds = Math.max(0, Math.round((nowMs - startedAtMs) / 1000));
+      // Estimate true end as midpoint between last-seen-live and offline-detection.
+      // Reduces expected error from ~half the poll interval to ~quarter.
+      const lastSeenLiveMs = new Date(current.lastPolledAt).getTime();
+      const endedAtMs = Math.round((lastSeenLiveMs + nowMs) / 2);
+      const endedAtIso = new Date(endedAtMs).toISOString();
+      const durationSeconds = Math.max(0, Math.round((endedAtMs - startedAtMs) / 1000));
       const finalized: FinalizedEarningsSession = {
         startedAt: current.startedAt,
-        endedAt: nowIso,
+        endedAt: endedAtIso,
         durationSeconds,
         totalCents,
         peakViewers: current.peakViewers

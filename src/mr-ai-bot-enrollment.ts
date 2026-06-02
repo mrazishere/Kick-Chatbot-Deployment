@@ -12,6 +12,11 @@ import KickSessionAuth = require('./kick-session-auth');
 import TelegramNotifier = require('./telegram-notifier');
 import { chatroomResolver } from './channels/chatroom-resolver';
 
+/* eslint-disable @typescript-eslint/no-var-requires, @typescript-eslint/no-explicit-any */
+const puppeteer = require('puppeteer-extra');
+const StealthPlugin = require('puppeteer-extra-plugin-stealth');
+puppeteer.use(StealthPlugin());
+
 // ---------------------------------------------------------------------------
 // Local interfaces
 // ---------------------------------------------------------------------------
@@ -1143,6 +1148,90 @@ app.get('/kick-bot-enroll/api/status/:username', (req: express.Request, res: exp
     }
   } else {
     res.json({ enrolled: false });
+  }
+});
+
+// ==================== VOD SCRAPER API ====================
+// Internal-only endpoint (not exposed via nginx) — called by the kpp-dashboard
+// on localhost. Uses stealth puppeteer to bypass Cloudflare on kick.com/api/v2.
+
+const UUID_RE_VOD = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function findVodUuid(obj: Record<string, unknown>): string | null {
+  for (const key of ['uuid', 'slug', 'video_uuid']) {
+    const v = obj[key];
+    if (typeof v === 'string' && UUID_RE_VOD.test(v)) return v;
+  }
+  for (const v of Object.values(obj)) {
+    if (typeof v === 'string' && UUID_RE_VOD.test(v)) return v;
+  }
+  return null;
+}
+
+app.get('/internal/vods/:username', async (req: express.Request, res: express.Response) => {
+  const usernameRaw = req.params['username'];
+  const slug = (typeof usernameRaw === 'string' ? usernameRaw : '').toLowerCase();
+  if (!validateChannelName(slug)) {
+    return res.status(400).json({ error: 'Invalid channel name' });
+  }
+
+  const t0 = Date.now();
+  const browser = await puppeteer.launch({
+    headless: true,
+    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
+  });
+
+  try {
+    const page = await browser.newPage();
+    await page.setUserAgent(
+      'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36'
+    );
+
+    const resp = await page.goto(`https://kick.com/api/v2/channels/${slug}/videos`, {
+      waitUntil: 'domcontentloaded',
+      timeout: 30000
+    });
+
+    if (!resp || resp.status() !== 200) {
+      return res.status(502).json({ error: `Kick returned ${resp?.status() ?? 'no response'}` });
+    }
+
+    const body = await resp.text();
+    const raw = JSON.parse(body) as unknown;
+    const items: Record<string, unknown>[] = Array.isArray(raw)
+      ? raw as Record<string, unknown>[]
+      : ((raw as { data?: Record<string, unknown>[] }).data ?? []);
+
+    // Each item is a stream/livestream record. The actual VOD UUID lives in item.video.uuid.
+    // stream_title / session_title = stream name; start_time = when stream began.
+    const vods = items.flatMap((v) => {
+      const video = v['video'] as Record<string, unknown> | null;
+      const uuid = video?.['uuid'];
+      if (typeof uuid !== 'string' || !UUID_RE_VOD.test(uuid)) return [];
+      if (video?.['is_pruned']) return []; // deleted VOD
+
+      const title = typeof v['session_title'] === 'string'
+        ? v['session_title']
+        : (typeof v['stream_title'] === 'string' ? v['stream_title'] : '');
+      const rawDate = typeof v['start_time'] === 'string' ? v['start_time'] as string : '';
+      const createdAt = rawDate.replace(' ', 'T').replace(/(\d{2}:\d{2}:\d{2})$/, '$1Z');
+      return [{
+        uuid,
+        title,
+        createdAt,
+        duration: typeof v['duration'] === 'number' ? v['duration'] : 0,
+        url: `https://kick.com/${slug}/videos/${uuid}`
+      }];
+    });
+
+    console.log(`[VOD] Scraped ${vods.length} VODs for ${slug} in ${Date.now() - t0}ms`);
+    return res.json({ vods });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[VOD] Scrape failed for ${slug}:`, msg);
+    return res.status(500).json({ error: msg });
+  } finally {
+    await browser.close().catch(() => {});
   }
 });
 

@@ -14,6 +14,8 @@
  */
 
 import fetch from 'node-fetch';
+import * as fs from 'fs';
+import * as path from 'path';
 import { CommandFn, FxError, ChannelConfig } from '../types';
 
 // ─── Section 1: Module-level constants and Maps ────────────────────────────────
@@ -22,8 +24,10 @@ const EXCHANGERATE_API_KEY = process.env.EXCHANGERATE_API_KEY;
 const RATE_CACHE = new Map<string, { conversionRate: number; rateDate: string; expiresAt: number }>();
 const LOCATION_CACHE = new Map<string, { isoCode: string; expiresAt: number }>();
 const RATE_LIMIT_MAP = new Map<string, number[]>();
+const CHANNEL_LOC_CACHE = new Map<string, { location: ChannelConfig['location']; expiresAt: number }>();
 const RATE_CACHE_TTL = 3600000;      // 1 hour ms
 const LOCATION_CACHE_TTL = 86400000; // 24 hours ms
+const CHANNEL_LOC_CACHE_TTL = 300000; // 5 minutes — pick up manual JSON edits without restart
 const RATE_LIMIT_WINDOW = 60000;     // 60 seconds ms
 const MAX_REQUESTS = 5;
 const ZERO_DECIMAL_CURRENCIES = new Set(['JPY', 'KRW', 'ISK']);
@@ -45,6 +49,31 @@ function checkRateLimit(username: string): boolean {
     validRequests.push(now);
     RATE_LIMIT_MAP.set(username, validRequests);
     return true; // Not rate limited
+}
+
+// ─── Section 2b: Channel location loader (reads from disk, 5-min TTL) ───────────
+// Bypasses the in-memory ChannelConfig passed from the channel bot (which is only
+// refreshed on OAuth token rotation). Manual edits to channel-configs/*.json take
+// effect within 5 minutes without a bot restart.
+
+function loadChannelLocation(channel: string): ChannelConfig['location'] | undefined {
+    const cleanChannel = channel.startsWith('#') ? channel.slice(1) : channel;
+    const now = Date.now();
+    const cached = CHANNEL_LOC_CACHE.get(cleanChannel);
+    if (cached && cached.expiresAt > now) {
+        return cached.location;
+    }
+    try {
+        const configPath = path.join(process.cwd(), 'data', 'channel-configs', `${cleanChannel}.json`);
+        if (fs.existsSync(configPath)) {
+            const config = JSON.parse(fs.readFileSync(configPath, 'utf8')) as ChannelConfig;
+            CHANNEL_LOC_CACHE.set(cleanChannel, { location: config.location, expiresAt: now + CHANNEL_LOC_CACHE_TTL });
+            return config.location;
+        }
+    } catch {
+        // fall through
+    }
+    return undefined;
 }
 
 // ─── Section 3: Rate cache (1-hour TTL, 100-entry cap) ────────────────────────
@@ -114,8 +143,7 @@ function locationObjToString(loc: { city?: string; state?: string; province?: st
 type ParsedArgs =
     | { form: 'implicit'; locationTokens: string[]; amount: number }
     | { form: 'pair'; fromToken: string; toToken: string; amount: number }
-    | { form: 'single'; locationTokens: string[]; amount: number }
-    | { form: 'reversed'; amount: number; currencyToken: string };
+    | { form: 'single'; locationTokens: string[]; amount: number };
 
 function parseArgs(message: string): ParsedArgs {
     const parts = message.trim().split(/\s+/);
@@ -132,23 +160,24 @@ function parseArgs(message: string): ParsedArgs {
     const parsedLast = parseFloat(last.replace(/,/g, ''));
     const lastIsNumber = !isNaN(parsedLast) && parsedLast > 0;
 
+    const parsedFirst = parseFloat(args[0].replace(/,/g, ''));
+    const firstIsNumber = !isNaN(parsedFirst) && parsedFirst > 0;
+
     let amount = defaultAmount;
     let tokens = args;
 
     if (lastIsNumber) {
+        // Amount at end: !fx won 5000, !fx THB SGD 5000
         amount = parsedLast;
         tokens = args.slice(0, args.length - 1);
+    } else if (firstIsNumber) {
+        // Amount at start: !fx 5000 won, !fx 450000 THB
+        amount = parsedFirst;
+        tokens = args.slice(1);
     }
 
     if (tokens.length === 0) {
         return { form: 'implicit', locationTokens: [], amount };
-    }
-
-    // Detect reversed input: !fx 450000 THB (number first, currency code last)
-    const firstIsNumber = !isNaN(parseFloat(args[0].replace(/,/g, ''))) && parseFloat(args[0].replace(/,/g, '')) > 0;
-    const lastIsCurrency = /^[A-Z]{3}$/i.test(tokens[tokens.length - 1]);
-    if (firstIsNumber && tokens.length === 1 && lastIsCurrency) {
-        return { form: 'reversed', amount: parseFloat(args[0].replace(/,/g, '')), currencyToken: tokens[0].toUpperCase() };
     }
 
     // Check if exactly 2 tokens and both look like ISO currency codes
@@ -276,14 +305,11 @@ export const fx: CommandFn = async function fx(client, message, channel, tags, c
         let fromCode: string | undefined;
         let toCode: string | undefined;
 
-        if (parsed.form === 'reversed') {
-            client.say(channel, `@${username}, try: !fx ${parsed.currencyToken} ${parsed.amount} — amount goes last. E.g. !fx THB 450000`);
-            return;
-        }
-
         if (parsed.form === 'implicit') {
-            const fromStr = locationObjToString(config.location?.current);
-            const toStr = locationObjToString(config.location?.home);
+            // Re-read from disk so manual config edits take effect without a restart
+            const freshLoc = loadChannelLocation(channel);
+            const fromStr = locationObjToString(freshLoc?.current ?? config.location?.current);
+            const toStr = locationObjToString(freshLoc?.home ?? config.location?.home);
 
             if (!fromStr) {
                 client.say(channel, `@${username}, current location not set. Use !location current set <place>.`);
@@ -315,7 +341,8 @@ export const fx: CommandFn = async function fx(client, message, channel, tags, c
             const locationStr = parsed.locationTokens.join(' ');
             fromCode = await resolveLocationToIso(locationStr) ?? undefined;
 
-            const toStr = locationObjToString(config.location?.home);
+            const freshLoc2 = loadChannelLocation(channel);
+            const toStr = locationObjToString(freshLoc2?.home ?? config.location?.home);
 
             if (!fromCode) {
                 client.say(channel, `@${username}, could not resolve "${locationStr}" to a supported currency.`);

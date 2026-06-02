@@ -271,7 +271,6 @@ class KickAuth {
         this.accessToken = data.accessToken;
         this.refreshToken = data.refreshToken;
         this.expiresAt = data.expiresAt;
-        console.log('[AUTH] Tokens loaded from file');
         return true;
       }
     } catch (error) {

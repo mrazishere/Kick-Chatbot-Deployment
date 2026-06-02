@@ -1213,36 +1213,6 @@ async function handleSpecialTrigger(client: { say(channel: string, msg: string):
         }
       }
 
-      // Calculate available space for @username suffix
-      const usernameSuffix = ` @${tags.username}`;
-      const availableChars = 480 - usernameSuffix.length; // More reasonable limit (Kick max is 500)
-
-      let firstMessage = responseText;
-      let secondMessage = '';
-
-      // If response is too long, split it
-      if (responseText.length > availableChars) {
-        // Try to split at a sentence boundary
-        const sentences = responseText.split(/([.!?]+\s*)/);
-        let tempMessage = '';
-
-        for (let i = 0; i < sentences.length; i++) {
-          if ((tempMessage + sentences[i]).length > availableChars - 3) {
-            break;
-          }
-          tempMessage += sentences[i];
-        }
-
-        if (tempMessage.length > 0) {
-          firstMessage = tempMessage.trim();
-          secondMessage = responseText.substring(tempMessage.length).trim();
-        } else {
-          // Fallback: hard cut
-          firstMessage = responseText.substring(0, availableChars - 3) + "...";
-          secondMessage = "..." + responseText.substring(availableChars - 3);
-        }
-      }
-
       // Update channel history with user's prompt and Claude's response
       const currentHistory = channelHistory.get(channel);
       if (currentHistory) {
@@ -1259,15 +1229,13 @@ async function handleSpecialTrigger(client: { say(channel: string, msg: string):
         channelHistory.set(channel, currentHistory);
       }
 
-      // Send first message
-      client.say(channel, sanitizeForKick(`@${tags.username}, ${firstMessage}`));
-
-      // Send second message if there's continuation content
-      if (secondMessage && secondMessage.length > 0) {
-        setTimeout(() => {
-          client.say(channel, sanitizeForKick(secondMessage));
-        }, 1000);
+      // Sanitize first, then truncate — so "..." isn't collapsed by the sanitizer
+      let outMessage = sanitizeForKick(`@${tags.username}, ${responseText}`);
+      if (outMessage.length > 490) {
+        outMessage = outMessage.substring(0, 487) + "...";
       }
+
+      client.say(channel, outMessage);
 
       // Apply per-user cooldown only if the user is not broadcaster/owner
       if (!isBroadcasterOrOwner) {
@@ -1357,13 +1325,6 @@ async function handleSukasResearch(client: { say(channel: string, msg: string): 
         }
       }
 
-      // Enforce message length limit
-      const usernamePrefix = `@${tags.username}, `;
-      const availableChars = 490 - usernamePrefix.length;
-      if (responseText.length > availableChars) {
-        responseText = responseText.substring(0, availableChars - 3) + "...";
-      }
-
       // Update channel history
       const currentHistory = channelHistory.get(channel);
       if (currentHistory) {
@@ -1377,7 +1338,13 @@ async function handleSukasResearch(client: { say(channel: string, msg: string): 
         channelHistory.set(channel, currentHistory);
       }
 
-      client.say(channel, sanitizeForKick(`@${tags.username}, ${responseText}`));
+      // Sanitize first, then truncate — so "..." isn't collapsed by the sanitizer
+      let outMessage = sanitizeForKick(`@${tags.username}, ${responseText}`);
+      if (outMessage.length > 490) {
+        outMessage = outMessage.substring(0, 487) + "...";
+      }
+
+      client.say(channel, outMessage);
 
       if (!isBroadcasterOrOwner) {
         setUserCooldown(tags.username, channel);
@@ -1626,15 +1593,6 @@ export const claude: CommandFn = async function claude(client, message, channel,
               }
             }
 
-            // Calculate available space after @username prefix
-            const usernamePrefix = `@${tags.username}, `;
-            const availableChars = 450 - usernamePrefix.length;
-
-            // Enforce character limit accounting for the @username prefix
-            if (responseText.length > availableChars) {
-              responseText = responseText.substring(0, availableChars - 3) + "...";
-            }
-
             // Update channel history
             const currentHistory = channelHistory.get(channel);
             if (currentHistory) {
@@ -1650,7 +1608,13 @@ export const claude: CommandFn = async function claude(client, message, channel,
               channelHistory.set(channel, currentHistory);
             }
 
-            client.say(channel, sanitizeForKick(`@${tags.username}, ${responseText}`));
+            // Sanitize first, then truncate — so "..." isn't collapsed by the sanitizer
+            let outMessage = sanitizeForKick(`@${tags.username}, ${responseText}`);
+            if (outMessage.length > 490) {
+              outMessage = outMessage.substring(0, 487) + "...";
+            }
+
+            client.say(channel, outMessage);
 
             if (!isBroadcasterOrOwner) {
               setUserCooldown(tags.username, channel);
@@ -1885,15 +1849,6 @@ export const claude: CommandFn = async function claude(client, message, channel,
             }
           }
 
-          // Calculate available space for @username prefix (Kick limit is 500)
-          const usernamePrefix = `@${tags.username}, `;
-          const MAX_MESSAGE_LENGTH = 490 - usernamePrefix.length;
-
-          // Truncate if response is too long (Claude should keep it under 450 anyway)
-          if (responseText.length > MAX_MESSAGE_LENGTH) {
-            responseText = responseText.substring(0, MAX_MESSAGE_LENGTH - 3) + "...";
-          }
-
           // Update channel history with user's prompt and Claude's response
           const currentHistory = channelHistory.get(channel);
           if (currentHistory) {
@@ -1910,8 +1865,14 @@ export const claude: CommandFn = async function claude(client, message, channel,
             channelHistory.set(channel, currentHistory);
           }
 
+          // Sanitize first, then truncate — so "..." isn't collapsed by the sanitizer
+          let outMessage = sanitizeForKick(`@${tags.username}, ${responseText}`);
+          if (outMessage.length > 490) {
+            outMessage = outMessage.substring(0, 487) + "...";
+          }
+
           // Send single message with username at beginning
-          client.say(channel, sanitizeForKick(`@${tags.username}, ${responseText}`));
+          client.say(channel, outMessage);
 
           // Apply per-user cooldown only if the user is not broadcaster/owner
           if (!isBroadcasterOrOwner) {

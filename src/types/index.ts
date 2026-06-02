@@ -81,6 +81,22 @@ export interface AutoTranslateConfig {
   logOnly?: boolean;
 }
 
+export interface KPPConfig {
+  // Master switch. When false (or block missing), tracker stays constructed
+  // but no-ops on polls and chat events. Matches autoTranslate.enabled idiom.
+  enabled?: boolean;
+  // Calibration: $ per engagement-score point. Set this from a real KPP payout.
+  // null/undefined = pending calibration → !kpp displays score-only, no $ figure.
+  dollarPerScore?: number | null;
+  // Baseline chat-activity rate (unique chatters / avg viewers). Per the KPP
+  // explainer reel, normal is 4–14%; midpoint 0.09 used as default.
+  chatNormalRate?: number;
+  // Authenticated-viewer-hour model: ¢ per authenticated viewer-hour.
+  // Authenticated VH = sum of per-user active polling windows × window duration.
+  // When set, this model is used instead of dollarPerScore × engagementScore.
+  centsPerAuthViewerHour?: number | null;
+}
+
 export interface ChannelConfig {
   channelName: string;
   chatroomId?: number;
@@ -93,6 +109,7 @@ export interface ChannelConfig {
   location?: ChannelLocation;
   excludedCommands?: string[];
   autoTranslate?: AutoTranslateConfig;
+  kpp?: KPPConfig;
   [key: string]: unknown;
 }
 
@@ -159,7 +176,7 @@ export type CommandFn = (
 export interface CurrentEarningsSession {
   startedAt: string;          // ISO — when stream went live (Kick's start_time, or first poll if absent)
   firstObservedAt: string;    // ISO — when our tracker first saw this stream; set once, never updated
-  lastPolledAt: string;       // ISO — last successful poll
+  lastPolledAt: string;       // ISO — last poll that confirmed live (used as last-seen-live for end-time estimation)
   lastViewerCount: number;    // viewers at last poll (used to prorate the next interval)
   accumulatedCents: number;   // integer cents earned so far this session
   peakViewers: number;        // highest viewer count observed this session
@@ -171,6 +188,57 @@ export interface FinalizedEarningsSession {
   durationSeconds: number;
   totalCents: number;
   peakViewers: number;
+}
+
+// ---------------------------------------------------------------------------
+// KPP (Kick Partner Program) engagement tracking — see kpp-tracker.ts.
+// KPP pays from a monthly pool weighted by engagement, not a flat CPM:
+//
+//   share = (your_score / total_platform_score) × monthly_pool
+//   score = authentic_watch_time × chat_activity_weight × viewer_trust_factor
+//
+// We can only approximate the first two locally (viewer_trust_factor is
+// server-side at Kick). Dollar estimate requires a one-shot calibration
+// (kpp.dollarPerScore) derived from a real KPP statement.
+// ---------------------------------------------------------------------------
+
+export interface CurrentKPPSession {
+  startedAt: string;
+  firstObservedAt: string;
+  lastPolledAt: string;
+  lastViewerCount: number;
+  viewerHoursSum: number;                       // Σ (avg_viewers × interval_hours)
+  peakViewers: number;
+  // Cumulative across the whole session — used for display only ("X unique chatters this stream").
+  cumulativeChatters: Record<string, number>;   // lowercase username → message count
+  // Per-poll-window chatters; resets each successful live poll.
+  windowChatters: Record<string, number>;
+  // Messages in the current poll window; resets alongside windowChatters.
+  windowMessages?: number;
+  // Per-user count of polling windows the user was active in. Accumulated
+  // across the session — never reset. Used to compute authenticatedViewerHours.
+  chatterActiveWindows?: Record<string, number>;
+  // Running mean of per-window chat rates (windowChatters / viewer_count_at_poll).
+  // This is what's compared to chatNormalRate. Concurrent participation, not cumulative.
+  chatRateSum: number;
+  chatRateSampleCount: number;
+  totalMessages: number;
+}
+
+export interface FinalizedKPPSession {
+  startedAt: string;
+  endedAt: string;
+  durationSeconds: number;
+  avgViewers: number;
+  peakViewers: number;
+  viewerHours: number;
+  uniqueChatters: number;
+  totalMessages: number;
+  chatActivityRate: number;       // uniqueChatters / avgViewers
+  chatActivityWeight: number;     // (chatActivityRate / chatNormalRate), clamped [0.2, 2.5]
+  engagementScore: number;        // viewerHours × chatActivityWeight
+  authenticatedViewerHours: number; // sum(per-user activeWindows) × windowDurationHours
+  estimatedCents: number | null;  // auth model or score × dollarPerScore × 100; null = uncalibrated
 }
 
 // ---------------------------------------------------------------------------
