@@ -91,6 +91,144 @@ function rateLimiter(req: express.Request, res: express.Response, next: express.
 }
 
 // ---------------------------------------------------------------------------
+// Webhook: public key + signature verification
+// ---------------------------------------------------------------------------
+
+const KICK_PUBLIC_KEY_PEM = `-----BEGIN PUBLIC KEY-----
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAq/+l1WnlRrGSolDMA+A8
+6rAhMbQGmQ2SapVcGM3zq8ANXjnhDWocMqfWcTd95btDydITa10kDvHzw9WQOqp2
+MZI7ZyrfzJuz5nhTPCiJwTwnEtWft7nV14BYRDHvlfqPUaZ+1KR4OCaO/wWIk/rQ
+L/TjY0M70gse8rlBkbo2a8rKhu69RQTRsoaf4DVhDPEeSeI5jVrRDGAMGL3cGuyY
+6CLKGdjVEM78g3JfYOvDU/RvfqD7L89TZ3iN94jrmWdGz34JNlEI5hqK8dd7C5EF
+BEbZ5jgB8s8ReQV8H+MkuffjdAj3ajDDX3DOJMIut1lBrUVD1AaSrGCKHooWoL2e
+twIDAQAB
+-----END PUBLIC KEY-----`;
+
+let cachedPublicKey: string = KICK_PUBLIC_KEY_PEM;
+let publicKeyFetchedAt: number = 0;
+const PUBLIC_KEY_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+
+async function getKickPublicKey(): Promise<string> {
+  const now = Date.now();
+  if (now - publicKeyFetchedAt < PUBLIC_KEY_TTL_MS) {
+    return cachedPublicKey;
+  }
+  try {
+    const response = await axios.get('https://api.kick.com/public/v1/public-key', { timeout: 5000 });
+    const pem = (response.data as { public_key?: string }).public_key
+      || (response.data as string);
+    if (pem && typeof pem === 'string') {
+      cachedPublicKey = pem;
+      publicKeyFetchedAt = now;
+    }
+  } catch (e) {
+    console.error('[WEBHOOK] Failed to refresh public key, using cached:', e instanceof Error ? e.message : String(e));
+  }
+  return cachedPublicKey;
+}
+
+async function verifyWebhookSignature(
+  messageId: string,
+  timestamp: string,
+  rawBody: Buffer,
+  signatureB64: string
+): Promise<boolean> {
+  try {
+    const pubKey = await getKickPublicKey();
+    const signedData = `${messageId}.${timestamp}.${rawBody.toString('utf8')}`;
+    const signature = Buffer.from(signatureB64, 'base64');
+    return crypto.verify(
+      'sha256',
+      Buffer.from(signedData, 'utf8'),
+      { key: pubKey, padding: crypto.constants.RSA_PKCS1_PADDING },
+      signature
+    );
+  } catch (e) {
+    console.error('[WEBHOOK] Signature verification error:', e instanceof Error ? e.message : String(e));
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Webhook: app access token (client_credentials) + subscription helpers
+// ---------------------------------------------------------------------------
+
+let _appToken: string | null = null;
+let _appTokenExpiresAt = 0;
+
+async function getWebhookAppToken(): Promise<string> {
+  if (_appToken && Date.now() < _appTokenExpiresAt - 60_000) return _appToken;
+  const res = await axios.post(
+    'https://id.kick.com/oauth/token',
+    new URLSearchParams({
+      grant_type: 'client_credentials',
+      client_id: process.env.CLIENT_ID || '',
+      client_secret: process.env.CLIENT_SECRET || '',
+    }).toString(),
+    { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
+  );
+  const data = res.data as { access_token: string; expires_in: number };
+  _appToken = data.access_token;
+  _appTokenExpiresAt = Date.now() + data.expires_in * 1000;
+  return _appToken;
+}
+
+async function subscribeChannelToWebhook(broadcasterUserId: number): Promise<void> {
+  try {
+    const appToken = await getWebhookAppToken();
+    const res = await axios.post(
+      'https://api.kick.com/public/v1/events/subscriptions',
+      {
+        events: [{ name: 'chat.message.sent', version: 1 }],
+        broadcaster_user_id: broadcasterUserId,
+        method: 'webhook'
+      },
+      {
+        headers: {
+          'Authorization': `Bearer ${appToken}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+    const result = res.data as { data?: Array<{ subscription_id?: string; error?: string }> };
+    const sub = result.data?.[0];
+    if (sub?.error) {
+      console.error(`[WEBHOOK] Subscription error for broadcaster ${broadcasterUserId}:`, sub.error);
+    } else {
+      console.log(`[WEBHOOK] Subscribed broadcaster ${broadcasterUserId} (id: ${sub?.subscription_id})`);
+    }
+  } catch (e) {
+    if (axios.isAxiosError(e)) {
+      const errData = e.response?.data as unknown;
+      console.error(`[WEBHOOK] Subscription failed for broadcaster ${broadcasterUserId}:`, JSON.stringify(errData) || e.message);
+    } else {
+      console.error(`[WEBHOOK] Subscription failed for broadcaster ${broadcasterUserId}:`, e instanceof Error ? e.message : String(e));
+    }
+  }
+}
+
+async function subscribeAllChannelsToWebhook(): Promise<void> {
+  const configDir = path.join(KICK_BASE_PATH, 'data', 'channel-configs');
+  if (!fs.existsSync(configDir)) return;
+
+  const files = fs.readdirSync(configDir).filter(f => f.endsWith('.json'));
+  for (const file of files) {
+    try {
+      const config = JSON.parse(fs.readFileSync(path.join(configDir, file), 'utf8')) as {
+        broadcasterUserId?: number;
+        channelName?: string;
+      };
+      if (config.broadcasterUserId) {
+        await subscribeChannelToWebhook(config.broadcasterUserId);
+        await new Promise(r => setTimeout(r, 500));
+      }
+    } catch (e) {
+      console.error(`[WEBHOOK] Failed to subscribe channel from ${file}:`, e instanceof Error ? e.message : String(e));
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // OAuth Configuration
 // ---------------------------------------------------------------------------
 
@@ -1114,6 +1252,13 @@ app.get('/kick-bot-enroll/complete', async (req: express.Request, res: express.R
     deployMessage = 'Config saved but deployment had issues.';
   }
 
+  // Subscribe the newly enrolled channel to webhook events (fire-and-forget)
+  if (broadcasterUserId) {
+    subscribeChannelToWebhook(broadcasterUserId).catch(e =>
+      console.error('[WEBHOOK] Post-enrollment subscription error:', e)
+    );
+  }
+
   res.send(successPage(username, resolvedChatroomId, broadcasterUserId, deployStatus, deployMessage));
 });
 
@@ -1657,6 +1802,89 @@ async function sendDeploymentMessage(message: string, sourceChatroomId: string):
   }
 }
 
+// ==================== KICK WEBHOOK ====================
+
+app.post('/kick-webhook', express.raw({ type: '*/*' }), async (req: express.Request, res: express.Response) => {
+  // Acknowledge immediately — Kick expects a fast 2xx
+  res.status(200).send('OK');
+
+  const rawBody = req.body as Buffer;
+  const signatureB64 = (req.headers['kick-event-signature'] as string | undefined) || '';
+  const messageId    = (req.headers['kick-event-message-id'] as string | undefined) || '';
+  const timestamp    = (req.headers['kick-event-message-timestamp'] as string | undefined) || '';
+
+  const skipVerify = process.env.WEBHOOK_VERIFY === 'false';
+  if (!skipVerify) {
+    if (!signatureB64) {
+      // No signature = likely a Kick ping/test with no body — log and ignore
+      console.log(`[WEBHOOK] Received request with no signature (headers: ${JSON.stringify(req.headers).slice(0, 200)})`);
+      return;
+    }
+    const valid = await verifyWebhookSignature(messageId, timestamp, rawBody, signatureB64);
+    if (!valid) {
+      console.error(`[WEBHOOK] Invalid signature for message ${messageId} — body: ${rawBody.toString('utf8').slice(0, 200)}`);
+      return;
+    }
+  } else {
+    console.warn('[WEBHOOK] Signature verification skipped (WEBHOOK_VERIFY=false)');
+  }
+
+  let event: Record<string, unknown>;
+  try {
+    event = JSON.parse(rawBody.toString('utf8')) as Record<string, unknown>;
+  } catch (e) {
+    console.error('[WEBHOOK] Failed to parse body:', e instanceof Error ? e.message : String(e));
+    return;
+  }
+
+  // Handle both { data: { ... } } envelope and direct payload
+  const payload = (event['data'] as Record<string, unknown> | undefined) ?? event;
+
+  // Identify chat.message.sent events
+  const eventType = (event['type'] as string | undefined) || '';
+  const isChatMessage = eventType === 'chat.message.sent' || typeof payload['message_id'] === 'string';
+  if (!isChatMessage) return;
+
+  const broadcaster = payload['broadcaster'] as { user_id?: number; username?: string } | undefined;
+  if (!broadcaster?.user_id) {
+    console.error('[WEBHOOK] Missing broadcaster.user_id in payload');
+    return;
+  }
+
+  // Look up channel name by broadcaster user_id
+  const configDir = path.join(KICK_BASE_PATH, 'data', 'channel-configs');
+  let channelName: string | null = null;
+  if (fs.existsSync(configDir)) {
+    for (const file of fs.readdirSync(configDir).filter(f => f.endsWith('.json'))) {
+      try {
+        const cfg = JSON.parse(fs.readFileSync(path.join(configDir, file), 'utf8')) as {
+          broadcasterUserId?: number;
+          channelName?: string;
+        };
+        if (cfg.broadcasterUserId === broadcaster.user_id) {
+          channelName = cfg.channelName || file.replace('.json', '');
+          break;
+        }
+      } catch (_) { /* skip bad config */ }
+    }
+  }
+
+  if (!channelName) {
+    console.warn(`[WEBHOOK] No enrolled channel found for broadcaster ${broadcaster.user_id}`);
+    return;
+  }
+
+  const sender = payload['sender'] as { username?: string } | undefined;
+  console.log(`[WEBHOOK] chat.message.sent from ${sender?.username ?? '?'} in ${channelName}`);
+
+  const eventsDir = path.join(KICK_BASE_PATH, 'data', 'webhook-events');
+  if (!fs.existsSync(eventsDir)) {
+    fs.mkdirSync(eventsDir, { recursive: true });
+  }
+  const queueFile = path.join(eventsDir, `${channelName}.jsonl`);
+  fs.appendFileSync(queueFile, JSON.stringify(payload) + '\n', 'utf8');
+});
+
 // ==================== START SERVICES ====================
 
 // Start server
@@ -1668,7 +1896,10 @@ app.listen(PORT, () => {
   // then start deployment bot so it always gets a fully refreshed token
   const botAuth = new KickAuth();
   const { ready } = botAuth.startTokenMonitor();
-  ready.then(() => startDeploymentBot());
+  ready.then(() => {
+    startDeploymentBot();
+    subscribeAllChannelsToWebhook().catch(e => console.error('[WEBHOOK] subscribeAllChannels error:', e));
+  });
 });
 
 // Export deployAddChannel for use if needed (currently unused but defined in original)

@@ -25,6 +25,7 @@ import KickAuth = require('../auth');
 import { ChannelConfig, CommandFn, KickTags, ClientWrapper, ChannelLocation, LocationSubfields } from '../types';
 import { markBotOutput } from '../recent-bot-outputs';
 import { resolveBotIdentity } from '../bot-identity';
+import { WebhookPoller } from './webhook-poller';
 
 const CHANNEL_NAME = '$$UPDATEHERE$$';
 
@@ -54,6 +55,7 @@ class KickChatBot {
   private reconnectDelay: number;
   private manualDisconnect: boolean;
   private pingInterval: NodeJS.Timeout | null;
+  private webhookPoller: WebhookPoller;
   private pendingLocationClarifications: Map<string, {
     options: Array<{ label: string; location: Record<string, string> }>;
     timestamp: number;
@@ -78,6 +80,8 @@ class KickChatBot {
     this.pingInterval = null;
 
     this.pendingLocationClarifications = new Map(); // username -> { options, timestamp, targetKey }
+
+    this.webhookPoller = new WebhookPoller(this.channelName, (data) => this.handleChatMessage(data));
 
     this.setupCommands();
   }
@@ -399,6 +403,7 @@ class KickChatBot {
         const eventData = (typeof message.data === 'string'
           ? JSON.parse(message.data)
           : message.data) as Record<string, unknown>;
+        this.webhookPoller.markSeen(eventData?.id as string | undefined);
         this.handleChatMessage(eventData);
       } else if (message.event === 'App\\Events\\SubscriptionEvent') {
         const eventData = (typeof message.data === 'string'
@@ -995,6 +1000,7 @@ Rules:
         await this.getChatroomId();
         this.startTokenRefreshScheduler();
         await this.connectWebSocket();
+        this.webhookPoller.start();
         return;
       } catch (error) {
         attempt++;
@@ -1017,6 +1023,8 @@ Rules:
       this.tokenRefreshInterval = null;
       console.log('[INFO] Token refresh scheduler stopped');
     }
+
+    this.webhookPoller.stop();
 
     if (this.ws) {
       console.log('[INFO] Disconnecting from Kick chat...');
