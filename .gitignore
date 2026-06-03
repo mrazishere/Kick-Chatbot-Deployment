@@ -26,3 +26,5 @@ src/channel-configs/
 # TypeScript build output
 dist/
 *.tsbuildinfo
+graphify-out/
+ws-test.js
