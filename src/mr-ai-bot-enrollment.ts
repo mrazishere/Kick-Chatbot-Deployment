@@ -1688,6 +1688,11 @@ async function deployAddChannel(requester: string, args: string[], badges: Array
           if (saveErr) console.error(`[DEPLOY] pm2 save failed: ${saveErr.message}`);
         });
         await sendDeploymentMessage(`@${requester}, bot deployed to ${sanitized}! (Chatroom: ${chatroomId})`, sourceChatroomId);
+        if (broadcasterUserId) {
+          subscribeChannelToWebhook(broadcasterUserId).catch(e =>
+            console.error('[WEBHOOK] Post-deploy subscription error:', e instanceof Error ? e.message : String(e))
+          );
+        }
       });
 
     } catch (err) {
