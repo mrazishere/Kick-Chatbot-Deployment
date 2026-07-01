@@ -1766,7 +1766,7 @@ async function deployStatus(requester: string, badges: Array<{ type: string }>, 
 }
 
 async function deployHelp(requester: string, sourceChatroomId: string): Promise<void> {
-  await sendDeploymentMessage(`@${requester}, !kickaddme - Enroll | !kickremoveme - Remove | OAuth: https://mr-ai.dev/kick-bot-enroll`, sourceChatroomId);
+  await sendDeploymentMessage(`@${requester}, !kickaddme - Enroll | !kickremoveme - Remove | OAuth: https://${oauthDomain}/kick-bot-enroll`, sourceChatroomId);
 }
 
 async function sendDeploymentMessage(message: string, sourceChatroomId: string): Promise<void> {
