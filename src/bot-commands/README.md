@@ -464,6 +464,29 @@ Catches a random Pokémon.
 
 ---
 
+## Disabling commands per channel
+
+Any command can be disabled for a specific channel without touching code. The list is stored in the channel's config JSON as `excludedCommands` and can be managed live from chat (broadcaster only):
+
+```
+!config exclude add <commandname>     → disable a command for this channel
+!config exclude remove <commandname>  → re-enable a disabled command
+!config exclude list                  → list all currently disabled commands
+```
+
+The `<commandname>` value is the function name as registered in the channel config (e.g. `fx`, `translate`, `claude`, `dad`). Changes take effect immediately — no restart required.
+
+**Example** — disable currency exchange and dad jokes for a channel:
+```
+!config exclude add fx
+!config exclude add dad
+!config exclude list    → Disabled commands: fx, dad
+```
+
+The `excludedCommands` array is also editable directly in the channel's config JSON (`data/channel-configs/<channel>.json`) if you prefer to set it at deploy time rather than from chat.
+
+---
+
 ## Adding a New Command
 
 1. Create `src/bot-commands/<name>.ts` exporting a `CommandFn` (see `src/types/index.ts`).
