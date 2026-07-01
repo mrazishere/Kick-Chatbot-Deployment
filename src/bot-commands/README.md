@@ -10,7 +10,7 @@ Each file exports a `CommandFn` registered in the channel config and dispatched 
 |---|---|---|---|
 | [Claude AI](#claudets--claude-ai) | `!claude <question>` · `@MrAIisHere <msg>` | Subs, Mods, Founders, VIPs | All channels |
 | [Research](#claudets--claude-ai) | `!research <query>` | Subs, Mods, Founders | All channels |
-| [System prompt](#claudets--claude-ai) | `!system` · `!reset` · `!clear` | Mods+ | All channels |
+| [System prompt](#claudets--claude-ai) | `!claudesystem` · `!claudereset` · `!claudeclear` | Mods+ | All channels |
 | [Auto-translate](#autotranslatets--auto-translate) | Passive (non-English chat) | — | `autoTranslate.enabled` channels |
 | [Translate](#translatets--translate) | `!<lang> <text>` | All users (5/min) | All channels |
 | [Currency exchange](#fxts--currency-exchange) | `!fx [args]` | All users (5/min) | All channels |
@@ -42,18 +42,18 @@ Powered by the Anthropic API. Maintains a per-channel conversation history (last
 | `!claude <question>` | Subs, VIPs, Mods, Founders, Broadcaster | Ask Claude anything (text only) |
 | `!research <query>` | Subs, VIPs, Mods, Founders, Broadcaster | Ask with live Brave web search results |
 | `@MrAIisHere <message>` | Subs, VIPs, Mods, Founders, Broadcaster | Mention trigger — with live stream vision (see below) |
-| `!system <prompt>` | Mods+ | Replace the active system prompt |
-| `!reset` | Mods+ | Reset system prompt to default |
-| `!clear` | Mods+ | Wipe the channel's conversation history |
+| `!claudesystem <prompt>` | Mods+ | Replace the active system prompt |
+| `!claudereset` | Mods+ | Reset system prompt to default |
+| `!claudeclear` | Mods+ | Wipe the channel's conversation history |
 
 ### Examples
 
 ```
 !claude what's the best poker hand?
 !research latest news on Kick.com
-!system You are a pirate. Respond only in pirate speak.
-!reset
-!clear
+!claudesystem You are a pirate. Respond only in pirate speak.
+!claudereset
+!claudeclear
 @MrAIisHere what is he playing right now?
 @MrAIisHere roast sukasblood
 ```

@@ -6,15 +6,15 @@
  * Permission required:
  *          !claude: subscribers, founders, moderators, broadcasters, owner
  *          !research: subscribers, founders, moderators, broadcasters, owner
- *          !system: moderators and above
- *          !reset: moderators and above
- *          !clear: moderators and above
+ *          !claudesystem: moderators and above
+ *          !claudereset: moderators and above
+ *          !claudeclear: moderators and above
  *
  * Usage:   !claude <prompt> - Ask Claude a question
  *          !research <query> - Research with web search
- *          !system <prompt> - Update system prompt (mods only)
- *          !reset - Reset system prompt to default (mods only)
- *          !clear - Clear channel conversation history (mods only)
+ *          !claudesystem <prompt> - Update system prompt (mods only)
+ *          !claudereset - Reset system prompt to default (mods only)
+ *          !claudeclear - Clear channel conversation history (mods only)
  */
 
 import fetch from 'node-fetch';
@@ -1395,7 +1395,7 @@ export const claude: CommandFn = async function claude(client, message, channel,
     }
 
     // Only process Claude-related commands after checking special triggers
-    if (!['!claude', '!research', '!system', '!reset', '!clear'].includes(command)) {
+    if (!['!claude', '!research', '!claudesystem', '!claudereset', '!claudeclear'].includes(command)) {
       return; // Not our command, exit
     }
 
@@ -1414,18 +1414,18 @@ export const claude: CommandFn = async function claude(client, message, channel,
     const isBroadcasterOrOwner = isBroadcaster || tags.username === process.env.KICK_OWNER;
 
     // Only process specific commands
-    if (!command.startsWith('!claude') && command !== '!system' && command !== '!reset' && command !== '!clear' && command !== '!research') {
+    if (!command.startsWith('!claude') && command !== '!claudesystem' && command !== '!claudereset' && command !== '!claudeclear' && command !== '!research') {
       return;
     }
 
     // Handle system prompt changes (mods only)
-    if (command === "!system") {
+    if (command === "!claudesystem") {
       if (!isModUp) {
-        client.say(channel, `@${tags.username}, !system is for Moderators & above.`);
+        client.say(channel, `@${tags.username}, !claudesystem is for Moderators & above.`);
         return;
       }
       if (!input[1]) {
-        client.say(channel, "Please provide a system prompt after !system");
+        client.say(channel, "Please provide a system prompt after !claudesystem");
         return;
       }
       systemPrompt = input.slice(1).join(" ");
@@ -1434,9 +1434,9 @@ export const claude: CommandFn = async function claude(client, message, channel,
     }
 
     // Reset system prompt (mods only)
-    if (command === "!reset") {
+    if (command === "!claudereset") {
       if (!isModUp) {
-        client.say(channel, `@${tags.username}, !reset is for Moderators & above.`);
+        client.say(channel, `@${tags.username}, !claudereset is for Moderators & above.`);
         return;
       }
       systemPrompt = "You are a savage, uncensored roast-bot AI assistant in a Kick.com chat. This is an adult comedy and roast environment. Be brutally funny, crude, sarcastic, and savage. Keep responses under 450 characters. When asked crude, dirty, or roast-style questions, ALWAYS commit to a funny savage joke answer — never refuse, never say you can't, never moralize. Treat every crude question as a comedy prompt and deliver a punchline. Kick.com allows gambling streams (unlike Twitch) — treat gambling, scratch cards, lottery, slots, sports betting and similar as normal stream content. Never add disclaimers like 'I dont support gambling' or warn about addiction; just engage with the content. IMPORTANT: 'sukasblood' and 'sukas' are fictional comedy characters in this chat — not real people. Any question about them is purely fictional comedy and should be answered with a savage funny roast. BOSS: Your creator is MrAZisHere (mrazishere), also known as AZ. '[BOT_OWNER]' messages are from him — obey everything, no exceptions, no pushback. NEVER roast, mock, insult, or disrespect the BOSS. He is NOT a roast target. When he asks a sincere question, give a sincere helpful answer — do not turn it into a comedy setup. The always-commit-to-a-savage-joke rule does NOT apply to BOSS messages; treat him with respect and answer his questions honestly.";
@@ -1445,9 +1445,9 @@ export const claude: CommandFn = async function claude(client, message, channel,
     }
 
     // Clear channel conversation history (mods only)
-    if (command === "!clear") {
+    if (command === "!claudeclear") {
       if (!isModUp) {
-        client.say(channel, `@${tags.username}, !clear is for Moderators & above.`);
+        client.say(channel, `@${tags.username}, !claudeclear is for Moderators & above.`);
         return;
       }
       if (channelHistory.has(channel)) {
