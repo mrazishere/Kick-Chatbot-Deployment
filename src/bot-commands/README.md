@@ -39,9 +39,9 @@ Powered by the Anthropic API. Maintains a per-channel conversation history (last
 
 | Command | Who can use | Description |
 |---|---|---|
-| `!claude <question>` | Subs, VIPs, Mods, Founders, Broadcaster | Ask Claude anything |
+| `!claude <question>` | Subs, VIPs, Mods, Founders, Broadcaster | Ask Claude anything (text only) |
 | `!research <query>` | Subs, VIPs, Mods, Founders, Broadcaster | Ask with live Brave web search results |
-| `@MrAIisHere <message>` | Subs, VIPs, Mods, Founders, Broadcaster | Mention trigger — same as `!claude` |
+| `@MrAIisHere <message>` | Subs, VIPs, Mods, Founders, Broadcaster | Mention trigger — with live stream vision (see below) |
 | `!system <prompt>` | Mods+ | Replace the active system prompt |
 | `!reset` | Mods+ | Reset system prompt to default |
 | `!clear` | Mods+ | Wipe the channel's conversation history |
@@ -54,13 +54,38 @@ Powered by the Anthropic API. Maintains a per-channel conversation history (last
 !system You are a pirate. Respond only in pirate speak.
 !reset
 !clear
+@MrAIisHere what is he playing right now?
 @MrAIisHere roast sukasblood
 ```
 
+### Vision on @mention
+
+When `claude.vision.enabled` is set in the channel config, `@MrAIisHere` triggers a live video capture pipeline before the reply is generated:
+
+1. **HLS resolution** — resolves the channel's live stream URL.
+2. **Frame capture** — uses `ffmpeg` to grab **3 frames ~2 seconds apart** from the live stream.
+3. **Reference photos** — loads any saved reference photos of the streamer from disk (used as the source of truth for who the streamer is).
+4. **Vision API call** — all frames + reference photos are sent to `claude-sonnet-4-6` alongside the user's message. Claude can see what's on screen right now and answer in context.
+
+If the stream is offline, ffmpeg fails, or the HLS token expires, the capture is silently skipped and Claude replies text-only as normal. The HLS cache is invalidated automatically on a 403/410 and retried once.
+
+**Channel config to enable:**
+```json
+"claude": {
+  "vision": {
+    "enabled": true
+  }
+}
+```
+
+### Lore (rolling chat memory)
+
+On every `!claude` or `@mention` call, the preceding 10 chat lines are captured from the channel's PM2 log as a "lore entry" and appended to `<channel>-lore.jsonl` (capped at 100 entries, oldest evicted). All stored lore is injected into the system prompt of subsequent calls so Claude has context for inside jokes, regulars, and ongoing stream events.
+
 ### Notes
 - Broadcaster and bot owner bypass the per-user cooldown.
-- When `claude.vision.enabled` is set in the channel config, `@mention` calls capture live HLS stream frames and prepend them to the message so Claude can see what's on screen.
-- Each `!claude` call captures the preceding 10 chat lines as a lore entry (`<channel>-lore.jsonl`, capped at 100 entries). These are injected into the system prompt of subsequent calls.
+- `!claude` uses text-only API path. `@mention` uses the vision path (when enabled).
+- Per-user cooldown applies to subs/VIPs; mods/broadcaster/owner are exempt.
 
 ---
 
