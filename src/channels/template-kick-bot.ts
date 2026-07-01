@@ -929,7 +929,9 @@ Rules:
         .replace(/\s+/g, ' ')                    // Collapse multiple spaces
         .trim();                                 // Remove leading/trailing spaces
 
-      // Limit special characters for type: "user" - Kick allows max 10 non-ASCII chars
+      // Limit special characters for type: "user" - Kick enforces MAX_SPECIAL_CHARS_ERROR
+      // Only ASCII punctuation/symbols count toward the limit; Unicode script characters
+      // (Thai, Korean, Arabic, emoji, etc.) are allowed freely.
       if (!hasChannelOAuth) {
         const MAX_SPECIAL_CHARS = 10;
         let specialCharCount = 0;
@@ -939,14 +941,22 @@ Rules:
         const chars = Array.from(sanitized);
         for (const char of chars) {
           const codePoint = char.codePointAt(0);
-          const isSpecialChar = codePoint !== undefined && codePoint > 127; // Non-ASCII character
+          const isAlphanumOrSpace = codePoint !== undefined && (
+            (codePoint >= 48 && codePoint <= 57) ||  // 0-9
+            (codePoint >= 65 && codePoint <= 90) ||  // A-Z
+            (codePoint >= 97 && codePoint <= 122) || // a-z
+            codePoint === 32                          // space
+          );
+          // Only ASCII symbols (codePoint < 128) count as special chars.
+          // Non-ASCII Unicode (Thai, Korean, Arabic, emoji, etc.) passes through freely.
+          const isAsciiSpecialChar = codePoint !== undefined && codePoint < 128 && !isAlphanumOrSpace;
 
-          if (isSpecialChar) {
+          if (isAsciiSpecialChar) {
             if (specialCharCount < MAX_SPECIAL_CHARS) {
               result += char;
               specialCharCount++;
             }
-            // Skip if over limit
+            // Drop ASCII special chars over the limit
           } else {
             result += char;
           }

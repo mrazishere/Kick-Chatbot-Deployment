@@ -215,7 +215,7 @@ function buildSystemPrompt(channelName: string, globalSystemPrompt: string): str
 // chat moments viewers found notable. File caps at LORE_MAX_ENTRIES (oldest
 // evicted). Injected into the system prompt of subsequent !claude calls.
 
-const LORE_MAX_ENTRIES = 100;
+const LORE_MAX_ENTRIES = 50;
 const LORE_PRECEDING_CHAT = 10;
 
 interface LoreEntry {

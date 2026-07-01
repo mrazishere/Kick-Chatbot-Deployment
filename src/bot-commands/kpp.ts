@@ -2,7 +2,7 @@
  * KPP command — shows engagement-weighted KPP estimate (separate from !earnings).
  *
  * Description: Display current/recent KPP engagement score and $ estimate (if calibrated).
- * Based on the KPP pool-share model: score = viewer_hours × chat_activity_weight.
+ * Based on the KPP pool-share model: score = viewer_hours x chat_activity_weight.
  *
  * Usage: !kpp
  *
@@ -54,6 +54,7 @@ export const kpp: CommandFn = async function kpp(client, message, channel, tags,
   const cfg = (config.kpp as KPPConfig | undefined) || {};
   const chatNormalRate = cfg.chatNormalRate ?? DEFAULT_CHAT_NORMAL_RATE;
   const dollarPerScore = cfg.dollarPerScore ?? null;
+  const centsPerVH = cfg.centsPerViewerHour ?? null;
   const centsPerAuthVH = cfg.centsPerAuthViewerHour ?? null;
   const POLL_INTERVAL_HOURS = 5 / 60; // 5-minute polls
 
@@ -93,16 +94,18 @@ export const kpp: CommandFn = async function kpp(client, message, channel, tags,
       const authVH = totalActiveWindows * POLL_INTERVAL_HOURS;
 
       let estCents: number | null = null;
-      if (centsPerAuthVH != null) {
+      if (centsPerVH != null) {
+        estCents = Math.round(viewerHours * centsPerVH);
+      } else if (centsPerAuthVH != null) {
         estCents = Math.round(authVH * centsPerAuthVH);
       } else if (dollarPerScore != null) {
         estCents = Math.round(score * dollarPerScore * 100);
       }
-      const dollarPart = estCents != null ? `KPP est: ${formatDollars(estCents)}` : 'KPP est: pending calibration';
+      const estPart = estCents != null ? formatDollars(estCents) + ' est' : 'pending';
 
       await client.say(
         channel,
-        `@${tags.username}, Don is LIVE — ${dollarPart} | score ${score.toFixed(0)} (${viewerHours.toFixed(0)}vh × ${chatWeight.toFixed(2)} chat-wt) | concurrent chat ${(chatRate * 100).toFixed(1)}% (${chatHealthLabel(chatRate)}), ${cumulativeChatters} unique chatters so far | ${formatDuration(durationSeconds)}, ${current.lastViewerCount} viewers (peak ${current.peakViewers}).`
+        `@${tags.username} Don is LIVE: ${estPart}, score ${score.toFixed(0)}, ${cumulativeChatters} chatters ${(chatRate * 100).toFixed(1)}pct ${chatHealthLabel(chatRate)}, ${formatDuration(durationSeconds)}, ${current.lastViewerCount} viewers peak ${current.peakViewers}`
       );
       return;
     }
@@ -124,12 +127,13 @@ export const kpp: CommandFn = async function kpp(client, message, channel, tags,
     }
 
     const last = sessions[sessions.length - 1];
-    const dollarPart = last.estimatedCents != null
-      ? `KPP est: ${formatDollars(last.estimatedCents)}`
-      : 'KPP est: pending calibration';
+    const lastEstCents = centsPerVH != null
+      ? Math.round(last.viewerHours * centsPerVH)
+      : last.estimatedCents;
+    const estPart = lastEstCents != null ? formatDollars(lastEstCents) + ' est' : 'pending';
     await client.say(
       channel,
-      `@${tags.username}, Don isn't streaming. Last session: ${dollarPart} | score ${last.engagementScore} (${last.viewerHours}vh × ${last.chatActivityWeight} chat-wt) | ${last.uniqueChatters} unique chatters (${(last.chatActivityRate * 100).toFixed(1)}% — ${chatHealthLabel(last.chatActivityRate)}) | ${formatDuration(last.durationSeconds)}, ${last.avgViewers} avg viewers (peak ${last.peakViewers}).`
+      `@${tags.username} Don is offline, last session: ${estPart}, score ${last.engagementScore}, ${last.uniqueChatters} chatters ${(last.chatActivityRate * 100).toFixed(1)}pct ${chatHealthLabel(last.chatActivityRate)}, ${formatDuration(last.durationSeconds)} avg ${Math.round(last.avgViewers)} peak ${last.peakViewers}`
     );
   } catch (err) {
     if (err instanceof Error) console.error('[KPP CMD] Command error:', err.message);

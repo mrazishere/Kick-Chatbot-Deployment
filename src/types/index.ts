@@ -91,9 +91,13 @@ export interface KPPConfig {
   // Baseline chat-activity rate (unique chatters / avg viewers). Per the KPP
   // explainer reel, normal is 4–14%; midpoint 0.09 used as default.
   chatNormalRate?: number;
+  // Simple viewer-hour model: ¢ per total viewer-hour (mirrors !earnings math).
+  // Set to ~50% of the earnings rate (e.g. 5) to reflect KPP ≈ 50% of earnings.
+  // Takes priority over centsPerAuthViewerHour and dollarPerScore when set.
+  centsPerViewerHour?: number | null;
   // Authenticated-viewer-hour model: ¢ per authenticated viewer-hour.
   // Authenticated VH = sum of per-user active polling windows × window duration.
-  // When set, this model is used instead of dollarPerScore × engagementScore.
+  // When set (and centsPerViewerHour is absent), used instead of dollarPerScore.
   centsPerAuthViewerHour?: number | null;
 }
 

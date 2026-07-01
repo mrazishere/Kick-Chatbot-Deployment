@@ -290,21 +290,13 @@ export const translate: CommandFn = async function translate(client, message, ch
                 const responseMsg = truncateMessage(`@${tags.username}, ${txt} / ${translation}`);
                 await client.say(channel, responseMsg);
             } else {
-                // Normal translation. Pronunciation is suppressed for languages
-                // that have a dedicated pronunciation command (!pinyin for zh*,
-                // !romaji for ja) — otherwise !cn ends up duplicating !pinyin.
+                // Normal translation — always show translated text only.
+                // Romanization/pronunciation is omitted here for all languages;
+                // !pinyin and !romaji exist for callers who explicitly want it.
                 const translation = res.text || 'Translation unavailable';
                 const connector = ll[1] || 'says';
-                const targetBase = ll[0].split('-')[0];
-                const hasDedicatedPronunciationCmd = targetBase === 'zh' || targetBase === 'ja';
-                const pronunciation = hasDedicatedPronunciationCmd ? '' : (res.pronunciation || '');
 
-                let responseMsg: string;
-                if (pronunciation && pronunciation !== translation) {
-                    responseMsg = truncateMessage(`@${tags.username} ${connector}: ${pronunciation}: ${translation}`);
-                } else {
-                    responseMsg = truncateMessage(`@${tags.username} ${connector}: ${translation}`);
-                }
+                const responseMsg = truncateMessage(`@${tags.username} ${connector}: ${translation}`);
                 await client.say(channel, responseMsg);
             }
 
