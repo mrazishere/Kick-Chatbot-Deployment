@@ -172,7 +172,7 @@ https://${process.env.OAUTH_DOMAIN || 'mr-ai.dev'}/kick-bot-reauth
 <b>Channel:</b> ${channel}
 <b>Consecutive refresh failures:</b> ${failureCount}
 
-The streamer OAuth token for this channel can no longer be refreshed (Kick grants expire 30 days after enrollment). The bot is falling back to the bot account token for sends.
+The streamer OAuth token for this channel can no longer be refreshed (Kick grants expire 30 days after enrollment). The bot has stopped retrying it and switched to the bot account token for sends. It will switch back automatically after re-enrollment.
 
 Have <b>${channel}</b> re-enroll here:
 https://${process.env.OAUTH_DOMAIN || 'mr-ai.dev'}/kick-bot-enroll
