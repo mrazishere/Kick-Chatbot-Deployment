@@ -24,6 +24,7 @@ class KickAuth {
   private accessToken: string | null = null;
   private refreshToken: string | null = null;
   private expiresAt: number | null = null;
+  private grantedAt: number | null = null;
   private codeVerifier: string | null = null;
   private codeChallenge: string | null = null;
   private authServer: string;
@@ -114,6 +115,7 @@ class KickAuth {
       this.accessToken = response.data.access_token;
       this.refreshToken = response.data.refresh_token;
       this.expiresAt = Date.now() + (response.data.expires_in * 1000);
+      this.grantedAt = Date.now();
 
       this.saveTokens();
       return this.accessToken;
@@ -127,6 +129,10 @@ class KickAuth {
 
   // Refresh access token using refresh token
   async refreshAccessToken(): Promise<string | null> {
+    // The token file is shared across processes (enrollment service + channel
+    // bots) and another process may have rotated it since we last read it —
+    // always refresh with the newest refresh token on disk, never a cached one.
+    this.loadTokens();
     if (!this.refreshToken) {
       throw new Error('No refresh token available');
     }
@@ -177,12 +183,28 @@ class KickAuth {
   // Alerts via Telegram if refresh fails and manual action is needed
   startTokenMonitor(intervalMs = 30 * 60 * 1000): { timer: NodeJS.Timeout; ready: Promise<void> } {
     const ALERT_THRESHOLD_MS = 24 * 60 * 60 * 1000; // alert/refresh if < 24h left
+    // Kick grants have a hard 30-day lifetime that refreshing does NOT extend.
+    // Warn daily once the grant is within 2 days of dying so re-auth can
+    // happen on the user's schedule instead of at failure time.
+    const GRANT_LIFETIME_MS = 30 * 24 * 60 * 60 * 1000;
+    const GRANT_WARN_BEFORE_MS = 2 * 24 * 60 * 60 * 1000;
     const telegram = new TelegramNotifier();
     let lastAlertedAt = 0;
+    let lastGrantWarnAt = 0;
 
     const check = async () => {
       try {
         this.loadTokens();
+
+        if (this.grantedAt) {
+          const grantMsLeft = this.grantedAt + GRANT_LIFETIME_MS - Date.now();
+          if (grantMsLeft < GRANT_WARN_BEFORE_MS && Date.now() - lastGrantWarnAt > 24 * 60 * 60 * 1000) {
+            lastGrantWarnAt = Date.now();
+            const daysLeft = Math.max(0, grantMsLeft / (24 * 60 * 60 * 1000));
+            console.warn(`[AUTH MONITOR] Grant reaches Kick's 30-day lifetime in ~${daysLeft.toFixed(1)} day(s)`);
+            await telegram.notifyGrantExpiringSoon(daysLeft).catch(() => {});
+          }
+        }
 
         if (!this.refreshToken) {
           console.warn('[AUTH MONITOR] No tokens on file — bot needs authentication');
@@ -236,10 +258,10 @@ class KickAuth {
 
   // Get valid access token (refreshes if expired)
   async getAccessToken(): Promise<string | null> {
-    // Load tokens from file if not in memory
-    if (!this.accessToken) {
-      this.loadTokens();
-    }
+    // Always re-read from disk: the file is shared with the enrollment
+    // service, which rotates it every 30 minutes. Caching tokens in memory
+    // left long-lived bot processes holding a revoked grant after re-auth.
+    this.loadTokens();
 
     // Check if token is expired or about to expire (within 5 minutes)
     if (this.expiresAt && this.expiresAt < Date.now() + 300000) {
@@ -255,7 +277,8 @@ class KickAuth {
     const data = {
       accessToken: this.accessToken,
       refreshToken: this.refreshToken,
-      expiresAt: this.expiresAt
+      expiresAt: this.expiresAt,
+      grantedAt: this.grantedAt ?? undefined
     };
     const tmpFile = this.tokenFile + '.tmp';
     fs.writeFileSync(tmpFile, JSON.stringify(data, null, 2));
@@ -271,6 +294,7 @@ class KickAuth {
         this.accessToken = data.accessToken;
         this.refreshToken = data.refreshToken;
         this.expiresAt = data.expiresAt;
+        this.grantedAt = data.grantedAt ?? null;
         return true;
       }
     } catch (error) {

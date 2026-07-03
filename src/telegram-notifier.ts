@@ -145,6 +145,42 @@ Earnings polling is working again. No action needed.
     return await this.sendMessage(message, true);
   }
 
+  // Warning: the bot grant is approaching Kick's hard 30-day lifetime.
+  // Refreshing does not extend it — only a manual re-auth creates a new grant.
+  async notifyGrantExpiringSoon(daysLeft: number): Promise<boolean> {
+    const urgent = daysLeft <= 1;
+    const message = `
+${urgent ? '🚨' : '⏳'} <b>Kick Bot - Re-auth Needed Within ${urgent ? '24 Hours' : '2 Days'}</b>
+
+<b>Bot Account:</b> ${process.env.KICK_USERNAME || 'Unknown'}
+<b>Grant expires in:</b> ~${daysLeft.toFixed(1)} day(s)
+
+Kick OAuth grants last exactly 30 days and cannot be extended by refreshing. Re-authorize now to avoid downtime (log in as the <b>bot account</b> first):
+https://${process.env.OAUTH_DOMAIN || 'mr-ai.dev'}/kick-bot-reauth
+    `.trim();
+
+    return await this.sendMessage(message, !urgent);
+  }
+
+  // Alert: a channel's streamer OAuth token can no longer be refreshed —
+  // the streamer must re-enroll. Without this the bot silently falls back
+  // to the bot token and the failure goes unnoticed.
+  async notifyChannelTokenBroken(channel: string, failureCount: number): Promise<boolean> {
+    const message = `
+⚠️ <b>Kick Bot - Channel Token Broken</b>
+
+<b>Channel:</b> ${channel}
+<b>Consecutive refresh failures:</b> ${failureCount}
+
+The streamer OAuth token for this channel can no longer be refreshed (Kick grants expire 30 days after enrollment). The bot is falling back to the bot account token for sends.
+
+Have <b>${channel}</b> re-enroll here:
+https://${process.env.OAUTH_DOMAIN || 'mr-ai.dev'}/kick-bot-enroll
+    `.trim();
+
+    return await this.sendMessage(message, false); // audible — needs streamer action
+  }
+
   // Informational: token refreshed successfully after a failed attempt
   async notifyRefreshRecovered(): Promise<boolean> {
     const message = `

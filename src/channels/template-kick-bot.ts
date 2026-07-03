@@ -22,6 +22,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import fetch from 'node-fetch';
 import KickAuth = require('../auth');
+import TelegramNotifier = require('../telegram-notifier');
 import { ChannelConfig, CommandFn, KickTags, ClientWrapper, ChannelLocation, LocationSubfields } from '../types';
 import { markBotOutput } from '../recent-bot-outputs';
 import { resolveBotIdentity } from '../bot-identity';
@@ -56,6 +57,8 @@ class KickChatBot {
   private manualDisconnect: boolean;
   private pingInterval: NodeJS.Timeout | null;
   private webhookPoller: WebhookPoller;
+  private channelTokenFailStreak = 0;
+  private lastChannelTokenAlertAt = 0;
   private pendingLocationClarifications: Map<string, {
     options: Array<{ label: string; location: Record<string, string> }>;
     timestamp: number;
@@ -604,10 +607,20 @@ class KickChatBot {
       const configPath = path.join(process.cwd(), 'data', 'channel-configs', `${this.channelName}.json`);
       fs.writeFileSync(configPath, JSON.stringify(this.config, null, 2));
       console.log('[AUTH] Channel token refreshed');
+      this.channelTokenFailStreak = 0;
       return true;
     } catch (error) {
       if (error instanceof Error) {
         console.error('[ERROR] Failed to refresh channel token:', error.message);
+      }
+      // Streamer grants expire 30 days after enrollment and refreshing cannot
+      // revive them — surface repeated failures instead of silently 401-ing
+      // every 30 minutes until someone notices.
+      this.channelTokenFailStreak++;
+      if (this.channelTokenFailStreak >= 3 && Date.now() - this.lastChannelTokenAlertAt > 24 * 60 * 60 * 1000) {
+        this.lastChannelTokenAlertAt = Date.now();
+        const telegram = new TelegramNotifier();
+        await telegram.notifyChannelTokenBroken(this.channelName, this.channelTokenFailStreak).catch(() => {});
       }
       return false;
     }

@@ -36,6 +36,10 @@ export interface OAuthTokens {
   accessToken: string;
   refreshToken: string;
   expiresAt: number;
+  // Epoch ms of the authorization_code exchange that created this grant.
+  // Kick grants have a hard 30-day lifetime regardless of refresh activity;
+  // this lets the token monitor warn before the grant dies.
+  grantedAt?: number;
 }
 
 // ---------------------------------------------------------------------------

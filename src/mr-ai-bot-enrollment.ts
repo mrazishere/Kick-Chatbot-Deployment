@@ -915,7 +915,10 @@ app.get('/kick-bot-enroll/callback', async (req: express.Request, res: express.R
       const tokenData = {
         accessToken: access_token,
         refreshToken: refresh_token,
-        expiresAt: Date.now() + (expires_in * 1000)
+        expiresAt: Date.now() + (expires_in * 1000),
+        // Kick grants die exactly 30 days after this exchange — the token
+        // monitor uses grantedAt to warn at day 28.
+        grantedAt: Date.now()
       };
       const tmpFile = path.join(__dirname, '.tokens.json.tmp');
       fs.writeFileSync(tmpFile, JSON.stringify(tokenData, null, 2));
@@ -930,8 +933,23 @@ app.get('/kick-bot-enroll/callback', async (req: express.Request, res: express.R
         // Intentionally ignored
       }
 
-      // Reload the enrollment service so the new tokens are picked up immediately
-      setTimeout(() => exec('pm2 reload Kick-Bot-Enrollment'), 3000);
+      // Restart every channel bot, then reload this service. The earnings/KPP
+      // pollers re-read tokens from disk and self-heal, but each bot's KickAuth
+      // caches tokens in memory — without a restart they keep using the revoked
+      // grant and fail sends with invalid_grant.
+      setTimeout(() => {
+        let channelBots = '';
+        try {
+          const cfgDir = path.join(process.cwd(), 'data', 'channel-configs');
+          channelBots = fs.readdirSync(cfgDir)
+            .filter(f => f.endsWith('.json'))
+            .map(f => `kick-${path.basename(f, '.json')}`)
+            .join(' ');
+        } catch (e) {
+          console.error('[BOT REAUTH] Could not list channel configs for restart:', e instanceof Error ? e.message : e);
+        }
+        exec(`pm2 restart ${channelBots} ; pm2 reload Kick-Bot-Enrollment`);
+      }, 3000);
 
       return res.send(`<!DOCTYPE html>
 <html lang="en">
@@ -958,7 +976,7 @@ app.get('/kick-bot-enroll/callback', async (req: express.Request, res: express.R
 <body>
     <div class="container">
         <h1>&#10003; Bot Re-authenticated!</h1>
-        <p>New tokens saved. The bot service will reload in a few seconds and resume operation automatically.</p>
+        <p>New tokens saved. All channel bots and the enrollment service will restart in a few seconds and resume operation automatically.</p>
     </div>
 </body>
 </html>`);
