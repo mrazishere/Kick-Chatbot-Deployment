@@ -58,8 +58,6 @@ class KickChatBot {
   private pingInterval: NodeJS.Timeout | null;
   private webhookPoller: WebhookPoller;
   private channelTokenFailStreak = 0;
-  private lastChannelTokenAlertAt = 0;
-  private channelTokenDead = false;
   private pendingLocationClarifications: Map<string, {
     options: Array<{ label: string; location: Record<string, string> }>;
     timestamp: number;
@@ -556,12 +554,6 @@ class KickChatBot {
   }
 
   async getChannelAccessToken(): Promise<{ token: string; isChannelToken: boolean }> {
-    // Channel token declared dead (grant expired) — don't retry the refresh
-    // on every send; use the bot token until re-enrollment provides a fresh
-    // grant (detected by the 30-min scheduler).
-    if (this.channelTokenDead) {
-      return { token: await this.auth.getAccessToken() ?? '', isChannelToken: false };
-    }
     // Use channel's own OAuth token if available
     if (this.config.oauth?.accessToken) {
       // Check if token needs refresh
@@ -615,21 +607,21 @@ class KickChatBot {
       fs.writeFileSync(configPath, JSON.stringify(this.config, null, 2));
       console.log('[AUTH] Channel token refreshed');
       this.channelTokenFailStreak = 0;
-      this.channelTokenDead = false;
       return true;
     } catch (error) {
       if (error instanceof Error) {
         console.error('[ERROR] Failed to refresh channel token:', error.message);
       }
       // Streamer grants expire 30 days after enrollment and refreshing cannot
-      // revive them — surface repeated failures instead of silently 401-ing
-      // every 30 minutes until someone notices.
-      this.channelTokenFailStreak++;
-      if (this.channelTokenFailStreak >= 3 && !this.channelTokenDead) {
-        this.channelTokenDead = true;
-        console.warn('[AUTH] Channel token declared dead after repeated refresh failures — using bot token until re-enrollment');
-        if (Date.now() - this.lastChannelTokenAlertAt > 24 * 60 * 60 * 1000) {
-          this.lastChannelTokenAlertAt = Date.now();
+      // revive them. Only definitive auth rejections count toward deletion —
+      // a network blip must not destroy a still-valid grant.
+      const status = axios.isAxiosError(error) ? error.response?.status : undefined;
+      if (status === 400 || status === 401 || status === 403) {
+        this.channelTokenFailStreak++;
+        if (this.channelTokenFailStreak >= 3 && this.config.oauth) {
+          delete this.config.oauth;
+          this.saveConfig();
+          console.warn('[AUTH] Channel token dead — removed from config; using bot token until re-enrollment');
           const telegram = new TelegramNotifier();
           await telegram.notifyChannelTokenBroken(this.channelName, this.channelTokenFailStreak).catch(() => {});
         }
@@ -914,22 +906,6 @@ Rules:
       } catch (readErr) {
         if (readErr instanceof Error && (readErr as NodeJS.ErrnoException).code !== 'ENOENT') {
           console.error('[AUTH] Failed to reload config:', readErr.message);
-        }
-      }
-
-      if (this.channelTokenDead) {
-        if (this.config.oauth?.expiresAt && this.config.oauth.expiresAt > Date.now()) {
-          // Re-enrollment wrote a fresh grant into the config — resume using it.
-          this.channelTokenDead = false;
-          this.channelTokenFailStreak = 0;
-          console.log('[AUTH] Fresh channel token found in config — resuming channel token use');
-        } else {
-          if (Date.now() - this.lastChannelTokenAlertAt > 24 * 60 * 60 * 1000) {
-            this.lastChannelTokenAlertAt = Date.now();
-            const telegram = new TelegramNotifier();
-            await telegram.notifyChannelTokenBroken(this.channelName, this.channelTokenFailStreak).catch(() => {});
-          }
-          return;
         }
       }
 
