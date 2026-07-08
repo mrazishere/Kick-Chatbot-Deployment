@@ -417,7 +417,7 @@ async function callClaudeAPI(messages: Array<{ role: string; content: string }>,
           'anthropic-version': '2023-06-01'
         },
         body: JSON.stringify({
-          model: "claude-sonnet-4-6",
+          model: "claude-sonnet-5",
           max_tokens: 300,
           system: systemPromptText,
           messages: messages
@@ -527,7 +527,7 @@ async function callClaudeAPIWithSearch(messages: Array<{ role: string; content: 
           'anthropic-version': '2023-06-01'
         },
         body: JSON.stringify({
-          model: "claude-sonnet-4-6",
+          model: "claude-sonnet-5",
           max_tokens: 300,
           system: enhancedSystemPrompt,
           messages: messages
@@ -673,7 +673,7 @@ async function buildMentionVisionContext(channel: string): Promise<VisionContext
 
 /**
  * Calls Claude with vision content prepended to the last user message.
- * Uses Sonnet 4.6 (better vision than the older Sonnet 4 used for text-only).
+ * Uses Sonnet 5 (same model as text-only; strong vision).
  * Same retry/backoff shape as callClaudeAPI.
  */
 async function callClaudeAPIWithVision(
@@ -725,7 +725,7 @@ async function callClaudeAPIWithVision(
           'anthropic-version': '2023-06-01'
         },
         body: JSON.stringify({
-          model: 'claude-sonnet-4-6',
+          model: 'claude-sonnet-5',
           max_tokens: 400,
           system: enhancedSystem,
           messages: enhanced

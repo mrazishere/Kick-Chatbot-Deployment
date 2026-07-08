@@ -65,7 +65,7 @@ When `claude.vision.enabled` is set in the channel config, `@MrAIisHere` trigger
 1. **HLS resolution** — resolves the channel's live stream URL.
 2. **Frame capture** — uses `ffmpeg` to grab **3 frames ~2 seconds apart** from the live stream.
 3. **Reference photos** — loads any saved reference photos of the streamer from disk (used as the source of truth for who the streamer is).
-4. **Vision API call** — all frames + reference photos are sent to `claude-sonnet-4-6` alongside the user's message. Claude can see what's on screen right now and answer in context.
+4. **Vision API call** — all frames + reference photos are sent to `claude-sonnet-5` alongside the user's message. Claude can see what's on screen right now and answer in context.
 
 If the stream is offline, ffmpeg fails, or the HLS token expires, the capture is silently skipped and Claude replies text-only as normal. The HLS cache is invalidated automatically on a 403/410 and retried once.
 
