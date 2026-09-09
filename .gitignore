@@ -18,6 +18,9 @@ src/channels/*.ts
 !src/channels/hls-resolver.ts
 !src/channels/live-frames.ts
 !src/channels/chatroom-resolver.ts
+!src/channels/webhook-poller.ts
+!src/channels/kpp-tracker.ts
+!src/channels/reward-redemptions.ts
 
 # Custom command data and runtime channel configs (contain OAuth tokens)
 data/

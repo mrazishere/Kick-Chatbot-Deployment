@@ -85,6 +85,14 @@ export interface AutoTranslateConfig {
   logOnly?: boolean;
 }
 
+export interface EarningsConfig {
+  // Master switch for earnings recording. When false or absent the tracker is
+  // constructed but never polls, and !earnings stays silent in the channel.
+  enabled?: boolean;
+  // ¢ per viewer-hour. Falls back to the tracker's built-in rate when unset.
+  centsPerViewerHour?: number;
+}
+
 export interface KPPConfig {
   // Master switch. When false (or block missing), tracker stays constructed
   // but no-ops on polls and chat events. Matches autoTranslate.enabled idiom.
@@ -118,7 +126,59 @@ export interface ChannelConfig {
   excludedCommands?: string[];
   autoTranslate?: AutoTranslateConfig;
   kpp?: KPPConfig;
+  earnings?: EarningsConfig;
+  rewardActions?: RewardAction[];
   [key: string]: unknown;
+}
+
+// ---------------------------------------------------------------------------
+// Channel point reward redemptions.
+// ---------------------------------------------------------------------------
+
+/**
+ * Maps one channel-points reward to an action the bot performs when it is
+ * redeemed. Matched by `rewardId` when present (exact, survives renames),
+ * otherwise by case-insensitive substring on `rewardTitle`.
+ */
+export interface RewardAction {
+  rewardId?: string;
+  rewardTitle?: string;
+  action: 'timeout';
+  /**
+   * Timeout length in seconds. Kick's ban API only accepts whole minutes, so
+   * anything not a multiple of 60 is issued as the next whole minute and then
+   * lifted early with an unban scheduled at the exact second.
+   */
+  durationSeconds: number;
+  /** Post the outcome in chat. Defaults to true. */
+  announce?: boolean;
+
+  /**
+   * Trial run. The timeout is really applied, but shortened to
+   * `testDurationSeconds` and the redemption is REJECTED afterwards so the
+   * redeemer's points come back. Lets a live reward be proven end to end
+   * without charging anyone.
+   */
+  testMode?: boolean;
+  /** Timeout length while `testMode` is on. Defaults to 5 seconds. */
+  testDurationSeconds?: number;
+  /**
+   * Usernames allowed to trigger the action while `testMode` is on. Anyone
+   * else is refunded and nobody is timed out, so an unproven reward can't
+   * catch real viewers. Empty or absent means everyone is allowed.
+   */
+  testRedeemers?: string[];
+}
+
+/** Payload of Kick's `channel.reward.redemption.updated` webhook (version 1). */
+export interface RewardRedemptionEvent {
+  id: string;
+  user_input?: string;
+  status: string;              // 'pending' | 'accepted' | 'rejected'
+  redeemed_at?: string;
+  reward: { id: string; title: string; cost?: number; description?: string };
+  redeemer: { user_id: number; username: string; channel_slug?: string };
+  broadcaster: { user_id: number; username: string };
 }
 
 // ---------------------------------------------------------------------------

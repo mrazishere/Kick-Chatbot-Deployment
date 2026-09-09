@@ -181,6 +181,26 @@ https://${process.env.OAUTH_DOMAIN || 'mr-ai.dev'}/kick-bot-enroll
     return await this.sendMessage(message, false); // audible — needs streamer action
   }
 
+  // Alert: a channel has rewardActions configured but its streamer grant
+  // predates the scopes those actions need. Redemptions silently no-op until
+  // the streamer re-authorizes, so this must not stay buried in a log.
+  async notifyRewardScopeMissing(channel: string, missing: string[], granted: string[]): Promise<boolean> {
+    const message = `
+⚠️ <b>Kick Bot - Reward Actions Not Authorized</b>
+
+<b>Channel:</b> ${channel}
+<b>Missing scopes:</b> ${missing.join(', ')}
+<b>Granted:</b> ${granted.join(' ') || 'none'}
+
+This channel has <code>rewardActions</code> configured, but its OAuth grant predates those scopes. Refreshing never widens a grant, so redemptions are being left pending and no timeout is applied.
+
+Have <b>${channel}</b> sign in again here to re-authorize:
+https://${process.env.OAUTH_DOMAIN || 'mr-ai.dev'}/kick-bot-enroll
+    `.trim();
+
+    return await this.sendMessage(message, false); // audible — needs streamer action
+  }
+
   // Informational: token refreshed successfully after a failed attempt
   async notifyRefreshRecovered(): Promise<boolean> {
     const message = `
