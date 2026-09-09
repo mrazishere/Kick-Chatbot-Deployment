@@ -205,9 +205,13 @@ export class HlsResolver {
         timeout: 45000
       });
 
-      // Poll up to 25s for the playback API response. The real-browser launch
-      // is slower than the old stealth flow because it has to clear Cloudflare.
-      const deadline = Date.now() + 25000;
+      // Poll for the playback API response. A healthy resolve on a live channel
+      // measures ~22s end to end, so the old 25s budget left barely two seconds
+      // of headroom and any slowdown — busy box, slow Cloudflare pass, several
+      // browsers launching at once — surfaced as a bogus "channel may be
+      // offline". Budget generously; the caller's own path is already async.
+      const POLL_MS = 45000;
+      const deadline = Date.now() + POLL_MS;
       while (!liveUrl && Date.now() < deadline) {
         await new Promise(r => setTimeout(r, 250));
       }
@@ -216,10 +220,13 @@ export class HlsResolver {
         // Diagnose: still on Cloudflare interstitial vs page loaded but offline?
         let title = '';
         try { title = await page.title(); } catch { /* ignore */ }
+        console.error(`[HLS] ${channel}: no playback URL after ${Date.now() - t0}ms (page title: "${title || 'unknown'}")`);
         if (/just a moment|attention required|cloudflare/i.test(title)) {
           throw new Error(`Cloudflare challenge not cleared for ${channel} (title: "${title}")`);
         }
-        throw new Error(`No playback URL extracted for ${channel} within 25s — channel may be offline`);
+        // Don't assert "offline" — that was misleading every time the real
+        // cause was a slow resolve on a live channel.
+        throw new Error(`No playback URL extracted for ${channel} within ${POLL_MS / 1000}s (page loaded, title: "${title || 'unknown'}") — channel is offline or the player never requested playback`);
       }
 
       const url: string = liveUrl;
