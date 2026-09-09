@@ -11,6 +11,7 @@ import KickAuth = require('./auth');
 import KickSessionAuth = require('./kick-session-auth');
 import TelegramNotifier = require('./telegram-notifier');
 import { chatroomResolver } from './channels/chatroom-resolver';
+import { resolveBotIdentity } from './bot-identity';
 
 /* eslint-disable @typescript-eslint/no-var-requires, @typescript-eslint/no-explicit-any */
 const puppeteer = require('puppeteer-extra');
@@ -45,8 +46,18 @@ const app = express();
 const PORT = process.env.CHATROOM_FINDER_PORT || 3006;
 
 // Middleware
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+//
+// /kick-webhook is deliberately excluded from the body parsers. Kick signs the
+// exact bytes it sent, so that route must reach its own express.raw() handler
+// with the request stream unconsumed. A global express.json() parses it first
+// and leaves req.body as a plain object — every signature check then hashed the
+// string "[object Object]" and failed, so no webhook was ever accepted.
+const WEBHOOK_PATH = '/kick-webhook';
+const skipWebhook = (parser: express.RequestHandler): express.RequestHandler =>
+  (req, res, next) => (req.path === WEBHOOK_PATH ? next() : parser(req, res, next));
+
+app.use(skipWebhook(express.json()));
+app.use(skipWebhook(express.urlencoded({ extended: true })));
 app.use('/kick-bot-enroll', rateLimiter);
 
 // Store pending OAuth sessions
@@ -179,7 +190,12 @@ async function subscribeChannelToWebhook(broadcasterUserId: number): Promise<voi
     const res = await axios.post(
       'https://api.kick.com/public/v1/events/subscriptions',
       {
-        events: [{ name: 'chat.message.sent', version: 1 }],
+        events: [
+          { name: 'chat.message.sent', version: 1 },
+          // Channel-points redemptions. Drives rewardActions in the channel
+          // config (e.g. a reward that times someone out).
+          { name: 'channel.reward.redemption.updated', version: 1 }
+        ],
         broadcaster_user_id: broadcasterUserId,
         method: 'webhook'
       },
@@ -190,12 +206,14 @@ async function subscribeChannelToWebhook(broadcasterUserId: number): Promise<voi
         }
       }
     );
-    const result = res.data as { data?: Array<{ subscription_id?: string; error?: string }> };
-    const sub = result.data?.[0];
-    if (sub?.error) {
-      console.error(`[WEBHOOK] Subscription error for broadcaster ${broadcasterUserId}:`, sub.error);
-    } else {
-      console.log(`[WEBHOOK] Subscribed broadcaster ${broadcasterUserId} (id: ${sub?.subscription_id})`);
+    // One entry per requested event — report them all, not just the first.
+    const result = res.data as { data?: Array<{ name?: string; subscription_id?: string; error?: string }> };
+    for (const sub of result.data ?? []) {
+      if (sub.error) {
+        console.error(`[WEBHOOK] Subscription error for broadcaster ${broadcasterUserId} (${sub.name}):`, sub.error);
+      } else {
+        console.log(`[WEBHOOK] Subscribed broadcaster ${broadcasterUserId} to ${sub.name} (id: ${sub.subscription_id})`);
+      }
     }
   } catch (e) {
     if (axios.isAxiosError(e)) {
@@ -237,6 +255,26 @@ const clientSecret = process.env.CLIENT_SECRET;
 const oauthDomain = process.env.OAUTH_DOMAIN || 'localhost';
 const protocol = oauthDomain.includes('localhost') ? 'http' : 'https';
 const redirectUri = `${protocol}://${oauthDomain}/kick-bot-enroll/callback`;
+
+// The bot dashboard replaced the standalone enrollment page. The OAuth routes
+// below stay put — /kick-bot-enroll/callback is registered with Kick and must
+// not move — but the human-facing landing page now lives in the dashboard.
+const dashboardUrl = process.env.BOT_DASHBOARD_URL || `${protocol}://${oauthDomain}/kick`;
+
+// The streamer-delegated scope set. The dashboard login requests the identical
+// string so that signing in re-authorizes silently and resets the 30-day grant
+// clock. If these ever diverge, every streamer gets an extra consent prompt.
+// Keep in sync with kpp-dashboard/src/lib/kick-scopes.ts.
+const SCOPES = [
+  'user:read',
+  'channel:read',
+  'channel:write',
+  'chat:write',
+  'events:subscribe',
+  'channel:rewards:write',
+  'moderation:ban',
+  'moderation:chat_message:manage'
+].join(' ');
 const authServer = 'https://id.kick.com';
 const KICK_BASE_PATH = path.resolve(__dirname, '..');
 
@@ -244,6 +282,38 @@ const KICK_BASE_PATH = path.resolve(__dirname, '..');
 function validateChannelName(name: string): boolean {
   if (typeof name !== 'string') return false;
   return /^[a-z0-9_]{1,30}$/.test(name);
+}
+
+/**
+ * Write a channel config without discarding what is already there.
+ *
+ * Enrollment used to build a fresh object and write it straight over the file.
+ * Re-authorizing — which every streamer must do monthly, because Kick grants
+ * die 30 days after auth — therefore wiped managers, excludedCommands,
+ * location, kpp/earnings settings and rewardActions. The bug was invisible
+ * because a first-time enrollment has nothing to lose.
+ *
+ * Precedence: `forced` (this enrollment's identity and tokens) beats what is on
+ * disk, which in turn beats `defaults` (only used for a genuinely new channel).
+ */
+function mergeChannelConfig(
+  configPath: string,
+  defaults: Record<string, unknown>,
+  forced: Record<string, unknown>
+): Record<string, unknown> {
+  let existing: Record<string, unknown> = {};
+  if (fs.existsSync(configPath)) {
+    try {
+      existing = JSON.parse(fs.readFileSync(configPath, 'utf8')) as Record<string, unknown>;
+    } catch (e) {
+      console.error(`[CONFIG] ${configPath} unreadable, treating as new:`, e instanceof Error ? e.message : String(e));
+    }
+  }
+  const merged = { ...defaults, ...existing, ...forced };
+  fs.writeFileSync(configPath, JSON.stringify(merged, null, 2));
+  const kept = Object.keys(existing).filter(k => !(k in forced));
+  if (kept.length) console.log(`[CONFIG] Preserved existing settings: ${kept.join(', ')}`);
+  return merged;
 }
 
 // Manage ecosystem.config.js
@@ -509,6 +579,7 @@ function successPage(username: string, chatroomId: number | string | null, broad
         <div class="status-box ${deployStatus === 'warning' ? 'warning' : ''}">
             <h3>${deployStatus === 'success' ? 'Bot Deployed!' : 'Attention'}</h3>
             <p>${statusMessage}</p>
+            <a href="${dashboardUrl}/${username}/bot" class="channel-link">Open Bot Dashboard</a>
             <a href="https://kick.com/${username}" target="_blank" class="channel-link">Go to Your Channel</a>
         </div>
 
@@ -597,161 +668,10 @@ function errorPage(title: string, message: string): string {
 // ---------------------------------------------------------------------------
 
 // Serve the main enrollment page
+// The enrollment landing page has been replaced by the bot dashboard. Keep the
+// URL alive so existing links, chat messages and bookmarks still work.
 app.get('/kick-bot-enroll', (_req: express.Request, res: express.Response) => {
-  const html = `<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Mr-AI Bot Enrollment</title>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
-            background: linear-gradient(135deg, #0f0f0f 0%, #1a1a1a 100%);
-            color: #e0e0e0;
-            min-height: 100vh;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            padding: 20px;
-        }
-
-        .container {
-            background: #1e1e1e;
-            border-radius: 12px;
-            padding: 40px;
-            max-width: 500px;
-            width: 100%;
-            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
-            border: 1px solid #2a2a2a;
-        }
-
-        h1 {
-            color: #53fc18;
-            font-size: 28px;
-            margin-bottom: 10px;
-            text-align: center;
-        }
-
-        .subtitle {
-            color: #999;
-            text-align: center;
-            margin-bottom: 30px;
-            font-size: 14px;
-        }
-
-        .info-box {
-            background: #2a2a2a;
-            border-radius: 8px;
-            padding: 20px;
-            margin-bottom: 25px;
-        }
-
-        .info-box h3 {
-            color: #53fc18;
-            margin-bottom: 10px;
-            font-size: 16px;
-        }
-
-        .info-box ul {
-            list-style: none;
-            padding: 0;
-        }
-
-        .info-box li {
-            padding: 8px 0;
-            border-bottom: 1px solid #3a3a3a;
-            font-size: 14px;
-            color: #ccc;
-        }
-
-        .info-box li:last-child {
-            border-bottom: none;
-        }
-
-        .info-box li span {
-            color: #53fc18;
-            font-weight: bold;
-        }
-
-        .enroll-btn {
-            width: 100%;
-            padding: 16px 24px;
-            background: linear-gradient(135deg, #53fc18 0%, #3dd612 100%);
-            color: #000;
-            border: none;
-            border-radius: 8px;
-            font-size: 18px;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.3s ease;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 10px;
-            text-decoration: none;
-        }
-
-        .enroll-btn:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 5px 20px rgba(83, 252, 24, 0.3);
-        }
-
-        .enroll-btn svg {
-            width: 24px;
-            height: 24px;
-        }
-
-        .footer {
-            margin-top: 25px;
-            text-align: center;
-            color: #666;
-            font-size: 12px;
-        }
-
-        .footer a {
-            color: #53fc18;
-            text-decoration: none;
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <h1>Mr-AI Bot Enrollment</h1>
-        <p class="subtitle">Connect your Kick channel to Mr-AI-is-Here bot</p>
-
-        <div class="info-box">
-            <h3>What happens when you enroll:</h3>
-            <ul>
-                <li><span>1.</span> You authorize the bot to chat in your channel</li>
-                <li><span>2.</span> Your channel IDs are automatically detected</li>
-                <li><span>3.</span> Bot is deployed and ready to use</li>
-                <li><span>4.</span> Messages appear from "Mr-AI-is-Here" bot</li>
-            </ul>
-        </div>
-
-        <a href="/kick-bot-enroll/start" class="enroll-btn">
-            <svg viewBox="0 0 24 24" fill="currentColor">
-                <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
-            </svg>
-            Connect with Kick
-        </a>
-
-        <div class="footer">
-            <p>By enrolling, you agree to let the bot send messages in your chat.</p>
-            <p style="margin-top: 8px;">Need help? <a href="https://kick.com/mraiishere">Visit mraiishere</a></p>
-        </div>
-    </div>
-</body>
-</html>`;
-
-  res.send(html);
+  res.redirect(302, dashboardUrl);
 });
 
 // Start OAuth flow (channel enrollment)
@@ -779,7 +699,21 @@ app.get('/kick-bot-enroll/start', (_req: express.Request, res: express.Response)
     state: state,
     code_challenge: pkce.codeChallenge,
     code_challenge_method: 'S256',
-    scope: 'chat:write user:read'
+    // Streamer-delegated scopes. Requested as one fixed set, because the
+    // dashboard login re-authorizes with these same scopes: Kick only re-prompts
+    // when the set CHANGES, so keeping it stable is what makes grant renewal
+    // silent. Adding a scope later costs every streamer a fresh consent screen.
+    //   chat:write                     — what the bot actually posts with
+    //   channel:read                   — /channels lookups on the streamer token
+    //   channel:write                  — update stream title/category
+    //   events:subscribe               — subscribe this channel to webhooks
+    //   channel:rewards:write          — create/edit rewards and accept or
+    //                                    reject redemptions (implies read)
+    //   moderation:ban                 — ban/unban/timeout (not used yet)
+    //   moderation:chat_message:manage — delete messages (not used yet)
+    // Deliberately NOT requested: streamkey:read (a leaked stream key lets
+    // someone broadcast as the channel, and no chat feature needs it) and ads:*.
+    scope: SCOPES
   });
 
   const authUrl = `${authServer}/oauth/authorize?${authParams.toString()}`;
@@ -1180,27 +1114,32 @@ app.get('/kick-bot-enroll/complete', async (req: express.Request, res: express.R
     fs.mkdirSync(configDir, { recursive: true });
   }
 
-  const config = {
-    channelName: username,
-    chatroomId: resolvedChatroomId,
-    broadcasterUserId: broadcasterUserId,
-    userId: userId,
-    chatOnly: false,
-    oauth: {
-      accessToken: access_token,
-      refreshToken: refresh_token,
-      expiresAt: Date.now() + (expires_in * 1000)
-    },
-    enrolledAt: new Date().toISOString(),
-    lastUpdated: new Date().toISOString(),
-    location: {
-      home: { country: "", city: "", state: "", province: "" },
-      current: { country: "", city: "", state: "", province: "" }
-    }
-  };
-
   const configPath = path.join(configDir, `${username}.json`);
-  fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+  mergeChannelConfig(
+    configPath,
+    {
+      chatOnly: false,
+      location: {
+        home: { country: "", city: "", state: "", province: "" },
+        current: { country: "", city: "", state: "", province: "" }
+      }
+    },
+    {
+      channelName: username,
+      chatroomId: resolvedChatroomId,
+      broadcasterUserId: broadcasterUserId,
+      userId: userId,
+      oauth: {
+        accessToken: access_token,
+        refreshToken: refresh_token,
+        expiresAt: Date.now() + (expires_in * 1000)
+      },
+      // Re-authorizing restarts Kick's 30-day grant clock, so this is
+      // "last authorized at" and must move forward on every enrollment.
+      enrolledAt: new Date().toISOString(),
+      lastUpdated: new Date().toISOString()
+    }
+  );
   // Bump the sentinel so PM2 file-watch (if active for this entry) restarts
   // the bot to pick up the new tokens. The explicit `pm2 restart` below also
   // covers this; the sentinel is here for symmetry with the chat-command path
@@ -1396,6 +1335,743 @@ app.get('/internal/vods/:username', async (req: express.Request, res: express.Re
   } finally {
     await browser.close().catch(() => {});
   }
+});
+
+// ==================== INTERNAL BOT MANAGEMENT API ====================
+// Consumed by the dashboard (Next.js, localhost:3008). Not exposed via nginx.
+// Same pattern as /internal/vods above: loopback-only, plus a shared secret on
+// mutating routes so a compromised co-tenant process can't drive pm2.
+
+const GRANT_LIFETIME_MS_API = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * Fallbacks the AI command applies when a channel config omits them
+ * (DEFAULT_MAX_REQUESTS_PER_WINDOW / DEFAULT_MAX_BURST_REQUESTS /
+ * DEFAULT_USER_COOLDOWN_MINUTES in bot-commands/claude.ts).
+ *
+ * Surfaced so the dashboard can show what an unset field actually does — an
+ * empty box otherwise reads as "off" when it means "using the default".
+ * Kept in sync by hand; a stale value here misleads the UI but breaks nothing.
+ */
+const CLAUDE_DEFAULTS = { rateLimit: 50, burstRequests: 5, cooldownMinutes: 5 };
+
+function isLoopback(req: express.Request): boolean {
+  const addr = req.socket.remoteAddress || '';
+  return addr === '127.0.0.1' || addr === '::1' || addr === '::ffff:127.0.0.1';
+}
+
+function internalGuard(mutating: boolean) {
+  return (req: express.Request, res: express.Response, next: express.NextFunction): void => {
+    if (!isLoopback(req)) {
+      res.status(403).json({ error: 'Forbidden' });
+      return;
+    }
+    if (mutating) {
+      const secret = process.env.INTERNAL_API_SECRET;
+      if (!secret) {
+        res.status(503).json({ error: 'INTERNAL_API_SECRET not configured' });
+        return;
+      }
+      const supplied = req.get('x-internal-secret') || '';
+      // Constant-time compare; mismatched lengths short-circuit to false.
+      const a = Buffer.from(supplied);
+      const b = Buffer.from(secret);
+      if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+        res.status(401).json({ error: 'Bad secret' });
+        return;
+      }
+    }
+    next();
+  };
+}
+
+interface Pm2Proc {
+  name?: string;
+  pid?: number;
+  pm2_env?: { status?: string; pm_uptime?: number; restart_time?: number; unstable_restarts?: number };
+  monit?: { memory?: number; cpu?: number };
+}
+
+async function pm2List(): Promise<Pm2Proc[]> {
+  return new Promise((resolve) => {
+    exec('pm2 jlist', { maxBuffer: 10 * 1024 * 1024 }, (error, stdout) => {
+      if (error) return resolve([]);
+      try {
+        resolve(JSON.parse(stdout) as Pm2Proc[]);
+      } catch {
+        resolve([]);
+      }
+    });
+  });
+}
+
+function execAsync(cmd: string, maxLen = 500): Promise<{ ok: boolean; message: string }> {
+  return new Promise((resolve) => {
+    exec(cmd, { maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
+      if (error) resolve({ ok: false, message: (stderr || error.message).trim().slice(0, 500) });
+      else resolve({ ok: true, message: (stdout || '').trim().slice(0, maxLen) });
+    });
+  });
+}
+
+/** Command names are the bot-commands module basenames the bot loads at runtime. */
+function listAvailableCommands(): string[] {
+  try {
+    return fs.readdirSync(path.join(KICK_BASE_PATH, 'dist', 'bot-commands'))
+      .filter(f => f.endsWith('.js'))
+      .map(f => path.basename(f, '.js'))
+      .sort();
+  } catch {
+    return [];
+  }
+}
+
+function readChannelConfig(channel: string): Record<string, unknown> | null {
+  const p = path.join(KICK_BASE_PATH, 'data', 'channel-configs', `${channel}.json`);
+  try {
+    return JSON.parse(fs.readFileSync(p, 'utf8')) as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+function writeChannelConfig(channel: string, config: Record<string, unknown>): void {
+  const p = path.join(KICK_BASE_PATH, 'data', 'channel-configs', `${channel}.json`);
+  fs.writeFileSync(p, JSON.stringify(config, null, 2));
+}
+
+/**
+ * Touch the sentinel PM2 watches so the bot picks up a config change.
+ * PM2 watches this file rather than the JSON, because the bot rewrites its own
+ * JSON on every token refresh (see addToEcosystem).
+ */
+function touchReload(channel: string): void {
+  const p = path.join(KICK_BASE_PATH, 'data', 'channel-configs', `${channel}.reload`);
+  try {
+    fs.writeFileSync(p, new Date().toISOString());
+  } catch (e) {
+    console.error(`[INTERNAL] Failed to touch reload sentinel for ${channel}:`, e instanceof Error ? e.message : String(e));
+  }
+}
+
+function summariseChannel(channel: string, procs: Pm2Proc[]): Record<string, unknown> {
+  const config = readChannelConfig(channel);
+  const proc = procs.find(p => p.name === `kick-${channel}`);
+  const oauth = config?.['oauth'] as { accessToken?: string; expiresAt?: number } | undefined;
+  const enrolledAt = typeof config?.['enrolledAt'] === 'string' ? Date.parse(config['enrolledAt'] as string) : null;
+  const grantExpiresAt = enrolledAt ? enrolledAt + GRANT_LIFETIME_MS_API : null;
+
+  return {
+    channel,
+    exists: config !== null,
+    deployed: !!proc,
+    status: proc?.pm2_env?.status ?? 'not-deployed',
+    uptimeMs: proc?.pm2_env?.status === 'online' && proc.pm2_env.pm_uptime ? Date.now() - proc.pm2_env.pm_uptime : null,
+    restarts: proc?.pm2_env?.restart_time ?? null,
+    unstableRestarts: proc?.pm2_env?.unstable_restarts ?? null,
+    memoryBytes: proc?.monit?.memory ?? null,
+    cpu: proc?.monit?.cpu ?? null,
+    broadcasterUserId: config?.['broadcasterUserId'] ?? null,
+    chatroomId: config?.['chatroomId'] ?? null,
+    chatOnly: config?.['chatOnly'] === true,
+    enrolledAt: config?.['enrolledAt'] ?? null,
+    lastUpdated: config?.['lastUpdated'] ?? null,
+    excludedCommands: Array.isArray(config?.['excludedCommands']) ? config['excludedCommands'] : [],
+    managers: Array.isArray(config?.['managers']) ? config['managers'] : [],
+    location: (config?.['location'] as unknown) ?? { home: {}, current: {} },
+    autoTranslate: (config?.['autoTranslate'] as unknown) ?? null,
+    claude: (config?.['claude'] as unknown) ?? null,
+    claudeDefaults: CLAUDE_DEFAULTS,
+    kpp: (config?.['kpp'] as unknown) ?? null,
+    earnings: (config?.['earnings'] as unknown) ?? null,
+    token: {
+      hasChannelOAuth: !!oauth?.accessToken,
+      accessTokenExpiresAt: oauth?.expiresAt ?? null,
+      grantExpiresAt,
+      grantDaysLeft: grantExpiresAt ? Math.max(0, (grantExpiresAt - Date.now()) / (24 * 60 * 60 * 1000)) : null
+    }
+  };
+}
+
+// List every enrolled channel with live pm2 state.
+app.get('/internal/bot/channels', internalGuard(false), async (_req, res) => {
+  const dir = path.join(KICK_BASE_PATH, 'data', 'channel-configs');
+  let channels: string[] = [];
+  try {
+    channels = fs.readdirSync(dir).filter(f => f.endsWith('.json')).map(f => path.basename(f, '.json')).sort();
+  } catch {
+    channels = [];
+  }
+  const procs = await pm2List();
+  res.json({
+    channels: channels.map(c => summariseChannel(c, procs)),
+    availableCommands: listAvailableCommands(),
+    maxChannels: MAX_CHANNELS
+  });
+});
+
+// One channel's detail.
+app.get('/internal/bot/:channel', internalGuard(false), async (req, res) => {
+  const channelRaw = req.params['channel'];
+  const channel = (typeof channelRaw === 'string' ? channelRaw : '').toLowerCase();
+  if (!validateChannelName(channel)) return res.status(400).json({ error: 'Invalid channel name' });
+  const procs = await pm2List();
+  const summary = summariseChannel(channel, procs);
+  if (!summary.exists) return res.status(404).json({ error: 'Not enrolled' });
+  return res.json({ ...summary, availableCommands: listAvailableCommands() });
+});
+
+// start | stop | restart the channel's bot process.
+app.post('/internal/bot/:channel/control', internalGuard(true), async (req, res) => {
+  const channelRaw = req.params['channel'];
+  const channel = (typeof channelRaw === 'string' ? channelRaw : '').toLowerCase();
+  if (!validateChannelName(channel)) return res.status(400).json({ error: 'Invalid channel name' });
+
+  const action = (req.body as { action?: string })?.action;
+  if (action !== 'start' && action !== 'stop' && action !== 'restart') {
+    return res.status(400).json({ error: 'action must be start, stop or restart' });
+  }
+  if (!readChannelConfig(channel)) return res.status(404).json({ error: 'Not enrolled' });
+
+  const pm2Name = `kick-${channel}`;
+  const result = await execAsync(`pm2 ${action} "${pm2Name}"`);
+  if (!result.ok) {
+    console.error(`[INTERNAL] pm2 ${action} ${pm2Name} failed: ${result.message}`);
+    return res.status(500).json({ error: `pm2 ${action} failed`, details: result.message });
+  }
+  console.log(`[INTERNAL] pm2 ${action} ${pm2Name} OK`);
+  const procs = await pm2List();
+  return res.json({ ok: true, action, ...summariseChannel(channel, procs) });
+});
+
+// Replace the excluded-command list. Body: { excludedCommands: string[] }
+app.post('/internal/bot/:channel/commands', internalGuard(true), async (req, res) => {
+  const channelRaw = req.params['channel'];
+  const channel = (typeof channelRaw === 'string' ? channelRaw : '').toLowerCase();
+  if (!validateChannelName(channel)) return res.status(400).json({ error: 'Invalid channel name' });
+
+  const config = readChannelConfig(channel);
+  if (!config) return res.status(404).json({ error: 'Not enrolled' });
+
+  const body = req.body as { excludedCommands?: unknown };
+  if (!Array.isArray(body?.excludedCommands)) {
+    return res.status(400).json({ error: 'excludedCommands must be an array' });
+  }
+
+  // Only accept names that correspond to real command modules — a typo here
+  // would otherwise sit in the config forever doing nothing.
+  const available = new Set(listAvailableCommands());
+  const requested = body.excludedCommands.map(c => String(c).toLowerCase());
+  const unknown = requested.filter(c => !available.has(c));
+  if (unknown.length > 0) {
+    return res.status(400).json({ error: `Unknown commands: ${unknown.join(', ')}` });
+  }
+
+  config['excludedCommands'] = Array.from(new Set(requested)).sort();
+  config['lastUpdated'] = new Date().toISOString();
+  writeChannelConfig(channel, config);
+  touchReload(channel);
+  console.log(`[INTERNAL] ${channel} excludedCommands set to [${requested.join(', ')}] — reload triggered`);
+
+  const procs = await pm2List();
+  return res.json({ ok: true, ...summariseChannel(channel, procs) });
+});
+
+/**
+ * Patch channel settings. Every key is optional; only what's present is written,
+ * and nested blocks merge rather than replace so fields this endpoint doesn't
+ * expose (autoTranslate's shadow/debug options, for instance) survive an edit
+ * made from the dashboard.
+ *
+ * Body: { chatOnly?, location?: {home?, current?}, autoTranslate?, kpp? }
+ */
+app.post('/internal/bot/:channel/settings', internalGuard(true), async (req, res) => {
+  const channelRaw = req.params['channel'];
+  const channel = (typeof channelRaw === 'string' ? channelRaw : '').toLowerCase();
+  if (!validateChannelName(channel)) return res.status(400).json({ error: 'Invalid channel name' });
+
+  const config = readChannelConfig(channel);
+  if (!config) return res.status(404).json({ error: 'Not enrolled' });
+
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const errors: string[] = [];
+  const applied: string[] = [];
+
+  const asBool = (v: unknown, name: string): boolean | undefined => {
+    if (v === undefined) return undefined;
+    if (typeof v !== 'boolean') { errors.push(`${name} must be a boolean`); return undefined; }
+    return v;
+  };
+  /** Numbers accept null to mean "unset" where the bot treats null as uncalibrated. */
+  const asNum = (v: unknown, name: string, min: number, max: number, nullable = false): number | null | undefined => {
+    if (v === undefined) return undefined;
+    if (v === null) {
+      if (nullable) return null;
+      errors.push(`${name} cannot be null`);
+      return undefined;
+    }
+    if (typeof v !== 'number' || !Number.isFinite(v)) { errors.push(`${name} must be a number`); return undefined; }
+    if (v < min || v > max) { errors.push(`${name} must be between ${min} and ${max}`); return undefined; }
+    return v;
+  };
+  const asPlace = (v: unknown, name: string): string | undefined => {
+    if (v === undefined) return undefined;
+    if (typeof v !== 'string') { errors.push(`${name} must be a string`); return undefined; }
+    const trimmed = v.trim();
+    if (trimmed.length > 60) { errors.push(`${name} must be 60 characters or fewer`); return undefined; }
+    return trimmed;
+  };
+
+  // ---- chatOnly -----------------------------------------------------------
+  const chatOnly = asBool(body['chatOnly'], 'chatOnly');
+  if (chatOnly !== undefined) { config['chatOnly'] = chatOnly; applied.push('chatOnly'); }
+
+  // ---- location -----------------------------------------------------------
+  if (body['location'] !== undefined) {
+    const loc = body['location'];
+    if (typeof loc !== 'object' || loc === null || Array.isArray(loc)) {
+      errors.push('location must be an object');
+    } else {
+      const existing = (config['location'] ?? {}) as Record<string, Record<string, string>>;
+      const next: Record<string, Record<string, string>> = {
+        home: { ...(existing['home'] ?? {}) },
+        current: { ...(existing['current'] ?? {}) }
+      };
+      for (const key of ['home', 'current'] as const) {
+        const block = (loc as Record<string, unknown>)[key];
+        if (block === undefined) continue;
+        if (typeof block !== 'object' || block === null || Array.isArray(block)) {
+          errors.push(`location.${key} must be an object`);
+          continue;
+        }
+        for (const field of ['country', 'city', 'state', 'province'] as const) {
+          const val = asPlace((block as Record<string, unknown>)[field], `location.${key}.${field}`);
+          if (val !== undefined) next[key][field] = val;
+        }
+        applied.push(`location.${key}`);
+      }
+      config['location'] = next;
+    }
+  }
+
+  // ---- autoTranslate ------------------------------------------------------
+  if (body['autoTranslate'] !== undefined) {
+    const at = body['autoTranslate'];
+    if (typeof at !== 'object' || at === null || Array.isArray(at)) {
+      errors.push('autoTranslate must be an object');
+    } else {
+      const src = at as Record<string, unknown>;
+      const next = { ...((config['autoTranslate'] ?? {}) as Record<string, unknown>) };
+      const enabled = asBool(src['enabled'], 'autoTranslate.enabled');
+      if (enabled !== undefined) next['enabled'] = enabled;
+      const logOnly = asBool(src['logOnly'], 'autoTranslate.logOnly');
+      if (logOnly !== undefined) next['logOnly'] = logOnly;
+      const minConfidence = asNum(src['minConfidence'], 'autoTranslate.minConfidence', 0, 1);
+      if (minConfidence !== undefined && minConfidence !== null) next['minConfidence'] = minConfidence;
+      const minLength = asNum(src['minLength'], 'autoTranslate.minLength', 0, 500);
+      if (minLength !== undefined && minLength !== null) next['minLength'] = Math.round(minLength);
+      const rate = asNum(src['rateLimitPerMinute'], 'autoTranslate.rateLimitPerMinute', 0, 600);
+      if (rate !== undefined && rate !== null) next['rateLimitPerMinute'] = Math.round(rate);
+      config['autoTranslate'] = next;
+      applied.push('autoTranslate');
+    }
+  }
+
+  // ---- kpp ----------------------------------------------------------------
+  if (body['kpp'] !== undefined) {
+    const k = body['kpp'];
+    if (typeof k !== 'object' || k === null || Array.isArray(k)) {
+      errors.push('kpp must be an object');
+    } else {
+      const src = k as Record<string, unknown>;
+      const next = { ...((config['kpp'] ?? {}) as Record<string, unknown>) };
+      const enabled = asBool(src['enabled'], 'kpp.enabled');
+      if (enabled !== undefined) next['enabled'] = enabled;
+      const dps = asNum(src['dollarPerScore'], 'kpp.dollarPerScore', 0, 1000, true);
+      if (dps !== undefined) next['dollarPerScore'] = dps;
+      const cnr = asNum(src['chatNormalRate'], 'kpp.chatNormalRate', 0.001, 1);
+      if (cnr !== undefined && cnr !== null) next['chatNormalRate'] = cnr;
+      const cvh = asNum(src['centsPerViewerHour'], 'kpp.centsPerViewerHour', 0, 10000, true);
+      if (cvh !== undefined) next['centsPerViewerHour'] = cvh;
+      const cavh = asNum(src['centsPerAuthViewerHour'], 'kpp.centsPerAuthViewerHour', 0, 10000, true);
+      if (cavh !== undefined) next['centsPerAuthViewerHour'] = cavh;
+      config['kpp'] = next;
+      applied.push('kpp');
+    }
+  }
+
+  // ---- earnings -----------------------------------------------------------
+  if (body['earnings'] !== undefined) {
+    const e = body['earnings'];
+    if (typeof e !== 'object' || e === null || Array.isArray(e)) {
+      errors.push('earnings must be an object');
+    } else {
+      const src = e as Record<string, unknown>;
+      const next = { ...((config['earnings'] ?? {}) as Record<string, unknown>) };
+      const enabled = asBool(src['enabled'], 'earnings.enabled');
+      if (enabled !== undefined) next['enabled'] = enabled;
+      const cvh = asNum(src['centsPerViewerHour'], 'earnings.centsPerViewerHour', 0, 10000);
+      if (cvh !== undefined && cvh !== null) next['centsPerViewerHour'] = cvh;
+      config['earnings'] = next;
+      applied.push('earnings');
+    }
+  }
+
+  // ---- claude --------------------------------------------------------------
+  if (body['claude'] !== undefined) {
+    const c = body['claude'];
+    if (typeof c !== 'object' || c === null || Array.isArray(c)) {
+      errors.push('claude must be an object');
+    } else {
+      const src = c as Record<string, unknown>;
+      const next = { ...((config['claude'] ?? {}) as Record<string, unknown>) };
+
+      // null is meaningful: it means "fall back to the global default prompt".
+      if (src['systemPrompt'] !== undefined) {
+        const sp = src['systemPrompt'];
+        if (sp === null) {
+          next['systemPrompt'] = null;
+        } else if (typeof sp !== 'string') {
+          errors.push('claude.systemPrompt must be a string or null');
+        } else if (sp.length > 6000) {
+          errors.push('claude.systemPrompt must be 6000 characters or fewer');
+        } else {
+          next['systemPrompt'] = sp.trim() === '' ? null : sp;
+        }
+      }
+      if (src['context'] !== undefined) {
+        const ctx = src['context'];
+        if (typeof ctx !== 'string') errors.push('claude.context must be a string');
+        else if (ctx.length > 2000) errors.push('claude.context must be 2000 characters or fewer');
+        else next['context'] = ctx;
+      }
+      if (src['settings'] !== undefined) {
+        const st = src['settings'];
+        if (typeof st !== 'object' || st === null || Array.isArray(st)) {
+          errors.push('claude.settings must be an object');
+        } else {
+          const stSrc = st as Record<string, unknown>;
+          const stNext = { ...((next['settings'] ?? {}) as Record<string, unknown>) };
+          const rl = asNum(stSrc['rateLimit'], 'claude.settings.rateLimit', 1, 500);
+          if (rl !== undefined && rl !== null) stNext['rateLimit'] = Math.round(rl);
+          const br = asNum(stSrc['burstRequests'], 'claude.settings.burstRequests', 1, 50);
+          if (br !== undefined && br !== null) stNext['burstRequests'] = Math.round(br);
+          const cd = asNum(stSrc['cooldownMinutes'], 'claude.settings.cooldownMinutes', 0, 1440);
+          if (cd !== undefined && cd !== null) stNext['cooldownMinutes'] = Math.round(cd);
+          next['settings'] = stNext;
+        }
+      }
+      if (src['vision'] !== undefined) {
+        const v = src['vision'];
+        if (typeof v !== 'object' || v === null || Array.isArray(v)) {
+          errors.push('claude.vision must be an object');
+        } else {
+          const vNext = { ...((next['vision'] ?? {}) as Record<string, unknown>) };
+          const en = asBool((v as Record<string, unknown>)['enabled'], 'claude.vision.enabled');
+          if (en !== undefined) vNext['enabled'] = en;
+          next['vision'] = vNext;
+        }
+      }
+
+      config['claude'] = next;
+      applied.push('claude');
+    }
+  }
+
+  if (errors.length > 0) return res.status(400).json({ error: errors.join('; ') });
+  if (applied.length === 0) return res.status(400).json({ error: 'No recognised settings in request' });
+
+  config['lastUpdated'] = new Date().toISOString();
+  writeChannelConfig(channel, config);
+
+  // claude.ts re-reads the channel config on a 5-minute TTL, so a prompt change
+  // applies on its own. Everything else here is read from the bot's in-memory
+  // config at startup and does need the restart.
+  const restartKeys = applied.filter(k => k !== 'claude');
+  if (restartKeys.length > 0) {
+    touchReload(channel);
+    console.log(`[INTERNAL] ${channel} settings updated: ${applied.join(', ')} — reload triggered`);
+  } else {
+    console.log(`[INTERNAL] ${channel} settings updated: ${applied.join(', ')} — no restart needed (picked up within 5 min)`);
+  }
+
+  const procs = await pm2List();
+  return res.json({ ok: true, ...summariseChannel(channel, procs) });
+});
+
+/**
+ * Store a freshly-issued streamer grant against an already-enrolled channel.
+ *
+ * This is what makes renewal automatic: the dashboard login requests the same
+ * scope set as enrollment, so every sign-in yields a new token, and posting it
+ * here resets the 30-day grant clock without the streamer doing anything beyond
+ * logging in. Enrolling a brand-new channel still goes through the full
+ * /kick-bot-enroll flow, which also needs the chatroom lookup and pm2 setup.
+ */
+app.post('/internal/bot/:channel/oauth', internalGuard(true), async (req, res) => {
+  const channelRaw = req.params['channel'];
+  const channel = (typeof channelRaw === 'string' ? channelRaw : '').toLowerCase();
+  if (!validateChannelName(channel)) return res.status(400).json({ error: 'Invalid channel name' });
+
+  const config = readChannelConfig(channel);
+  if (!config) return res.status(404).json({ error: 'Not enrolled' });
+
+  const body = req.body as { accessToken?: unknown; refreshToken?: unknown; expiresIn?: unknown };
+  if (typeof body?.accessToken !== 'string' || body.accessToken.length === 0) {
+    return res.status(400).json({ error: 'accessToken required' });
+  }
+  if (typeof body.refreshToken !== 'string' || body.refreshToken.length === 0) {
+    return res.status(400).json({ error: 'refreshToken required' });
+  }
+  const expiresIn = typeof body.expiresIn === 'number' && body.expiresIn > 0 ? body.expiresIn : 3600;
+
+  const now = new Date();
+  config['oauth'] = {
+    accessToken: body.accessToken,
+    refreshToken: body.refreshToken,
+    expiresAt: now.getTime() + expiresIn * 1000
+  };
+  // enrolledAt drives the 30-day grant countdown shown in the dashboard, so a
+  // new grant has to reset it — otherwise the UI keeps counting down the old one.
+  config['enrolledAt'] = now.toISOString();
+  config['lastUpdated'] = now.toISOString();
+  writeChannelConfig(channel, config);
+  touchReload(channel);
+  console.log(`[INTERNAL] ${channel} streamer grant refreshed via dashboard login — 30-day clock reset`);
+
+  const procs = await pm2List();
+  return res.json({ ok: true, ...summariseChannel(channel, procs) });
+});
+
+/**
+ * Accounts that are never offered as bot managers: Kick's own system bots and
+ * this bot itself, all of which carry a moderator badge in channels they serve.
+ */
+const NEVER_SUGGEST = new Set(['kickbot', 'kickcx', 'botrix', 'streamelements', 'nightbot', 'moobot']);
+
+/**
+ * Usernames recently seen with a moderator badge in a channel's log.
+ *
+ * Kick's public API has no endpoint that lists moderators, so the chat log is
+ * the only moderator signal available. It's used purely to SUGGEST names for
+ * the broadcaster to pick from — never to grant access on its own.
+ */
+async function recentModerators(channel: string): Promise<string[]> {
+  const logPath = path.join(KICK_BASE_PATH, 'logs', `kick-${channel}-out.log`);
+  if (!fs.existsSync(logPath)) return [];
+
+  // Filter inside the shell rather than buffering the tail in Node: these logs
+  // reach tens of MB and a raw `tail -n 200000` blows past exec's maxBuffer,
+  // which fails silently and looks like "this channel has no moderators".
+  const cmd = `tail -n 200000 ${JSON.stringify(logPath)} | grep -oE '\\[[a-z_,]*moderator[a-z_,]*\\] [A-Za-z0-9_]+:' | sed -E 's/.*\\] //; s/:$//' | sort -u`;
+  const result = await execAsync(cmd, 1024 * 1024);
+  if (!result.ok || !result.message) return [];
+
+  const seen = new Set<string>();
+  for (const line of result.message.split('\n')) {
+    const name = line.trim().toLowerCase();
+    if (!name) continue;
+    if (NEVER_SUGGEST.has(name)) continue;
+    if (name === channel) continue;   // the broadcaster already has access
+    seen.add(name);
+  }
+
+  const identity = await resolveBotIdentity().catch(() => null);
+  if (identity?.username) seen.delete(identity.username.toLowerCase());
+
+  return Array.from(seen).sort();
+}
+
+// Every bot this user can reach: their own channel (when enrolled) plus any
+// channel that lists them as a manager. Drives the dashboard's channel switcher.
+app.get('/internal/bot/reachable-by/:username', internalGuard(false), async (req, res) => {
+  const rawName = req.params['username'];
+  const username = (typeof rawName === 'string' ? rawName : '').toLowerCase();
+  if (!validateChannelName(username)) return res.status(400).json({ error: 'Invalid username' });
+
+  const dir = path.join(KICK_BASE_PATH, 'data', 'channel-configs');
+  let files: string[] = [];
+  try {
+    files = fs.readdirSync(dir).filter(f => f.endsWith('.json'));
+  } catch {
+    files = [];
+  }
+
+  const channels: Array<{ channel: string; isSelf: boolean }> = [];
+  for (const file of files) {
+    const channel = path.basename(file, '.json');
+    const config = readChannelConfig(channel);
+    if (!config) continue;
+    const managers = Array.isArray(config['managers']) ? (config['managers'] as string[]) : [];
+    if (channel === username) channels.push({ channel, isSelf: true });
+    else if (managers.includes(username)) channels.push({ channel, isSelf: false });
+  }
+
+  // Own channel first, then managed ones alphabetically.
+  channels.sort((a, b) => (a.isSelf === b.isSelf ? a.channel.localeCompare(b.channel) : a.isSelf ? -1 : 1));
+  return res.json({ username, channels });
+});
+
+// Channels that list this username as a manager. Without it a manager has no
+// way to reach the channel they manage — the dashboard sends them to their own.
+app.get('/internal/bot/managed-by/:username', internalGuard(false), async (req, res) => {
+  const rawName = req.params['username'];
+  const username = (typeof rawName === 'string' ? rawName : '').toLowerCase();
+  if (!validateChannelName(username)) return res.status(400).json({ error: 'Invalid username' });
+
+  const dir = path.join(KICK_BASE_PATH, 'data', 'channel-configs');
+  let files: string[] = [];
+  try {
+    files = fs.readdirSync(dir).filter(f => f.endsWith('.json'));
+  } catch {
+    files = [];
+  }
+
+  const channels: string[] = [];
+  for (const file of files) {
+    const channel = path.basename(file, '.json');
+    const config = readChannelConfig(channel);
+    const managers = Array.isArray(config?.['managers']) ? (config!['managers'] as string[]) : [];
+    if (managers.includes(username)) channels.push(channel);
+  }
+
+  return res.json({ username, channels: channels.sort() });
+});
+
+/**
+ * Current managers plus moderators observed in chat.
+ *
+ * `seeded` distinguishes "never configured" (no `managers` key at all) from
+ * "deliberately empty" (`[]`). The list is populated from observed moderators
+ * ONCE, on first configuration; after that it is only ever changed by hand.
+ * Re-seeding automatically would resurrect anyone the broadcaster removed.
+ */
+app.get('/internal/bot/:channel/managers', internalGuard(false), async (req, res) => {
+  const channelRaw = req.params['channel'];
+  const channel = (typeof channelRaw === 'string' ? channelRaw : '').toLowerCase();
+  if (!validateChannelName(channel)) return res.status(400).json({ error: 'Invalid channel name' });
+
+  const config = readChannelConfig(channel);
+  if (!config) return res.status(404).json({ error: 'Not enrolled' });
+
+  const seeded = Array.isArray(config['managers']);
+  const managers = seeded ? (config['managers'] as string[]) : [];
+  const suggestions = (await recentModerators(channel)).filter(m => !managers.includes(m));
+  return res.json({ channel, managers, suggestions, seeded });
+});
+
+/**
+ * Merge observed moderators into the manager list.
+ *
+ * Additive only — it never drops an existing manager. Used for the one-time
+ * seed when a channel has no list yet, and for an explicit "sync" the
+ * broadcaster can trigger later to pick up moderators added since.
+ */
+app.post('/internal/bot/:channel/managers/sync', internalGuard(true), async (req, res) => {
+  const channelRaw = req.params['channel'];
+  const channel = (typeof channelRaw === 'string' ? channelRaw : '').toLowerCase();
+  if (!validateChannelName(channel)) return res.status(400).json({ error: 'Invalid channel name' });
+
+  const config = readChannelConfig(channel);
+  if (!config) return res.status(404).json({ error: 'Not enrolled' });
+
+  const existing = Array.isArray(config['managers']) ? (config['managers'] as string[]) : [];
+  const observed = await recentModerators(channel);
+  const merged = Array.from(new Set([...existing, ...observed])).sort();
+  const added = merged.filter(m => !existing.includes(m));
+
+  config['managers'] = merged;
+  config['lastUpdated'] = new Date().toISOString();
+  writeChannelConfig(channel, config);
+  console.log(`[INTERNAL] ${channel} managers synced from moderators — added ${added.length}: [${added.join(', ')}]`);
+
+  const procs = await pm2List();
+  return res.json({ ok: true, added, ...summariseChannel(channel, procs) });
+});
+
+// Replace the manager list. Body: { managers: string[] }
+app.post('/internal/bot/:channel/managers', internalGuard(true), async (req, res) => {
+  const channelRaw = req.params['channel'];
+  const channel = (typeof channelRaw === 'string' ? channelRaw : '').toLowerCase();
+  if (!validateChannelName(channel)) return res.status(400).json({ error: 'Invalid channel name' });
+
+  const config = readChannelConfig(channel);
+  if (!config) return res.status(404).json({ error: 'Not enrolled' });
+
+  const body = req.body as { managers?: unknown };
+  if (!Array.isArray(body?.managers)) {
+    return res.status(400).json({ error: 'managers must be an array' });
+  }
+  if (body.managers.length > 50) {
+    return res.status(400).json({ error: 'At most 50 managers' });
+  }
+
+  const cleaned: string[] = [];
+  for (const raw of body.managers) {
+    const name = String(raw).toLowerCase().trim();
+    if (!validateChannelName(name)) {
+      return res.status(400).json({ error: `Invalid username: ${String(raw).slice(0, 30)}` });
+    }
+    if (name === channel) continue;              // broadcaster access is implicit
+    if (!cleaned.includes(name)) cleaned.push(name);
+  }
+
+  config['managers'] = cleaned.sort();
+  config['lastUpdated'] = new Date().toISOString();
+  writeChannelConfig(channel, config);
+  // No reload needed: managers only affect dashboard authorization, not the bot.
+  console.log(`[INTERNAL] ${channel} managers set to [${cleaned.join(', ')}]`);
+
+  const procs = await pm2List();
+  return res.json({ ok: true, ...summariseChannel(channel, procs) });
+});
+
+// Remove the bot from a channel entirely. Mirrors deployRemoveChannel.
+app.delete('/internal/bot/:channel', internalGuard(true), async (req, res) => {
+  const channelRaw = req.params['channel'];
+  const channel = (typeof channelRaw === 'string' ? channelRaw : '').toLowerCase();
+  if (!validateChannelName(channel)) return res.status(400).json({ error: 'Invalid channel name' });
+  if (!readChannelConfig(channel)) return res.status(404).json({ error: 'Not enrolled' });
+
+  const pm2Name = `kick-${channel}`;
+  // Tolerate a missing process — the config may exist without a live bot.
+  await execAsync(`pm2 stop "${pm2Name}"`);
+  await execAsync(`pm2 delete "${pm2Name}"`);
+
+  for (const p of [
+    path.join(KICK_BASE_PATH, 'dist', 'channels', `${channel}.js`),
+    path.join(KICK_BASE_PATH, 'dist', 'channels', `${channel}.js.map`),
+    path.join(KICK_BASE_PATH, 'src', 'channels', `${channel}.ts`),
+    path.join(KICK_BASE_PATH, 'data', 'channel-configs', `${channel}.json`),
+    path.join(KICK_BASE_PATH, 'data', 'channel-configs', `${channel}.reload`)
+  ]) {
+    try {
+      if (fs.existsSync(p)) fs.unlinkSync(p);
+    } catch (e) {
+      console.error(`[INTERNAL] Failed to remove ${p}:`, e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  removeFromEcosystem(channel);
+  await execAsync('pm2 save');
+  console.log(`[INTERNAL] Removed bot for ${channel}`);
+  return res.json({ ok: true, channel });
+});
+
+// Recent log lines for a channel, newest last.
+app.get('/internal/bot/:channel/logs', internalGuard(false), async (req, res) => {
+  const channelRaw = req.params['channel'];
+  const channel = (typeof channelRaw === 'string' ? channelRaw : '').toLowerCase();
+  if (!validateChannelName(channel)) return res.status(400).json({ error: 'Invalid channel name' });
+
+  const linesRaw = parseInt(String(req.query['lines'] ?? '100'), 10);
+  const lines = Number.isFinite(linesRaw) ? Math.min(Math.max(linesRaw, 1), 500) : 100;
+  const logPath = path.join(KICK_BASE_PATH, 'logs', `kick-${channel}-out.log`);
+  if (!fs.existsSync(logPath)) return res.json({ lines: [] });
+
+  const result = await execAsync(`tail -n ${lines} ${JSON.stringify(logPath)}`, 2 * 1024 * 1024);
+  if (!result.ok) return res.status(500).json({ error: 'Failed to read log' });
+  return res.json({ lines: result.message ? result.message.split('\n') : [] });
 });
 
 // ==================== COMMAND-BASED DEPLOYMENT BOT ====================
@@ -1660,21 +2336,26 @@ async function deployAddChannel(requester: string, args: string[], badges: Array
         fs.mkdirSync(configDir, { recursive: true });
       }
 
-      const config = {
-        channelName: sanitized,
-        chatroomId: chatroomId,
-        broadcasterUserId: broadcasterUserId,
-        chatOnly: false,
-        enrolledAt: new Date().toISOString(),
-        lastUpdated: new Date().toISOString(),
-        location: {
-          home: { country: "", city: "", state: "", province: "" },
-          current: { country: "", city: "", state: "", province: "" }
-        }
-      };
-
+      // Merge, never replace: this path also runs for channels that already
+      // exist, and it must not drop their oauth block or their settings.
       const configPath = path.join(configDir, `${sanitized}.json`);
-      fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+      mergeChannelConfig(
+        configPath,
+        {
+          chatOnly: false,
+          enrolledAt: new Date().toISOString(),
+          location: {
+            home: { country: "", city: "", state: "", province: "" },
+            current: { country: "", city: "", state: "", province: "" }
+          }
+        },
+        {
+          channelName: sanitized,
+          chatroomId: chatroomId,
+          broadcasterUserId: broadcasterUserId,
+          lastUpdated: new Date().toISOString()
+        }
+      );
       // Bump the .reload sentinel so PM2's file-watch picks up the new config.
       // Bot never touches this file, so refresh-token rotation won't trigger
       // spurious restarts.
@@ -1845,7 +2526,10 @@ app.post('/kick-webhook', express.raw({ type: '*/*' }), async (req: express.Requ
     }
     const valid = await verifyWebhookSignature(messageId, timestamp, rawBody, signatureB64);
     if (!valid) {
-      console.error(`[WEBHOOK] Invalid signature for message ${messageId} — body: ${rawBody.toString('utf8').slice(0, 200)}`);
+      const shown = Buffer.isBuffer(rawBody)
+        ? rawBody.toString('utf8').slice(0, 200)
+        : `NOT-RAW (${typeof rawBody}) ${JSON.stringify(rawBody).slice(0, 200)}`;
+      console.error(`[WEBHOOK] Invalid signature for message ${messageId} — body: ${shown}`);
       return;
     }
   } else {
@@ -1854,7 +2538,9 @@ app.post('/kick-webhook', express.raw({ type: '*/*' }), async (req: express.Requ
 
   let event: Record<string, unknown>;
   try {
-    event = JSON.parse(rawBody.toString('utf8')) as Record<string, unknown>;
+    event = (Buffer.isBuffer(rawBody)
+      ? JSON.parse(rawBody.toString('utf8'))
+      : rawBody) as Record<string, unknown>;
   } catch (e) {
     console.error('[WEBHOOK] Failed to parse body:', e instanceof Error ? e.message : String(e));
     return;
@@ -1863,10 +2549,18 @@ app.post('/kick-webhook', express.raw({ type: '*/*' }), async (req: express.Requ
   // Handle both { data: { ... } } envelope and direct payload
   const payload = (event['data'] as Record<string, unknown> | undefined) ?? event;
 
-  // Identify chat.message.sent events
-  const eventType = (event['type'] as string | undefined) || '';
-  const isChatMessage = eventType === 'chat.message.sent' || typeof payload['message_id'] === 'string';
-  if (!isChatMessage) return;
+  // Kick names the event in a header; the body carries only the payload. Fall
+  // back to the body's own hints for older/odd deliveries.
+  const headerType = (req.headers['kick-event-type'] as string | undefined) || '';
+  const bodyType = (event['type'] as string | undefined) || '';
+  let eventType = headerType || bodyType;
+  if (!eventType) {
+    if (typeof payload['message_id'] === 'string') eventType = 'chat.message.sent';
+    else if (payload['reward'] && payload['redeemer']) eventType = 'channel.reward.redemption.updated';
+  }
+
+  const QUEUED_EVENTS = ['chat.message.sent', 'channel.reward.redemption.updated'];
+  if (!QUEUED_EVENTS.includes(eventType)) return;
 
   const broadcaster = payload['broadcaster'] as { user_id?: number; username?: string } | undefined;
   if (!broadcaster?.user_id) {
@@ -1897,15 +2591,36 @@ app.post('/kick-webhook', express.raw({ type: '*/*' }), async (req: express.Requ
     return;
   }
 
-  const sender = payload['sender'] as { username?: string } | undefined;
-  console.log(`[WEBHOOK] chat.message.sent from ${sender?.username ?? '?'} in ${channelName}`);
+  if (eventType === 'chat.message.sent') {
+    const sender = payload['sender'] as { username?: string } | undefined;
+    console.log(`[WEBHOOK] chat.message.sent from ${sender?.username ?? '?'} in ${channelName}`);
+  } else {
+    const reward = payload['reward'] as { id?: string; title?: string; cost?: number } | undefined;
+    const redeemer = payload['redeemer'] as { username?: string } | undefined;
+    console.log(
+      `[WEBHOOK] ${eventType} "${reward?.title ?? '?'}" (reward_id=${reward?.id ?? '?'}, cost=${reward?.cost ?? '?'}) ` +
+      `by ${redeemer?.username ?? '?'} in ${channelName} — status=${String(payload['status'] ?? '?')} ` +
+      `input=${JSON.stringify(payload['user_input'] ?? '')}`
+    );
+    // Keep the raw payload of every redemption. It is the only ground truth for
+    // a channel whose grant can't read its own reward list, and it is what
+    // `rewardActions[].rewardId` gets pinned to.
+    try {
+      const samplePath = path.join(KICK_BASE_PATH, 'data', 'redemption-samples.jsonl');
+      fs.appendFileSync(samplePath, JSON.stringify({ receivedAt: new Date().toISOString(), channelName, payload }) + '\n', 'utf8');
+    } catch (e) {
+      console.error('[WEBHOOK] Failed to record redemption sample:', e instanceof Error ? e.message : String(e));
+    }
+  }
 
   const eventsDir = path.join(KICK_BASE_PATH, 'data', 'webhook-events');
   if (!fs.existsSync(eventsDir)) {
     fs.mkdirSync(eventsDir, { recursive: true });
   }
   const queueFile = path.join(eventsDir, `${channelName}.jsonl`);
-  fs.appendFileSync(queueFile, JSON.stringify(payload) + '\n', 'utf8');
+  // Wrapped so the channel-side poller can tell event types apart. Bare
+  // payloads written by an older build are still read as chat messages.
+  fs.appendFileSync(queueFile, JSON.stringify({ __event: eventType, payload }) + '\n', 'utf8');
 });
 
 // ==================== START SERVICES ====================
