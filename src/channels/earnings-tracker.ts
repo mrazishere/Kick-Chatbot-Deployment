@@ -28,6 +28,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { CurrentEarningsSession, FinalizedEarningsSession } from '../types';
 import KickAuth = require('../auth');
+import { EarningsConfig } from '../types';
 import TelegramNotifier = require('../telegram-notifier');
 
 const POLL_INTERVAL_MS = 5 * 60 * 1000;          // 5 minutes
@@ -64,7 +65,10 @@ export class EarningsTracker {
   private consecutiveFailures = 0;
   private hasAlertedBroken = false;
 
-  constructor(channelName: string, tokenFilePath: string) {
+  private getConfig: () => EarningsConfig | undefined;
+
+  constructor(channelName: string, tokenFilePath: string, getConfig?: () => EarningsConfig | undefined) {
+    this.getConfig = getConfig ?? (() => undefined);
     this.channelName = channelName;
     // Use a dedicated KickAuth pointed at the bot's central token file
     // (kept fresh by the enrollment service's startTokenMonitor). The poller
@@ -81,9 +85,25 @@ export class EarningsTracker {
     }
   }
 
+  /** Rate is read per-poll so a calibration edit applies without a restart. */
+  private ratePerViewerHour(): number {
+    const cfg = this.getConfig();
+    return typeof cfg?.centsPerViewerHour === 'number' && cfg.centsPerViewerHour >= 0
+      ? cfg.centsPerViewerHour
+      : CENTS_PER_VIEWER_PER_HOUR;
+  }
+
+  private isEnabled(): boolean {
+    return this.getConfig()?.enabled === true;
+  }
+
   async start(): Promise<void> {
+    if (!this.isEnabled()) {
+      console.log(`[EARNINGS] Disabled for ${this.channelName} — set earnings.enabled to record`);
+      return;
+    }
     console.log(
-      `[EARNINGS] Tracker starting for ${this.channelName} — polling every ${POLL_INTERVAL_MS / 60000}m, rate $${(CENTS_PER_VIEWER_PER_HOUR / 100).toFixed(2)}/viewer/hour`
+      `[EARNINGS] Tracker starting for ${this.channelName} — polling every ${POLL_INTERVAL_MS / 60000}m, rate $${(this.ratePerViewerHour() / 100).toFixed(2)}/viewer/hour`
     );
     await this.pollOnce();
     this.pollInterval = setInterval(() => {
@@ -216,7 +236,7 @@ export class EarningsTracker {
     if (isLive && current) {
       const hoursElapsed = this.hoursBetween(current.lastPolledAt, nowMs);
       const avgViewers = (current.lastViewerCount + viewers) / 2;
-      const earnedCents = Math.round(avgViewers * CENTS_PER_VIEWER_PER_HOUR * hoursElapsed);
+      const earnedCents = Math.round(avgViewers * this.ratePerViewerHour() * hoursElapsed);
 
       current.accumulatedCents += earnedCents;
       current.lastPolledAt = nowIso;
@@ -249,7 +269,7 @@ export class EarningsTracker {
       }
 
       const hoursElapsed = this.hoursBetween(current.lastPolledAt, nowMs);
-      const finalCents = Math.round(current.lastViewerCount * CENTS_PER_VIEWER_PER_HOUR * hoursElapsed);
+      const finalCents = Math.round(current.lastViewerCount * this.ratePerViewerHour() * hoursElapsed);
       const totalCents = current.accumulatedCents + finalCents;
       // Estimate true end as midpoint between last-seen-live and offline-detection.
       // Reduces expected error from ~half the poll interval to ~quarter.

@@ -23,10 +23,13 @@ import * as path from 'path';
 import fetch from 'node-fetch';
 import KickAuth = require('../auth');
 import TelegramNotifier = require('../telegram-notifier');
-import { ChannelConfig, CommandFn, KickTags, ClientWrapper, ChannelLocation, LocationSubfields } from '../types';
+import { ChannelConfig, CommandFn, KickTags, ClientWrapper, ChannelLocation, LocationSubfields, EarningsConfig, KPPConfig } from '../types';
 import { markBotOutput } from '../recent-bot-outputs';
 import { resolveBotIdentity } from '../bot-identity';
 import { WebhookPoller } from './webhook-poller';
+import { RewardRedemptionHandler } from './reward-redemptions';
+import { EarningsTracker } from './earnings-tracker';
+import { KPPTracker } from './kpp-tracker';
 
 const CHANNEL_NAME = '$$UPDATEHERE$$';
 
@@ -57,6 +60,9 @@ class KickChatBot {
   private manualDisconnect: boolean;
   private pingInterval: NodeJS.Timeout | null;
   private webhookPoller: WebhookPoller;
+  private rewardHandler: RewardRedemptionHandler;
+  private earningsTracker: EarningsTracker;
+  private kppTracker: KPPTracker;
   private channelTokenFailStreak = 0;
   private pendingLocationClarifications: Map<string, {
     options: Array<{ label: string; location: Record<string, string> }>;
@@ -83,7 +89,37 @@ class KickChatBot {
 
     this.pendingLocationClarifications = new Map(); // username -> { options, timestamp, targetKey }
 
-    this.webhookPoller = new WebhookPoller(this.channelName, (data) => this.handleChatMessage(data));
+    // Channel-points rewards mapped to moderation actions. Inert unless the
+    // channel config carries a rewardActions entry.
+    this.rewardHandler = new RewardRedemptionHandler({
+      channelName: this.channelName,
+      getConfig: () => this.config,
+      getBroadcasterUserId: () => this.broadcasterUserId,
+      getToken: () => this.getChannelAccessToken(),
+      getBotToken: () => this.auth.getAccessToken(),
+      sendMessage: (msg) => this.sendMessage(msg)
+    });
+
+    this.webhookPoller = new WebhookPoller(
+      this.channelName,
+      (data) => this.handleChatMessage(data),
+      (event) => { void this.rewardHandler.handle(event); }
+    );
+
+
+    // Earnings and KPP recording are opt-in per channel. Both trackers are
+    // always constructed but read their own config on start, so flipping
+    // earnings.enabled / kpp.enabled is all that's needed to turn them on.
+    this.earningsTracker = new EarningsTracker(
+      channelName,
+      path.join(__dirname, '..', '.tokens.json'),
+      () => this.config.earnings as EarningsConfig | undefined
+    );
+    this.kppTracker = new KPPTracker(
+      channelName,
+      path.join(__dirname, '..', '.tokens.json'),
+      () => this.config.kpp as KPPConfig | undefined
+    );
 
     this.setupCommands();
   }
@@ -444,9 +480,28 @@ class KickChatBot {
     const message = content;
     const badges = sender?.identity?.badges || [];
 
+    // Keep the reward handler's moderator set current so a mod who was promoted
+    // since the last log warm-start still can't be timed out by a redemption.
+    this.rewardHandler.noteBadges(username, badges);
+
+    // Detect native Kick reply metadata. Button-replies carry the replied-to
+    // user/message here in `metadata`; the visible `content` usually has no
+    // @mention, so this is the only reliable reply signal. Absent on normal
+    // messages — best-effort, never throws.
+    const replyMeta = data.metadata as { original_sender?: { username?: string }; original_message?: { content?: string } } | undefined;
+    const replyTo = replyMeta?.original_sender?.username;
+    const replyExcerpt = replyMeta?.original_message?.content;
+    const replyStr = replyTo
+      ? `[↩ reply to ${replyTo}${replyExcerpt ? `: "${replyExcerpt.slice(0, 40)}"` : ''}] `
+      : '';
+    // Surface an unexpected metadata shape instead of silently logging nothing.
+    if (replyMeta && (replyMeta.original_sender || replyMeta.original_message) && !replyTo) {
+      console.log(`[DEBUG] reply metadata shape unrecognized: ${JSON.stringify(data.metadata).slice(0, 200)}`);
+    }
+
     // Display the message
     const badgeStr = badges.length > 0 ? `[${badges.map(b => b.type).join(',')}] ` : '';
-    console.log(`${badgeStr}${username}: ${message}`);
+    console.log(`${badgeStr}${username}: ${replyStr}${message}`);
 
     // Check if message starts with command prefix
     const messageWords = message.split(' ');
@@ -467,6 +522,9 @@ class KickChatBot {
       console.log(`[COMMANDS] Command "${requestedCommandName}" is excluded for channel ${this.channelName}`);
       return;
     }
+
+    // Record for KPP engagement tracking (no-op when no live session).
+    this.kppTracker.recordChat(username);
 
     // Build permission flags from badges
     const isBroadcaster = badges.some(b => b.type === 'broadcaster' || b.type === 'owner');
@@ -572,6 +630,25 @@ class KickChatBot {
   }
 
   async refreshChannelToken(): Promise<boolean> {
+    // Re-read from disk before touching the config. This method rewrites the
+    // whole file, and `this.config` is a snapshot from bot startup — without
+    // this reload, any edit made meanwhile (dashboard, manual JSON edit, another
+    // process) is silently reverted the next time a token refresh happens.
+    // checkAndRefreshToken() already reloads; the on-demand path through
+    // getChannelAccessToken() did not, which is how config edits went missing.
+    try {
+      const configPath = path.join(process.cwd(), 'data', 'channel-configs', `${this.channelName}.json`);
+      const raw = fs.readFileSync(configPath, 'utf8');
+      const onDisk = JSON.parse(raw) as ChannelConfig;
+      // Keep the in-memory oauth if the file somehow lost it mid-flight.
+      if (!onDisk.oauth && this.config.oauth) onDisk.oauth = this.config.oauth;
+      this.config = onDisk;
+    } catch (readErr) {
+      if (readErr instanceof Error && (readErr as NodeJS.ErrnoException).code !== 'ENOENT') {
+        console.error('[AUTH] Could not reload config before token refresh:', readErr.message);
+      }
+    }
+
     if (!this.config.oauth?.refreshToken) return false;
 
     try {
@@ -1028,6 +1105,17 @@ Rules:
         this.startTokenRefreshScheduler();
         await this.connectWebSocket();
         this.webhookPoller.start();
+        this.rewardHandler.start();
+        this.earningsTracker.start().catch(err => {
+          if (err instanceof Error) {
+            console.error('[EARNINGS] Tracker failed to start:', err.message);
+          }
+        });
+        this.kppTracker.start().catch(err => {
+          if (err instanceof Error) {
+            console.error('[KPP] Tracker failed to start:', err.message);
+          }
+        });
         return;
       } catch (error) {
         attempt++;
@@ -1052,6 +1140,9 @@ Rules:
     }
 
     this.webhookPoller.stop();
+    this.rewardHandler.stop();
+    this.earningsTracker.stop();
+    this.kppTracker.stop();
 
     if (this.ws) {
       console.log('[INFO] Disconnecting from Kick chat...');

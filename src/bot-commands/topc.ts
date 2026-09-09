@@ -14,11 +14,11 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { CommandFn, CurrentKPPSession } from '../types';
 
-const SUPPORTED_CHANNELS = new Set(['sukasblood']);
+// Reads the KPP chat data, so it follows kpp.enabled.
 
 export const topc: CommandFn = async function topc(client, message, channel, tags, config) {
   if (message.trim().split(/\s+/)[0] !== '!topc') return;
-  if (!SUPPORTED_CHANNELS.has(config.channelName)) return;
+  if ((config.kpp as { enabled?: boolean } | undefined)?.enabled !== true) return;
 
   const dataDir = path.join(process.cwd(), 'data', 'kpp', config.channelName);
   const currentFile = path.join(dataDir, 'current.json');

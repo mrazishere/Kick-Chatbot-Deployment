@@ -21,7 +21,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { CommandFn, CurrentKPPSession, FinalizedKPPSession, KPPConfig } from '../types';
 
-const SUPPORTED_CHANNELS = new Set(['sukasblood']);
+// Availability follows kpp.enabled in the channel config.
 const DEFAULT_CHAT_NORMAL_RATE = 0.09;
 const CHAT_WEIGHT_FLOOR = 0.2;
 const CHAT_WEIGHT_CEILING = 2.5;
@@ -49,7 +49,7 @@ export const kpp: CommandFn = async function kpp(client, message, channel, tags,
   if (message.trim().split(/\s+/)[0] !== '!kpp') return;
 
   const channelName = config.channelName;
-  if (!SUPPORTED_CHANNELS.has(channelName)) return;
+  if ((config.kpp as KPPConfig | undefined)?.enabled !== true) return;
 
   const cfg = (config.kpp as KPPConfig | undefined) || {};
   const chatNormalRate = cfg.chatNormalRate ?? DEFAULT_CHAT_NORMAL_RATE;

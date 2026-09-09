@@ -22,7 +22,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { CommandFn, CurrentEarningsSession, FinalizedEarningsSession } from '../types';
 
-const SUPPORTED_CHANNELS = new Set(['sukasblood']);
+// Availability follows the channel config, not a hardcoded allowlist — the
+// dashboard's command toggle would otherwise be a no-op on other channels.
 const CENTS_PER_VIEWER_PER_HOUR = 10;
 
 function formatDollars(cents: number): string {
@@ -40,7 +41,7 @@ export const earnings: CommandFn = async function earnings(client, message, chan
   if (words[0] !== '!earnings') return;
 
   const channelName = config.channelName;
-  if (!SUPPORTED_CHANNELS.has(channelName)) return;
+  if ((config.earnings as { enabled?: boolean } | undefined)?.enabled !== true) return;
 
   const dataDir = path.join(process.cwd(), 'data', 'earnings', channelName);
   const currentFile = path.join(dataDir, 'current.json');
