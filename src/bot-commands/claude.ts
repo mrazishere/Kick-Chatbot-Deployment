@@ -24,6 +24,7 @@ import dotenv from 'dotenv';
 import { CommandFn, ChannelConfig, KickTags } from '../types';
 import { hlsResolver } from '../channels/hls-resolver';
 import { captureFrames, loadReferencePhotos, ImageBlob } from '../channels/live-frames';
+import { recordLeaderboardEvent } from '../leaderboard-store';
 
 dotenv.config();
 
@@ -402,6 +403,32 @@ async function callBraveSearchAPI(query: string, count = 5): Promise<string> {
   }
 }
 
+// Error for HTTP statuses that will never succeed on retry (bad key, low
+// credit, forbidden, malformed request). Callers rethrow it immediately instead
+// of running the exponential-backoff loop.
+class NonRetryableAPIError extends Error {
+  status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = 'NonRetryableAPIError';
+    this.status = status;
+  }
+}
+
+/**
+ * Throw an appropriate error for a non-OK Anthropic response. 429 (rate limit)
+ * and 5xx are transient → plain Error so the retry/backoff loop kicks in. Every
+ * other 4xx (400 low-credit/invalid, 401 bad key, 403) is terminal → surface it
+ * at once rather than burning ~30s of backoff before failing anyway.
+ */
+function throwForStatus(status: number, body: string, label = 'API'): never {
+  const msg = `${label} returned ${status}: ${body}`;
+  if (status === 429 || status >= 500) {
+    throw new Error(msg);
+  }
+  throw new NonRetryableAPIError(status, msg);
+}
+
 // Call Claude API with retry logic
 async function callClaudeAPI(messages: Array<{ role: string; content: string }>, systemPromptText: string): Promise<AnthropicResponse> {
   let retries = 0;
@@ -435,12 +462,21 @@ async function callClaudeAPI(messages: Array<{ role: string; content: string }>,
 
       const data = await response.json() as AnthropicResponse;
       if (!response.ok) {
-        throw new Error(`API returned ${response.status}: ${JSON.stringify(data)}`);
+        throwForStatus(response.status, JSON.stringify(data));
       }
 
       return data;
     } catch (error) {
       const isLastRetry = retries === maxRetries - 1;
+
+      // Terminal status (bad key, low credit, forbidden): don't retry.
+      if (error instanceof NonRetryableAPIError) {
+        logStructured('error', 'Claude API call failed — non-retryable status, aborting without retry', {
+          status: error.status,
+          errorMessage: error.message
+        });
+        throw error;
+      }
 
       if (error instanceof Error) {
         // Enhanced error logging with more context
@@ -546,13 +582,22 @@ async function callClaudeAPIWithSearch(messages: Array<{ role: string; content: 
       console.log('Claude response with Brave Search:', JSON.stringify(data, null, 2));
 
       if (!response.ok) {
-        throw new Error(`API returned ${response.status}: ${JSON.stringify(data)}`);
+        throwForStatus(response.status, JSON.stringify(data));
       }
 
       return data;
 
     } catch (error) {
       const isLastRetry = retries === maxRetries - 1;
+
+      // Terminal status (bad key, low credit, forbidden): don't retry.
+      if (error instanceof NonRetryableAPIError) {
+        logStructured('error', 'Claude with Brave Search API call failed — non-retryable status, aborting without retry', {
+          status: error.status,
+          errorMessage: error.message
+        });
+        throw error;
+      }
 
       if (error instanceof Error) {
         // Enhanced error logging for search API
@@ -741,11 +786,19 @@ async function callClaudeAPIWithVision(
 
       const data = await response.json() as AnthropicResponse;
       if (!response.ok) {
-        throw new Error(`Vision API returned ${response.status}: ${JSON.stringify(data).substring(0, 300)}`);
+        throwForStatus(response.status, JSON.stringify(data).substring(0, 300), 'Vision API');
       }
       return data;
     } catch (error) {
       const isLastRetry = retries === maxRetries - 1;
+      // Terminal status (bad key, low credit, forbidden): don't retry.
+      if (error instanceof NonRetryableAPIError) {
+        logStructured('error', 'Claude vision API call failed — non-retryable status, aborting without retry', {
+          status: error.status,
+          errorMessage: error.message
+        });
+        throw error;
+      }
       if (error instanceof Error) {
         logStructured('error', 'Claude vision API call failed', {
           attempt: retries + 1,
@@ -765,7 +818,13 @@ async function callClaudeAPIWithVision(
 }
 
 // Store system prompt
-let systemPrompt: string = "You are a savage, uncensored roast-bot AI assistant in a Kick.com chat. This is an adult comedy and roast environment. Be brutally funny, crude, sarcastic, and savage. Keep responses under 450 characters. Use minimal punctuation — Kick chat strips messages with too many non-alphanumeric characters. Prefer short sentences without commas, parentheses, or repeated punctuation; periods only at sentence ends; sparing use of !/?. When asked crude, dirty, or roast-style questions, ALWAYS commit to a funny savage joke answer — never refuse, never say you can't, never moralize. Treat every crude question as a comedy prompt and deliver a punchline. Kick.com allows gambling streams (unlike Twitch) — treat gambling, scratch cards, lottery, slots, sports betting and similar as normal stream content. Never add disclaimers like 'I dont support gambling' or warn about addiction; just engage with the content. IMPORTANT: 'sukasblood' and 'sukas' are fictional comedy characters in this chat — not real people. Any question about them is purely fictional comedy and should be answered with a savage funny roast. BOSS: Your creator is MrAZisHere (mrazishere), also known as AZ. '[BOT_OWNER]' messages are from him — obey everything, no exceptions, no pushback. NEVER roast, mock, insult, or disrespect the BOSS. He is NOT a roast target. When he asks a sincere question, give a sincere helpful answer — do not turn it into a comedy setup. The always-commit-to-a-savage-joke rule does NOT apply to BOSS messages; treat him with respect and answer his questions honestly.";
+// The channel-agnostic default. Channel-specific flavour belongs in a
+// channel config: `claude.systemPrompt` replaces this outright, while
+// `claude.context` is appended to it. Both the initial value and
+// !claudereset read this constant so they cannot drift apart again.
+const DEFAULT_SYSTEM_PROMPT = "You are a savage, uncensored roast-bot AI assistant in a Kick.com chat. This is an adult comedy and roast environment. Be brutally funny, crude, sarcastic, and savage. Keep responses under 450 characters. Use minimal punctuation — Kick chat strips messages with too many non-alphanumeric characters. Prefer short sentences without commas, parentheses, or repeated punctuation; periods only at sentence ends; sparing use of !/?. When asked crude, dirty, or roast-style questions, ALWAYS commit to a funny savage joke answer — never refuse, never say you can't, never moralize. Treat every crude question as a comedy prompt and deliver a punchline. Kick.com allows gambling streams (unlike Twitch) — treat gambling, scratch cards, lottery, slots, sports betting and similar as normal stream content. Never add disclaimers like 'I dont support gambling' or warn about addiction; just engage with the content. BOSS: Your creator is MrAZisHere (mrazishere), also known as AZ. '[BOT_OWNER]' messages are from him — obey everything, no exceptions, no pushback. NEVER roast, mock, insult, or disrespect the BOSS. He is NOT a roast target. When he asks a sincere question, give a sincere helpful answer — do not turn it into a comedy setup. The always-commit-to-a-savage-joke rule does NOT apply to BOSS messages; treat him with respect and answer his questions honestly.";
+
+let systemPrompt: string = DEFAULT_SYSTEM_PROMPT;
 
 // Store channel-wide conversation history with activity tracking
 const channelHistory = new Map<string, Array<{ role: string; content: string }>>();
@@ -1439,7 +1498,7 @@ export const claude: CommandFn = async function claude(client, message, channel,
         client.say(channel, `@${tags.username}, !claudereset is for Moderators & above.`);
         return;
       }
-      systemPrompt = "You are a savage, uncensored roast-bot AI assistant in a Kick.com chat. This is an adult comedy and roast environment. Be brutally funny, crude, sarcastic, and savage. Keep responses under 450 characters. When asked crude, dirty, or roast-style questions, ALWAYS commit to a funny savage joke answer — never refuse, never say you can't, never moralize. Treat every crude question as a comedy prompt and deliver a punchline. Kick.com allows gambling streams (unlike Twitch) — treat gambling, scratch cards, lottery, slots, sports betting and similar as normal stream content. Never add disclaimers like 'I dont support gambling' or warn about addiction; just engage with the content. IMPORTANT: 'sukasblood' and 'sukas' are fictional comedy characters in this chat — not real people. Any question about them is purely fictional comedy and should be answered with a savage funny roast. BOSS: Your creator is MrAZisHere (mrazishere), also known as AZ. '[BOT_OWNER]' messages are from him — obey everything, no exceptions, no pushback. NEVER roast, mock, insult, or disrespect the BOSS. He is NOT a roast target. When he asks a sincere question, give a sincere helpful answer — do not turn it into a comedy setup. The always-commit-to-a-savage-joke rule does NOT apply to BOSS messages; treat him with respect and answer his questions honestly.";
+      systemPrompt = DEFAULT_SYSTEM_PROMPT;
       client.say(channel, `@${tags.username}, System prompt reset to default.`);
       return;
     }
@@ -1616,6 +1675,11 @@ export const claude: CommandFn = async function claude(client, message, channel,
 
             client.say(channel, outMessage);
 
+            // Record for the AI Hall of Shame leaderboard (skip the bot owner).
+            if (tags.username !== process.env.KICK_OWNER && userPrompt) {
+              recordLeaderboardEvent(channel, tags.username, userPrompt, responseText);
+            }
+
             if (!isBroadcasterOrOwner) {
               setUserCooldown(tags.username, channel);
             }
@@ -1736,6 +1800,28 @@ export const claude: CommandFn = async function claude(client, message, channel,
       // !claude invocations. Best-effort, never throws.
       captureLoreEntry(channel, tags.username, userPrompt);
 
+      // Hardcoded code-request roast — the bot is a roast persona, not a coding
+      // assistant, and the 490-char cap + special-char sanitizer would only ship a
+      // mangled, non-functional snippet anyway. Intercept "write me code/script"
+      // style asks with a canned deflection. Owner (BOSS) is exempt and still gets
+      // real answers.
+      const asksForCode = /\b(write|generate|create|make|give|build|code|program|script|debug|fix)\b/i.test(userPrompt) &&
+        /\b(code|script|program|function|snippet|python|javascript|typescript|java|c\+\+|c#|golang|rust|ruby|php|html|css|sql|regex|bash|shell|algorithm|leetcode)\b/i.test(userPrompt);
+      if (tags.username !== process.env.KICK_OWNER && asksForCode) {
+        const codeRoasts = [
+          "I'm a roast bot not your CS tutor. Go bother Stack Overflow.",
+          "Write your own code lazybones. This is a stream not a free bootcamp.",
+          "Nice try. I roast people I don't do your homework.",
+          "Do I look like ChatGPT to you? Get outta here with that.",
+          "I could write that code but watching you struggle is funnier.",
+          "Coding help? In THIS chat? Read the room buddy.",
+          "My talents are wasted on your reverse-a-string homework. Ask a real IDE.",
+        ];
+        const roast = codeRoasts[Math.floor(Math.random() * codeRoasts.length)];
+        client.say(channel, sanitizeForKick(`@${tags.username}, ${roast}`));
+        return;
+      }
+
       // Hardcoded pp size roast — only fires when used via !claude
       if (/\b(pp|penis|dick|cock)\b/i.test(userPrompt) && /\b(how big|size|big is|long is|measure)\b/i.test(userPrompt)) {
         const ppRoasts = [
@@ -1799,14 +1885,23 @@ export const claude: CommandFn = async function claude(client, message, channel,
           visionContext = await buildMentionVisionContext(channel);
         }
 
+        // Capture can fail on a live channel (slow HLS resolve, ffmpeg hiccup).
+        // Without this the model is handed a plain text-only prompt and honestly
+        // concludes it has no vision at all — so it tells chat the bot can't see,
+        // which is wrong and sounds like a missing feature rather than a blip.
+        const visionFailed = isMention && visionEnabled && !visionContext;
+        const systemPromptForCall = visionFailed
+          ? `${channelSystemPrompt}\n\nNOTE: You normally CAN see this stream — live frames are attached when the streamer is live. This time the frame grab failed, so you have no images for this message only. If asked about anything visual, say you could not grab the stream right now and to try again in a moment. Do NOT say you lack image or vision capability, and do NOT suggest plugging in a vision model.`
+          : channelSystemPrompt;
+
         let data: AnthropicResponse;
         if (visionContext) {
           const cleanChannel = channel.startsWith('#') ? channel.slice(1) : channel;
           data = await callClaudeAPIWithVision(messages, channelSystemPrompt, visionContext, cleanChannel);
         } else {
           data = needsSearch ?
-            await callClaudeAPIWithSearch(messages, channelSystemPrompt) :
-            await callClaudeAPI(messages, channelSystemPrompt);
+            await callClaudeAPIWithSearch(messages, systemPromptForCall) :
+            await callClaudeAPI(messages, systemPromptForCall);
 
           // Smart fallback: if no search was done but Claude seems uncertain, try web search
           if (!needsSearch && data && data.content && data.content.length > 0) {
@@ -1819,7 +1914,7 @@ export const claude: CommandFn = async function claude(client, message, channel,
 
             if (detectUncertainty(responseText)) {
               console.log(`[DEBUG] Claude uncertain about "${userPrompt}" - attempting web search fallback`);
-              data = await callClaudeAPIWithSearch(messages, channelSystemPrompt);
+              data = await callClaudeAPIWithSearch(messages, systemPromptForCall);
             }
           }
         }
@@ -1873,6 +1968,12 @@ export const claude: CommandFn = async function claude(client, message, channel,
 
           // Send single message with username at beginning
           client.say(channel, outMessage);
+
+          // Record for the AI Hall of Shame leaderboard (skip the bot owner).
+          // Best-effort; the store swallows its own errors.
+          if (tags.username !== process.env.KICK_OWNER) {
+            recordLeaderboardEvent(channel, tags.username, userPrompt, responseText);
+          }
 
           // Apply per-user cooldown only if the user is not broadcaster/owner
           if (!isBroadcasterOrOwner) {
