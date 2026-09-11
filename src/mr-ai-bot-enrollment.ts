@@ -56,9 +56,16 @@ const WEBHOOK_PATH = '/kick-webhook';
 const skipWebhook = (parser: express.RequestHandler): express.RequestHandler =>
   (req, res, next) => (req.path === WEBHOOK_PATH ? next() : parser(req, res, next));
 
+// nginx proxies the public routes in from loopback. Trusting only loopback proxies
+// gives the rate limiter each visitor's own address — before, everyone shared
+// 127.0.0.1 and one ten-a-minute budget — while internalGuard still checks the raw
+// socket, so a forwarded header can't pass for a local caller.
+app.set('trust proxy', 'loopback');
 app.use(skipWebhook(express.json()));
 app.use(skipWebhook(express.urlencoded({ extended: true })));
 app.use('/kick-bot-enroll', rateLimiter);
+// The bot re-auth flow is public too; unthrottled, anyone could grow pendingSessions without limit.
+app.use('/kick-bot-reauth', rateLimiter);
 
 // Store pending OAuth sessions
 const pendingSessions = new Map<string, OAuthSession>();
@@ -281,10 +288,19 @@ const SCOPES = [
 const authServer = 'https://id.kick.com';
 const KICK_BASE_PATH = path.resolve(__dirname, '..');
 
+/**
+ * Names that can't be channels. Each channel's bot is dist/channels/<name>.js,
+ * right beside the modules every bot shares, so enrolling a channel called
+ * `moderation` overwrote moderation.js — breaking every bot at its next restart —
+ * and removing it deleted the module. Shared modules with a hyphen in the name
+ * are already out of reach. `channels` is the bot API's list route.
+ */
+const RESERVED_CHANNEL_NAMES = new Set(['channels', 'moderation']);
+
 // Validate channel name: only lowercase alphanumeric and underscores, 1-30 chars
 function validateChannelName(name: string): boolean {
   if (typeof name !== 'string') return false;
-  return /^[a-z0-9_]{1,30}$/.test(name);
+  return /^[a-z0-9_]{1,30}$/.test(name) && !RESERVED_CHANNEL_NAMES.has(name);
 }
 
 /** Write JSON through a rename, so a process reading the file never sees half of it. */
@@ -604,6 +620,14 @@ function successPage(username: string, chatroomId: number | string | null, broad
 </html>`;
 }
 
+/**
+ * Escape text for these HTML pages. errorPage shows query parameters and Kick's error
+ * text; unescaped, `?error=<script>` ran script on the same origin as the dashboard.
+ */
+function escapeHtml(text: unknown): string {
+  return String(text).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] as string);
+}
+
 function errorPage(title: string, message: string): string {
   return `<!DOCTYPE html>
 <html lang="en">
@@ -665,8 +689,8 @@ function errorPage(title: string, message: string): string {
                 <path d="M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12 19 6.41z"/>
             </svg>
         </div>
-        <h1>${title}</h1>
-        <p class="message">${message}</p>
+        <h1>${escapeHtml(title)}</h1>
+        <p class="message">${escapeHtml(message)}</p>
         <a href="/kick-bot-enroll" class="retry-btn">Try Again</a>
     </div>
 </body>
@@ -858,6 +882,29 @@ app.get('/kick-bot-enroll/callback', async (req: express.Request, res: express.R
 
     // ── Bot re-auth: save tokens to .tokens.json and restart the service ──
     if (isBotReauth) {
+      // Any Kick user can finish this login, so check WHO signed in before replacing the
+      // bot's token. Without this, any account could become the bot in every channel.
+      const expected = (process.env.KICK_USERNAME || '').toLowerCase();
+      let signedInAs = '';
+      try {
+        const who = await axios.get('https://api.kick.com/public/v1/users', {
+          headers: { Authorization: `Bearer ${access_token}` },
+          timeout: 10_000
+        });
+        const user = ((who.data as { data?: Array<{ name?: string; username?: string }> })?.data ?? [])[0];
+        signedInAs = String(user?.name ?? user?.username ?? '');
+      } catch (e) {
+        console.error('[BOT REAUTH] Could not confirm which account signed in:', e instanceof Error ? e.message : String(e));
+      }
+      if (!expected || signedInAs.toLowerCase() !== expected) {
+        console.warn(`[BOT REAUTH] Refused: signed in as "${signedInAs || 'unknown'}", bot account is "${expected || 'unset'}"`);
+        return res.send(errorPage(
+          'Wrong Kick Account',
+          `You signed in as ${signedInAs || 'an account that could not be confirmed'}, but the bot account is ` +
+          `${expected || '(KICK_USERNAME is not set)'}. Nothing was changed. Log in to Kick as the bot account and try again.`
+        ));
+      }
+
       const tokenData = {
         accessToken: access_token,
         refreshToken: refresh_token,
@@ -956,6 +1003,11 @@ app.get('/kick-bot-enroll/callback', async (req: express.Request, res: express.R
 
     if (!username) {
       throw new Error('Could not get username from API response');
+    }
+    // The same rule as every other path. A reserved name like "moderation" would put a
+    // bot file on top of a module every bot shares.
+    if (!validateChannelName(username)) {
+      return res.send(errorPage('Enrollment Not Available', 'This Kick username cannot be used as a bot channel.'));
     }
 
     console.log(`[DEBUG] Username: ${username}, User ID: ${userId}`);
@@ -1116,6 +1168,18 @@ app.get('/kick-bot-enroll/complete', async (req: express.Request, res: express.R
   res.clearCookie('enrollSession');
 
   const { username, userId, broadcasterUserId, access_token, refresh_token, expires_in } = enroll;
+  if (!validateChannelName(username)) {
+    return res.send(errorPage('Enrollment Not Available', 'This Kick username cannot be used as a bot channel.'));
+  }
+  // The chat command enforced MAX_CHANNELS but this path didn't, so any Kick user could
+  // add bot processes without limit. An existing channel (monthly re-auth) is exempt.
+  const alreadyEnrolled = fs.existsSync(path.join(KICK_BASE_PATH, 'data', 'channel-configs', `${username}.json`));
+  if (!alreadyEnrolled) {
+    const running = (await pm2List()).filter(p => p.name?.startsWith('kick-')).length;
+    if (running >= MAX_CHANNELS) {
+      return res.send(errorPage('At Capacity', `The bot is at its limit of ${MAX_CHANNELS} channels right now.`));
+    }
+  }
   const resolvedChatroomId: number | null = parseInt(chatroomId, 10) || broadcasterUserId;
 
   console.log(`[ENROLL] Completing enrollment for ${username} - Chatroom: ${resolvedChatroomId}, Broadcaster: ${broadcasterUserId}`);
@@ -2868,7 +2932,7 @@ async function deployAddChannel(requester: string, args: string[], badges: Array
   }
 
   const sanitized = targetChannel.replace(/[^a-z0-9_]/g, '');
-  if (!sanitized || sanitized.length < 1 || sanitized.length > 25) {
+  if (!sanitized || sanitized.length > 25 || !validateChannelName(sanitized)) {
     await sendDeploymentMessage(`@${requester}, invalid channel name.`, sourceChatroomId);
     return;
   }
@@ -3030,6 +3094,10 @@ async function deployRemoveChannel(requester: string, args: string[], badges: Ar
   }
 
   const sanitized = targetChannel.replace(/[^a-z0-9_]/g, '');
+  if (!validateChannelName(sanitized)) {
+    await sendDeploymentMessage(`@${requester}, invalid channel name.`, sourceChatroomId);
+    return;
+  }
 
   if (sanitized !== requester.toLowerCase() && !isModUp) {
     await sendDeploymentMessage(`@${requester}, you can only remove your own channel.`, sourceChatroomId);
