@@ -920,9 +920,9 @@ app.get('/kick-bot-enroll/callback', async (req: express.Request, res: express.R
         // monitor uses grantedAt to warn at day 28.
         grantedAt: Date.now()
       };
-      const tmpFile = path.join(__dirname, '.tokens.json.tmp');
-      fs.writeFileSync(tmpFile, JSON.stringify(tokenData, null, 2));
-      fs.renameSync(tmpFile, path.join(__dirname, '.tokens.json'));
+      // Under the refresh lock: written bare, a refresh already in flight in another
+      // process could finish afterwards and put the old grant's tokens back over this one.
+      await KickAuth.storeTokens(tokenData, path.join(__dirname, '.tokens.json'));
       console.log('[BOT REAUTH] Tokens saved to .tokens.json');
 
       // Notify via Telegram

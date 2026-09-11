@@ -1,8 +1,43 @@
 import 'dotenv/config';
 import axios from 'axios';
+import * as fs from 'fs';
 import * as path from 'path';
+import { withFileLock, writeJsonAtomic } from './file-lock';
 
 const DEPLOY_PATH: string = process.env.BOT_FULL_PATH || path.resolve(__dirname, '..');
+
+/**
+ * When each alert was last sent, shared by every Kick process. The enrollment
+ * service and each channel bot all run their own notifier, so a shared failure
+ * (a revoked bot grant, say) used to arrive once per process.
+ */
+const ALERT_STATE_FILE = path.join(DEPLOY_PATH, 'data', 'telegram-alerts.json');
+const ALERT_LOCK = { staleMs: 10_000, waitMs: 3_000 };
+/** Entries this old can't suppress anything any more; dropped so the file stays small. */
+const ALERT_STATE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+const HOUR = 60 * 60 * 1000;
+
+type AlertState = Record<string, number>;
+
+/** Telegram's HTML mode rejects the whole message on a stray < or &, and would render one that parses. */
+function esc(value: unknown): string {
+  return String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function alertKey(kind: string, channel?: string): string {
+  return channel ? `${kind}:${channel.toLowerCase()}` : kind;
+}
+
+function readAlertState(): AlertState {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(ALERT_STATE_FILE, 'utf8')) as unknown;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as AlertState : {};
+  } catch {
+    // Missing or corrupt: start clean. A lost entry can only cause one repeat alert.
+    return {};
+  }
+}
 
 class TelegramNotifier {
   private botToken: string | undefined;
@@ -42,22 +77,84 @@ class TelegramNotifier {
     }
   }
 
+  /**
+   * Send an alert at most once per `cooldownMs` across every process.
+   *
+   * The key is claimed before sending, under a lock, so processes that hit the
+   * same failure together can't all see it unsent. A send that fails gives the
+   * claim back, so the next attempt isn't muted for a whole cooldown. If the
+   * shared state can't be used at all the alert goes out anyway: a duplicate
+   * beats silence.
+   */
+  private async sendOnce(key: string, cooldownMs: number, message: string, silent: boolean): Promise<boolean> {
+    if (!this.enabled) return false;
+
+    let claimed: boolean;
+    try {
+      claimed = await withFileLock(`${ALERT_STATE_FILE}.lock`, async () => {
+        const state = readAlertState();
+        const now = Date.now();
+        const last = state[key];
+        if (typeof last === 'number' && now - last < cooldownMs) return false;
+        for (const [k, at] of Object.entries(state)) {
+          if (typeof at !== 'number' || now - at > ALERT_STATE_MAX_AGE_MS) delete state[k];
+        }
+        state[key] = now;
+        fs.mkdirSync(path.dirname(ALERT_STATE_FILE), { recursive: true });
+        writeJsonAtomic(ALERT_STATE_FILE, state);
+        return true;
+      }, ALERT_LOCK);
+    } catch (err) {
+      console.error(`[TELEGRAM] Alert dedupe unavailable for "${key}", sending anyway:`, err instanceof Error ? err.message : String(err));
+      return this.sendMessage(message, silent);
+    }
+
+    if (!claimed) {
+      console.log(`[TELEGRAM] "${key}" alert already sent within its cooldown — skipped`);
+      return false;
+    }
+    const sent = await this.sendMessage(message, silent);
+    if (!sent) await this.forget([key]);
+    return sent;
+  }
+
+  /** Drop alert keys so the next failure of that kind alerts straight away. */
+  private async forget(keys: string[]): Promise<void> {
+    // Read first without the lock: recoveries fire often and there is usually nothing to clear.
+    const present = readAlertState();
+    if (!keys.some(k => k in present)) return;
+    try {
+      await withFileLock(`${ALERT_STATE_FILE}.lock`, async () => {
+        const state = readAlertState();
+        for (const k of keys) delete state[k];
+        writeJsonAtomic(ALERT_STATE_FILE, state);
+      }, ALERT_LOCK);
+    } catch (err) {
+      console.error('[TELEGRAM] Could not clear alert state:', err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  /** Mark a failure as resolved without sending anything, e.g. after a successful token refresh. */
+  async clearAlert(kind: string, channel?: string): Promise<void> {
+    await this.forget([alertKey(kind, channel)]);
+  }
+
   // Alert: refresh token invalid/revoked — manual re-auth required
   async notifyReauthRequired(reason = 'Refresh token is invalid or revoked'): Promise<boolean> {
     const message = `
 🚨 <b>Kick Bot - Re-authentication Required</b>
 
-<b>Bot Account:</b> ${process.env.KICK_USERNAME || 'Unknown'}
-<b>Reason:</b> ${reason}
+<b>Bot Account:</b> ${esc(process.env.KICK_USERNAME || 'Unknown')}
+<b>Reason:</b> ${esc(reason)}
 
 <b>Action Required:</b>
 The bot's refresh token has been revoked by Kick. Automatic renewal is not possible.
 
 Re-authorize the bot (log in as the <b>bot account</b> first):
-https://${process.env.OAUTH_DOMAIN || 'mr-ai.dev'}/kick-bot-reauth
+https://${esc(process.env.OAUTH_DOMAIN || 'mr-ai.dev')}/kick-bot-reauth
     `.trim();
 
-    return await this.sendMessage(message, false); // audible — needs immediate action
+    return await this.sendOnce(alertKey('reauth-required'), HOUR, message, false); // audible — needs immediate action
   }
 
   // Alert: token expiring soon but refresh still possible
@@ -70,14 +167,15 @@ https://${process.env.OAUTH_DOMAIN || 'mr-ai.dev'}/kick-bot-reauth
     const message = `
 ${emoji} <b>Kick Bot Token Expiry ${urgency}</b>
 
-<b>Bot Account:</b> ${process.env.KICK_USERNAME || 'Unknown'}
-<b>Time Remaining:</b> ~${hoursLeft} hour(s)
+<b>Bot Account:</b> ${esc(process.env.KICK_USERNAME || 'Unknown')}
+<b>Time Remaining:</b> ~${esc(hoursLeft)} hour(s)
 
 Auto-refresh is being attempted. If the bot goes offline, re-authorize here:
-https://${process.env.OAUTH_DOMAIN || 'mr-ai.dev'}/kick-bot-reauth
+https://${esc(process.env.OAUTH_DOMAIN || 'mr-ai.dev')}/kick-bot-reauth
     `.trim();
 
-    return await this.sendMessage(message, hoursLeft > 6);
+    // Keyed by urgency so an escalation still gets through the cooldown.
+    return await this.sendOnce(alertKey(`token-expiring-${urgency.toLowerCase()}`), HOUR, message, hoursLeft > 6);
   }
 
   // Alert: vision (HLS resolver) has been failing for several attempts.
@@ -92,24 +190,25 @@ https://${process.env.OAUTH_DOMAIN || 'mr-ai.dev'}/kick-bot-reauth
     const message = `
 ${emoji} <b>Kick Bot - Vision Broken</b>
 
-<b>Channel:</b> ${channel}
-<b>Consecutive failures:</b> ${failureCount}
-<b>Last error:</b> <code>${reason.substring(0, 200)}</code>
+<b>Channel:</b> ${esc(channel)}
+<b>Consecutive failures:</b> ${esc(failureCount)}
+<b>Last error:</b> <code>${esc(reason.substring(0, 200))}</code>
 
 ${headline}.
 
 The bot is still running and will fall back to text-only Claude responses. Investigate <code>src/channels/hls-resolver.ts</code> when convenient.
     `.trim();
 
-    return await this.sendMessage(message, false); // audible
+    return await this.sendOnce(alertKey('vision-broken', channel), HOUR, message, false); // audible
   }
 
   // Informational: vision started working again after being broken.
   async notifyVisionRecovered(channel: string): Promise<boolean> {
+    await this.forget([alertKey('vision-broken', channel)]);
     const message = `
 ✅ <b>Kick Bot - Vision Recovered</b>
 
-<b>Channel:</b> ${channel}
+<b>Channel:</b> ${esc(channel)}
 
 The HLS resolver is working again. No action needed.
     `.trim();
@@ -123,22 +222,23 @@ The HLS resolver is working again. No action needed.
     const message = `
 ⚠️ <b>Kick Bot - Earnings Poller Broken</b>
 
-<b>Channel:</b> ${channel}
-<b>Consecutive failures:</b> ${failureCount}
-<b>Last error:</b> <code>${reason.substring(0, 200)}</code>
+<b>Channel:</b> ${esc(channel)}
+<b>Consecutive failures:</b> ${esc(failureCount)}
+<b>Last error:</b> <code>${esc(reason.substring(0, 200))}</code>
 
 Earnings polling has failed repeatedly. Likely cause: the central bot token (<code>dist/.tokens.json</code>) is stale because the enrollment service isn't refreshing it. Check that <code>Kick-Bot-Enrollment</code> is running.
     `.trim();
 
-    return await this.sendMessage(message, false); // audible
+    return await this.sendOnce(alertKey('earnings-broken', channel), HOUR, message, false); // audible
   }
 
   // Informational: earnings poller started working again.
   async notifyEarningsRecovered(channel: string): Promise<boolean> {
+    await this.forget([alertKey('earnings-broken', channel)]);
     const message = `
 ✅ <b>Kick Bot - Earnings Poller Recovered</b>
 
-<b>Channel:</b> ${channel}
+<b>Channel:</b> ${esc(channel)}
 
 Earnings polling is working again. No action needed.
     `.trim();
@@ -152,14 +252,15 @@ Earnings polling is working again. No action needed.
     const message = `
 ${urgent ? '🚨' : '⏳'} <b>Kick Bot - Re-auth Needed Within ${urgent ? '24 Hours' : '2 Days'}</b>
 
-<b>Bot Account:</b> ${process.env.KICK_USERNAME || 'Unknown'}
-<b>Grant expires in:</b> ~${daysLeft.toFixed(1)} day(s)
+<b>Bot Account:</b> ${esc(process.env.KICK_USERNAME || 'Unknown')}
+<b>Grant expires in:</b> ~${esc(daysLeft.toFixed(1))} day(s)
 
 Kick OAuth grants last exactly 30 days and cannot be extended by refreshing. Re-authorize now to avoid downtime (log in as the <b>bot account</b> first):
-https://${process.env.OAUTH_DOMAIN || 'mr-ai.dev'}/kick-bot-reauth
+https://${esc(process.env.OAUTH_DOMAIN || 'mr-ai.dev')}/kick-bot-reauth
     `.trim();
 
-    return await this.sendMessage(message, !urgent);
+    // Daily reminder; the urgent tier has its own key so crossing into it alerts at once.
+    return await this.sendOnce(alertKey(urgent ? 'grant-expiring-urgent' : 'grant-expiring'), 20 * HOUR, message, !urgent);
   }
 
   // Alert: a channel's streamer OAuth token can no longer be refreshed —
@@ -169,16 +270,16 @@ https://${process.env.OAUTH_DOMAIN || 'mr-ai.dev'}/kick-bot-reauth
     const message = `
 ⚠️ <b>Kick Bot - Channel Token Broken</b>
 
-<b>Channel:</b> ${channel}
-<b>Consecutive refresh failures:</b> ${failureCount}
+<b>Channel:</b> ${esc(channel)}
+<b>Consecutive refresh failures:</b> ${esc(failureCount)}
 
 The streamer OAuth token for this channel can no longer be refreshed (Kick grants expire 30 days after enrollment). The dead token was removed from the channel config and the bot now uses the bot account token for sends. Re-enrolling restores the channel token.
 
-Have <b>${channel}</b> re-enroll here:
-https://${process.env.OAUTH_DOMAIN || 'mr-ai.dev'}/kick-bot-enroll
+Have <b>${esc(channel)}</b> re-enroll here:
+https://${esc(process.env.OAUTH_DOMAIN || 'mr-ai.dev')}/kick-bot-enroll
     `.trim();
 
-    return await this.sendMessage(message, false); // audible — needs streamer action
+    return await this.sendOnce(alertKey('channel-token-broken', channel), 6 * HOUR, message, false); // audible — needs streamer action
   }
 
   // Alert: a channel has rewardActions configured but its streamer grant
@@ -188,25 +289,35 @@ https://${process.env.OAUTH_DOMAIN || 'mr-ai.dev'}/kick-bot-enroll
     const message = `
 ⚠️ <b>Kick Bot - Reward Actions Not Authorized</b>
 
-<b>Channel:</b> ${channel}
-<b>Missing scopes:</b> ${missing.join(', ')}
-<b>Granted:</b> ${granted.join(' ') || 'none'}
+<b>Channel:</b> ${esc(channel)}
+<b>Missing scopes:</b> ${esc(missing.join(', '))}
+<b>Granted:</b> ${esc(granted.join(' ') || 'none')}
 
 This channel has <code>rewardActions</code> configured, but its OAuth grant predates those scopes. Refreshing never widens a grant, so redemptions are being left pending and no timeout is applied.
 
-Have <b>${channel}</b> sign in again here to re-authorize:
-https://${process.env.OAUTH_DOMAIN || 'mr-ai.dev'}/kick-bot-enroll
+Have <b>${esc(channel)}</b> sign in again here to re-authorize:
+https://${esc(process.env.OAUTH_DOMAIN || 'mr-ai.dev')}/kick-bot-enroll
     `.trim();
 
-    return await this.sendMessage(message, false); // audible — needs streamer action
+    // The bot checks once per start, so without a cooldown every restart re-alerts.
+    return await this.sendOnce(alertKey('reward-scope-missing', channel), 24 * HOUR, message, false); // audible — needs streamer action
   }
 
   // Informational: token refreshed successfully after a failed attempt
   async notifyRefreshRecovered(): Promise<boolean> {
+    // A new grant resets both the revoked-token alert and the 30-day countdown.
+    await this.forget([
+      alertKey('reauth-required'),
+      alertKey('grant-expiring'),
+      alertKey('grant-expiring-urgent'),
+      alertKey('token-expiring-warning'),
+      alertKey('token-expiring-urgent'),
+      alertKey('token-expiring-critical')
+    ]);
     const message = `
 ✅ <b>Kick Bot - Token Refreshed Successfully</b>
 
-<b>Bot Account:</b> ${process.env.KICK_USERNAME || 'Unknown'}
+<b>Bot Account:</b> ${esc(process.env.KICK_USERNAME || 'Unknown')}
 
 Token was renewed. No action needed.
     `.trim();

@@ -6,14 +6,25 @@ import * as path from 'path';
 import * as crypto from 'crypto';
 import * as http from 'http';
 import TelegramNotifier = require('./telegram-notifier');
+import { withFileLock, writeJsonAtomic } from './file-lock';
 import { OAuthTokens } from './types';
 
+/**
+ * Held across the refresh request, so stale must outlast its timeout by a wide
+ * margin, and waiters must outlast stale so a dead holder never strands them.
+ */
+const TOKEN_LOCK = { staleMs: 60_000, waitMs: 90_000 };
+const REFRESH_TIMEOUT_MS = 15_000;
+
+const DEFAULT_TOKEN_FILE = path.join(__dirname, '.tokens.json');
+
 class KickAuth {
-  // Process-wide rate-limit for the reauth Telegram alert. Multiple KickAuth
-  // instances (e.g. enrollment monitor + channel bots) all hitting invalid_grant
-  // used to fan out into one Telegram message per failed refresh.
-  private static lastReauthAlertAt = 0;
-  private static readonly REAUTH_ALERT_COOLDOWN_MS = 60 * 60 * 1000;
+  /**
+   * Refreshes under way in this process, by token file. Several KickAuth
+   * instances share a file (the enrollment service creates one per request),
+   * and they should share one refresh rather than queue on the lock.
+   */
+  private static refreshes = new Map<string, Promise<string | null>>();
 
   private clientId: string | undefined;
   private clientSecret: string | undefined;
@@ -25,6 +36,8 @@ class KickAuth {
   private refreshToken: string | null = null;
   private expiresAt: number | null = null;
   private grantedAt: number | null = null;
+  /** Identity of the file version last loaded, so an unchanged file isn't parsed again. */
+  private loadedStamp: string | null = null;
   private codeVerifier: string | null = null;
   private codeChallenge: string | null = null;
   private authServer: string;
@@ -41,13 +54,27 @@ class KickAuth {
     const portPart = this.oauthDomain.includes('localhost') ? `:${this.oauthPort}` : '';
     this.redirectUri = `${protocol}://${this.oauthDomain}${portPart}/kick-bot-enroll/callback`;
 
-    this.tokenFile = tokenFilePath ?? path.join(__dirname, '.tokens.json');
+    this.tokenFile = tokenFilePath ?? DEFAULT_TOKEN_FILE;
     this.accessToken = null;
     this.refreshToken = null;
     this.expiresAt = null;
     this.codeVerifier = null;
     this.codeChallenge = null;
     this.authServer = 'https://id.kick.com';
+  }
+
+  /**
+   * Store a grant in the shared token file under the refresh lock.
+   *
+   * For anything that writes tokens from outside this class, such as the bot
+   * re-auth callback. Writing without the lock let a refresh already in flight
+   * finish afterwards and put the old grant's tokens back over the new one.
+   */
+  static async storeTokens(tokens: OAuthTokens, tokenFile: string = DEFAULT_TOKEN_FILE): Promise<void> {
+    await withFileLock(`${tokenFile}.lock`, async () => {
+      writeJsonAtomic(tokenFile, tokens);
+    }, TOKEN_LOCK);
+    console.log('[AUTH] Tokens saved to file');
   }
 
   // Generate PKCE code verifier and challenge
@@ -108,7 +135,8 @@ class KickAuth {
         {
           headers: {
             'Content-Type': 'application/x-www-form-urlencoded'
-          }
+          },
+          timeout: REFRESH_TIMEOUT_MS
         }
       );
 
@@ -117,7 +145,7 @@ class KickAuth {
       this.expiresAt = Date.now() + (response.data.expires_in * 1000);
       this.grantedAt = Date.now();
 
-      this.saveTokens();
+      await KickAuth.storeTokens(this.currentTokens(), this.tokenFile);
       return this.accessToken;
     } catch (error) {
       if (axios.isAxiosError(error)) {
@@ -127,56 +155,111 @@ class KickAuth {
     }
   }
 
-  // Refresh access token using refresh token
+  /**
+   * Refresh the access token, once across every process sharing the file.
+   *
+   * Kick rotates the refresh token on every use. Processes refreshing together
+   * all sent the same one, and every loser's rejection read as a revoked grant —
+   * which alerted for a re-auth nobody needed.
+   */
   async refreshAccessToken(): Promise<string | null> {
-    // The token file is shared across processes (enrollment service + channel
-    // bots) and another process may have rotated it since we last read it —
-    // always refresh with the newest refresh token on disk, never a cached one.
+    const pending = KickAuth.refreshes.get(this.tokenFile);
+    if (pending) {
+      await pending;
+      this.loadTokens();
+      return this.accessToken;
+    }
+    const run = this.refreshUnderLock().finally(() => KickAuth.refreshes.delete(this.tokenFile));
+    KickAuth.refreshes.set(this.tokenFile, run);
+    return run;
+  }
+
+  private async refreshUnderLock(): Promise<string | null> {
+    // The newest refresh token on disk, never a cached one: another process may have rotated it.
     this.loadTokens();
-    if (!this.refreshToken) {
+    const seen = this.refreshToken;
+    if (!seen) {
       throw new Error('No refresh token available');
     }
 
-    try {
-      const response = await axios.post(`${this.authServer}/oauth/token`,
-        new URLSearchParams({
-          grant_type: 'refresh_token',
-          client_id: this.clientId!,          // non-null: required for token refresh
-          client_secret: this.clientSecret!,  // non-null: required for token refresh
-          refresh_token: this.refreshToken!   // non-null: checked above the try block
-        }).toString(),
-        {
-          headers: {
-            'Content-Type': 'application/x-www-form-urlencoded'
+    return withFileLock(`${this.tokenFile}.lock`, async () => {
+      // Whoever held the lock before may have refreshed already. Its tokens are
+      // current and ours is now spent, so use them instead of refreshing again.
+      this.loadTokens();
+      if (!this.refreshToken) {
+        throw new Error('No refresh token available');
+      }
+      if (this.refreshToken !== seen) {
+        console.log('[AUTH] Token was refreshed by another process — using it');
+        return this.accessToken;
+      }
+      const used = this.refreshToken;
+
+      let response;
+      try {
+        response = await axios.post(`${this.authServer}/oauth/token`,
+          new URLSearchParams({
+            grant_type: 'refresh_token',
+            client_id: this.clientId!,          // non-null: required for token refresh
+            client_secret: this.clientSecret!,  // non-null: required for token refresh
+            refresh_token: used
+          }).toString(),
+          {
+            headers: {
+              'Content-Type': 'application/x-www-form-urlencoded'
+            },
+            // The lock is held across this call; a stalled connection must not hold it for good.
+            timeout: REFRESH_TIMEOUT_MS
           }
-        }
-      );
+        );
+      } catch (error) {
+        // Rejected because the file changed underneath — a re-auth stored a new
+        // grant meanwhile — says nothing about the grant now in use.
+        if (this.adoptNewerGrant(used)) return this.accessToken;
 
-      this.accessToken = response.data.access_token;
-      this.refreshToken = response.data.refresh_token;
-      this.expiresAt = Date.now() + (response.data.expires_in * 1000);
+        if (axios.isAxiosError(error)) {
+          const errData = error.response?.data as { error?: string } | undefined;
+          console.error('[AUTH ERROR] Failed to refresh token:', errData || error.message);
 
-      this.saveTokens();
-      return this.accessToken;
-    } catch (error) {
-      if (axios.isAxiosError(error)) {
-        const errData = error.response?.data as { error?: string } | undefined;
-        console.error('[AUTH ERROR] Failed to refresh token:', errData || error.message);
-
-        // Refresh token revoked/expired — cannot auto-recover. Rate-limit the
-        // Telegram alert to once per hour per process so a fast-polling caller
-        // (e.g. EarningsTracker every 5 min) can't fan out into a flood.
-        if (errData?.error === 'invalid_grant') {
-          const now = Date.now();
-          if (now - KickAuth.lastReauthAlertAt > KickAuth.REAUTH_ALERT_COOLDOWN_MS) {
-            KickAuth.lastReauthAlertAt = now;
+          // Refresh token revoked/expired — cannot auto-recover. The notifier sends
+          // this once an hour across all processes, however many hit it.
+          if (errData?.error === 'invalid_grant') {
             const telegram = new TelegramNotifier();
             await telegram.notifyReauthRequired('invalid_grant — refresh token was revoked or expired by Kick').catch(() => {});
           }
         }
+        throw error;
       }
-      throw error;
-    }
+
+      const data = response.data as { access_token?: unknown; refresh_token?: unknown; expires_in?: unknown };
+      if (typeof data.access_token !== 'string' || !data.access_token) {
+        throw new Error('Token refresh response had no access token');
+      }
+
+      // A grant stored while this request was in flight is the newer authorization; keep it.
+      if (this.adoptNewerGrant(used)) return this.accessToken;
+
+      this.accessToken = data.access_token;
+      // Only replace the refresh token if the response carried one.
+      this.refreshToken = typeof data.refresh_token === 'string' && data.refresh_token ? data.refresh_token : used;
+      this.expiresAt = Date.now() + ((typeof data.expires_in === 'number' ? data.expires_in : 3600) * 1000);
+
+      this.saveTokens();
+      // A refresh that works means any standing re-auth alert is over; the next failure should alert again.
+      void new TelegramNotifier().clearAlert('reauth-required').catch(() => {});
+      return this.accessToken;
+    }, TOKEN_LOCK);
+  }
+
+  /**
+   * Switch to the tokens on disk if they're no longer the grant `used` came from.
+   * Returns whether it did.
+   */
+  private adoptNewerGrant(used: string): boolean {
+    this.loadTokens();
+    if (!this.refreshToken || this.refreshToken === used) return false;
+    console.log('[AUTH] Token file changed during the refresh — using the newer tokens');
+    return true;
   }
 
   // Proactively monitor and refresh the token on a schedule
@@ -272,32 +355,42 @@ class KickAuth {
     return this.accessToken;
   }
 
-  // Save tokens to file
-  saveTokens(): void {
-    const data = {
-      accessToken: this.accessToken,
-      refreshToken: this.refreshToken,
-      expiresAt: this.expiresAt,
+  private currentTokens(): OAuthTokens {
+    return {
+      accessToken: this.accessToken as string,
+      refreshToken: this.refreshToken as string,
+      expiresAt: this.expiresAt as number,
       grantedAt: this.grantedAt ?? undefined
     };
-    const tmpFile = this.tokenFile + '.tmp';
-    fs.writeFileSync(tmpFile, JSON.stringify(data, null, 2));
-    fs.renameSync(tmpFile, this.tokenFile);
+  }
+
+  // Save tokens to file. Callers that can race a refresh hold the token lock.
+  saveTokens(): void {
+    writeJsonAtomic(this.tokenFile, this.currentTokens());
     console.log('[AUTH] Tokens saved to file');
   }
 
-  // Load tokens from file
+  /**
+   * Load tokens from file, re-parsing only when the file has changed.
+   *
+   * Every write replaces the file through a rename, so a new inode, size or
+   * mtime marks a new version — a re-auth or another process's refresh is
+   * picked up on the next call, without restarting this process.
+   */
   loadTokens(): boolean {
     try {
-      if (fs.existsSync(this.tokenFile)) {
-        const data = JSON.parse(fs.readFileSync(this.tokenFile, 'utf8')) as OAuthTokens;
-        this.accessToken = data.accessToken;
-        this.refreshToken = data.refreshToken;
-        this.expiresAt = data.expiresAt;
-        this.grantedAt = data.grantedAt ?? null;
-        return true;
-      }
+      const st = fs.statSync(this.tokenFile);
+      const stamp = `${st.ino}:${st.size}:${st.mtimeMs}`;
+      if (stamp === this.loadedStamp) return true;
+      const data = JSON.parse(fs.readFileSync(this.tokenFile, 'utf8')) as OAuthTokens;
+      this.accessToken = data.accessToken;
+      this.refreshToken = data.refreshToken;
+      this.expiresAt = data.expiresAt;
+      this.grantedAt = data.grantedAt ?? null;
+      this.loadedStamp = stamp;
+      return true;
     } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
       if (error instanceof Error) {
         console.error('[AUTH ERROR] Failed to load tokens:', error.message);
       }
