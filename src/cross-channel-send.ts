@@ -21,9 +21,10 @@ export async function sendToBroadcaster(broadcasterUserId: number, message: stri
   let sanitized = message
     .replace(/\n+/g, ' ')
     .replace(/\*\*(.+?)\*\*/g, '$1')
-    .replace(/__(.+?)__/g, '$1')
+    // Underscores only count as markdown at word edges; inside a word they're part of a name.
+    .replace(/(?<![A-Za-z0-9_@])__(\S(?:.*?\S)?)__(?![A-Za-z0-9_])/g, '$1')
     .replace(/\*(.+?)\*/g, '$1')
-    .replace(/_(.+?)_/g, '$1')
+    .replace(/(?<![A-Za-z0-9_@])_(\S(?:.*?\S)?)_(?![A-Za-z0-9_])/g, '$1')
     .replace(/\s+/g, ' ')
     .trim();
 

@@ -1110,9 +1110,11 @@ Rules:
       let sanitized = message
         .replace(/\n+/g, ' ')                    // Replace newlines with spaces
         .replace(/\*\*(.+?)\*\*/g, '$1')         // Remove **bold** markdown
-        .replace(/__(.+?)__/g, '$1')             // Remove __italic__ markdown
+        // Markdown underscores only count at word edges. Inside a word they're part
+        // of a name, and stripping them turned @VJ_in_PJs into @VJinPJs.
+        .replace(/(?<![A-Za-z0-9_@])__(\S(?:.*?\S)?)__(?![A-Za-z0-9_])/g, '$1')             // Remove __italic__ markdown
         .replace(/\*(.+?)\*/g, '$1')             // Remove *italic* markdown
-        .replace(/_(.+?)_/g, '$1')               // Remove _underline_ markdown
+        .replace(/(?<![A-Za-z0-9_@])_(\S(?:.*?\S)?)_(?![A-Za-z0-9_])/g, '$1')               // Remove _underline_ markdown
         .replace(/\s+/g, ' ')                    // Collapse multiple spaces
         .trim();                                 // Remove leading/trailing spaces
 
