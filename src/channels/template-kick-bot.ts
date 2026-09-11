@@ -34,6 +34,13 @@ import { KPPTracker } from './kpp-tracker';
 
 const CHANNEL_NAME = '$$UPDATEHERE$$';
 
+/** How often the bot pings Pusher. */
+const PING_INTERVAL_MS = 30_000;
+/** Silence on the socket, pongs included, after which it is treated as dead: two missed pongs plus slack. */
+const STALE_SOCKET_MS = 75_000;
+/** How long a subscribe may go unconfirmed before Pusher's "in progress" errors stop being expected. */
+const SUBSCRIBE_GRACE_MS = 10_000;
+
 interface ResolvedLocation {
   status: 'resolved' | 'ambiguous' | 'unknown';
   location?: Record<string, string>;
@@ -60,6 +67,13 @@ class KickChatBot {
   private reconnectDelay: number;
   private manualDisconnect: boolean;
   private pingInterval: NodeJS.Timeout | null;
+  /** The one pending reconnect, so two failure paths can't each open a socket. */
+  private reconnectTimer: NodeJS.Timeout | null = null;
+  /** When the current socket last received anything, pongs included. */
+  private lastFrameAt = 0;
+  /** When the last pusher:subscribe went out, and whether Pusher has confirmed it since. */
+  private subscribeSentAt = 0;
+  private subscribed = false;
   private webhookPoller: WebhookPoller;
   private rewardHandler: RewardRedemptionHandler;
   private moderator: ChannelModerator;
@@ -344,7 +358,14 @@ class KickChatBot {
 
   subscribeToChannels(): void {
     const channel = `chatrooms.${this.chatroomId}.v2`;
-    this.ws!.send(JSON.stringify({ event: 'pusher:unsubscribe', data: { channel } }));
+    // Unsubscribe first only to replace a subscription this socket already has. A fresh
+    // socket has none, and Pusher answers that unsubscribe with "No current subscription",
+    // which used to trigger a second subscribe on every connect.
+    if (this.subscribed) {
+      this.ws!.send(JSON.stringify({ event: 'pusher:unsubscribe', data: { channel } }));
+    }
+    this.subscribed = false;
+    this.subscribeSentAt = Date.now();
     this.ws!.send(JSON.stringify({ event: 'pusher:subscribe', data: { auth: '', channel } }));
     console.log(`[INFO] Sent subscription request for ${channel}`);
   }
@@ -368,6 +389,13 @@ class KickChatBot {
         this.ws = null;
       }
 
+      // This attempt supersedes any reconnect still waiting to fire.
+      if (this.reconnectTimer) {
+        clearTimeout(this.reconnectTimer);
+        this.reconnectTimer = null;
+      }
+      this.subscribed = false;
+
       console.log('[INFO] Connecting to Kick chat WebSocket...');
       this.ws = new WebSocket(wsUrl);
 
@@ -376,20 +404,40 @@ class KickChatBot {
       this.ws.on('open', () => {
         console.log('[SUCCESS] WebSocket connected!');
         this.reconnectDelay = 5000; // reset backoff on successful connection
+        this.lastFrameAt = Date.now();
         this.subscribeToChannels();
 
         // Handle ping/pong to keep connection alive (started per successful connection)
         this.pingInterval = setInterval(() => {
-          if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-            this.ws.send(JSON.stringify({ event: 'pusher:ping', data: {} }));
+          if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
+
+          // A half-open connection never closes on its own: sends succeed, nothing comes
+          // back, and the bot is deaf until restarted. Pusher answers every ping, so a
+          // silence this long means the socket is dead — terminate it and let the close
+          // handler reconnect.
+          const silentMs = Date.now() - this.lastFrameAt;
+          if (silentMs > STALE_SOCKET_MS) {
+            console.warn(`[WARNING] No WebSocket traffic for ${Math.round(silentMs / 1000)}s — connection is dead, reconnecting`);
+            this.ws.terminate();
+            return;
           }
-        }, 30000);
+
+          // A subscribe that neither succeeded nor failed would leave the bot connected
+          // but deaf just the same.
+          if (!this.subscribed && Date.now() - this.subscribeSentAt > SUBSCRIBE_GRACE_MS) {
+            console.warn('[WARNING] Chat subscription was never confirmed — subscribing again');
+            this.subscribeToChannels();
+          }
+
+          this.ws.send(JSON.stringify({ event: 'pusher:ping', data: {} }));
+        }, PING_INTERVAL_MS);
 
         resolved = true;
         resolve();
       });
 
       this.ws.on('message', (data: WebSocket.RawData) => {
+        this.lastFrameAt = Date.now();
         try {
           const message = JSON.parse(data.toString()) as PusherMessage;
           this.handleWebSocketMessage(message);
@@ -416,14 +464,27 @@ class KickChatBot {
 
         if (this.manualDisconnect) return;
 
-        // Exponential backoff reconnect (max 60s)
-        console.log(`[INFO] Reconnecting in ${this.reconnectDelay / 1000}s...`);
-        setTimeout(() => {
-          this.reconnectDelay = Math.min(this.reconnectDelay * 2, 60000);
-          this.connectWebSocket().catch(() => {});
-        }, this.reconnectDelay);
+        // A socket that never opened is its caller's failure to retry: connect()'s loop,
+        // or the reconnect that started it. Scheduling one here as well put two sockets
+        // in the race, and the later one tore down whichever had connected.
+        if (!resolved) {
+          reject(new Error(`WebSocket closed before opening (code ${code})`));
+          return;
+        }
+        this.scheduleReconnect();
       });
     });
+  }
+
+  /** Reconnect after an exponential backoff (max 60s), retrying until a socket opens. */
+  private scheduleReconnect(): void {
+    if (this.manualDisconnect || this.reconnectTimer) return;
+    console.log(`[INFO] Reconnecting in ${this.reconnectDelay / 1000}s...`);
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.reconnectDelay = Math.min(this.reconnectDelay * 2, 60000);
+      this.connectWebSocket().catch(() => this.scheduleReconnect());
+    }, this.reconnectDelay);
   }
 
   handleWebSocketMessage(message: PusherMessage): void {
@@ -441,11 +502,19 @@ class KickChatBot {
 
     if (message.event === 'pusher:error') {
       const errData = message.data as Record<string, unknown> | undefined;
-      console.error('[ERROR] Pusher error:', JSON.stringify(errData));
-
       const isObj = errData && typeof errData === 'object' && !Array.isArray(errData);
       const code = isObj ? errData.code : undefined;
       const errMsg = isObj && typeof errData.message === 'string' ? errData.message : '';
+
+      // Pusher says this about a subscribe that simply hasn't completed yet. Resubscribing
+      // then only doubled the subscription, so wait for the one already on its way.
+      const subscribeInFlight = !this.subscribed && Date.now() - this.subscribeSentAt < SUBSCRIBE_GRACE_MS;
+      if (subscribeInFlight && /no current subscription|subscription in progress/i.test(errMsg)) {
+        console.log('[INFO] Chat subscription still in progress — waiting for it');
+        return;
+      }
+
+      console.error('[ERROR] Pusher error:', JSON.stringify(errData));
 
       if (code === 4200) {
         // Pusher requests immediate reconnect
@@ -460,6 +529,7 @@ class KickChatBot {
     }
 
     if (message.event === 'pusher_internal:subscription_succeeded') {
+      this.subscribed = true;
       console.log('[SUCCESS] Successfully subscribed to chat!');
       console.log(`[INFO] Listening to ${this.channelName}'s chat...`);
       console.log(`[INFO] Command prefix: ${this.prefix}`);
@@ -505,10 +575,19 @@ class KickChatBot {
         const giftedUsernames = eventData.gifted_usernames as unknown[] | undefined;
         const count = giftedUsernames?.length ?? '?';
         console.log(`[EVENT] ${eventData.gifter_username} gifted ${count} subs!`);
+      } else if (message.event === 'App\\Events\\StreamHostEvent') {
+        const eventData = (typeof message.data === 'string'
+          ? JSON.parse(message.data)
+          : message.data) as Record<string, unknown>;
+        const hostUsername = eventData.host_username ?? eventData.username ?? 'Unknown';
+        const viewers = eventData.number_viewers ?? eventData.viewers ?? eventData.viewer_count ?? '?';
+        console.log(`[EVENT] ${hostUsername} hosted with ${viewers} viewers!`);
+        console.log(`[HOST DATA]`, JSON.stringify(eventData));
       } else {
-        // Log unknown events to see what we're missing
+        // Log unknown events with full data for future handlers
         if (message.event && !message.event.startsWith('pusher')) {
-          console.log('[UNKNOWN EVENT]', message.event, 'Channel:', message.channel);
+          const rawData = typeof message.data === 'string' ? message.data : JSON.stringify(message.data);
+          console.log('[UNKNOWN EVENT]', message.event, 'Channel:', message.channel, 'Data:', (rawData || '').slice(0, 300));
         }
       }
     } catch (err) {
@@ -567,13 +646,18 @@ class KickChatBot {
     // Get excluded commands from config
     const excludedCommands = (this.config.excludedCommands as string[] | undefined) || [];
 
-    // For command messages, check if the requested command is excluded FIRST
-    if (isCommand && excludedCommands.includes(requestedCommandName)) {
+    // For command messages, check if the requested command is excluded FIRST.
+    // Case-insensitive like setupCommands: the dashboard stores module spellings (customC).
+    if (isCommand && excludedCommands.some(c => String(c).toLowerCase() === requestedCommandName)) {
       console.log(`[COMMANDS] Command "${requestedCommandName}" is excluded for channel ${this.channelName}`);
       return;
     }
 
+    // Ignore messages from bots
+    if (badges.some(b => b.type === 'bot')) return;
+
     // Record for KPP engagement tracking (no-op when no live session).
+    // Placed after the bot-badge filter so chat-engagement reflects humans only.
     this.kppTracker.recordChat(username);
 
     // Build permission flags from badges
@@ -1092,6 +1176,10 @@ Rules:
   }
 
   startTokenRefreshScheduler(): void {
+    // connect() calls this on every attempt, and a failed attempt retries. Without
+    // clearing, each retry left another interval running for the life of the process.
+    if (this.tokenRefreshInterval) clearInterval(this.tokenRefreshInterval);
+
     // Check token every 30 minutes
     this.tokenRefreshInterval = setInterval(() => {
       this.checkAndRefreshToken().catch(() => {});
@@ -1227,6 +1315,15 @@ Rules:
 
   disconnect(): void {
     this.manualDisconnect = true;
+
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    if (this.pingInterval) {
+      clearInterval(this.pingInterval);
+      this.pingInterval = null;
+    }
 
     // Clear token refresh interval
     if (this.tokenRefreshInterval) {
