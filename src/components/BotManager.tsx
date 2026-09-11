@@ -2107,7 +2107,7 @@ export default function BotManager({
                 <div className="border-t border-neutral-800 pt-5">
                   <Toggle
                     label="Vision"
-                    description="Lets !claude look at a frame from the live stream when someone asks about what's on screen."
+                    description="When someone @mentions the bot, it looks at 3 live frames (plus the streamer's reference photos) before answering. !claude stays text-only."
                     checked={bot.claude?.vision?.enabled ?? false}
                     disabled={!!busy}
                     onChange={toggleVision}

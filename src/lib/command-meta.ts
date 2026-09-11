@@ -23,8 +23,8 @@ export const COMMAND_META: Record<string, CommandMeta> = {
   catfacts: { label: "Cat Facts", trigger: "!catfacts", description: "Random cat fact." },
   claude: {
     label: "Claude AI",
-    trigger: "!claude",
-    description: "Ask the AI a question. Uses channel chat history and lore for context.",
+    trigger: "!claude or @MrAIisHere",
+    description: "Ask the AI a question. Uses channel chat history and lore for context. With Vision on, @mentions also see the live stream.",
   },
   countd: { label: "Countdown", trigger: "!countd", description: "Countdown timer overlay." },
   customC: {
