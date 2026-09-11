@@ -1618,6 +1618,24 @@ function touchReload(channel: string): void {
   }
 }
 
+/**
+ * A stop the owner or an admin chose that is still in force, or null.
+ *
+ * Managers may bring back a bot that crashed, but not one the broadcaster
+ * switched off. A process started after the stop — by the owner, the pm2 CLI or
+ * a resurrect on reboot — has a newer pm_uptime, which retires the record
+ * without anything having to clear it.
+ */
+function deliberateStop(config: Record<string, unknown> | null, proc: Pm2Proc | undefined): { by: string | null; at: string } | null {
+  const stop = config?.['stopped'] as { by?: unknown; at?: unknown } | undefined;
+  if (!stop || typeof stop.at !== 'string') return null;
+  const at = Date.parse(stop.at);
+  if (!Number.isFinite(at)) return null;
+  if (proc?.pm2_env?.status === 'online') return null;
+  if ((proc?.pm2_env?.pm_uptime ?? 0) > at) return null;
+  return { by: typeof stop.by === 'string' ? stop.by : null, at: stop.at };
+}
+
 function summariseChannel(channel: string, procs: Pm2Proc[]): Record<string, unknown> {
   const config = readChannelConfig(channel);
   const proc = procs.find(p => p.name === `kick-${channel}`);
@@ -1652,6 +1670,7 @@ function summariseChannel(channel: string, procs: Pm2Proc[]): Record<string, unk
     claudeDefaults: CLAUDE_DEFAULTS,
     kpp: (config?.['kpp'] as unknown) ?? null,
     earnings: (config?.['earnings'] as unknown) ?? null,
+    stopped: deliberateStop(config, proc),
     token: {
       hasChannelOAuth: !!oauth?.accessToken,
       accessTokenExpiresAt: oauth?.expiresAt ?? null,
@@ -1690,24 +1709,58 @@ app.get('/internal/bot/:channel', internalGuard(false), async (req, res) => {
 });
 
 // start | stop | restart the channel's bot process.
+// Body: { action, actor?: { username, role: 'owner' | 'admin' | 'manager' } }
 app.post('/internal/bot/:channel/control', internalGuard(true), async (req, res) => {
   const channelRaw = req.params['channel'];
   const channel = (typeof channelRaw === 'string' ? channelRaw : '').toLowerCase();
   if (!validateChannelName(channel)) return res.status(400).json({ error: 'Invalid channel name' });
 
-  const action = (req.body as { action?: string })?.action;
+  const body = (req.body ?? {}) as { action?: string; actor?: { username?: unknown; role?: unknown } };
+  const action = body.action;
   if (action !== 'start' && action !== 'stop' && action !== 'restart') {
     return res.status(400).json({ error: 'action must be start, stop or restart' });
   }
-  if (!readChannelConfig(channel)) return res.status(404).json({ error: 'Not enrolled' });
+  const config = readChannelConfig(channel);
+  if (!config) return res.status(404).json({ error: 'Not enrolled' });
+
+  // The dashboard authorizes the user and says who it is. A caller that doesn't
+  // say is treated as the owner, which is what every call was before managers.
+  const actorName = typeof body.actor?.username === 'string' ? body.actor.username.slice(0, 25) : null;
+  const isManager = body.actor?.role === 'manager';
 
   const pm2Name = `kick-${channel}`;
+  const stop = deliberateStop(config, (await pm2List()).find(p => p.name === pm2Name));
+  if (isManager && action === 'stop') {
+    return res.status(403).json({ error: 'Only the broadcaster can stop the bot' });
+  }
+  if (isManager && stop) {
+    return res.status(403).json({ error: `${stop.by ?? 'The broadcaster'} stopped this bot — only the broadcaster can start it again` });
+  }
+
+  if (stop) {
+    // Cleared before starting, while the process is down: once the bot runs it
+    // rewrites this file on token refresh, and a write racing that can lose a token.
+    const fresh = readChannelConfig(channel);
+    if (fresh) {
+      delete fresh['stopped'];
+      writeChannelConfig(channel, fresh);
+    }
+  }
+
   const result = await execAsync(`pm2 ${action} "${pm2Name}"`);
   if (!result.ok) {
     console.error(`[INTERNAL] pm2 ${action} ${pm2Name} failed: ${result.message}`);
     return res.status(500).json({ error: `pm2 ${action} failed`, details: result.message });
   }
-  console.log(`[INTERNAL] pm2 ${action} ${pm2Name} OK`);
+  if (action === 'stop') {
+    // Written once the process is down, for the same reason.
+    const fresh = readChannelConfig(channel);
+    if (fresh) {
+      fresh['stopped'] = { by: actorName, at: new Date().toISOString() };
+      writeChannelConfig(channel, fresh);
+    }
+  }
+  console.log(`[INTERNAL] pm2 ${action} ${pm2Name} OK${actorName ? ` (by ${actorName})` : ''}`);
   const procs = await pm2List();
   return res.json({ ok: true, action, ...summariseChannel(channel, procs) });
 });
@@ -2842,6 +2895,24 @@ const KICK_OWNER = process.env.KICK_OWNER;
 let deploymentWs: WebSocket | null = null;
 let deploymentPingInterval: NodeJS.Timeout | null = null;
 let deploymentBroadcasterId: number | null = null;
+let deploymentStartAttempts = 0;
+let deploymentStartTimer: NodeJS.Timeout | null = null;
+
+/**
+ * Try the start again later. A failed start used to be final: one Kick API blip
+ * or a token not yet refreshed at boot left !kickaddme dead until the next
+ * service restart. Backs off to five minutes and never gives up.
+ */
+function retryDeploymentBot(reason: string): void {
+  if (deploymentStartTimer) return;
+  deploymentStartAttempts++;
+  const delayMs = Math.min(5 * 60_000, 15_000 * 2 ** Math.min(deploymentStartAttempts - 1, 5));
+  console.error(`[DEPLOY BOT] ${reason} — retrying in ${Math.round(delayMs / 1000)}s`);
+  deploymentStartTimer = setTimeout(() => {
+    deploymentStartTimer = null;
+    void startDeploymentBot();
+  }, delayMs);
+}
 
 async function startDeploymentBot(): Promise<void> {
   if (!DEPLOYMENT_CHATROOM_ID) {
@@ -2854,24 +2925,25 @@ async function startDeploymentBot(): Promise<void> {
     const botAuth = new KickAuth();
 
     if (!botAuth.isAuthenticated()) {
-      console.log('[DEPLOY BOT] Not authenticated, skipping');
+      retryDeploymentBot('Not authenticated');
       return;
     }
 
     // Get broadcaster ID for sending messages
     const botToken = await botAuth.getAccessToken();
     const channelResponse = await axios.get(`https://api.kick.com/public/v1/channels?slug=${DEPLOYMENT_CHANNEL}`, {
-      headers: { 'Authorization': `Bearer ${botToken}` }
+      headers: { 'Authorization': `Bearer ${botToken}` },
+      // Without a limit a stalled request holds the start, and so the retry, forever.
+      timeout: 10_000
     });
     deploymentBroadcasterId = (channelResponse.data.data[0] as { broadcaster_user_id?: number } | undefined)?.broadcaster_user_id ?? null;
 
-    // Connect to WebSocket
+    // Connect to WebSocket. From here the socket's close handler does the reconnecting.
+    deploymentStartAttempts = 0;
     connectDeploymentWebSocket();
 
   } catch (err) {
-    if (err instanceof Error) {
-      console.error('[DEPLOY BOT] Failed to start:', err.message);
-    }
+    retryDeploymentBot(`Failed to start: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 
@@ -2897,8 +2969,13 @@ function connectDeploymentWebSocket(): void {
     }
   }, 15000);
 
+  // The watchdog above only covers connecting. Once open, a socket can go silent
+  // with TCP none the wiser; Pusher answers every ping, so a long silence means dead.
+  let lastFrameAt = Date.now();
+
   deploymentWs.on('open', () => {
     clearTimeout(connectTimeout);
+    lastFrameAt = Date.now();
     console.log('[DEPLOY BOT] WebSocket connected!');
 
     const channels = [
@@ -2925,6 +3002,7 @@ function connectDeploymentWebSocket(): void {
   });
 
   deploymentWs.on('message', (data: WebSocket.RawData) => {
+    lastFrameAt = Date.now();
     try {
       const message = JSON.parse(data.toString()) as { event?: string; data?: unknown; channel?: string };
       handleDeploymentMessage(message);
@@ -2951,9 +3029,15 @@ function connectDeploymentWebSocket(): void {
   });
 
   deploymentPingInterval = setInterval(() => {
-    if (deploymentWs && deploymentWs.readyState === WebSocket.OPEN) {
-      deploymentWs.send(JSON.stringify({ event: 'pusher:ping', data: {} }));
+    if (ws.readyState !== WebSocket.OPEN) return;
+    // Two and a half ping intervals without a frame. Terminating hands over to the
+    // close handler, the one place a reconnect is scheduled.
+    if (Date.now() - lastFrameAt > 75_000) {
+      console.error('[DEPLOY BOT] No frames for 75s — terminating dead socket');
+      ws.terminate();
+      return;
     }
+    ws.send(JSON.stringify({ event: 'pusher:ping', data: {} }));
   }, 30000);
 }
 
@@ -2972,7 +3056,10 @@ function handleDeploymentMessage(message: { event?: string; data?: unknown; chan
     // Extract chatroom ID from Pusher channel name (e.g. "chatrooms.84265270.v2")
     const chatroomMatch = message.channel?.match(/chatrooms\.(\d+)/);
     const sourceChatroomId = chatroomMatch ? chatroomMatch[1] : DEPLOYMENT_CHATROOM_ID;
-    handleDeploymentCommand(eventData, sourceChatroomId as string);
+    // Nothing awaits this, and an unhandled rejection takes the whole service down.
+    handleDeploymentCommand(eventData, sourceChatroomId as string).catch(err => {
+      console.error('[DEPLOY BOT] Command failed:', err instanceof Error ? err.message : String(err));
+    });
   }
 }
 
