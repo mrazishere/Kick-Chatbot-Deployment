@@ -832,6 +832,10 @@ export default function PointsCard({
 
                   <div className="space-y-3 border-t border-neutral-800 pt-4">
                     <h4 className={LABEL}>Adjust balance</h4>
+                    {readOnly ? (
+                      <p className="text-sm text-neutral-500">Only the broadcaster can adjust balances.</p>
+                    ) : (
+                    <>
                     <div className="flex flex-wrap gap-2">
                       {(["add", "remove", "set"] as const).map((m) => (
                         <button
@@ -872,6 +876,8 @@ export default function PointsCard({
                     <Button variant="primary" onClick={() => void submitAdjust()} busy={busy === "adjust"} disabled={!!busy}>
                       Apply
                     </Button>
+                    </>
+                    )}
                   </div>
 
                   <div className="border-t border-neutral-800 pt-4">

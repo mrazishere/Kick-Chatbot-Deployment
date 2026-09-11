@@ -1,13 +1,14 @@
 import { NextResponse } from "next/server";
 import { adjustPoints, type PointsAdjustMode } from "@/lib/bot-api";
-import { authorizeChannel, errorResponse, validChannel } from "@/lib/bot-auth";
+import { authorizeChannel, errorResponse, requireAdminister, validChannel } from "@/lib/bot-auth";
 
 type Params = { params: Promise<{ channel: string }> };
 
 const MODES = new Set<PointsAdjustMode>(["add", "remove", "set"]);
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-// Owner, admin and managers alike: moderators can already change balances from chat.
+// Owner and admin only (user, 2026-09-12): managers can look viewers up but not change
+// balances, matching chat, where only the broadcaster and the bot owner can.
 // Every change needs a reason and is logged against the signed-in user — the actor
 // comes from the session, never from the request body.
 
@@ -20,6 +21,8 @@ export async function POST(req: Request, { params }: Params): Promise<NextRespon
 
   const gate = await authorizeChannel(channel);
   if (!gate.ok) return gate.response;
+  const denied = requireAdminister(gate.auth);
+  if (denied) return denied;
 
   let body: Record<string, unknown>;
   try {
