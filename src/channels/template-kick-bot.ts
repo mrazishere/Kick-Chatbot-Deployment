@@ -31,6 +31,7 @@ import { RewardRedemptionHandler } from './reward-redemptions';
 import { ChannelModerator } from './moderation';
 import { EarningsTracker } from './earnings-tracker';
 import { KPPTracker } from './kpp-tracker';
+import { PointsService } from '../points/service';
 
 const CHANNEL_NAME = '$$UPDATEHERE$$';
 
@@ -79,6 +80,7 @@ class KickChatBot {
   private moderator: ChannelModerator;
   private earningsTracker: EarningsTracker;
   private kppTracker: KPPTracker;
+  private points: PointsService;
   private channelTokenFailStreak = 0;
   private pendingLocationClarifications: Map<string, {
     options: Array<{ label: string; location: Record<string, string> }>;
@@ -123,17 +125,31 @@ class KickChatBot {
       sendMessage: (msg) => this.sendMessage(msg)
     });
 
-    this.webhookPoller = new WebhookPoller(
-      this.channelName,
-      (data) => this.handleChatMessage(data),
+    // Loyalty points. Inert until the channel config enables them.
+    this.points = new PointsService({
+      channelName: this.channelName,
+      getBroadcasterUserId: () => this.broadcasterUserId,
+      sendMessage: (msg) => this.sendMessage(msg),
+      lookupUser: (name) => this.moderator.lookupUser(name),
+      tokenFile: path.join(__dirname, '..', '.tokens.json')
+    });
+
+    this.webhookPoller = new WebhookPoller(this.channelName, {
+      chat: (data) => this.handleChatMessage(data),
       // Nothing awaits this, so a rejection would be unhandled — and Node exits on those.
-      (event) => {
+      redemption: (event) => {
         this.rewardHandler.handle(event).catch(err => {
           console.error(`[REWARD] Redemption ${event.id} failed:`, err instanceof Error ? err.message : String(err));
         });
       },
-      (event) => this.moderator.noteBan(event)
-    );
+      ban: (event) => this.moderator.noteBan(event),
+      follow: (event, meta) => { this.points.onFollow(event, meta); },
+      subscriptionNew: (event, meta) => { this.points.onSubscriptionNew(event, meta); },
+      subscriptionRenewal: (event, meta) => { this.points.onSubscriptionRenewal(event, meta); },
+      subscriptionGifts: (event, meta) => { this.points.onSubscriptionGifts(event, meta); },
+      kicksGifted: (event, meta) => { this.points.onKicksGifted(event, meta); },
+      livestreamStatus: (event, meta) => this.points.onLivestreamStatus(event, meta)
+    });
 
 
     // Earnings and KPP recording are opt-in per channel. Both trackers are
@@ -568,6 +584,8 @@ class KickChatBot {
           ? JSON.parse(message.data)
           : message.data) as Record<string, unknown>;
         console.log(`[EVENT] ${eventData.username} just subscribed!`);
+        // Points only use this when the sub webhooks couldn't be subscribed.
+        this.points.onPusherSubscription(eventData);
       } else if (message.event === 'App\\Events\\GiftedSubscriptionsEvent') {
         const eventData = (typeof message.data === 'string'
           ? JSON.parse(message.data)
@@ -575,6 +593,7 @@ class KickChatBot {
         const giftedUsernames = eventData.gifted_usernames as unknown[] | undefined;
         const count = giftedUsernames?.length ?? '?';
         console.log(`[EVENT] ${eventData.gifter_username} gifted ${count} subs!`);
+        this.points.onPusherGifts(eventData);
       } else if (message.event === 'App\\Events\\StreamHostEvent') {
         const eventData = (typeof message.data === 'string'
           ? JSON.parse(message.data)
@@ -659,6 +678,8 @@ class KickChatBot {
     // Record for KPP engagement tracking (no-op when no live session).
     // Placed after the bot-badge filter so chat-engagement reflects humans only.
     this.kppTracker.recordChat(username);
+    // Loyalty points presence: chatting recently is what counts as watching.
+    this.points.noteChat(sender?.id, username, badges);
 
     // Build permission flags from badges
     const isBroadcaster = badges.some(b => b.type === 'broadcaster' || b.type === 'owner');
@@ -689,7 +710,9 @@ class KickChatBot {
       isModUp: isModUp,
       isVIPUp: isVIPUp,
       rawBadges: badges,
-      senderId: sender?.id
+      senderId: sender?.id,
+      // Lets a command that changes state recognise the same message handled again after a restart.
+      messageId: typeof data.id === 'string' ? data.id : undefined
     };
 
     // Create client wrapper for commands
@@ -701,7 +724,8 @@ class KickChatBot {
         await this.sendMessage(msg).catch(() => {});
       },
       // Lets custom commands issue real timeouts instead of posting "/timeout" as text.
-      timeout: (request) => this.moderator.timeout(request)
+      timeout: (request) => this.moderator.timeout(request),
+      lookupUser: (name) => this.moderator.lookupUser(name)
     };
 
     // Intercept numeric replies for pending location clarifications
@@ -1300,6 +1324,7 @@ Rules:
             console.error('[KPP] Tracker failed to start:', err.message);
           }
         });
+        this.points.start();
         return;
       } catch (error) {
         attempt++;
@@ -1337,6 +1362,7 @@ Rules:
     this.moderator.stop();
     this.earningsTracker.stop();
     this.kppTracker.stop();
+    this.points.stop();
 
     if (this.ws) {
       console.log('[INFO] Disconnecting from Kick chat...');
