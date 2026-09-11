@@ -143,19 +143,30 @@ export interface ChannelConfig {
 export interface RewardAction {
   rewardId?: string;
   rewardTitle?: string;
-  action: 'timeout';
   /**
-   * Timeout length in seconds. Kick's ban API only accepts whole minutes, so
-   * anything not a multiple of 60 is issued as the next whole minute and then
-   * lifted early with an unban scheduled at the exact second.
+   * timeout  — time out the user named in the redemption.
+   * roulette — 50/50: time out the named user, or the redeemer.
+   * pardon   — lift a timeout the bot gave out (reward or /timeout command) on the
+   *            named user, or on the redeemer when nobody is named. Moderators'
+   *            own timeouts and bans are never touched.
+   * shield   — other viewers' timeout and roulette rewards can't hit the redeemer.
    */
-  durationSeconds: number;
+  action: 'timeout' | 'roulette' | 'pardon' | 'shield';
+  /**
+   * Seconds: the timeout length (timeout, roulette) or how long the shield lasts.
+   * Unused by pardon. Kick's ban API only accepts whole minutes, so a timeout
+   * that isn't a multiple of 60 is issued as the next whole minute and then
+   * lifted early at the exact second.
+   */
+  durationSeconds?: number;
+  /** shield only: a timeout or roulette aimed at the holder lands on whoever redeemed it. */
+  reflect?: boolean;
   /** Post the outcome in chat. Defaults to true. */
   announce?: boolean;
 
   /**
-   * Trial run. The timeout is really applied, but shortened to
-   * `testDurationSeconds` and the redemption is REJECTED afterwards so the
+   * Trial run. The action is really applied — a timeout or shield shortened to
+   * `testDurationSeconds` — and the redemption is REJECTED afterwards so the
    * redeemer's points come back. Lets a live reward be proven end to end
    * without charging anyone.
    */
@@ -179,6 +190,14 @@ export interface RewardRedemptionEvent {
   reward: { id: string; title: string; cost?: number; description?: string };
   redeemer: { user_id: number; username: string; channel_slug?: string };
   broadcaster: { user_id: number; username: string };
+}
+
+/** Kick's `moderation.banned` webhook payload. `expires_at` is null for a permanent ban. */
+export interface ModerationBannedEvent {
+  broadcaster: { user_id: number; username: string };
+  moderator?: { user_id: number; username: string };
+  banned_user: { user_id: number; username: string };
+  metadata?: { reason?: string; created_at?: string; expires_at?: string | null };
 }
 
 // ---------------------------------------------------------------------------
@@ -213,12 +232,30 @@ export interface KickTags {
 }
 
 // ---------------------------------------------------------------------------
-// ClientWrapper — the say-capable wrapper passed to every command plugin.
-// Derived from clientWrapper construction in template-kick-bot.js lines 398-403.
+// ClientWrapper — the wrapper passed to every command plugin: chat output, plus
+// timeouts issued through Kick's moderation API (see channels/moderation.ts).
 // ---------------------------------------------------------------------------
+
+/** A timeout a command asks the bot to issue. */
+export interface TimeoutRequest {
+  /** Kick username to time out; a leading @ is ignored. */
+  target: string;
+  seconds: number;
+  /** Who triggered it. Naming yourself is always allowed. */
+  invoker: string;
+  /** Shown in Kick's moderation log, truncated to 100 characters. */
+  reason: string;
+}
+
+/** `error` is a short sentence that is safe to post in chat. */
+export type TimeoutResult =
+  | { ok: true; target: string; seconds: number; actor: string }
+  | { ok: false; error: string };
 
 export interface ClientWrapper {
   say(channel: string, msg: string): Promise<void>;
+  /** Time a user out through Kick's API. Absent where the bot cannot moderate. */
+  timeout?(request: TimeoutRequest): Promise<TimeoutResult>;
 }
 
 // ---------------------------------------------------------------------------

@@ -194,7 +194,10 @@ async function subscribeChannelToWebhook(broadcasterUserId: number): Promise<voi
           { name: 'chat.message.sent', version: 1 },
           // Channel-points redemptions. Drives rewardActions in the channel
           // config (e.g. a reward that times someone out).
-          { name: 'channel.reward.redemption.updated', version: 1 }
+          { name: 'channel.reward.redemption.updated', version: 1 },
+          // Lets the bot drop a timeout it gave out once a moderator bans the same
+          // user, so its early unban or a pardon can't lift the moderator's ban.
+          { name: 'moderation.banned', version: 1 }
         ],
         broadcaster_user_id: broadcasterUserId,
         method: 'webhook'
@@ -709,7 +712,7 @@ app.get('/kick-bot-enroll/start', (_req: express.Request, res: express.Response)
     //   events:subscribe               — subscribe this channel to webhooks
     //   channel:rewards:write          — create/edit rewards and accept or
     //                                    reject redemptions (implies read)
-    //   moderation:ban                 — ban/unban/timeout (not used yet)
+    //   moderation:ban                 — reward timeouts (rewardActions)
     //   moderation:chat_message:manage — delete messages (not used yet)
     // Deliberately NOT requested: streamkey:read (a leaked stream key lets
     // someone broadcast as the channel, and no chat feature needs it) and ads:*.
@@ -791,7 +794,9 @@ app.get('/kick-bot-reauth/start', (_req: express.Request, res: express.Response)
     state: state,
     code_challenge: pkce.codeChallenge,
     code_challenge_method: 'S256',
-    scope: 'chat:write user:read channel:read'  // channel:read needed for /channels API lookups
+    // channel:read for /channels lookups; moderation:ban so reward timeouts are
+    // credited to the bot on channels where it is a moderator.
+    scope: 'chat:write user:read channel:read moderation:ban'
   });
 
   res.redirect(`${authServer}/oauth/authorize?${authParams.toString()}`);
@@ -2559,7 +2564,7 @@ app.post('/kick-webhook', express.raw({ type: '*/*' }), async (req: express.Requ
     else if (payload['reward'] && payload['redeemer']) eventType = 'channel.reward.redemption.updated';
   }
 
-  const QUEUED_EVENTS = ['chat.message.sent', 'channel.reward.redemption.updated'];
+  const QUEUED_EVENTS = ['chat.message.sent', 'channel.reward.redemption.updated', 'moderation.banned'];
   if (!QUEUED_EVENTS.includes(eventType)) return;
 
   const broadcaster = payload['broadcaster'] as { user_id?: number; username?: string } | undefined;
@@ -2594,6 +2599,14 @@ app.post('/kick-webhook', express.raw({ type: '*/*' }), async (req: express.Requ
   if (eventType === 'chat.message.sent') {
     const sender = payload['sender'] as { username?: string } | undefined;
     console.log(`[WEBHOOK] chat.message.sent from ${sender?.username ?? '?'} in ${channelName}`);
+  } else if (eventType === 'moderation.banned') {
+    const banned = payload['banned_user'] as { username?: string } | undefined;
+    const moderator = payload['moderator'] as { username?: string } | undefined;
+    const meta = payload['metadata'] as { expires_at?: string | null } | undefined;
+    console.log(
+      `[WEBHOOK] moderation.banned ${banned?.username ?? '?'} by ${moderator?.username ?? '?'} in ${channelName} — ` +
+      (meta?.expires_at ? `until ${meta.expires_at}` : 'permanent')
+    );
   } else {
     const reward = payload['reward'] as { id?: string; title?: string; cost?: number } | undefined;
     const redeemer = payload['redeemer'] as { username?: string } | undefined;

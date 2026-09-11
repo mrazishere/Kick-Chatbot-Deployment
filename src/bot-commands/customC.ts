@@ -24,12 +24,18 @@
  *              $streamerp = Random percentage except if user2 is the streamer of the channel, will print 10000000%
  *              $ynm - Random yes/no/maybe
  *
+ * Timeouts:    A response starting with "/timeout <user> <duration>" times the user out
+ *              through Kick's API (e.g. "/timeout $user1 1m"). Duration takes s/m/h/d;
+ *              a bare number is minutes. Text after the duration is posted once it works.
+ *              Anyone allowed to use the command may time themselves out; timing out
+ *              someone else needs a moderator.
+ *
  */
 
 import * as fs from 'fs';
 import * as path from 'path';
 import { promisify } from 'util';
-import { CommandFn } from '../types';
+import { ClientWrapper, CommandFn } from '../types';
 
 const readFileAsync = promisify(fs.readFile);
 const writeFileAsync = promisify(fs.writeFile);
@@ -83,6 +89,60 @@ function validateChannelPath(channelName: string): string | null {
   const sanitized = channelName.replace(/[^a-zA-Z0-9_-]/g, '');
   if (sanitized !== channelName || sanitized.length === 0) return null;
   return sanitized;
+}
+
+/**
+ * Kick only turns slash commands into actions when a person types them into its
+ * own chat box. Sent through the API — which is how every bot talks — "/timeout"
+ * is just text, so the bot performs the timeout itself.
+ */
+const TIMEOUT_RESPONSE = /^\/timeout\s+@*([A-Za-z0-9_]{2,25})\s+(\d{1,6})([smhd]?)(?:\s+([\s\S]*))?$/i;
+const MAX_TIMEOUT_SECONDS = 7 * 24 * 60 * 60;   // Kick's ban API caps a timeout at one week
+
+function parseTimeoutResponse(response: string): { target: string; seconds: number; followUp: string } | null {
+    const m = TIMEOUT_RESPONSE.exec(response.trim());
+    if (!m) return null;
+    const unit = (m[3] || 'm').toLowerCase();
+    const multiplier = unit === 's' ? 1 : unit === 'h' ? 3600 : unit === 'd' ? 86400 : 60;
+    return { target: m[1], seconds: Number(m[2]) * multiplier, followUp: (m[4] ?? '').trim() };
+}
+
+async function runTimeoutResponse(
+    client: ClientWrapper,
+    channel: string,
+    commandName: string,
+    response: string,
+    invoker: string,
+    invokerIsModUp: boolean
+): Promise<void> {
+    const parsed = parseTimeoutResponse(response);
+    if (!parsed) {
+        console.error(`[CUSTOMC] !${commandName} has a malformed /timeout response: ${response}`);
+        await client.say(channel, `@${invoker}, !${commandName} is misconfigured — its /timeout needs a user and a duration like 1m.`);
+        return;
+    }
+    const { target, seconds, followUp } = parsed;
+    if (seconds < 1 || seconds > MAX_TIMEOUT_SECONDS) {
+        await client.say(channel, `@${invoker}, !${commandName} asks for a timeout outside Kick's limit of 1 second to 7 days.`);
+        return;
+    }
+    // Timing yourself out is anyone's call; timing out someone else is a moderator's.
+    if (target.toLowerCase() !== invoker.toLowerCase() && !invokerIsModUp) {
+        await client.say(channel, `@${invoker}, only moderators can use !${commandName} on someone else.`);
+        return;
+    }
+    if (!client.timeout) {
+        console.error(`[CUSTOMC] !${commandName} wants a timeout but this bot cannot moderate`);
+        return;
+    }
+
+    const result = await client.timeout({ target, seconds, invoker, reason: `!${commandName} used by ${invoker}` });
+    if (!result.ok) {
+        await client.say(channel, `@${invoker}, ${result.error}.`);
+        return;
+    }
+    console.log(`[CUSTOMC] !${commandName}: ${invoker} timed out ${result.target} for ${result.seconds}s (as ${result.actor})`);
+    if (followUp) await client.say(channel, followUp);
 }
 
 export const customC: CommandFn = async function customC(client, message, channel, tags, _config) {
@@ -444,6 +504,9 @@ export const customC: CommandFn = async function customC(client, message, channe
             return; // Silently ignore for mod-only commands
         } else if (modOnly === "v" && !isVIPUp) {
             return; // Silently ignore for VIP+ commands
+        } else if (/^\/timeout\b/i.test(response.trim())) {
+            await runTimeoutResponse(client, channel, commandName, response, tags.username, !!isModUp);
+            return;
         } else {
             // Execute the command
             client.say(channel, response);

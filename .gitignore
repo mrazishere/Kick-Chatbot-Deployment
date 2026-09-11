@@ -21,6 +21,7 @@ src/channels/*.ts
 !src/channels/webhook-poller.ts
 !src/channels/kpp-tracker.ts
 !src/channels/reward-redemptions.ts
+!src/channels/moderation.ts
 
 # Custom command data and runtime channel configs (contain OAuth tokens)
 data/

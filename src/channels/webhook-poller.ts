@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { RewardRedemptionEvent } from '../types';
+import { ModerationBannedEvent, RewardRedemptionEvent } from '../types';
 
 const QUEUE_DIR = path.join(process.cwd(), 'data', 'webhook-events');
 const POLL_MS = 200;
@@ -28,6 +28,7 @@ export class WebhookPoller {
   private channelName: string;
   private onMessage: (data: Record<string, unknown>) => void;
   private onRedemption: ((event: RewardRedemptionEvent) => void) | null;
+  private onBan: ((event: ModerationBannedEvent) => void) | null;
   private queuePath: string;
   private interval: NodeJS.Timeout | null = null;
   private seenIds: string[] = [];
@@ -35,11 +36,13 @@ export class WebhookPoller {
   constructor(
     channelName: string,
     onMessage: (data: Record<string, unknown>) => void,
-    onRedemption?: (event: RewardRedemptionEvent) => void
+    onRedemption?: (event: RewardRedemptionEvent) => void,
+    onBan?: (event: ModerationBannedEvent) => void
   ) {
     this.channelName = channelName;
     this.onMessage = onMessage;
     this.onRedemption = onRedemption ?? null;
+    this.onBan = onBan ?? null;
     this.queuePath = path.join(QUEUE_DIR, `${channelName}.jsonl`);
   }
 
@@ -85,6 +88,11 @@ export class WebhookPoller {
         const eventName = wrapped ? (parsed['__event'] as string) : 'chat.message.sent';
         const event = (wrapped ? parsed['payload'] : parsed) as Record<string, unknown>;
         if (!event) continue;
+
+        if (eventName === 'moderation.banned') {
+          this.onBan?.(event as unknown as ModerationBannedEvent);
+          continue;
+        }
 
         if (eventName === 'channel.reward.redemption.updated') {
           const redemption = event as unknown as RewardRedemptionEvent;

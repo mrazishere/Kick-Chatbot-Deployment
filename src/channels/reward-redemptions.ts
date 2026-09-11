@@ -2,9 +2,13 @@
  * Channel-points reward redemptions → moderation actions.
  *
  * Kick delivers `channel.reward.redemption.updated` webhooks to the enrollment
- * service, which queues them per channel; WebhookPoller hands them here. The
- * only action implemented today is `timeout`: the redeemer names a victim in
- * the reward's user input and the bot times them out.
+ * service, which queues them per channel; WebhookPoller hands them here.
+ *
+ * Actions: `timeout` the user named in the redemption, `roulette` (50/50 the
+ * named user or the redeemer), `pardon` a timeout the bot gave out, and
+ * `shield` the redeemer from other viewers' timeout rewards. The moderation
+ * itself — who may be targeted, which token issues it, what's shielded — is
+ * ChannelModerator's.
  *
  * Everything is driven by `rewardActions` in the channel config, so a channel
  * with no such entry never does anything.
@@ -13,53 +17,38 @@
 import axios from 'axios';
 import * as fs from 'fs';
 import * as path from 'path';
-import { exec } from 'child_process';
-import { ChannelConfig, RewardAction, RewardRedemptionEvent, RawBadge } from '../types';
-import { getBotIdentity } from '../bot-identity';
+import { ChannelConfig, RewardAction, RewardRedemptionEvent } from '../types';
 import TelegramNotifier = require('../telegram-notifier');
+import { ChannelModerator, formatDuration } from './moderation';
 
 const API = 'https://api.kick.com/public/v1';
-
-/** Kick's ban API caps a timeout at one week. */
-const MAX_TIMEOUT_MINUTES = 10080;
 
 /** Redemption ids already acted on. The webhook re-fires on every status change. */
 const SEEN_LIMIT = 500;
 
-/** Bots that carry a moderator badge but are not people. Kept out of the mod cache. */
-const SYSTEM_BOTS = new Set(['kickbot', 'kickcx', 'botrix', 'streamelements', 'nightbot', 'moobot']);
+/** What one redemption did, or why it didn't. A failure is refunded. */
+type Outcome =
+  | { ok: true; announce: string; log: string }
+  | { ok: false; reason: string };
 
-/** How often the moderator cache is re-warmed from the channel log. */
-const MOD_REFRESH_MS = 30 * 60 * 1000;
-
-/** Scopes a `timeout` reward action cannot work without. */
+/** Scopes a reward action cannot work without. */
 const REQUIRED_SCOPES = ['moderation:ban', 'channel:rewards:write'];
 
 export interface RewardHandlerDeps {
   channelName: string;
   /** Live config — read through a getter, since token refresh replaces the object. */
   getConfig: () => ChannelConfig;
-  getBroadcasterUserId: () => number | null;
-  /** Streamer-delegated token. `isChannelToken: false` means moderation is not authorized. */
+  /** Streamer-delegated token, for refunds and scope checks. `isChannelToken: false` means none. */
   getToken: () => Promise<{ token: string; isChannelToken: boolean }>;
-  /**
-   * The bot's own token. Username lookups are channel-agnostic and only need
-   * `channel:read`, which the bot always holds — so they keep working even on a
-   * channel whose streamer grant predates the wider scope set.
-   */
-  getBotToken: () => Promise<string | null>;
+  /** Issues the timeouts. Shared with custom commands. */
+  moderator: ChannelModerator;
   sendMessage: (message: string) => Promise<unknown>;
 }
 
 export class RewardRedemptionHandler {
   private deps: RewardHandlerDeps;
   private seen: string[] = [];
-  /** Usernames (lowercase) known to hold a moderator/broadcaster badge here. */
-  private mods = new Set<string>();
-  private modRefreshTimer: NodeJS.Timeout | null = null;
-  private pendingUnbans = new Set<NodeJS.Timeout>();
-  /** Scopes actually granted on a given channel token, keyed by the token itself. */
-  private scopeCache = new Map<string, string[]>();
+  private started = false;
   private scopeGapNotified = false;
 
   constructor(deps: RewardHandlerDeps) {
@@ -67,10 +56,20 @@ export class RewardRedemptionHandler {
   }
 
   start(): void {
-    if (this.modRefreshTimer) return;
-    void this.warmModeratorCache();
+    if (this.started) return;
+    this.started = true;
     void this.preflightScopes();
-    this.modRefreshTimer = setInterval(() => void this.warmModeratorCache(), MOD_REFRESH_MS);
+  }
+
+  /** Nothing to tear down here — pending unbans belong to the moderator. */
+  stop(): void {
+    this.started = false;
+  }
+
+  /** Give up a claim whose checks then failed, so a later event for the redemption can still act. */
+  private release(redemptionId: string): void {
+    const i = this.seen.lastIndexOf(redemptionId);
+    if (i !== -1) this.seen.splice(i, 1);
   }
 
   /**
@@ -81,7 +80,7 @@ export class RewardRedemptionHandler {
    * nothing. Surface it while there is still time to act on it.
    */
   private async preflightScopes(): Promise<void> {
-    const actions = this.deps.getConfig().rewardActions;
+    const actions = this.currentActions();
     if (!Array.isArray(actions) || actions.length === 0) return;
 
     const { token, isChannelToken } = await this.deps.getToken().catch(() => ({ token: '', isChannelToken: false }));
@@ -90,7 +89,7 @@ export class RewardRedemptionHandler {
       return;
     }
 
-    const granted = await this.grantedScopes(token);
+    const granted = await this.deps.moderator.grantedScopes(token);
     if (granted.length === 0) return;   // introspection failed; don't cry wolf
 
     // A live action matched only by title is a loose match: two rewards whose
@@ -108,7 +107,13 @@ export class RewardRedemptionHandler {
     const missing = REQUIRED_SCOPES.filter(scope => !granted.includes(scope));
     if (missing.length === 0) {
       const pinned = actions.filter(a => a.rewardId).length;
-      console.log(`[REWARD] ${actions.length} reward action(s) armed and authorized (${pinned} pinned by id).`);
+      const asBot = (await this.deps.moderator.issuers()).some(a => a.isBot);
+      console.log(
+        `[REWARD] ${actions.length} reward action(s) armed and authorized (${pinned} pinned by id). ` +
+        (asBot
+          ? `Timeouts issued as the bot, falling back to ${this.deps.channelName} where it is not a moderator.`
+          : `Timeouts issued as ${this.deps.channelName} — the bot's own token lacks moderation:ban.`)
+      );
       return;
     }
 
@@ -124,107 +129,24 @@ export class RewardRedemptionHandler {
     }
   }
 
-  stop(): void {
-    if (this.modRefreshTimer) {
-      clearInterval(this.modRefreshTimer);
-      this.modRefreshTimer = null;
-    }
-    for (const t of this.pendingUnbans) clearTimeout(t);
-    this.pendingUnbans.clear();
-  }
-
   /**
-   * Feed live chat badges in. A moderator who has not spoken since the bot
-   * started is still covered by the log warm-start, but this keeps freshly
-   * promoted mods protected without waiting for the next refresh.
+   * The channel's reward actions, read from disk so a dashboard edit applies to
+   * the very next redemption without restarting the bot. Falls back to the
+   * bot's in-memory config when the file is missing, mid-write or unreadable.
    */
-  noteBadges(username: string, badges: RawBadge[] | undefined): void {
-    if (!username || !badges?.length) return;
-    const isMod = badges.some(b => b.type === 'moderator' || b.type === 'broadcaster' || b.type === 'owner');
-    if (isMod) this.mods.add(username.toLowerCase());
-  }
-
-  /**
-   * Seed the moderator set from the channel's own log.
-   *
-   * Kick's public API has no endpoint that lists moderators, so past chat is
-   * the only signal. Without this, a mod who is lurking at bot-restart time
-   * would be a legal timeout target.
-   */
-  private warmModeratorCache(): Promise<void> {
-    const logPath = path.join(process.cwd(), 'logs', `kick-${this.deps.channelName}-out.log`);
-    if (!fs.existsSync(logPath)) return Promise.resolve();
-
-    // Filter in the shell: these logs reach tens of MB and buffering a raw tail
-    // in Node blows past exec's maxBuffer, which fails silently.
-    const cmd = `tail -n 200000 ${JSON.stringify(logPath)} | grep -oE '\\[[a-z_,]*moderator[a-z_,]*\\] [A-Za-z0-9_]+:' | sed -E 's/.*\\] //; s/:$//' | sort -u`;
-    return new Promise<void>(resolve => {
-      exec(cmd, { maxBuffer: 1024 * 1024 }, (err, stdout) => {
-        if (err && !stdout) return resolve();
-        let added = 0;
-        for (const line of stdout.split('\n')) {
-          const name = line.trim().toLowerCase();
-          if (!name || SYSTEM_BOTS.has(name)) continue;
-          if (!this.mods.has(name)) added++;
-          this.mods.add(name);
-        }
-        if (added) console.log(`[REWARD] Moderator cache warmed from log (+${added}, ${this.mods.size} total)`);
-        resolve();
-      });
-    });
-  }
-
-  /**
-   * Why `target` may not be timed out, or null if it may.
-   *
-   * Someone naming themselves is always allowed: a self-inflicted timeout
-   * harms nobody else, and it's the only way a moderator can exercise the
-   * reward at all. The broadcaster and the bot stay protected even from
-   * themselves — gagging either one breaks the stream or the bot's own replies.
-   */
-  private protectionReason(target: string, redeemer: string): string | null {
-    const name = target.toLowerCase();
-    if (name === this.deps.channelName.toLowerCase()) return 'broadcaster';
-    const bot = getBotIdentity();
-    if (bot?.username && name === bot.username.toLowerCase()) return 'the bot';
-    if (SYSTEM_BOTS.has(name)) return 'a system bot';
-
-    if (name === redeemer.toLowerCase()) return null;   // self-inflicted
-
-    if (name === (process.env.KICK_OWNER || '').toLowerCase()) return 'the bot owner';
-    if (this.mods.has(name)) return 'a moderator';
-    return null;
-  }
-
-  /**
-   * Scopes actually present on the channel token.
-   *
-   * A grant made before a scope was added to the enrollment request keeps the
-   * old, narrower set forever — refreshing never widens it. Acting without
-   * checking means the ban call 403s and the redeemer gets told their points
-   * were refunded when the refund 403'd too.
-   */
-  private async grantedScopes(token: string): Promise<string[]> {
-    const cached = this.scopeCache.get(token);
-    if (cached) return cached;
+  private currentActions(): RewardAction[] {
     try {
-      const res = await axios.post(`${API}/token/introspect`, null, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      const scope = (res.data as { data?: { scope?: string } })?.data?.scope ?? '';
-      const scopes = scope.split(/\s+/).filter(Boolean);
-      // Tokens rotate on refresh; keep the map from growing unbounded.
-      if (this.scopeCache.size > 4) this.scopeCache.clear();
-      this.scopeCache.set(token, scopes);
-      return scopes;
+      const file = path.join(process.cwd(), 'data', 'channel-configs', `${this.deps.channelName}.json`);
+      const onDisk = JSON.parse(fs.readFileSync(file, 'utf8')) as ChannelConfig;
+      return Array.isArray(onDisk.rewardActions) ? onDisk.rewardActions : [];
     } catch {
-      // Unknown rather than empty — assume capable and let the API be the judge.
-      return [];
+      const inMemory = this.deps.getConfig().rewardActions;
+      return Array.isArray(inMemory) ? inMemory : [];
     }
   }
 
   private matchAction(reward: RewardRedemptionEvent['reward']): RewardAction | null {
-    const actions = this.deps.getConfig().rewardActions;
+    const actions = this.currentActions();
     if (!Array.isArray(actions) || actions.length === 0) return null;
 
     // Reward id is exact and survives a rename, so it wins over the title.
@@ -249,26 +171,31 @@ export class RewardRedemptionHandler {
     const status = (event.status || '').toLowerCase();
     if (status !== 'pending' && status !== 'accepted') return;
 
-    // Preflight the token BEFORE claiming the redemption. If the channel can't
-    // authorize a ban there is nothing useful to do: stay silent and leave the
-    // redemption pending so the streamer can resolve it by hand. Announcing a
-    // failure and a refund we can't perform is worse than doing nothing.
-    const { token, isChannelToken } = await this.deps.getToken();
-    if (!isChannelToken || !token) {
-      console.error(`[REWARD] "${event.reward.title}" ignored — no streamer token. Channel must re-authorize.`);
-      return;
-    }
-    const scopes = await this.grantedScopes(token);
-    if (scopes.length > 0 && !scopes.includes('moderation:ban')) {
-      console.error(
-        `[REWARD] "${event.reward.title}" ignored — ${this.deps.channelName}'s token lacks moderation:ban ` +
-        `(granted: ${scopes.join(' ') || 'none'}). Redemption left pending; channel must re-authorize.`
-      );
-      return;
-    }
-
+    // Claim it before the first await. Kick sends a follow-up event for the same
+    // redemption a second or two later, and claiming only after the checks below
+    // let both copies through: a double timeout, or two shields for one purchase.
     this.seen.push(event.id);
     if (this.seen.length > SEEN_LIMIT) this.seen.shift();
+
+    // If the channel can't authorize a ban there is nothing useful to do: stay
+    // silent and leave the redemption pending so the streamer can resolve it by
+    // hand. Announcing a failure and a refund we can't perform is worse than doing
+    // nothing. The claim is released so a later event can still act once fixed.
+    const { token, isChannelToken } = await this.deps.getToken().catch(() => ({ token: '', isChannelToken: false }));
+    if (!isChannelToken || !token) {
+      console.error(`[REWARD] "${event.reward.title}" ignored — no streamer token. Channel must re-authorize.`);
+      this.release(event.id);
+      return;
+    }
+    const scopes = await this.deps.moderator.grantedScopes(token);
+    if ((await this.deps.moderator.issuers()).length === 0) {
+      console.error(
+        `[REWARD] "${event.reward.title}" ignored — neither the bot nor ${this.deps.channelName}'s token carries moderation:ban ` +
+        `(channel granted: ${scopes.join(' ') || 'none'}). Redemption left pending; channel must re-authorize.`
+      );
+      this.release(event.id);
+      return;
+    }
 
     // A redemption that arrives already accepted skipped the request queue —
     // there is no queue entry left to resolve, so accept/reject is a no-op.
@@ -302,99 +229,139 @@ export class RewardRedemptionHandler {
       return;
     }
 
-    const target = parseTargetUsername(event.user_input);
-    if (!target) {
-      return fail('I could not read a username in that redemption');
-    }
-    const blocked = this.protectionReason(target, redeemer);
-    if (blocked) {
-      return fail(`${target} cannot be timed out (${blocked})`);
+    const outcome = await this.perform(action, event, redeemer, isTest);
+    if (!outcome.ok) {
+      return fail(outcome.reason);
     }
 
-    const broadcasterUserId = this.deps.getBroadcasterUserId();
-    if (!broadcasterUserId) {
-      console.error('[REWARD] Broadcaster user id unknown — cannot time out.');
-      return fail('the bot could not identify this channel');
-    }
-
-    const lookupToken = (await this.deps.getBotToken().catch(() => null)) || token;
-    const targetUserId = await resolveUserId(target, lookupToken)
-      ?? (lookupToken === token ? null : await resolveUserId(target, token));
-    if (!targetUserId) {
-      return fail(`I could not find a Kick user called "${target}"`);
-    }
-    if (targetUserId === broadcasterUserId) {
-      return fail(`${target} cannot be timed out`);
-    }
-
-    const configured = isTest ? (action.testDurationSeconds ?? 5) : action.durationSeconds;
-    const seconds = Math.max(1, Math.floor(configured));
-    // Kick's ban API takes whole minutes. Round up so the punishment is never
-    // shorter than configured, then lift it early at the exact second below.
-    const minutes = Math.min(MAX_TIMEOUT_MINUTES, Math.ceil(seconds / 60));
-
-    try {
-      await axios.post(`${API}/moderation/bans`, {
-        broadcaster_user_id: broadcasterUserId,
-        user_id: targetUserId,
-        duration: minutes,
-        reason: truncate(`Reward "${event.reward.title}" redeemed by ${redeemer}`, 100)
-      }, { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } });
-    } catch (err) {
-      const detail = axios.isAxiosError(err)
-        ? JSON.stringify(err.response?.data ?? err.message)
-        : (err instanceof Error ? err.message : String(err));
-      console.error(`[REWARD] Timeout of ${target} failed: ${detail}`);
-      return fail(`I could not time out ${target}`);
-    }
-
-    console.log(`[REWARD]${isTest ? ' [TEST]' : ''} ${redeemer} timed out ${target} for ${seconds}s (API: ${minutes}m) via "${event.reward.title}"`);
-
-    if (seconds % 60 !== 0) {
-      this.scheduleUnban(target, targetUserId, broadcasterUserId, seconds);
-    }
+    console.log(`[REWARD]${isTest ? ' [TEST]' : ''} ${outcome.log} via "${event.reward.title}"`);
 
     // A test run rejects rather than accepts, which is what refunds the points.
     const resolved = canResolve ? await this.resolve(event.id, !isTest) : false;
 
     if (action.announce !== false) {
-      const headline = `@${redeemer} ${isTest ? 'TEST — ' : `redeemed "${event.reward.title}" — `}` +
-        `${target} is timed out for ${formatDuration(seconds)}`;
+      const lead = `@${redeemer} ${isTest ? 'TEST — ' : `redeemed "${event.reward.title}" — `}`;
       const tail = isTest
         ? (resolved ? ', points refunded.' : ', but the refund failed — resolve it manually.')
         : '.';
-      await this.deps.sendMessage(headline + tail).catch(() => {});
+      await this.deps.sendMessage(lead + outcome.announce + tail).catch(() => {});
     }
   }
 
-  /**
-   * Lift the rounded-up ban at the exact configured second.
-   *
-   * Best-effort by design: if the bot dies before this fires, Kick expires the
-   * timeout on its own within the next minute rather than leaving anyone stuck.
-   */
-  private scheduleUnban(target: string, userId: number, broadcasterUserId: number, seconds: number): void {
-    const timer = setTimeout(() => {
-      this.pendingUnbans.delete(timer);
-      void (async () => {
-        try {
-          const { token, isChannelToken } = await this.deps.getToken();
-          if (!isChannelToken || !token) return;
-          await axios.delete(`${API}/moderation/bans`, {
-            headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-            data: { broadcaster_user_id: broadcasterUserId, user_id: userId }
-          });
-          console.log(`[REWARD] Timeout on ${target} lifted at ${seconds}s`);
-        } catch (err) {
-          // Kick expires the rounded-up ban shortly anyway — log and move on.
-          const detail = axios.isAxiosError(err)
-            ? JSON.stringify(err.response?.data ?? err.message)
-            : (err instanceof Error ? err.message : String(err));
-          console.error(`[REWARD] Early unban of ${target} failed: ${detail}`);
+  /** Carry out one redemption. The caller refunds a failure and announces a success. */
+  private async perform(action: RewardAction, event: RewardRedemptionEvent, redeemer: string, isTest: boolean): Promise<Outcome> {
+    const { moderator } = this.deps;
+    const reason = `${event.reward.title} redeemed by ${redeemer}`;
+    const seconds = (isTest ? (action.testDurationSeconds ?? 5) : action.durationSeconds) ?? 0;
+    if (action.action !== 'pardon' && !(seconds > 0)) {
+      console.error(`[REWARD] "${event.reward.title}" is a ${action.action} action with no durationSeconds — fix the channel config.`);
+      return { ok: false, reason: 'this reward is not set up correctly' };
+    }
+
+    switch (action.action) {
+      case 'timeout': {
+        const target = parseTargetUsername(event.user_input);
+        if (!target) return { ok: false, reason: 'I could not read a username in that redemption' };
+
+        const blocked = moderator.protectionReason(target, redeemer);
+        if (blocked) return { ok: false, reason: `${target} cannot be timed out (${blocked})` };
+        const shield = sameUser(target, redeemer) ? null : moderator.shieldOf(target);
+        if (shield && !shield.reflect) return { ok: false, reason: `${target} is shielded` };
+
+        const result = await moderator.timeout({ target: shield ? redeemer : target, seconds, invoker: redeemer, reason });
+        if (!result.ok) return { ok: false, reason: result.error };
+        const dur = formatDuration(result.seconds);
+        return shield
+          ? {
+              ok: true,
+              announce: `${target}'s shield bounced it back, so you're timed out for ${dur}`,
+              log: `${redeemer}'s timeout on ${target} bounced off a shield — ${redeemer} timed out for ${result.seconds}s (as ${result.actor})`
+            }
+          : {
+              ok: true,
+              announce: `${result.target} is timed out for ${dur}`,
+              log: `${redeemer} timed out ${result.target} for ${result.seconds}s (as ${result.actor})`
+            };
+      }
+
+      case 'roulette': {
+        const target = parseTargetUsername(event.user_input);
+        if (!target) return { ok: false, reason: 'I could not read a username in that redemption' };
+
+        // Settle everything that could void the spin BEFORE rolling, so a typo or a
+        // protected name is refunded rather than becoming a coin flip on the redeemer.
+        // That includes the redeemer: Kick won't time out a moderator, so a mod's
+        // backfire would fail and refund, a spin they could never lose.
+        const immune = moderator.protectionReason(redeemer, '');
+        if (immune) {
+          const who = immune === 'broadcaster' ? 'the streamer' : immune;
+          return { ok: false, reason: `you're ${who}, so a backfire can't time you out. No free spins` };
         }
-      })();
-    }, seconds * 1000);
-    this.pendingUnbans.add(timer);
+        const blocked = moderator.protectionReason(target, redeemer);
+        if (blocked) return { ok: false, reason: `${target} cannot be timed out (${blocked})` };
+        if (!(await moderator.lookupUser(target))) {
+          return { ok: false, reason: `I could not find a Kick user called "${target}"` };
+        }
+        const shield = sameUser(target, redeemer) ? null : moderator.shieldOf(target);
+        if (shield && !shield.reflect) return { ok: false, reason: `${target} is shielded` };
+
+        const backfired = shield !== null || Math.random() < 0.5;
+        console.log(`[REWARD] ${redeemer}'s roulette on ${target}: ${shield ? 'bounced off a shield' : backfired ? 'backfired' : 'landed'}`);
+        const result = await moderator.timeout({ target: backfired ? redeemer : target, seconds, invoker: redeemer, reason });
+        if (!result.ok) return { ok: false, reason: result.error };
+        const dur = formatDuration(result.seconds);
+        if (shield) {
+          return {
+            ok: true,
+            announce: `${target}'s shield bounced the roulette back, so you're timed out for ${dur}`,
+            log: `${redeemer}'s roulette on ${target} bounced off a shield — ${redeemer} timed out for ${result.seconds}s (as ${result.actor})`
+          };
+        }
+        return backfired
+          ? {
+              ok: true,
+              announce: `the roulette on ${target} backfired, so you're timed out for ${dur}`,
+              log: `${redeemer}'s roulette on ${target} backfired — ${redeemer} timed out for ${result.seconds}s (as ${result.actor})`
+            }
+          : {
+              ok: true,
+              announce: `the roulette landed on ${result.target}, timed out for ${dur}`,
+              log: `${redeemer}'s roulette landed on ${result.target} — timed out for ${result.seconds}s (as ${result.actor})`
+            };
+      }
+
+      case 'pardon': {
+        // No name means "get me out". A name that can't be read is an error, not a self-pardon.
+        const input = (event.user_input ?? '').trim();
+        const target = input ? parseTargetUsername(input) : redeemer;
+        if (!target) return { ok: false, reason: 'I could not read a username in that redemption' };
+
+        const result = await moderator.pardon(target);
+        if (!result.ok) return { ok: false, reason: result.error };
+        return {
+          ok: true,
+          announce: sameUser(result.target, redeemer) ? 'your timeout is lifted' : `${result.target} is out of timeout`,
+          log: `${redeemer} pardoned ${result.target}`
+        };
+      }
+
+      case 'shield': {
+        const shield = moderator.grantShield(redeemer, seconds, action.reflect === true);
+        const left = formatDuration(Math.round((shield.expiresAt - Date.now()) / 1000));
+        return {
+          ok: true,
+          announce: `you're shielded from timeout rewards for ${left}` +
+            (shield.reflect ? ', and any aimed at you bounce back' : ''),
+          log: `${redeemer} is shielded for ${left}${shield.reflect ? ' (reflect)' : ''}`
+        };
+      }
+
+      default: {
+        const unknown = (action as { action?: unknown }).action;
+        console.error(`[REWARD] "${event.reward.title}" has unknown action "${String(unknown)}" — fix the channel config.`);
+        return { ok: false, reason: 'this reward is not set up correctly' };
+      }
+    }
   }
 
   /** Accept (fulfil) or reject (refund) the queued redemption. Returns success. */
@@ -435,32 +402,6 @@ export function parseTargetUsername(userInput: string | undefined): string | nul
   return /^[A-Za-z0-9_]{2,25}$/.test(cleaned) ? cleaned : null;
 }
 
-/** Resolve a Kick username to its numeric user id via its channel slug. */
-async function resolveUserId(username: string, token: string): Promise<number | null> {
-  try {
-    const res = await axios.get(`${API}/channels`, {
-      params: { slug: username.toLowerCase() },
-      headers: { Authorization: `Bearer ${token}`, Accept: '*/*' }
-    });
-    const rows = (res.data as { data?: Array<{ broadcaster_user_id?: number }> })?.data;
-    const id = rows?.[0]?.broadcaster_user_id;
-    return typeof id === 'number' ? id : null;
-  } catch (err) {
-    const detail = axios.isAxiosError(err)
-      ? JSON.stringify(err.response?.data ?? err.message)
-      : (err instanceof Error ? err.message : String(err));
-    console.error(`[REWARD] Could not resolve user "${username}": ${detail}`);
-    return null;
-  }
-}
-
-function truncate(text: string, max: number): string {
-  return text.length <= max ? text : text.slice(0, max - 1) + '…';
-}
-
-function formatDuration(seconds: number): string {
-  if (seconds < 60) return `${seconds} seconds`;
-  const mins = Math.floor(seconds / 60);
-  const rem = seconds % 60;
-  return rem ? `${mins}m ${rem}s` : `${mins} minute${mins === 1 ? '' : 's'}`;
+function sameUser(a: string, b: string): boolean {
+  return a.replace(/^@+/, '').toLowerCase() === b.replace(/^@+/, '').toLowerCase();
 }

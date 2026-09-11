@@ -28,6 +28,7 @@ import { markBotOutput } from '../recent-bot-outputs';
 import { resolveBotIdentity } from '../bot-identity';
 import { WebhookPoller } from './webhook-poller';
 import { RewardRedemptionHandler } from './reward-redemptions';
+import { ChannelModerator } from './moderation';
 import { EarningsTracker } from './earnings-tracker';
 import { KPPTracker } from './kpp-tracker';
 
@@ -61,6 +62,7 @@ class KickChatBot {
   private pingInterval: NodeJS.Timeout | null;
   private webhookPoller: WebhookPoller;
   private rewardHandler: RewardRedemptionHandler;
+  private moderator: ChannelModerator;
   private earningsTracker: EarningsTracker;
   private kppTracker: KPPTracker;
   private channelTokenFailStreak = 0;
@@ -91,19 +93,27 @@ class KickChatBot {
 
     // Channel-points rewards mapped to moderation actions. Inert unless the
     // channel config carries a rewardActions entry.
+    // Issues timeouts for both channel-point rewards and /timeout custom commands.
+    this.moderator = new ChannelModerator({
+      channelName: this.channelName,
+      getBroadcasterUserId: () => this.broadcasterUserId,
+      getToken: () => this.getChannelAccessToken(),
+      getBotToken: () => this.auth.getAccessToken()
+    });
+
     this.rewardHandler = new RewardRedemptionHandler({
       channelName: this.channelName,
       getConfig: () => this.config,
-      getBroadcasterUserId: () => this.broadcasterUserId,
       getToken: () => this.getChannelAccessToken(),
-      getBotToken: () => this.auth.getAccessToken(),
+      moderator: this.moderator,
       sendMessage: (msg) => this.sendMessage(msg)
     });
 
     this.webhookPoller = new WebhookPoller(
       this.channelName,
       (data) => this.handleChatMessage(data),
-      (event) => { void this.rewardHandler.handle(event); }
+      (event) => { void this.rewardHandler.handle(event); },
+      (event) => this.moderator.noteBan(event)
     );
 
 
@@ -482,7 +492,7 @@ class KickChatBot {
 
     // Keep the reward handler's moderator set current so a mod who was promoted
     // since the last log warm-start still can't be timed out by a redemption.
-    this.rewardHandler.noteBadges(username, badges);
+    this.moderator.noteBadges(username, badges);
 
     // Detect native Kick reply metadata. Button-replies carry the replied-to
     // user/message here in `metadata`; the visible `content` usually has no
@@ -563,7 +573,9 @@ class KickChatBot {
       say: async (_channel: string, msg: string): Promise<void> => {
         console.log(`[COMMAND RESPONSE] ${msg}`);
         await this.sendMessage(msg);
-      }
+      },
+      // Lets custom commands issue real timeouts instead of posting "/timeout" as text.
+      timeout: (request) => this.moderator.timeout(request)
     };
 
     // Intercept numeric replies for pending location clarifications
@@ -1105,6 +1117,7 @@ Rules:
         this.startTokenRefreshScheduler();
         await this.connectWebSocket();
         this.webhookPoller.start();
+        this.moderator.start();
         this.rewardHandler.start();
         this.earningsTracker.start().catch(err => {
           if (err instanceof Error) {
@@ -1141,6 +1154,7 @@ Rules:
 
     this.webhookPoller.stop();
     this.rewardHandler.stop();
+    this.moderator.stop();
     this.earningsTracker.stop();
     this.kppTracker.stop();
 
