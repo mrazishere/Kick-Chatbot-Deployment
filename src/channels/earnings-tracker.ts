@@ -30,6 +30,7 @@ import { CurrentEarningsSession, FinalizedEarningsSession } from '../types';
 import KickAuth = require('../auth');
 import { EarningsConfig } from '../types';
 import TelegramNotifier = require('../telegram-notifier');
+import { writeJsonAtomic } from '../file-lock';
 
 const POLL_INTERVAL_MS = 5 * 60 * 1000;          // 5 minutes
 const CENTS_PER_VIEWER_PER_HOUR = 10;             // $0.10/viewer/hour
@@ -81,7 +82,7 @@ export class EarningsTracker {
     this.sessionsFile = path.join(this.dataDir, 'sessions.json');
     fs.mkdirSync(this.dataDir, { recursive: true });
     if (!fs.existsSync(this.sessionsFile)) {
-      fs.writeFileSync(this.sessionsFile, '[]');
+      writeJsonAtomic(this.sessionsFile, []);
     }
   }
 
@@ -154,8 +155,11 @@ export class EarningsTracker {
     }
   }
 
+  // Through a rename: the dashboard and !earnings read these files while the
+  // tracker writes them, and a crash mid-write left a truncated current.json
+  // that reads as "no session", so the stream's earnings so far were lost.
   private writeCurrent(session: CurrentEarningsSession): void {
-    fs.writeFileSync(this.currentFile, JSON.stringify(session, null, 2));
+    writeJsonAtomic(this.currentFile, session);
   }
 
   private deleteCurrent(): void {
@@ -176,7 +180,7 @@ export class EarningsTracker {
       }
     }
     sessions.push(session);
-    fs.writeFileSync(this.sessionsFile, JSON.stringify(sessions, null, 2));
+    writeJsonAtomic(this.sessionsFile, sessions);
   }
 
   private hoursBetween(fromIso: string, toMs: number): number {
