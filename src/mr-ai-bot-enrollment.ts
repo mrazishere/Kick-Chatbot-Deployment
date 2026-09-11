@@ -1446,6 +1446,16 @@ function writeChannelConfig(channel: string, config: Record<string, unknown>): v
 }
 
 /**
+ * Command names as the modules spell them. Chat and the dashboard stored them
+ * lowercased ("customc"), which matched no module, so the dashboard could never
+ * save customC as disabled. Names with no module come back as null.
+ */
+function canonicalCommandNames(names: unknown[]): Array<string | null> {
+  const byLower = new Map(listAvailableCommands().map(c => [c.toLowerCase(), c] as const));
+  return names.map(n => byLower.get(String(n).toLowerCase()) ?? null);
+}
+
+/**
  * Touch the sentinel PM2 watches so the bot picks up a config change.
  * PM2 watches this file rather than the JSON, because the bot rewrites its own
  * JSON on every token refresh (see addToEcosystem).
@@ -1481,7 +1491,11 @@ function summariseChannel(channel: string, procs: Pm2Proc[]): Record<string, unk
     chatOnly: config?.['chatOnly'] === true,
     enrolledAt: config?.['enrolledAt'] ?? null,
     lastUpdated: config?.['lastUpdated'] ?? null,
-    excludedCommands: Array.isArray(config?.['excludedCommands']) ? config['excludedCommands'] : [],
+    // As the modules spell them, so the dashboard's toggles match; names with no
+    // module left are dropped rather than failing every later save as "unknown".
+    excludedCommands: Array.isArray(config?.['excludedCommands'])
+      ? canonicalCommandNames(config['excludedCommands'] as unknown[]).filter((c): c is string => c !== null)
+      : [],
     managers: Array.isArray(config?.['managers']) ? config['managers'] : [],
     location: (config?.['location'] as unknown) ?? { home: {}, current: {} },
     autoTranslate: (config?.['autoTranslate'] as unknown) ?? null,
@@ -1564,15 +1578,16 @@ app.post('/internal/bot/:channel/commands', internalGuard(true), async (req, res
   }
 
   // Only accept names that correspond to real command modules — a typo here
-  // would otherwise sit in the config forever doing nothing.
-  const available = new Set(listAvailableCommands());
-  const requested = body.excludedCommands.map(c => String(c).toLowerCase());
-  const unknown = requested.filter(c => !available.has(c));
+  // would otherwise sit in the config forever doing nothing. Matched ignoring
+  // case and stored as the module spells it: lowercased, customC matched nothing.
+  const canonical = canonicalCommandNames(body.excludedCommands);
+  const unknown = body.excludedCommands.filter((_, i) => canonical[i] === null).map(c => String(c));
   if (unknown.length > 0) {
     return res.status(400).json({ error: `Unknown commands: ${unknown.join(', ')}` });
   }
+  const requested = Array.from(new Set(canonical as string[])).sort();
 
-  config['excludedCommands'] = Array.from(new Set(requested)).sort();
+  config['excludedCommands'] = requested;
   config['lastUpdated'] = new Date().toISOString();
   writeChannelConfig(channel, config);
   touchReload(channel);
@@ -1580,6 +1595,588 @@ app.post('/internal/bot/:channel/commands', internalGuard(true), async (req, res
 
   const procs = await pm2List();
   return res.json({ ok: true, ...summariseChannel(channel, procs) });
+});
+
+// ---- Custom commands --------------------------------------------------------
+// The same data !acomm / !ecomm / !dcomm manage from chat:
+// data/custom-commands/<channel>.json, a map of name → [access, response, counter].
+// The bot reads that file on every chat message, so edits apply without a
+// restart. Validation mirrors bot-commands/customC.ts so a command made here
+// behaves exactly like one made in chat.
+
+type CustomCommandTuple = [string, string, number];
+
+/** n = everyone, v = VIPs and up, y = moderators and up. */
+const CUSTOM_COMMAND_ACCESS = ['n', 'v', 'y'];
+
+function customCommandsPath(channel: string): string {
+  return path.join(KICK_BASE_PATH, 'data', 'custom-commands', `${channel}.json`);
+}
+
+/**
+ * A missing file is an empty set; a file that fails to parse throws. The bot
+ * rewrites this file non-atomically every time a command runs, and reading a
+ * half-written file as "no commands" would let the next save wipe them all.
+ */
+function readCustomCommands(channel: string): Record<string, CustomCommandTuple> {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(customCommandsPath(channel), 'utf8');
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return {};
+    throw e;
+  }
+  const parsed = JSON.parse(raw) as unknown;
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('custom commands file is not a JSON object');
+  }
+  return parsed as Record<string, CustomCommandTuple>;
+}
+
+function writeCustomCommands(channel: string, commands: Record<string, CustomCommandTuple>): void {
+  const p = customCommandsPath(channel);
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  const tmp = `${p}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(commands, null, 2), 'utf8');
+  fs.renameSync(tmp, p);
+}
+
+function listCustomCommands(commands: Record<string, CustomCommandTuple>) {
+  return Object.keys(commands).sort().map(name => {
+    const [access, response, counter] = commands[name];
+    return { name, access, response, counter: Number.isFinite(counter) ? counter : 0 };
+  });
+}
+
+function hasCustomCommand(commands: Record<string, CustomCommandTuple>, name: string): boolean {
+  return Object.prototype.hasOwnProperty.call(commands, name);
+}
+
+function customCommandsUnreadable(res: express.Response, channel: string, e: unknown): express.Response {
+  console.error(`[INTERNAL] ${channel} custom commands unreadable:`, e instanceof Error ? e.message : String(e));
+  return res.status(500).json({ error: 'Could not read the custom commands file — try again in a moment' });
+}
+
+app.get('/internal/bot/:channel/custom-commands', internalGuard(false), (req, res) => {
+  const channelRaw = req.params['channel'];
+  const channel = (typeof channelRaw === 'string' ? channelRaw : '').toLowerCase();
+  if (!validateChannelName(channel)) return res.status(400).json({ error: 'Invalid channel name' });
+  if (!readChannelConfig(channel)) return res.status(404).json({ error: 'Not enrolled' });
+
+  try {
+    return res.json({ commands: listCustomCommands(readCustomCommands(channel)) });
+  } catch (e) {
+    return customCommandsUnreadable(res, channel, e);
+  }
+});
+
+/**
+ * Add, edit or rename one command.
+ *
+ * Body: { name, access, response, counter?, originalName? }
+ * `originalName` marks an edit (and a rename when it differs from `name`).
+ * Omitting `counter` keeps the stored count, so saving from a page loaded an
+ * hour ago doesn't roll back the uses chat has racked up since.
+ */
+app.post('/internal/bot/:channel/custom-commands', internalGuard(true), (req, res) => {
+  const channelRaw = req.params['channel'];
+  const channel = (typeof channelRaw === 'string' ? channelRaw : '').toLowerCase();
+  if (!validateChannelName(channel)) return res.status(400).json({ error: 'Invalid channel name' });
+  if (!readChannelConfig(channel)) return res.status(404).json({ error: 'Not enrolled' });
+
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const name = typeof body['name'] === 'string' ? body['name'].trim().replace(/^!/, '').toLowerCase() : '';
+  if (!/^[a-z0-9]{3,25}$/.test(name)) {
+    return res.status(400).json({ error: 'Command name must be 3–25 letters or digits' });
+  }
+  const access = typeof body['access'] === 'string' ? body['access'] : '';
+  if (!CUSTOM_COMMAND_ACCESS.includes(access)) {
+    return res.status(400).json({ error: 'access must be n (everyone), v (VIPs and up) or y (mods and up)' });
+  }
+  // customC strips angle brackets from responses; do the same so what's saved is what chat sees.
+  const response = typeof body['response'] === 'string' ? body['response'].replace(/[<>]/g, '').trim() : '';
+  if (!response) return res.status(400).json({ error: 'Response cannot be empty' });
+  if (response.length > 500) return res.status(400).json({ error: 'Response must be 500 characters or fewer' });
+  // A /timeout response is carried out by the bot through Kick's API (see customC).
+  // Reject a malformed one here, where the author can fix it, not later in chat.
+  if (/^\/timeout\b/i.test(response)) {
+    const m = /^\/timeout\s+@*(\$user1|\$user2|[A-Za-z0-9_]{2,25})\s+(\d{1,6})([smhd]?)(\s|$)/i.exec(response);
+    if (!m) {
+      return res.status(400).json({ error: 'A /timeout response needs a user and a duration, e.g. /timeout $user1 1m' });
+    }
+    // The limits customC enforces in chat. Without them a 0 or an 8d saved fine
+    // here and then failed every time someone used the command.
+    const unit = (m[3] || 'm').toLowerCase();
+    const seconds = Number(m[2]) * (unit === 's' ? 1 : unit === 'h' ? 3600 : unit === 'd' ? 86400 : 60);
+    if (seconds < 1 || seconds > 7 * 24 * 60 * 60) {
+      return res.status(400).json({ error: 'A /timeout duration must be between 1 second and 7 days' });
+    }
+  }
+
+  let counter: number | undefined;
+  if (body['counter'] !== undefined && body['counter'] !== null) {
+    const c = body['counter'];
+    if (typeof c !== 'number' || !Number.isInteger(c) || c < 0) {
+      return res.status(400).json({ error: 'Counter must be a whole number, 0 or more' });
+    }
+    counter = c;
+  }
+  const originalName = typeof body['originalName'] === 'string' ? body['originalName'].toLowerCase() : null;
+
+  let commands: Record<string, CustomCommandTuple>;
+  try {
+    commands = readCustomCommands(channel);
+  } catch (e) {
+    return customCommandsUnreadable(res, channel, e);
+  }
+
+  if (originalName && !hasCustomCommand(commands, originalName)) {
+    return res.status(404).json({ error: `!${originalName} no longer exists — it may have been deleted from chat` });
+  }
+  const renaming = originalName !== null && originalName !== name;
+  if ((originalName === null || renaming) && hasCustomCommand(commands, name)) {
+    return res.status(409).json({ error: `!${name} already exists` });
+  }
+
+  const previous = originalName ? commands[originalName] : undefined;
+  const keptCounter = counter ?? (previous && Number.isFinite(previous[2]) ? previous[2] : 0);
+  if (renaming) delete commands[originalName];
+  commands[name] = [access, response, keptCounter];
+
+  try {
+    writeCustomCommands(channel, commands);
+  } catch (e) {
+    console.error(`[INTERNAL] ${channel} custom command save failed:`, e instanceof Error ? e.message : String(e));
+    return res.status(500).json({ error: 'Could not save the command' });
+  }
+  const verb = originalName === null ? 'added' : renaming ? `renamed from !${originalName}` : 'updated';
+  console.log(`[INTERNAL] ${channel} custom command !${name} ${verb}`);
+  return res.json({ ok: true, commands: listCustomCommands(commands) });
+});
+
+app.delete('/internal/bot/:channel/custom-commands/:name', internalGuard(true), (req, res) => {
+  const channelRaw = req.params['channel'];
+  const channel = (typeof channelRaw === 'string' ? channelRaw : '').toLowerCase();
+  if (!validateChannelName(channel)) return res.status(400).json({ error: 'Invalid channel name' });
+  if (!readChannelConfig(channel)) return res.status(404).json({ error: 'Not enrolled' });
+
+  const nameRaw = req.params['name'];
+  const name = (typeof nameRaw === 'string' ? nameRaw : '').toLowerCase();
+
+  let commands: Record<string, CustomCommandTuple>;
+  try {
+    commands = readCustomCommands(channel);
+  } catch (e) {
+    return customCommandsUnreadable(res, channel, e);
+  }
+  if (!hasCustomCommand(commands, name)) {
+    return res.status(404).json({ error: `!${name} does not exist` });
+  }
+
+  delete commands[name];
+  try {
+    writeCustomCommands(channel, commands);
+  } catch (e) {
+    console.error(`[INTERNAL] ${channel} custom command delete failed:`, e instanceof Error ? e.message : String(e));
+    return res.status(500).json({ error: 'Could not delete the command' });
+  }
+  console.log(`[INTERNAL] ${channel} custom command !${name} deleted`);
+  return res.json({ ok: true, commands: listCustomCommands(commands) });
+});
+
+// ---- Channel point rewards ----------------------------------------------------
+// Backs the dashboard's rewards card: the channel's rewards as Kick has them,
+// each with the bot action attached (`rewardActions` in the channel config).
+// The bot reads rewardActions on every redemption, so a change here applies to
+// the next one without a restart.
+
+const KICK_API = 'https://api.kick.com/public/v1';
+const REWARD_ACTION_KINDS = ['timeout', 'roulette', 'pardon', 'shield'];
+const MAX_REWARD_ACTION_SECONDS = 7 * 24 * 60 * 60;
+
+interface KickReward {
+  id: string;
+  title: string;
+  cost: number;
+  description: string;
+  background_color: string;
+  is_enabled: boolean;
+  is_paused: boolean;
+  is_user_input_required: boolean;
+  should_redemptions_skip_request_queue: boolean;
+}
+
+type RewardActionEntry = Record<string, unknown> & { rewardId?: string; rewardTitle?: string };
+
+class KickCallError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+  }
+}
+
+/**
+ * Call Kick as the channel's streamer.
+ *
+ * Deliberately never refreshes the token: Kick rotates refresh tokens, so a
+ * refresh from this process would leave the channel's bot holding a dead one.
+ * The bot refreshes well before expiry; a token about to lapse is reported as
+ * a short wait instead.
+ */
+async function kickAsStreamer<T>(channel: string, method: 'get' | 'post' | 'patch' | 'delete', urlPath: string, body?: unknown): Promise<T> {
+  const oauth = readChannelConfig(channel)?.['oauth'] as { accessToken?: string; expiresAt?: number } | undefined;
+  if (!oauth?.accessToken) {
+    throw new KickCallError(`${channel} has not authorized the bot with Kick, so its rewards can't be managed`, 409);
+  }
+  if (oauth.expiresAt && oauth.expiresAt < Date.now() + 60_000) {
+    // Well past expiry means nothing is refreshing it, and "try again in a minute"
+    // would repeat forever for a stopped bot or a dead grant.
+    if (oauth.expiresAt < Date.now() - 5 * 60_000) {
+      throw new KickCallError(
+        `${channel}'s Kick token expired and hasn't been refreshed — start the bot if it's stopped, or have the streamer re-authorize`,
+        503
+      );
+    }
+    throw new KickCallError(`${channel}'s Kick token is being refreshed by the bot — try again in a minute`, 503);
+  }
+  try {
+    const res = await axios.request({
+      method,
+      url: `${KICK_API}${urlPath}`,
+      data: body,
+      timeout: 10_000,
+      headers: { Authorization: `Bearer ${oauth.accessToken}`, 'Content-Type': 'application/json', Accept: 'application/json' }
+    });
+    return res.data as T;
+  } catch (e) {
+    if (!axios.isAxiosError(e)) throw e;
+    const status = e.response?.status;
+    const detail = (e.response?.data as { message?: string } | undefined)?.message || e.message;
+    if (status === 401) throw new KickCallError(`Kick rejected ${channel}'s token (${detail}) — the streamer may need to re-authorize`, 401);
+    if (status === 403) throw new KickCallError(`Kick refused: ${detail}. That reward belongs to another app, and Kick only lets that app change it`, 403);
+    if (status === 400 || status === 404) throw new KickCallError(`Kick: ${detail}`, status);
+    throw new KickCallError(`Kick is not responding properly (${status ?? 'no response'}: ${detail})`, 502);
+  }
+}
+
+/** Kick returns text HTML-escaped: "T's" arrives as "T&#39;s". */
+function decodeHtmlEntities(text: string): string {
+  return text
+    .replace(/&#(\d+);/g, (_m, code: string) => String.fromCharCode(Number(code)))
+    .replace(/&quot;/g, '"')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&');
+}
+
+function rewardActionsOf(config: Record<string, unknown>): RewardActionEntry[] {
+  return Array.isArray(config['rewardActions']) ? (config['rewardActions'] as RewardActionEntry[]) : [];
+}
+
+/**
+ * Which rewards this channel's token may edit, as far as Kick has said.
+ *
+ * Kick's docs say only the app that created a reward can change it. In practice
+ * that means another third-party app: rewards made in Kick's own settings accept
+ * edits from the streamer's token (verified 2026-09-10). The reward list doesn't
+ * carry the flag, but redemption history does (`reward.can_manage`), so it is read
+ * from there and a reward with no history is assumed editable. Kick still has the
+ * final say: a refused edit comes back as a 403.
+ */
+async function rewardManageability(channel: string): Promise<Map<string, boolean>> {
+  const flags = new Map<string, boolean>();
+  const pages = await Promise.allSettled(['pending', 'accepted', 'rejected'].map(status =>
+    kickAsStreamer<{ data?: Array<{ reward?: { id?: string; can_manage?: boolean } }> }>(
+      channel, 'get', `/channels/rewards/redemptions?status=${status}`
+    )
+  ));
+  for (const page of pages) {
+    if (page.status !== 'fulfilled') continue;
+    for (const group of page.value.data ?? []) {
+      if (group.reward?.id && typeof group.reward.can_manage === 'boolean') {
+        flags.set(group.reward.id, group.reward.can_manage);
+      }
+    }
+  }
+  return flags;
+}
+
+/** Whether a config entry applies to a reward: pinned by id, or the legacy title match the bot also honours. */
+function actionMatchesReward(entry: RewardActionEntry, reward: { id: string; title: string }): boolean {
+  if (entry.rewardId) return entry.rewardId === reward.id;
+  return !!entry.rewardTitle && !!reward.title && reward.title.toLowerCase().includes(entry.rewardTitle.toLowerCase());
+}
+
+/**
+ * Replace whatever the bot would match to this reward with `entry`, or with nothing.
+ *
+ * The bot prefers an entry pinned by id over any title match, so saving one only
+ * clears legacy title-only entries whose title is exactly this reward's. Clearing
+ * by substring deleted unrelated ones: configuring "Timeout roulette" removed a
+ * legacy entry meant for a reward titled "Timeout". Removing the action still
+ * clears every entry that matches, or the reward would keep acting.
+ */
+function putRewardAction(channel: string, reward: { id: string; title: string }, entry: RewardActionEntry | null): void {
+  const config = readChannelConfig(channel);
+  if (!config) return;
+  const title = reward.title.toLowerCase();
+  const kept = rewardActionsOf(config).filter(a => {
+    if (a.rewardId) return a.rewardId !== reward.id;
+    if (!entry) return !actionMatchesReward(a, reward);
+    return !a.rewardTitle || !title || a.rewardTitle.toLowerCase() !== title;
+  });
+  if (entry) kept.push(entry);
+  config['rewardActions'] = kept;
+  writeChannelConfig(channel, config);
+}
+
+/** Validate a bot action from the dashboard into the shape the bot reads. */
+function validateRewardAction(input: unknown, rewardId: string): { entry?: RewardActionEntry; error?: string } {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return { error: 'action must be an object or null' };
+  const a = input as Record<string, unknown>;
+  const kind = a['action'];
+  if (typeof kind !== 'string' || !REWARD_ACTION_KINDS.includes(kind)) {
+    return { error: `action must be one of ${REWARD_ACTION_KINDS.join(', ')}` };
+  }
+  const entry: RewardActionEntry = { rewardId, action: kind };
+  if (kind !== 'pardon') {
+    const d = a['durationSeconds'];
+    if (typeof d !== 'number' || !Number.isInteger(d) || d < 1 || d > MAX_REWARD_ACTION_SECONDS) {
+      return { error: 'Duration must be a whole number of seconds, up to 7 days' };
+    }
+    entry['durationSeconds'] = d;
+  }
+  if (kind === 'shield' && a['reflect'] === true) entry['reflect'] = true;
+  entry['announce'] = a['announce'] !== false;
+  if (a['testMode'] === true) {
+    entry['testMode'] = true;
+    const td = a['testDurationSeconds'];
+    if (td !== undefined && td !== null) {
+      if (typeof td !== 'number' || !Number.isInteger(td) || td < 1 || td > 3600) {
+        return { error: 'Test length must be 1–3600 seconds' };
+      }
+      entry['testDurationSeconds'] = td;
+    }
+    const testers = a['testRedeemers'];
+    if (testers !== undefined && testers !== null) {
+      if (!Array.isArray(testers) || testers.length > 20 ||
+          testers.some(t => typeof t !== 'string' || !/^@?[A-Za-z0-9_]{2,25}$/.test(t))) {
+        return { error: 'Testers must be up to 20 Kick usernames' };
+      }
+      entry['testRedeemers'] = (testers as string[]).map(t => t.replace(/^@/, '').toLowerCase());
+    }
+  }
+  return { entry };
+}
+
+/** Kick's own reward fields from a request body. Creating requires a title and cost. */
+function kickRewardFields(input: unknown, creating: boolean): { fields?: Record<string, unknown>; error?: string } {
+  const src = (input && typeof input === 'object' && !Array.isArray(input) ? input : {}) as Record<string, unknown>;
+  const fields: Record<string, unknown> = {};
+  if (creating || src['title'] !== undefined) {
+    const title = typeof src['title'] === 'string' ? src['title'].trim() : '';
+    if (!title || title.length > 50) return { error: 'Title must be 1–50 characters' };
+    fields['title'] = title;
+  }
+  if (creating || src['cost'] !== undefined) {
+    const cost = src['cost'];
+    if (typeof cost !== 'number' || !Number.isInteger(cost) || cost < 1) {
+      return { error: 'Cost must be a whole number of points, 1 or more' };
+    }
+    fields['cost'] = cost;
+  }
+  if (src['description'] !== undefined) {
+    if (typeof src['description'] !== 'string' || src['description'].length > 200) {
+      return { error: 'Description must be 200 characters or fewer' };
+    }
+    fields['description'] = src['description'];
+  }
+  if (src['background_color'] !== undefined) {
+    if (typeof src['background_color'] !== 'string' || !/^#[0-9A-Fa-f]{6}$/.test(src['background_color'])) {
+      return { error: 'Colour must look like #53FC18' };
+    }
+    fields['background_color'] = src['background_color'];
+  }
+  for (const key of ['is_enabled', 'is_paused', 'is_user_input_required', 'should_redemptions_skip_request_queue']) {
+    if (src[key] === undefined) continue;
+    if (typeof src[key] !== 'boolean') return { error: `${key} must be true or false` };
+    if (creating && key === 'is_paused') continue;   // Kick's create call has no pause flag
+    fields[key] = src[key];
+  }
+  return { fields };
+}
+
+/** Everything the rewards card shows: Kick's rewards with their bot actions, plus granted scopes. */
+async function rewardsPayload(channel: string): Promise<Record<string, unknown>> {
+  const [kick, manageable] = await Promise.all([
+    kickAsStreamer<{ data?: KickReward[] }>(channel, 'get', '/channels/rewards'),
+    rewardManageability(channel)
+  ]);
+  const config = readChannelConfig(channel) ?? {};
+  const actions = rewardActionsOf(config);
+  const rewards = (kick.data ?? []).map(r => {
+    const title = decodeHtmlEntities(r.title ?? '');
+    const pinned = actions.find(a => a.rewardId === r.id);
+    const byTitle = pinned ? undefined : actions.find(a => !a.rewardId && actionMatchesReward(a, { id: r.id, title }));
+    return {
+      ...r,
+      title,
+      description: decodeHtmlEntities(r.description ?? ''),
+      canManage: manageable.get(r.id) ?? true,
+      action: pinned ?? byTitle ?? null,
+      actionPinned: !!pinned
+    };
+  });
+  // Actions pointing at a reward that's gone from Kick, so the card can offer to clean them up.
+  const orphaned = actions.filter(a => a.rewardId && !rewards.some(r => r.id === a.rewardId));
+
+  let scopes: string[] = [];
+  try {
+    const intro = await kickAsStreamer<{ data?: { scope?: string } }>(channel, 'post', '/token/introspect');
+    scopes = String(intro.data?.scope ?? '').split(/\s+/).filter(Boolean);
+  } catch {
+    // Unknown scopes just mean the card can't warn about missing ones.
+  }
+  return { rewards, orphaned, scopes };
+}
+
+function rewardsError(res: express.Response, channel: string, e: unknown): express.Response {
+  if (e instanceof KickCallError) return res.status(e.status).json({ error: e.message });
+  console.error(`[INTERNAL] ${channel} rewards request failed:`, e instanceof Error ? e.message : String(e));
+  return res.status(500).json({ error: 'Rewards request failed' });
+}
+
+/**
+ * Answer a reward change Kick has already accepted. Reloading the list afterwards
+ * can still fail, and reporting that as an error invited a retry — which created
+ * a second copy of a reward that was made the first time. The change stands, so
+ * say it did and let the card reload.
+ */
+async function rewardsChangedResponse(res: express.Response, channel: string, extra: Record<string, unknown> = {}): Promise<express.Response> {
+  try {
+    return res.json({ ok: true, ...extra, ...(await rewardsPayload(channel)) });
+  } catch (e) {
+    console.error(`[INTERNAL] ${channel} reward change saved, but reloading the list failed:`, e instanceof Error ? e.message : String(e));
+    return res.json({ ok: true, ...extra, reloadFailed: true });
+  }
+}
+
+function validRewardId(id: unknown): id is string {
+  return typeof id === 'string' && /^[A-Za-z0-9]{10,40}$/.test(id);
+}
+
+app.get('/internal/bot/:channel/rewards', internalGuard(false), async (req, res) => {
+  const channelRaw = req.params['channel'];
+  const channel = (typeof channelRaw === 'string' ? channelRaw : '').toLowerCase();
+  if (!validateChannelName(channel)) return res.status(400).json({ error: 'Invalid channel name' });
+  if (!readChannelConfig(channel)) return res.status(404).json({ error: 'Not enrolled' });
+  try {
+    return res.json(await rewardsPayload(channel));
+  } catch (e) {
+    return rewardsError(res, channel, e);
+  }
+});
+
+// Create a reward on Kick, optionally with a bot action. Body: { reward: {Kick fields}, action?: {...} | null }
+app.post('/internal/bot/:channel/rewards', internalGuard(true), async (req, res) => {
+  const channelRaw = req.params['channel'];
+  const channel = (typeof channelRaw === 'string' ? channelRaw : '').toLowerCase();
+  if (!validateChannelName(channel)) return res.status(400).json({ error: 'Invalid channel name' });
+  if (!readChannelConfig(channel)) return res.status(404).json({ error: 'Not enrolled' });
+
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const { fields, error } = kickRewardFields(body['reward'], true);
+  if (error || !fields) return res.status(400).json({ error });
+  // Validate the action before touching Kick, so a bad one can't leave a half-made reward.
+  let entry: RewardActionEntry | null = null;
+  if (body['action'] !== undefined && body['action'] !== null) {
+    const v = validateRewardAction(body['action'], 'pending');
+    if (v.error || !v.entry) return res.status(400).json({ error: v.error });
+    entry = v.entry;
+  }
+
+  try {
+    const created = await kickAsStreamer<{ data?: KickReward }>(channel, 'post', '/channels/rewards', fields);
+    const reward = created.data;
+    if (!reward?.id) return res.status(502).json({ error: 'Kick did not return the new reward' });
+
+    if (entry) {
+      entry.rewardId = reward.id;
+      putRewardAction(channel, { id: reward.id, title: decodeHtmlEntities(reward.title ?? '') }, entry);
+    }
+    console.log(`[INTERNAL] ${channel} reward "${reward.title}" (${reward.id}) created${entry ? ` with ${String(entry['action'])} action` : ''}`);
+    return rewardsChangedResponse(res, channel, { id: reward.id });
+  } catch (e) {
+    return rewardsError(res, channel, e);
+  }
+});
+
+// Update a reward on Kick and/or its bot action. Body: { reward?: {Kick fields}, action?: {...} | null }
+app.patch('/internal/bot/:channel/rewards/:rewardId', internalGuard(true), async (req, res) => {
+  const channelRaw = req.params['channel'];
+  const channel = (typeof channelRaw === 'string' ? channelRaw : '').toLowerCase();
+  if (!validateChannelName(channel)) return res.status(400).json({ error: 'Invalid channel name' });
+  if (!readChannelConfig(channel)) return res.status(404).json({ error: 'Not enrolled' });
+  const rewardId = req.params['rewardId'];
+  if (!validRewardId(rewardId)) return res.status(400).json({ error: 'Invalid reward id' });
+
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  let fields: Record<string, unknown> = {};
+  if (body['reward'] !== undefined && body['reward'] !== null) {
+    const r = kickRewardFields(body['reward'], false);
+    if (r.error || !r.fields) return res.status(400).json({ error: r.error });
+    fields = r.fields;
+  }
+  const changesAction = Object.prototype.hasOwnProperty.call(body, 'action');
+  let entry: RewardActionEntry | null = null;
+  if (changesAction && body['action'] !== null) {
+    const v = validateRewardAction(body['action'], rewardId);
+    if (v.error || !v.entry) return res.status(400).json({ error: v.error });
+    entry = v.entry;
+  }
+  if (Object.keys(fields).length === 0 && !changesAction) {
+    return res.status(400).json({ error: 'Nothing to change' });
+  }
+
+  try {
+    if (Object.keys(fields).length > 0) {
+      await kickAsStreamer(channel, 'patch', `/channels/rewards/${rewardId}`, fields);
+    }
+    if (changesAction) {
+      const list = await kickAsStreamer<{ data?: KickReward[] }>(channel, 'get', '/channels/rewards');
+      const reward = (list.data ?? []).find(r => r.id === rewardId);
+      if (!reward && entry) return res.status(404).json({ error: 'That reward no longer exists on Kick' });
+      putRewardAction(channel, { id: rewardId, title: reward ? decodeHtmlEntities(reward.title ?? '') : '' }, entry);
+    }
+    const what = [Object.keys(fields).length ? `fields ${Object.keys(fields).join(',')}` : '', changesAction ? `action ${entry ? String(entry['action']) : 'removed'}` : '']
+      .filter(Boolean).join('; ');
+    console.log(`[INTERNAL] ${channel} reward ${rewardId} updated: ${what}`);
+    return rewardsChangedResponse(res, channel);
+  } catch (e) {
+    return rewardsError(res, channel, e);
+  }
+});
+
+// Delete a reward from Kick, along with its bot action.
+app.delete('/internal/bot/:channel/rewards/:rewardId', internalGuard(true), async (req, res) => {
+  const channelRaw = req.params['channel'];
+  const channel = (typeof channelRaw === 'string' ? channelRaw : '').toLowerCase();
+  if (!validateChannelName(channel)) return res.status(400).json({ error: 'Invalid channel name' });
+  if (!readChannelConfig(channel)) return res.status(404).json({ error: 'Not enrolled' });
+  const rewardId = req.params['rewardId'];
+  if (!validRewardId(rewardId)) return res.status(400).json({ error: 'Invalid reward id' });
+
+  try {
+    await kickAsStreamer(channel, 'delete', `/channels/rewards/${rewardId}`);
+    const config = readChannelConfig(channel);
+    if (config) {
+      config['rewardActions'] = rewardActionsOf(config).filter(a => a.rewardId !== rewardId);
+      writeChannelConfig(channel, config);
+    }
+    console.log(`[INTERNAL] ${channel} reward ${rewardId} deleted`);
+    return rewardsChangedResponse(res, channel);
+  } catch (e) {
+    return rewardsError(res, channel, e);
+  }
 });
 
 /**
@@ -1757,12 +2354,14 @@ app.post('/internal/bot/:channel/settings', internalGuard(true), async (req, res
         } else {
           const stSrc = st as Record<string, unknown>;
           const stNext = { ...((next['settings'] ?? {}) as Record<string, unknown>) };
-          const rl = asNum(stSrc['rateLimit'], 'claude.settings.rateLimit', 1, 500);
-          if (rl !== undefined && rl !== null) stNext['rateLimit'] = Math.round(rl);
-          const br = asNum(stSrc['burstRequests'], 'claude.settings.burstRequests', 1, 50);
-          if (br !== undefined && br !== null) stNext['burstRequests'] = Math.round(br);
-          const cd = asNum(stSrc['cooldownMinutes'], 'claude.settings.cooldownMinutes', 0, 1440);
-          if (cd !== undefined && cd !== null) stNext['cooldownMinutes'] = Math.round(cd);
+          // null clears the override so the bot's default applies. Before, a field
+          // emptied in the dashboard just went missing from the request and kept its value.
+          const limits: Array<[string, number, number]> = [['rateLimit', 1, 500], ['burstRequests', 1, 50], ['cooldownMinutes', 0, 1440]];
+          for (const [key, min, max] of limits) {
+            const v = asNum(stSrc[key], `claude.settings.${key}`, min, max, true);
+            if (v === null) delete stNext[key];
+            else if (v !== undefined) stNext[key] = Math.round(v);
+          }
           next['settings'] = stNext;
         }
       }

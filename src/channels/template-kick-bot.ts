@@ -174,9 +174,13 @@ class KickChatBot {
   }
 
   setupCommands(): void {
-    const excludedCommands: string[] = Array.isArray(this.config.excludedCommands)
-      ? (this.config.excludedCommands as string[])
-      : [];
+    // Matched case-insensitively: module files are camelCase (customC.js), while
+    // `!config exclude` and the dashboard stored names lowercased, so excluding
+    // "customc" never excluded anything.
+    const excludedCommands = new Set(
+      (Array.isArray(this.config.excludedCommands) ? (this.config.excludedCommands as string[]) : [])
+        .map(c => String(c).toLowerCase())
+    );
 
     console.log('[COMMANDS] Loading bot commands from bot-commands directory...');
 
@@ -200,7 +204,7 @@ class KickChatBot {
         const functionName = path.basename(file, '.js');
 
         // Skip if command is in the excluded list
-        if (excludedCommands.includes(functionName)) {
+        if (excludedCommands.has(functionName.toLowerCase())) {
           console.log(`[COMMANDS] Skipping excluded command: ${functionName}`);
           return;
         }
