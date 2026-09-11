@@ -16,10 +16,13 @@ const SESSION_TTL_SECONDS = 60 * 60 * 24 * 7; // 7 days
  * The cookie this dashboard used until 2026-09-11: named kpp_session, set at path
  * "/", sealed with the same secret. Renaming and scoping the cookie would otherwise
  * sign everyone out, and making streamers log in again costs them. Browsers still
- * send the old cookie to /kick, so it is honoured until it lapses (7 days after it
- * was last written, so by 2026-09-18), after which this can be removed.
+ * send the old cookie to /kick, so it is honoured until it lapses: 7 days after it
+ * was last written, so by 2026-09-18. From LEGACY_COOKIE_RETIRES_AT this path is
+ * switched off by itself, so there is nothing to remember to remove on that date.
  */
 const LEGACY_COOKIE = "kpp_session";
+// A day of slack past the last possible lapse, in the dashboard's own timezone.
+const LEGACY_COOKIE_RETIRES_AT = Date.parse("2026-09-19T00:00:00+08:00");
 const LEGACY_SEAL_TTL_SECONDS = 60 * 60 * 24 * 14; // iron-session's default when those were sealed
 
 type CookieStore = Awaited<ReturnType<typeof cookies>>;
@@ -96,7 +99,9 @@ export async function getSession(): Promise<IronSession<SessionData>> {
   const options = sessionOptions();
   const session = await getIronSession<SessionData>(cookieStore, options);
 
-  if (!session.userId) {
+  if (Date.now() >= LEGACY_COOKIE_RETIRES_AT) {
+    // Every old cookie has lapsed by now; the migration no longer does anything.
+  } else if (!session.userId) {
     await adoptLegacySession(cookieStore, session, options.password);
   } else if (cookieStore.get(LEGACY_COOKIE)) {
     // Already moved. A leftover old cookie would sign the user back in after logout.
