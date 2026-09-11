@@ -36,9 +36,16 @@ export interface ImageBlob {
 }
 
 // Playlists are tiny; segments are ~1MB. Both should be near-instant on a
-// healthy connection — these are stall guards, not budgets.
+// healthy connection — these are stall guards, not budgets. They apply to the
+// whole request: axios's own `timeout` only measures socket idle time in Node,
+// so a response that keeps trickling in would never trip it.
 const PLAYLIST_TIMEOUT_MS = 10_000;
 const SEGMENT_TIMEOUT_MS = 20_000;
+
+// Pulling one frame from a local ~1MB segment takes well under a second, even
+// with three running at once. Past this ffmpeg is wedged. It would otherwise
+// keep running, holding memory and the vision request that's waiting on it.
+const FFMPEG_TIMEOUT_MS = 20_000;
 
 // Frames are scaled to this width; picking a variant much larger just wastes
 // bandwidth, so we prefer the smallest rendition at or above it.
@@ -74,11 +81,13 @@ async function fetchPlaylist(url: string, what: string): Promise<string> {
     const res = await axios.get<string>(url, {
       responseType: 'text',
       timeout: PLAYLIST_TIMEOUT_MS,
+      signal: AbortSignal.timeout(PLAYLIST_TIMEOUT_MS),
       // Playlists are text/plain-ish; stop axios from trying to parse JSON.
       transformResponse: [(d) => d]
     });
     return res.data;
   } catch (err) {
+    if (axios.isCancel(err)) throw new Error(`${what} timed out after ${PLAYLIST_TIMEOUT_MS / 1000}s`);
     throw describeHttpError(err, what);
   }
 }
@@ -87,10 +96,12 @@ async function fetchSegment(url: string): Promise<Buffer> {
   try {
     const res = await axios.get<ArrayBuffer>(url, {
       responseType: 'arraybuffer',
-      timeout: SEGMENT_TIMEOUT_MS
+      timeout: SEGMENT_TIMEOUT_MS,
+      signal: AbortSignal.timeout(SEGMENT_TIMEOUT_MS)
     });
     return Buffer.from(res.data);
   } catch (err) {
+    if (axios.isCancel(err)) throw new Error(`segment timed out after ${SEGMENT_TIMEOUT_MS / 1000}s`);
     throw describeHttpError(err, 'segment');
   }
 }
@@ -237,17 +248,32 @@ async function extractFrame(segmentPath: string, outPath: string): Promise<void>
       '-y',
       outPath
     ];
-    const ff = spawn('ffmpeg', args);
+    // stdin is ignored because ffmpeg otherwise listens on it for keyboard commands.
+    const ff = spawn('ffmpeg', args, { stdio: ['ignore', 'ignore', 'pipe'] });
     let stderr = '';
-    ff.stderr.on('data', d => { stderr += d.toString(); });
+    let settled = false;
+    let timer: NodeJS.Timeout | undefined;
+    const finish = (err?: Error): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (err) reject(err);
+      else resolve();
+    };
+    timer = setTimeout(() => {
+      ff.kill('SIGKILL');
+      finish(new Error(`ffmpeg timed out after ${FFMPEG_TIMEOUT_MS / 1000}s`));
+    }, FFMPEG_TIMEOUT_MS);
+    // Only the start of stderr ends up in the error, so a wedged ffmpeg can't grow this without limit.
+    ff.stderr.on('data', d => { if (stderr.length < 2000) stderr += d.toString(); });
     ff.on('close', code => {
       if (code !== 0) {
-        reject(new Error(`ffmpeg exit ${code}: ${stderr.slice(0, 300)}`));
+        finish(new Error(`ffmpeg exit ${code}: ${stderr.slice(0, 300)}`));
         return;
       }
-      resolve();
+      finish();
     });
-    ff.on('error', reject);
+    ff.on('error', err => finish(err));
   });
 }
 

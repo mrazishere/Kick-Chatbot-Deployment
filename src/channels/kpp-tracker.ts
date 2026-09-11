@@ -62,6 +62,22 @@ interface KickChannelsResponse {
 const TIMELINE_MINUTE_MS = 60_000;
 const TIMELINE_KEEP_STREAMS = 2; // retain last N streams at 1-min resolution
 
+// Chat counts are written to current.json at most this often. If the process
+// dies, at most this much chat goes uncounted.
+const CHAT_FLUSH_MS = 2000;
+
+/**
+ * Replace a file through a rename. The dashboard reads these files while they're
+ * being written. A crash mid-write also used to leave a truncated current.json,
+ * which reads as "no session", so the next poll started a fresh session and
+ * everything the stream had counted so far was lost.
+ */
+function writeFileAtomic(file: string, data: string): void {
+  const tmp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, data);
+  fs.renameSync(tmp, file);
+}
+
 export class KPPTracker {
   private channelName: string;
   private auth: InstanceType<typeof KickAuth>;
@@ -77,6 +93,13 @@ export class KPPTracker {
   private minuteChatters = new Set<string>();
   private minuteMessages = 0;
 
+  // Chat not yet written to current.json. recordChat used to read, parse and
+  // rewrite the whole session, every chatter's counts included, for each chat
+  // message. Counts now collect here and flushChat writes them in batches.
+  private pendingChatters = new Map<string, number>();
+  private pendingMessages = 0;
+  private flushTimer: NodeJS.Timeout | null = null;
+
   constructor(channelName: string, tokenFilePath: string, getConfig: () => KPPConfig | undefined) {
     this.channelName = channelName;
     this.auth = new KickAuth(tokenFilePath);
@@ -87,7 +110,7 @@ export class KPPTracker {
     this.timelineFile = path.join(this.dataDir, 'timeline.jsonl');
     fs.mkdirSync(this.dataDir, { recursive: true });
     if (!fs.existsSync(this.sessionsFile)) {
-      fs.writeFileSync(this.sessionsFile, '[]');
+      writeFileAtomic(this.sessionsFile, '[]');
     }
   }
 
@@ -112,6 +135,7 @@ export class KPPTracker {
       clearInterval(this.minuteInterval);
       this.minuteInterval = null;
     }
+    this.flushChat();
     console.log('[KPP] Tracker stopped');
   }
 
@@ -158,21 +182,52 @@ export class KPPTracker {
   }
 
   // Called by the chat handler for every non-bot user message.
-  // No-ops when disabled or no session active.
+  // No-ops when disabled; chat with no active session is dropped at flush time.
   recordChat(username: string): void {
     if (!this.isEnabled()) return;
     if (!username) return;
-    const current = this.readCurrent();
-    if (!current) return;
     const key = username.toLowerCase();
-    current.cumulativeChatters[key] = (current.cumulativeChatters[key] || 0) + 1;
-    current.windowChatters[key] = (current.windowChatters[key] || 0) + 1;
-    current.windowMessages = (current.windowMessages ?? 0) + 1;
-    current.totalMessages++;
-    this.writeCurrent(current);
-    // In-memory per-minute counters (no file I/O per message)
+    this.pendingChatters.set(key, (this.pendingChatters.get(key) ?? 0) + 1);
+    this.pendingMessages++;
+    if (!this.flushTimer) {
+      this.flushTimer = setTimeout(() => this.flushChat(), CHAT_FLUSH_MS);
+    }
+    // In-memory per-minute counters (no file I/O per message). Anything counted
+    // outside a session is cleared by recordMinuteSnapshot or at session start.
     this.minuteChatters.add(key);
     this.minuteMessages++;
+  }
+
+  /**
+   * Write batched chat counts into the live session. Also runs at the start of
+   * every poll, so a poll always sees chat that arrived before it. With no
+   * session, the counts are dropped, just as recordChat used to drop them.
+   * Never throws: it runs from a timer, and a throw there would take the bot down.
+   */
+  private flushChat(): void {
+    if (this.flushTimer) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = null;
+    }
+    if (this.pendingMessages === 0) return;
+    const chatters = this.pendingChatters;
+    const messages = this.pendingMessages;
+    this.pendingChatters = new Map();
+    this.pendingMessages = 0;
+
+    const current = this.readCurrent();
+    if (!current) return;
+    for (const [key, n] of chatters) {
+      current.cumulativeChatters[key] = (current.cumulativeChatters[key] || 0) + n;
+      current.windowChatters[key] = (current.windowChatters[key] || 0) + n;
+    }
+    current.windowMessages = (current.windowMessages ?? 0) + messages;
+    current.totalMessages += messages;
+    try {
+      this.writeCurrent(current);
+    } catch (err) {
+      console.error(`[KPP] Could not save ${messages} chat message(s):`, err instanceof Error ? err.message : String(err));
+    }
   }
 
   private async fetchLivestream(): Promise<KickStream | null> {
@@ -199,7 +254,7 @@ export class KPPTracker {
   }
 
   private writeCurrent(session: CurrentKPPSession): void {
-    fs.writeFileSync(this.currentFile, JSON.stringify(session, null, 2));
+    writeFileAtomic(this.currentFile, JSON.stringify(session, null, 2));
   }
 
   private deleteCurrent(): void {
@@ -215,7 +270,7 @@ export class KPPTracker {
       if (err instanceof Error) console.error('[KPP] sessions.json unreadable, starting fresh:', err.message);
     }
     sessions.push(session);
-    fs.writeFileSync(this.sessionsFile, JSON.stringify(sessions, null, 2));
+    writeFileAtomic(this.sessionsFile, JSON.stringify(sessions, null, 2));
   }
 
   private hoursBetween(fromIso: string, toMs: number): number {
@@ -319,6 +374,8 @@ export class KPPTracker {
     const viewers = stream?.viewer_count ?? 0;
     const nowMs = Date.now();
     const nowIso = new Date(nowMs).toISOString();
+    // Land batched chat first, so this poll's window, and a session it finalizes, include it.
+    this.flushChat();
     const current = this.readCurrent();
 
     if (isLive && !current) {
