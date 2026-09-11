@@ -130,7 +130,124 @@ export interface ChannelConfig {
   rewardActions?: RewardAction[];
   /** What !kpp and !earnings call the streamer ("Don" for sukasblood). Defaults to channelName. */
   streamerName?: string;
+  /** Loyalty points. Stored partially; read through points/config effectivePointsConfig. */
+  points?: StoredPointsConfig;
   [key: string]: unknown;
+}
+
+// ---------------------------------------------------------------------------
+// Loyalty points (see src/points/). Viewers earn a channel currency for chatting
+// while live and for follows, subs, gifted subs and Kicks.
+// ---------------------------------------------------------------------------
+
+export interface PointsBonusesConfig {
+  follow: number;
+  subNew: number;
+  subRenewal: number;
+  /** Per sub gifted, to the gifter. */
+  giftSubGifterPerSub: number;
+  /** To each recipient of a gifted sub. */
+  giftSubRecipient: number;
+  /** Multiplied by the number of Kicks gifted, then floored. */
+  pointsPerKick: number;
+  onlyWhileLive: boolean;
+  /** Thank the viewer in chat when a bonus lands. */
+  announce: boolean;
+}
+
+export interface PointsGiveConfig {
+  enabled: boolean;
+  minAmount: number;
+  /** 0 means no maximum. */
+  maxAmount: number;
+  cooldownSeconds: number;
+}
+
+/** Effective points settings: every field present, defaults applied. */
+export interface PointsConfig {
+  enabled: boolean;
+  currencyName: string;
+  /** The chat command word. null derives it from currencyName ("$DON" → "don"). */
+  currencyCommand: string | null;
+  pointsPerInterval: number;
+  intervalMinutes: number;
+  /** A viewer counts as watching when they chatted within this many minutes. */
+  activeWindowMinutes: number;
+  subscriberMultiplier: number;
+  excludeBroadcaster: boolean;
+  /** Lowercase usernames that never earn. */
+  ignoreUsers: string[];
+  bonuses: PointsBonusesConfig;
+  give: PointsGiveConfig;
+  modMaxAdjust: number;
+  publicLeaderboard: boolean;
+}
+
+/** The `points` block as stored in a channel config: any subset of the fields. */
+export type StoredPointsConfig = Partial<Omit<PointsConfig, 'bonuses' | 'give'>> & {
+  bonuses?: Partial<PointsBonusesConfig>;
+  give?: Partial<PointsGiveConfig>;
+  /** Staging only, set by editing the file: treat the channel as live. Never exposed by the API. */
+  debugForceLive?: boolean;
+};
+
+/** A Kick user as it appears in webhook payloads. */
+export interface KickEventUser {
+  user_id: number | null;
+  username: string;
+  is_anonymous?: boolean;
+  is_verified?: boolean;
+  profile_picture?: string;
+  channel_slug?: string;
+}
+
+/** `channel.followed` (version 1). */
+export interface FollowEvent {
+  broadcaster: KickEventUser;
+  follower: KickEventUser;
+}
+
+/** `channel.subscription.new` and `channel.subscription.renewal` (version 1). */
+export interface SubscriptionEvent {
+  broadcaster: KickEventUser;
+  subscriber: KickEventUser;
+  duration?: number;
+  created_at?: string;
+  expires_at?: string;
+}
+
+/** `channel.subscription.gifts` (version 1). The gifter may be anonymous. */
+export interface SubscriptionGiftsEvent {
+  broadcaster: KickEventUser;
+  gifter: KickEventUser | null;
+  giftees: KickEventUser[];
+  created_at?: string;
+  expires_at?: string;
+}
+
+/** `kicks.gifted` (version 1). */
+export interface KicksGiftedEvent {
+  broadcaster: KickEventUser;
+  sender: KickEventUser;
+  gift: { amount: number; name?: string; type?: string; tier?: string; message?: string };
+  created_at?: string;
+}
+
+/** `livestream.status.updated` (version 1). */
+export interface LivestreamStatusEvent {
+  broadcaster: KickEventUser;
+  is_live: boolean;
+  title?: string;
+  started_at?: string;
+  ended_at?: string | null;
+}
+
+/** What the webhook queue knows about an event besides its payload. */
+export interface QueueMeta {
+  /** Milliseconds since the enrollment service queued it; null for unstamped lines. */
+  ageMs: number | null;
+  /** Kick's event message id, when the enrollment service recorded it. */
+  messageId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -231,6 +348,8 @@ export interface KickTags {
   isVIPUp: boolean;
   rawBadges: RawBadge[];
   senderId?: number | string;
+  /** Kick's id for the chat message, the same whether it came by chat socket or webhook. */
+  messageId?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -258,6 +377,8 @@ export interface ClientWrapper {
   say(channel: string, msg: string): Promise<void>;
   /** Time a user out through Kick's API. Absent where the bot cannot moderate. */
   timeout?(request: TimeoutRequest): Promise<TimeoutResult>;
+  /** A Kick username's numeric user id, or null. Calls Kick's API; use sparingly. */
+  lookupUser?(username: string): Promise<number | null>;
 }
 
 // ---------------------------------------------------------------------------

@@ -16,14 +16,12 @@ import * as path from 'path';
 import { exec } from 'child_process';
 import { ModerationBannedEvent, RawBadge, TimeoutRequest, TimeoutResult } from '../types';
 import { getBotIdentity } from '../bot-identity';
+import { SYSTEM_BOTS } from '../system-bots';
 
 const API = 'https://api.kick.com/public/v1';
 
 /** Kick's ban API caps a timeout at one week. */
 const MAX_TIMEOUT_MINUTES = 10080;
-
-/** Bots that carry a moderator badge but are not people. Kept out of the mod cache. */
-const SYSTEM_BOTS = new Set(['kickbot', 'kickcx', 'botrix', 'streamelements', 'nightbot', 'moobot']);
 
 /** How often the moderator cache is re-warmed from the channel log. */
 const MOD_REFRESH_MS = 30 * 60 * 1000;
