@@ -4,13 +4,15 @@
  * Description: Claude AI assistant integration for Kick chat
  *
  * Permission required:
- *          !claude: subscribers, founders, moderators, broadcasters, owner
+ *          !claude and @MrAIisHere: subscribers, founders, VIPs, moderators, broadcasters, owner
  *          !research: subscribers, founders, moderators, broadcasters, owner
  *          !claudesystem: moderators and above
  *          !claudereset: moderators and above
  *          !claudeclear: moderators and above
  *
- * Usage:   !claude <prompt> - Ask Claude a question
+ * Usage:   !claude <prompt> - Ask Claude a question (text only, never looks at the stream)
+ *          @MrAIisHere <prompt> - The same question. With claude.vision.enabled it also
+ *                     looks at 3 live frames plus data/channel-refs/<channel> photos
  *          !research <query> - Research with web search
  *          !claudesystem <prompt> - Override this channel's system prompt until !claudereset or a restart (mods only)
  *          !claudereset - Drop that override (mods only)
