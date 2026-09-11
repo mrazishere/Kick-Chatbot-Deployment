@@ -17,6 +17,7 @@ import { Earner } from './earner';
 import * as bonuses from './events';
 import { LiveState, checkLive } from './live';
 import { PresenceTracker } from './presence';
+import { LastMessages, presenceVerdict } from './presence-rules';
 import { Exclusions, exclusionsFor, findUserByName, getUser, isExcluded, pruneApplied, setMetaTx } from './store';
 
 const USERNAME_RE = /^[a-z0-9_]{2,25}$/;
@@ -53,6 +54,8 @@ export class PointsService {
   readonly channel: string;
   private deps: PointsServiceDeps;
   private presence: PresenceTracker;
+  /** Each viewer's previous message, for the back-to-back repeat rule. */
+  private lastMessages = new LastMessages();
   private earner: Earner;
   private started = false;
   private dbReady = false;
@@ -131,13 +134,29 @@ export class PointsService {
   }
 
   /** Called for every human chat message; commands count as activity too. Never throws. */
-  noteChat(senderId: unknown, username: string, badges: RawBadge[]): void {
+  /**
+   * `message` is the chat text. Commands, low-effort messages and back-to-back
+   * repeats don't refresh presence (see presence-rules.ts); their sender stays
+   * resolvable by name. Callers that pass no text (internal tests) always count.
+   */
+  noteChat(senderId: unknown, username: string, badges: RawBadge[], message?: string): void {
     try {
-      if (!this.config().enabled) return;
+      const cfg = this.config();
+      if (!cfg.enabled) return;
       const userId = Number(senderId);
       if (!Number.isInteger(userId) || userId <= 0 || !username) return;
       if (isBotSender(username, userId) || isExcluded(this.exclusions(), userId, username)) return;
-      this.presence.note({ userId, username, isSub: badges.some(b => b.type === 'subscriber'), at: this.now() });
+      const now = this.now();
+      if (message !== undefined) {
+        const verdict = presenceVerdict(message, this.lastMessages.previous(userId, now), effectiveCommand(cfg));
+        this.lastMessages.remember(userId, verdict.normalized, now);
+        if (!verdict.counts) {
+          this.presence.rememberName(userId, username);
+          return;
+        }
+      }
+      // Sub status comes only from counted messages, alongside the presence they refresh.
+      this.presence.note({ userId, username, isSub: badges.some(b => b.type === 'subscriber'), at: now });
     } catch (err) {
       console.error(`[POINTS] noteChat failed: ${err instanceof Error ? err.message : String(err)}`);
     }

@@ -36,9 +36,18 @@ export class PresenceTracker {
       const oldest = this.pending.keys().next().value;
       if (oldest !== undefined) this.pending.delete(oldest);
     }
-    const lc = row.username.toLowerCase();
+    this.rememberName(row.userId, row.username);
+  }
+
+  /**
+   * Keep a name resolvable without noting presence. A message that doesn't count
+   * toward earning (a repeat, an emote, a command) still identifies its sender,
+   * and `!don add @name` should find them.
+   */
+  rememberName(userId: number, username: string): void {
+    const lc = username.toLowerCase();
     this.names.delete(lc);
-    this.names.set(lc, row.userId);
+    this.names.set(lc, userId);
     if (this.names.size > MAX_NAMES) {
       const oldest = this.names.keys().next().value;
       if (oldest !== undefined) this.names.delete(oldest);

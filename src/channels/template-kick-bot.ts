@@ -678,8 +678,9 @@ class KickChatBot {
     // Record for KPP engagement tracking (no-op when no live session).
     // Placed after the bot-badge filter so chat-engagement reflects humans only.
     this.kppTracker.recordChat(username);
-    // Loyalty points presence: chatting recently is what counts as watching.
-    this.points.noteChat(sender?.id, username, badges);
+    // Loyalty points presence: chatting recently is what counts as watching. The text
+    // decides whether this message counts (repeats, emotes and !don don't).
+    this.points.noteChat(sender?.id, username, badges, message);
 
     // Build permission flags from badges
     const isBroadcaster = badges.some(b => b.type === 'broadcaster' || b.type === 'owner');

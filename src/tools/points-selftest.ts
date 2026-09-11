@@ -16,6 +16,7 @@ import { effectiveCommand, effectivePointsConfig, invalidateLivePointsConfig, va
 import { closeAllPointsDbs, openPointsDb, PointsDb, reportDbError, runWrite } from '../points/db';
 import { LiveState } from '../points/live';
 import { PointsService } from '../points/service';
+import { normalizeChat, presenceVerdict } from '../points/presence-rules';
 import {
   adjustPoints, backupPoints, creditTx, debitTx, getUser, grantTick, invariantViolations,
   pointsLeaderboard, pointsSummary, searchPointsUsers, getPointsUserDetail, transfer
@@ -170,6 +171,50 @@ async function main(): Promise<void> {
     const watchAfter = (db3.prepare('SELECT COALESCE(SUM(points),0) AS s FROM watch_ledger').get() as { s: number }).s;
     check('same slots from two processes granted once', watchAfter - watchBefore === 50 * 20 * 10, { watchBefore, watchAfter });
     check('invariant holds after tick race', invariantViolations(db3).length === 0);
+  }
+
+  // Presence rules: which messages keep a viewer earning
+  {
+    check('case, spacing and stretched letters normalize alike',
+      normalizeChat('LOL') === normalizeChat(' lolll ') && normalizeChat('Hello   World') === normalizeChat('hello worlddd'));
+    const v = (text: string, prev?: string) => presenceVerdict(text, prev === undefined ? undefined : normalizeChat(prev), 'don');
+    check('back-to-back repeat ignored', v('HELLO  thereee', 'hello there').counts === false);
+    check('alternating lines count', v('bbb', 'aaa').counts === true && v('aaa', 'bbb').counts === true);
+    check('repeat after a different message counts again', v('hello there', 'something else').counts === true);
+    check('emote-only ignored', v('[emote:123:peeguu] [emote:456:cat]').counts === false);
+    check('k and ?? ignored', v('k').counts === false && v('??').counts === false);
+    check('three characters of text count', v('abc').counts === true && v('aaa').counts === true);
+    check('emote plus short text ignored', v('[emote:1:x] ok').counts === false);
+    check('!don and !don top ignored', v('!don').counts === false && v('!DON top').counts === false);
+    check('a word starting with the command still counts', v('!donate now please').counts === true);
+
+    // At tick time: ignored messages must not extend the window.
+    const ch = 'spamch';
+    const B = 1_000_001 * 10 * MIN;
+    let now = B;
+    writeConfig(root, ch, { enabled: true, pointsPerInterval: 5, currencyName: '$DON' });
+    const svc = makeService(ch, { live: async () => ({ isLive: true, startedAt: null }), now: () => now });
+    const say = (id: number, name: string, at: number, text: string) => { now = at; svc.noteChat(id, name, badges(), text); };
+    say(41, 'repeater', B - 40 * MIN, 'hello there');
+    say(41, 'repeater', B - 5 * MIN, 'HELLO  thereee');
+    say(42, 'emoter', B - 40 * MIN, 'first message');
+    say(42, 'emoter', B - 5 * MIN, '[emote:1:x] [emote:2:y]');
+    say(43, 'commander', B - 40 * MIN, 'hi everyone');
+    say(43, 'commander', B - 5 * MIN, '!don top');
+    say(44, 'alternator', B - 40 * MIN, 'aaa');
+    say(44, 'alternator', B - 35 * MIN, 'bbb');
+    say(44, 'alternator', B - 5 * MIN, 'aaa');
+    say(45, 'shorty', B - 5 * MIN, 'ok');
+    say(46, 'normal', B - 5 * MIN, 'lol');
+    now = B + 5000;
+    svc.flushPresence();
+    await svc.runTick(B);
+    check('repeat does not extend the window', balance(ch, 41) === 0);
+    check('emote-only does not extend the window', balance(ch, 42) === 0);
+    check('!don does not extend the window', balance(ch, 43) === 0);
+    check('alternating message extends the window', balance(ch, 44) === 5);
+    check('short message never earns', balance(ch, 45) === 0);
+    check('ordinary message earns', balance(ch, 46) === 5);
   }
 
   // Earner
