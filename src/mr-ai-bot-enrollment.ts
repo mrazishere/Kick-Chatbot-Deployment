@@ -1342,6 +1342,20 @@ app.get('/kick-bot-enroll/api/status/:username', (req: express.Request, res: exp
 
 const UUID_RE_VOD = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/** Legacy video.uuid → current VOD id. Both are permanent, so entries never go stale. */
+const vodIdByUuid = new Map<string, string>();
+
+/**
+ * Every scrape launches a headless Chromium, and the dashboard's public earnings
+ * page can ask about any channel. Results are cached briefly and only a couple of
+ * browsers run at once, so a burst of requests can't exhaust the memory that every
+ * channel bot on this machine shares.
+ */
+const vodCache = new Map<string, { at: number; vods: unknown[] }>();
+const VOD_CACHE_MS = 5 * 60 * 1000;
+const VOD_MAX_CONCURRENT = 2;
+let vodScrapesRunning = 0;
+
 function findVodUuid(obj: Record<string, unknown>): string | null {
   for (const key of ['uuid', 'slug', 'video_uuid']) {
     const v = obj[key];
@@ -1360,11 +1374,30 @@ app.get('/internal/vods/:username', async (req: express.Request, res: express.Re
     return res.status(400).json({ error: 'Invalid channel name' });
   }
 
+  const cached = vodCache.get(slug);
+  if (cached && Date.now() - cached.at < VOD_CACHE_MS) {
+    return res.json({ vods: cached.vods });
+  }
+  if (vodScrapesRunning >= VOD_MAX_CONCURRENT) {
+    return res.status(503).json({ error: 'VOD lookups are busy — try again shortly' });
+  }
+
   const t0 = Date.now();
-  const browser = await puppeteer.launch({
-    headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
-  });
+  vodScrapesRunning++;
+  let browser: Awaited<ReturnType<typeof puppeteer.launch>>;
+  try {
+    browser = await puppeteer.launch({
+      headless: true,
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage']
+    });
+  } catch (err) {
+    vodScrapesRunning--;
+    // This used to sit outside any try, so a failed launch rejected the handler —
+    // and an unhandled rejection takes the whole enrollment service down.
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[VOD] Browser launch failed for ${slug}:`, msg);
+    return res.status(500).json({ error: msg });
+  }
 
   try {
     const page = await browser.newPage();
@@ -1387,9 +1420,9 @@ app.get('/internal/vods/:username', async (req: express.Request, res: express.Re
       ? raw as Record<string, unknown>[]
       : ((raw as { data?: Record<string, unknown>[] }).data ?? []);
 
-    // Each item is a stream/livestream record. The actual VOD UUID lives in item.video.uuid.
+    // Each item is a stream/livestream record; item.video.uuid is the VOD's legacy id.
     // stream_title / session_title = stream name; start_time = when stream began.
-    const vods = items.flatMap((v) => {
+    const listed = items.flatMap((v) => {
       const video = v['video'] as Record<string, unknown> | null;
       const uuid = video?.['uuid'];
       if (typeof uuid !== 'string' || !UUID_RE_VOD.test(uuid)) return [];
@@ -1404,19 +1437,56 @@ app.get('/internal/vods/:username', async (req: express.Request, res: express.Re
         uuid,
         title,
         createdAt,
-        duration: typeof v['duration'] === 'number' ? v['duration'] : 0,
-        url: `https://kick.com/${slug}/videos/${uuid}`
+        duration: typeof v['duration'] === 'number' ? v['duration'] : 0
       }];
     });
 
-    console.log(`[VOD] Scraped ${vods.length} VODs for ${slug} in ${Date.now() - t0}ms`);
+    // Kick's VOD pages moved to a new id: /videos/<video.uuid> now renders "Oops,
+    // something went wrong". The new id isn't in this listing; it is
+    // livestream.vod_id on the per-video endpoint, so look up whichever ids aren't
+    // mapped yet. The fetches run inside the page so they share its Cloudflare
+    // clearance. An id that can't be mapped links to the channel's videos page
+    // instead of a page that errors.
+    const missing = listed.map(l => l.uuid).filter(u => !vodIdByUuid.has(u));
+    if (missing.length > 0) {
+      const found = (await page.evaluate(async (uuids: string[]) => Promise.all(uuids.map(async (u) => {
+        try {
+          const r = await fetch(`/api/v1/video/${u}`, { headers: { Accept: 'application/json' } });
+          if (!r.ok) return [u, null];
+          const j = (await r.json()) as { livestream?: { vod_id?: unknown } };
+          const id = j?.livestream?.vod_id;
+          return [u, typeof id === 'string' ? id : null];
+        } catch {
+          return [u, null];
+        }
+      })), missing)) as Array<[string, string | null]>;
+      for (const [u, id] of found) {
+        if (id && UUID_RE_VOD.test(id)) vodIdByUuid.set(u, id);
+      }
+    }
+
+    const vods = listed.map(l => {
+      const vodId = vodIdByUuid.get(l.uuid) ?? null;
+      return { ...l, vodId, url: vodId ? `https://kick.com/${slug}/videos/${vodId}` : `https://kick.com/${slug}/videos` };
+    });
+    const unmapped = vods.filter(v => !v.vodId).length;
+    console.log(
+      `[VOD] Scraped ${vods.length} VODs for ${slug} in ${Date.now() - t0}ms` +
+      (missing.length ? `, looked up ${missing.length} new VOD id(s)` : '') +
+      (unmapped ? ` — ${unmapped} without a current VOD id, linked to the videos page` : '')
+    );
+    if (vodCache.size > 100) vodCache.clear();
+    vodCache.set(slug, { at: Date.now(), vods });
     return res.json({ vods });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`[VOD] Scrape failed for ${slug}:`, msg);
     return res.status(500).json({ error: msg });
   } finally {
-    await browser.close().catch(() => {});
+    // A close that never settles must not hold its slot for good: two of those and
+    // every later lookup would be "busy" until the service restarts.
+    await Promise.race([browser.close().catch(() => {}), new Promise(r => setTimeout(r, 10_000))]);
+    vodScrapesRunning--;
   }
 });
 
