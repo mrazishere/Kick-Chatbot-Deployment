@@ -1750,6 +1750,15 @@ app.post('/internal/bot/:channel/control', internalGuard(true), async (req, res)
   const result = await execAsync(`pm2 ${action} "${pm2Name}"`);
   if (!result.ok) {
     console.error(`[INTERNAL] pm2 ${action} ${pm2Name} failed: ${result.message}`);
+    if (stop) {
+      // The bot didn't come back, so the owner's stop still stands. Without the record
+      // put back, a failed start left managers able to start what the broadcaster switched off.
+      const fresh = readChannelConfig(channel);
+      if (fresh && !fresh['stopped']) {
+        fresh['stopped'] = { by: stop.by, at: stop.at };
+        writeChannelConfig(channel, fresh);
+      }
+    }
     return res.status(500).json({ error: `pm2 ${action} failed`, details: result.message });
   }
   if (action === 'stop') {
