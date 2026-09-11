@@ -1214,7 +1214,7 @@ async function handleSpecialTrigger(client: { say(channel: string, msg: string):
     message: messageContent
   });
 
-  const rateLimitCheck = checkRateLimit(tags.username);
+  const rateLimitCheck = checkRateLimit(tags.username, channel);
   if (!rateLimitCheck.allowed) {
     logStructured('warn', 'Special trigger rate limited', {
       username: tags.username,
@@ -1325,7 +1325,7 @@ async function handleSukasResearch(client: { say(channel: string, msg: string): 
   const isBroadcaster = badges.broadcaster;
   const isBroadcasterOrOwner = isBroadcaster || tags.username === process.env.KICK_OWNER;
 
-  const rateLimitCheck = checkRateLimit(tags.username);
+  const rateLimitCheck = checkRateLimit(tags.username, channel);
   if (!rateLimitCheck.allowed) {
     logStructured('warn', 'Sukas trigger rate limited', {
       username: tags.username,
@@ -1749,6 +1749,13 @@ export const claude: CommandFn = async function claude(client, message, channel,
         return;
       }
 
+      // Count the request before the API call. Recorded only once the reply came back,
+      // a burst of messages all passed these checks while the first call was in flight.
+      if (!isBroadcasterOrOwner) {
+        setUserCooldown(tags.username, channel);
+      }
+      incrementRateLimit(tags.username, channel);
+
       let userPrompt: string | null = null;
 
       // Check if this is a reply to another message
@@ -1944,6 +1951,13 @@ export const claude: CommandFn = async function claude(client, message, channel,
             }
           }
 
+          // Everything can be stripped away above. An empty assistant turn in the history
+          // makes the API reject every later request, breaking !claude for the channel.
+          if (!responseText) {
+            console.warn(`[CLAUDE] Empty reply for ${tags.username} in ${channel} — not sent`);
+            return;
+          }
+
           // Update channel history with user's prompt and Claude's response
           const currentHistory = channelHistory.get(channel);
           if (currentHistory) {
@@ -1975,11 +1989,6 @@ export const claude: CommandFn = async function claude(client, message, channel,
             recordLeaderboardEvent(channel, tags.username, userPrompt, responseText);
           }
 
-          // Apply per-user cooldown only if the user is not broadcaster/owner
-          if (!isBroadcasterOrOwner) {
-            setUserCooldown(tags.username, channel);
-          }
-          incrementRateLimit(tags.username, channel);
         } else {
           throw new Error(`Unexpected response format: ${JSON.stringify(data)}`);
         }
