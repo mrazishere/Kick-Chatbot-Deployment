@@ -12,6 +12,9 @@ import KickSessionAuth = require('./kick-session-auth');
 import TelegramNotifier = require('./telegram-notifier');
 import { chatroomResolver } from './channels/chatroom-resolver';
 import { resolveBotIdentity } from './bot-identity';
+import { SYSTEM_BOTS } from './system-bots';
+import { commandWordCollides, effectiveCommand, effectivePointsConfig, readSubscriptionStatus, validatePointsPatch } from './points/config';
+import { adjustPoints, backupPoints, getPointsUserDetail, pointsLeaderboard, pointsSummary, searchPointsUsers } from './points/store';
 
 /* eslint-disable @typescript-eslint/no-var-requires, @typescript-eslint/no-explicit-any */
 const puppeteer = require('puppeteer-extra');
@@ -198,21 +201,73 @@ async function getWebhookAppToken(): Promise<string> {
   return _appToken;
 }
 
-async function subscribeChannelToWebhook(broadcasterUserId: number): Promise<void> {
+/**
+ * Every event a channel is subscribed to, and so every event the receiver queues.
+ * Subscribing with the app token needs no scope beyond what the app already has,
+ * so adding one here never makes a streamer re-authorize.
+ */
+const WEBHOOK_EVENTS = [
+  'chat.message.sent',
+  // Channel-points redemptions. Drives rewardActions in the channel
+  // config (e.g. a reward that times someone out).
+  'channel.reward.redemption.updated',
+  // Lets the bot drop a timeout it gave out once a moderator bans the same
+  // user, so its early unban or a pardon can't lift the moderator's ban.
+  'moderation.banned',
+  // Loyalty points bonuses (src/points/events.ts).
+  'channel.followed',
+  'channel.subscription.new',
+  'channel.subscription.renewal',
+  'channel.subscription.gifts',
+  'kicks.gifted',
+  // A hint for the points earner; its own live check is what decides.
+  'livestream.status.updated'
+];
+
+/** The enrolled channel a broadcaster id belongs to, or null. */
+function channelNameForBroadcaster(broadcasterUserId: number): string | null {
+  const configDir = path.join(KICK_BASE_PATH, 'data', 'channel-configs');
+  if (!fs.existsSync(configDir)) return null;
+  for (const file of fs.readdirSync(configDir).filter(f => f.endsWith('.json'))) {
+    try {
+      const cfg = JSON.parse(fs.readFileSync(path.join(configDir, file), 'utf8')) as {
+        broadcasterUserId?: number;
+        channelName?: string;
+      };
+      if (cfg.broadcasterUserId === broadcasterUserId) return cfg.channelName || file.replace('.json', '');
+    } catch (_) { /* skip bad config */ }
+  }
+  return null;
+}
+
+/**
+ * Record how each event's subscription went, in data/webhook-subscriptions/<channel>.json.
+ * The bot falls back to chat-socket sub events only for an event recorded as failed,
+ * and the dashboard shows the list.
+ */
+function recordSubscriptionStatus(channel: string | null, results: Record<string, { ok: boolean; error?: string }>): void {
+  if (!channel) return;
+  try {
+    const dir = path.join(KICK_BASE_PATH, 'data', 'webhook-subscriptions');
+    fs.mkdirSync(dir, { recursive: true });
+    const at = new Date().toISOString();
+    writeJsonAtomic(
+      path.join(dir, `${channel}.json`),
+      Object.fromEntries(Object.entries(results).map(([name, r]) => [name, { ...r, at }]))
+    );
+  } catch (e) {
+    console.error(`[WEBHOOK] Could not record subscription status for ${channel}:`, e instanceof Error ? e.message : String(e));
+  }
+}
+
+async function subscribeChannelToWebhook(broadcasterUserId: number, channelName?: string): Promise<void> {
+  const channel = channelName ?? channelNameForBroadcaster(broadcasterUserId);
   try {
     const appToken = await getWebhookAppToken();
     const res = await axios.post(
       'https://api.kick.com/public/v1/events/subscriptions',
       {
-        events: [
-          { name: 'chat.message.sent', version: 1 },
-          // Channel-points redemptions. Drives rewardActions in the channel
-          // config (e.g. a reward that times someone out).
-          { name: 'channel.reward.redemption.updated', version: 1 },
-          // Lets the bot drop a timeout it gave out once a moderator bans the same
-          // user, so its early unban or a pardon can't lift the moderator's ban.
-          { name: 'moderation.banned', version: 1 }
-        ],
+        events: WEBHOOK_EVENTS.map(name => ({ name, version: 1 })),
         broadcaster_user_id: broadcasterUserId,
         method: 'webhook'
       },
@@ -225,19 +280,29 @@ async function subscribeChannelToWebhook(broadcasterUserId: number): Promise<voi
     );
     // One entry per requested event — report them all, not just the first.
     const result = res.data as { data?: Array<{ name?: string; subscription_id?: string; error?: string }> };
+    const results: Record<string, { ok: boolean; error?: string }> = {};
     for (const sub of result.data ?? []) {
       if (sub.error) {
         console.error(`[WEBHOOK] Subscription error for broadcaster ${broadcasterUserId} (${sub.name}):`, sub.error);
+        if (sub.name) results[sub.name] = { ok: false, error: String(sub.error) };
       } else {
         console.log(`[WEBHOOK] Subscribed broadcaster ${broadcasterUserId} to ${sub.name} (id: ${sub.subscription_id})`);
+        if (sub.name) results[sub.name] = { ok: true };
       }
     }
+    for (const name of WEBHOOK_EVENTS) {
+      if (!results[name]) results[name] = { ok: false, error: 'Kick did not report this subscription' };
+    }
+    recordSubscriptionStatus(channel, results);
   } catch (e) {
-    if (axios.isAxiosError(e)) {
-      const errData = e.response?.data as unknown;
-      console.error(`[WEBHOOK] Subscription failed for broadcaster ${broadcasterUserId}:`, JSON.stringify(errData) || e.message);
-    } else {
-      console.error(`[WEBHOOK] Subscription failed for broadcaster ${broadcasterUserId}:`, e instanceof Error ? e.message : String(e));
+    const detail = axios.isAxiosError(e)
+      ? (JSON.stringify(e.response?.data as unknown) || e.message)
+      : (e instanceof Error ? e.message : String(e));
+    console.error(`[WEBHOOK] Subscription failed for broadcaster ${broadcasterUserId}:`, detail);
+    // Kick keeps subscriptions made earlier, so a failed retry says nothing about
+    // them. Only a channel with no record at all is marked failed.
+    if (channel && !readSubscriptionStatus(channel)) {
+      recordSubscriptionStatus(channel, Object.fromEntries(WEBHOOK_EVENTS.map(name => [name, { ok: false, error: detail }])));
     }
   }
 }
@@ -254,7 +319,7 @@ async function subscribeAllChannelsToWebhook(): Promise<void> {
         channelName?: string;
       };
       if (config.broadcasterUserId) {
-        await subscribeChannelToWebhook(config.broadcasterUserId);
+        await subscribeChannelToWebhook(config.broadcasterUserId, config.channelName || file.replace('.json', ''));
         await new Promise(r => setTimeout(r, 500));
       }
     } catch (e) {
@@ -1670,6 +1735,7 @@ function summariseChannel(channel: string, procs: Pm2Proc[]): Record<string, unk
     claudeDefaults: CLAUDE_DEFAULTS,
     kpp: (config?.['kpp'] as unknown) ?? null,
     earnings: (config?.['earnings'] as unknown) ?? null,
+    points: pointsView(config?.['points']),
     stopped: deliberateStop(config, proc),
     token: {
       hasChannelOAuth: !!oauth?.accessToken,
@@ -2390,13 +2456,195 @@ app.delete('/internal/bot/:channel/rewards/:rewardId', internalGuard(true), asyn
   }
 });
 
+// ---- Loyalty points -----------------------------------------------------------
+// Backs the dashboard's Points card and the public leaderboard. Balances live in
+// data/points/<channel>/points.sqlite, written by the channel's bot; these routes
+// read it and apply dashboard adjustments through src/points/store.ts. None of
+// them create a database for a channel that has never earned anything.
+
+/** Points settings as the API reports them: defaults applied, plus the chat command word. */
+function pointsView(raw: unknown): Record<string, unknown> {
+  const cfg = effectivePointsConfig(raw);
+  return { ...cfg, effectiveCommand: effectiveCommand(cfg) };
+}
+
+function broadcasterIdOf(config: Record<string, unknown>): number | null {
+  const id = config['broadcasterUserId'];
+  return typeof id === 'number' && Number.isFinite(id) ? id : null;
+}
+
+/**
+ * Words a currency command can't take in a channel: command modules, the inline
+ * !location and !config, and the channel's custom commands. The points module is
+ * left out, since its trigger is the currency command itself.
+ */
+function pointsReservedWords(channel: string): string[] {
+  const words = listAvailableCommands().filter(c => c.toLowerCase() !== 'points');
+  words.push('location', 'config');
+  try {
+    words.push(...Object.keys(readCustomCommands(channel)));
+  } catch {
+    // Unreadable custom commands: the module names are still checked.
+  }
+  return words;
+}
+
+function pointsUnavailable(res: express.Response, channel: string, e: unknown): express.Response {
+  console.error(`[INTERNAL] ${channel} points request failed:`, e instanceof Error ? e.message : String(e));
+  return res.status(500).json({ error: 'Points data is unavailable right now — try again in a moment' });
+}
+
+const POINTS_REQUEST_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+app.get('/internal/bot/:channel/points', internalGuard(false), (req, res) => {
+  const channelRaw = req.params['channel'];
+  const channel = (typeof channelRaw === 'string' ? channelRaw : '').toLowerCase();
+  if (!validateChannelName(channel)) return res.status(400).json({ error: 'Invalid channel name' });
+  const config = readChannelConfig(channel);
+  if (!config) return res.status(404).json({ error: 'Not enrolled' });
+
+  const cfg = effectivePointsConfig(config['points']);
+  try {
+    return res.json({
+      enabled: cfg.enabled,
+      currencyName: cfg.currencyName,
+      effectiveCommand: effectiveCommand(cfg),
+      ...pointsSummary(channel),
+      subscriptions: readSubscriptionStatus(channel) ?? {}
+    });
+  } catch (e) {
+    return pointsUnavailable(res, channel, e);
+  }
+});
+
+// Prefix search by username; no q lists the top balances. ?q=&limit=1-50
+app.get('/internal/bot/:channel/points/users', internalGuard(false), (req, res) => {
+  const channelRaw = req.params['channel'];
+  const channel = (typeof channelRaw === 'string' ? channelRaw : '').toLowerCase();
+  if (!validateChannelName(channel)) return res.status(400).json({ error: 'Invalid channel name' });
+  const config = readChannelConfig(channel);
+  if (!config) return res.status(404).json({ error: 'Not enrolled' });
+
+  const q = (typeof req.query['q'] === 'string' ? req.query['q'] : '').trim().replace(/^@+/, '').toLowerCase();
+  if (q && !/^[a-z0-9_]{1,25}$/.test(q)) return res.status(400).json({ error: 'q must be the start of a Kick username' });
+  const limitRaw = Number(req.query['limit'] ?? 20);
+  const limit = Number.isInteger(limitRaw) && limitRaw >= 1 && limitRaw <= 50 ? limitRaw : 20;
+
+  try {
+    const cfg = effectivePointsConfig(config['points']);
+    return res.json({ users: searchPointsUsers(channel, cfg, q, limit, broadcasterIdOf(config)) });
+  } catch (e) {
+    return pointsUnavailable(res, channel, e);
+  }
+});
+
+app.get('/internal/bot/:channel/points/users/:userId', internalGuard(false), (req, res) => {
+  const channelRaw = req.params['channel'];
+  const channel = (typeof channelRaw === 'string' ? channelRaw : '').toLowerCase();
+  if (!validateChannelName(channel)) return res.status(400).json({ error: 'Invalid channel name' });
+  const config = readChannelConfig(channel);
+  if (!config) return res.status(404).json({ error: 'Not enrolled' });
+
+  const userIdRaw = req.params['userId'];
+  const userId = typeof userIdRaw === 'string' && /^\d{1,15}$/.test(userIdRaw) ? Number(userIdRaw) : 0;
+  if (!Number.isSafeInteger(userId) || userId <= 0) return res.status(400).json({ error: 'Invalid user id' });
+
+  try {
+    const cfg = effectivePointsConfig(config['points']);
+    const detail = getPointsUserDetail(channel, cfg, userId, broadcasterIdOf(config));
+    if (!detail) return res.status(404).json({ error: `No viewer with id ${userId}` });
+    return res.json(detail);
+  } catch (e) {
+    return pointsUnavailable(res, channel, e);
+  }
+});
+
+/**
+ * Add, remove or set a viewer's balance from the dashboard.
+ *
+ * Body: { userId, mode: add|remove|set, amount, reason (3–200), actor: {username, role}, requestId (uuid) }
+ * The dashboard authorizes the user and names them in `actor`. `requestId` makes a
+ * double-submit, or a retry after a timeout, apply once (`applied: false` on repeats).
+ */
+app.post('/internal/bot/:channel/points/adjust', internalGuard(true), (req, res) => {
+  const channelRaw = req.params['channel'];
+  const channel = (typeof channelRaw === 'string' ? channelRaw : '').toLowerCase();
+  if (!validateChannelName(channel)) return res.status(400).json({ error: 'Invalid channel name' });
+  const config = readChannelConfig(channel);
+  if (!config) return res.status(404).json({ error: 'Not enrolled' });
+
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const actor = body['actor'] as { username?: unknown; role?: unknown } | undefined;
+  const actorName = typeof actor?.username === 'string' ? actor.username.trim() : '';
+  const role = actor?.role;
+  if (!/^[A-Za-z0-9_]{1,25}$/.test(actorName) || (role !== 'owner' && role !== 'admin' && role !== 'manager')) {
+    return res.status(400).json({ error: 'actor must be { username, role: owner, admin or manager }' });
+  }
+  const requestId = body['requestId'];
+  if (typeof requestId !== 'string' || !POINTS_REQUEST_ID_RE.test(requestId)) {
+    return res.status(400).json({ error: 'requestId must be a UUID' });
+  }
+  const mode = body['mode'];
+  if (mode !== 'add' && mode !== 'remove' && mode !== 'set') {
+    return res.status(400).json({ error: 'mode must be add, remove or set' });
+  }
+
+  try {
+    const cfg = effectivePointsConfig(config['points']);
+    const result = adjustPoints(channel, cfg, {
+      // adjustPoints checks these are whole numbers and the reason's length.
+      userId: body['userId'] as number,
+      mode,
+      amount: body['amount'] as number,
+      reason: typeof body['reason'] === 'string' ? body['reason'] : '',
+      actor: `dashboard:${actorName.toLowerCase()}:${role}`,
+      requestId
+    }, broadcasterIdOf(config));
+    if ('error' in result) return res.status(result.status).json({ error: result.error });
+    console.log(
+      `[INTERNAL] ${channel} points ${mode} ${String(body['amount'])} for ${result.user.username} (${result.user.userId}) ` +
+      `by ${actorName} (${role})${result.applied ? '' : ' — repeat of an applied request, nothing changed'}`
+    );
+    return res.json({ ok: true, applied: result.applied, user: result.user });
+  } catch (e) {
+    return pointsUnavailable(res, channel, e);
+  }
+});
+
+/**
+ * The public leaderboard's data: top balances and watch time, usernames only.
+ * A 404 unless the channel is enrolled with points and the public page on. Kept
+ * clear of summariseChannel, which lists pm2, because anyone can load the page.
+ */
+app.get('/internal/bot/:channel/points/leaderboard', internalGuard(false), (req, res) => {
+  const channelRaw = req.params['channel'];
+  const channel = (typeof channelRaw === 'string' ? channelRaw : '').toLowerCase();
+  if (!validateChannelName(channel)) return res.status(400).json({ error: 'Invalid channel name' });
+  const config = readChannelConfig(channel);
+  if (!config) return res.status(404).json({ error: 'Not enrolled' });
+
+  const cfg = effectivePointsConfig(config['points']);
+  if (!cfg.enabled || !cfg.publicLeaderboard) {
+    return res.status(404).json({ error: 'This channel has no public leaderboard' });
+  }
+  const limitRaw = Number(req.query['limit'] ?? 100);
+  const limit = Number.isInteger(limitRaw) && limitRaw >= 1 && limitRaw <= 100 ? limitRaw : 100;
+
+  try {
+    const board = pointsLeaderboard(channel, cfg, limit, broadcasterIdOf(config));
+    return res.json({ channel, currencyName: cfg.currencyName, updatedAt: new Date().toISOString(), ...board });
+  } catch (e) {
+    return pointsUnavailable(res, channel, e);
+  }
+});
+
 /**
  * Patch channel settings. Every key is optional; only what's present is written,
  * and nested blocks merge rather than replace so fields this endpoint doesn't
  * expose (autoTranslate's shadow/debug options, for instance) survive an edit
  * made from the dashboard.
  *
- * Body: { chatOnly?, location?: {home?, current?}, autoTranslate?, kpp? }
+ * Body: { chatOnly?, location?: {home?, current?}, autoTranslate?, kpp?, earnings?, claude?, points? }
  */
 app.post('/internal/bot/:channel/settings', internalGuard(true), async (req, res) => {
   const channelRaw = req.params['channel'];
@@ -2593,21 +2841,40 @@ app.post('/internal/bot/:channel/settings', internalGuard(true), async (req, res
     }
   }
 
+  // ---- points -------------------------------------------------------------
+  if (body['points'] !== undefined) {
+    const { next, errors: pointsErrors } = validatePointsPatch(config['points'], body['points']);
+    if (!next) {
+      errors.push(...pointsErrors);
+    } else {
+      const word = effectiveCommand(effectivePointsConfig(next));
+      // Only a changed command word is checked: a word saved before a custom command
+      // of that name existed shouldn't block every later save, the toggle included.
+      const unchanged = word === effectiveCommand(effectivePointsConfig(config['points']));
+      if (!unchanged && commandWordCollides(word, pointsReservedWords(channel))) {
+        errors.push(`!${word} is already a command in this channel — choose a different currency command`);
+      } else {
+        config['points'] = next;
+        applied.push('points');
+      }
+    }
+  }
+
   if (errors.length > 0) return res.status(400).json({ error: errors.join('; ') });
   if (applied.length === 0) return res.status(400).json({ error: 'No recognised settings in request' });
 
   config['lastUpdated'] = new Date().toISOString();
   writeChannelConfig(channel, config);
 
-  // claude.ts re-reads the channel config on a 5-minute TTL, so a prompt change
-  // applies on its own. Everything else here is read from the bot's in-memory
-  // config at startup and does need the restart.
-  const restartKeys = applied.filter(k => k !== 'claude');
+  // claude.ts re-reads the channel config on a 5-minute TTL and the points service
+  // within 15 seconds, so those apply on their own. Everything else here is read
+  // from the bot's in-memory config at startup and does need the restart.
+  const restartKeys = applied.filter(k => k !== 'claude' && k !== 'points');
   if (restartKeys.length > 0) {
     touchReload(channel);
     console.log(`[INTERNAL] ${channel} settings updated: ${applied.join(', ')} — reload triggered`);
   } else {
-    console.log(`[INTERNAL] ${channel} settings updated: ${applied.join(', ')} — no restart needed (picked up within 5 min)`);
+    console.log(`[INTERNAL] ${channel} settings updated: ${applied.join(', ')} — no restart needed (the bot re-reads these)`);
   }
 
   const procs = await pm2List();
@@ -2662,7 +2929,7 @@ app.post('/internal/bot/:channel/oauth', internalGuard(true), async (req, res) =
  * Accounts that are never offered as bot managers: Kick's own system bots and
  * this bot itself, all of which carry a moderator badge in channels they serve.
  */
-const NEVER_SUGGEST = new Set(['kickbot', 'kickcx', 'botrix', 'streamelements', 'nightbot', 'moobot']);
+const NEVER_SUGGEST = SYSTEM_BOTS;
 
 /**
  * Usernames recently seen with a moderator badge in a channel's log.
@@ -3435,8 +3702,7 @@ app.post('/kick-webhook', express.raw({ type: '*/*' }), async (req: express.Requ
     else if (payload['reward'] && payload['redeemer']) eventType = 'channel.reward.redemption.updated';
   }
 
-  const QUEUED_EVENTS = ['chat.message.sent', 'channel.reward.redemption.updated', 'moderation.banned'];
-  if (!QUEUED_EVENTS.includes(eventType)) return;
+  if (!WEBHOOK_EVENTS.includes(eventType)) return;
 
   const broadcaster = payload['broadcaster'] as { user_id?: number; username?: string } | undefined;
   if (!broadcaster?.user_id) {
@@ -3444,41 +3710,34 @@ app.post('/kick-webhook', express.raw({ type: '*/*' }), async (req: express.Requ
     return;
   }
 
-  // Look up channel name by broadcaster user_id
-  const configDir = path.join(KICK_BASE_PATH, 'data', 'channel-configs');
-  let channelName: string | null = null;
-  if (fs.existsSync(configDir)) {
-    for (const file of fs.readdirSync(configDir).filter(f => f.endsWith('.json'))) {
-      try {
-        const cfg = JSON.parse(fs.readFileSync(path.join(configDir, file), 'utf8')) as {
-          broadcasterUserId?: number;
-          channelName?: string;
-        };
-        if (cfg.broadcasterUserId === broadcaster.user_id) {
-          channelName = cfg.channelName || file.replace('.json', '');
-          break;
-        }
-      } catch (_) { /* skip bad config */ }
-    }
-  }
-
+  const channelName = channelNameForBroadcaster(broadcaster.user_id);
   if (!channelName) {
     console.warn(`[WEBHOOK] No enrolled channel found for broadcaster ${broadcaster.user_id}`);
     return;
   }
 
+  const who = (u: unknown): string => (u as { username?: string } | undefined)?.username ?? '?';
   if (eventType === 'chat.message.sent') {
-    const sender = payload['sender'] as { username?: string } | undefined;
-    console.log(`[WEBHOOK] chat.message.sent from ${sender?.username ?? '?'} in ${channelName}`);
+    console.log(`[WEBHOOK] chat.message.sent from ${who(payload['sender'])} in ${channelName}`);
   } else if (eventType === 'moderation.banned') {
-    const banned = payload['banned_user'] as { username?: string } | undefined;
-    const moderator = payload['moderator'] as { username?: string } | undefined;
     const meta = payload['metadata'] as { expires_at?: string | null } | undefined;
     console.log(
-      `[WEBHOOK] moderation.banned ${banned?.username ?? '?'} by ${moderator?.username ?? '?'} in ${channelName} — ` +
+      `[WEBHOOK] moderation.banned ${who(payload['banned_user'])} by ${who(payload['moderator'])} in ${channelName} — ` +
       (meta?.expires_at ? `until ${meta.expires_at}` : 'permanent')
     );
-  } else {
+  } else if (eventType === 'channel.followed') {
+    console.log(`[WEBHOOK] channel.followed by ${who(payload['follower'])} in ${channelName}`);
+  } else if (eventType === 'channel.subscription.new' || eventType === 'channel.subscription.renewal') {
+    console.log(`[WEBHOOK] ${eventType} ${who(payload['subscriber'])} in ${channelName} — duration=${String(payload['duration'] ?? '?')}`);
+  } else if (eventType === 'channel.subscription.gifts') {
+    const giftees = Array.isArray(payload['giftees']) ? payload['giftees'].length : '?';
+    console.log(`[WEBHOOK] channel.subscription.gifts ${giftees} sub(s) from ${payload['gifter'] ? who(payload['gifter']) : 'anonymous'} in ${channelName}`);
+  } else if (eventType === 'kicks.gifted') {
+    const gift = payload['gift'] as { amount?: number } | undefined;
+    console.log(`[WEBHOOK] kicks.gifted ${String(gift?.amount ?? '?')} Kicks from ${who(payload['sender'])} in ${channelName}`);
+  } else if (eventType === 'livestream.status.updated') {
+    console.log(`[WEBHOOK] livestream.status.updated ${channelName} is_live=${String(payload['is_live'] ?? '?')}`);
+  } else if (eventType === 'channel.reward.redemption.updated') {
     const reward = payload['reward'] as { id?: string; title?: string; cost?: number } | undefined;
     const redeemer = payload['redeemer'] as { username?: string } | undefined;
     console.log(
@@ -3495,6 +3754,8 @@ app.post('/kick-webhook', express.raw({ type: '*/*' }), async (req: express.Requ
     } catch (e) {
       console.error('[WEBHOOK] Failed to record redemption sample:', e instanceof Error ? e.message : String(e));
     }
+  } else {
+    console.log(`[WEBHOOK] ${eventType} in ${channelName}`);
   }
 
   const eventsDir = path.join(KICK_BASE_PATH, 'data', 'webhook-events');
@@ -3503,28 +3764,79 @@ app.post('/kick-webhook', express.raw({ type: '*/*' }), async (req: express.Requ
   }
   const queueFile = path.join(eventsDir, `${channelName}.jsonl`);
   // A stopped bot doesn't drain its queue. Past this size it's hours of chat the
-  // poller would skip as stale anyway, so start over rather than grow without limit.
+  // poller would skip as stale anyway, so drop the chat. Everything else stays:
+  // a follow or sub waiting for the bot still earns its bonus when it comes back.
   const MAX_QUEUE_BYTES = 5 * 1024 * 1024;
   try {
     if (fs.statSync(queueFile).size > MAX_QUEUE_BYTES) {
-      fs.writeFileSync(queueFile, '', 'utf8');
-      console.warn(`[WEBHOOK] ${channelName}'s queue passed 5 MB without being drained — is its bot running? Cleared it.`);
+      const kept = fs.readFileSync(queueFile, 'utf8').split('\n').filter(line => {
+        if (!line.trim()) return false;
+        try {
+          const ev = (JSON.parse(line) as { __event?: unknown }).__event;
+          // Bare lines from an older build are chat.
+          return typeof ev === 'string' && ev !== 'chat.message.sent';
+        } catch {
+          return false;
+        }
+      });
+      const tmp = `${queueFile}.${process.pid}.tmp`;
+      fs.writeFileSync(tmp, kept.length ? kept.join('\n') + '\n' : '', 'utf8');
+      fs.renameSync(tmp, queueFile);
+      console.warn(
+        `[WEBHOOK] ${channelName}'s queue passed 5 MB without being drained — is its bot running? ` +
+        `Dropped its chat and kept ${kept.length} other event(s).`
+      );
     }
   } catch {
-    // No queue file yet.
+    // No queue file yet, or the bot claimed it meanwhile.
   }
   // Wrapped so the channel-side poller can tell event types apart, and stamped
-  // so it can skip what waited out a stopped bot. Bare payloads written by an
-  // older build are still read as chat messages.
-  fs.appendFileSync(queueFile, JSON.stringify({ __event: eventType, receivedAt: Date.now(), payload }) + '\n', 'utf8');
+  // so it can skip what waited out a stopped bot. Kick's message id lets it
+  // recognise a redelivery. Bare payloads written by an older build are still
+  // read as chat messages.
+  fs.appendFileSync(
+    queueFile,
+    JSON.stringify({ __event: eventType, receivedAt: Date.now(), messageId: messageId || undefined, payload }) + '\n',
+    'utf8'
+  );
 });
 
 // ==================== START SERVICES ====================
+
+const POINTS_BACKUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Back up the points database of every channel with points on. Run from here
+ * because this service is always up, unlike a channel bot that may be stopped.
+ */
+async function backupAllPoints(): Promise<void> {
+  const configDir = path.join(KICK_BASE_PATH, 'data', 'channel-configs');
+  let channels: string[] = [];
+  try {
+    channels = fs.readdirSync(configDir).filter(f => f.endsWith('.json')).map(f => path.basename(f, '.json'));
+  } catch {
+    return;
+  }
+  for (const channel of channels) {
+    const config = readChannelConfig(channel);
+    if (!config || !effectivePointsConfig(config['points']).enabled) continue;
+    try {
+      const file = await backupPoints(channel);
+      if (file) console.log(`[POINTS] Backed up ${channel} to ${path.relative(KICK_BASE_PATH, file)}`);
+    } catch (e) {
+      console.error(`[POINTS] Backup of ${channel} failed:`, e instanceof Error ? e.message : String(e));
+    }
+  }
+}
 
 // Start server
 app.listen(PORT, () => {
   console.log(`[INFO] Mr-AI Bot Enrollment Service running on http://localhost:${PORT}`);
   console.log(`[INFO] Public URL: https://${oauthDomain}/kick-bot-enroll`);
+
+  // A minute after start, then daily. Nothing awaits these, so failures are caught inside.
+  setTimeout(() => { void backupAllPoints(); }, 60_000);
+  setInterval(() => { void backupAllPoints(); }, POINTS_BACKUP_INTERVAL_MS);
 
   // Start token monitor first, wait for initial check to complete,
   // then start deployment bot so it always gets a fully refreshed token
