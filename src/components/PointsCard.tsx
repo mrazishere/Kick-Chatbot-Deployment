@@ -192,7 +192,7 @@ function buildPatch(f: SettingsForm): { patch: PointsSettingsPatch } | { error: 
   if (!/^[A-Za-z0-9 $_-]{1,24}$/.test(currencyName)) {
     errors.push("Currency name must be 1–24 letters, digits, spaces or $ _ -");
   }
-  const command = f.currencyCommand.trim().replace(/^!+/, "").toLowerCase();
+  const command = f.currencyCommand.trim().replace(/^[!$]+/, "").toLowerCase();
   if (command && !/^[a-z0-9_]{2,20}$/.test(command)) {
     errors.push("Command must be 2–20 lowercase letters, digits or _");
   }
@@ -520,7 +520,7 @@ export default function PointsCard({
   const readOnly = !canAdminister;
   const dirty = JSON.stringify(form) !== JSON.stringify(formFromConfig(saved));
   const commandPreview =
-    form.currencyCommand.trim().replace(/^!+/, "").toLowerCase() || deriveCommand(form.currencyName.trim());
+    form.currencyCommand.trim().replace(/^[!$]+/, "").toLowerCase() || deriveCommand(form.currencyName.trim());
   const leaderboardUrl = `${BASE_PATH}/${channel}/leaderboard`;
   const set = <K extends keyof SettingsForm>(key: K, value: SettingsForm[K]) =>
     setForm((f) => (f ? { ...f, [key]: value } : f));
@@ -560,7 +560,7 @@ export default function PointsCard({
           label={`${currency} loyalty points`}
           description={
             `Viewers who chatted recently earn ${currency} while the stream is live, plus bonuses for follows, subs and Kicks. ` +
-            `Chat command: !${saved.effectiveCommand}.` +
+            `Chat command: $${saved.effectiveCommand}.` +
             (readOnly ? " Only the broadcaster can change this." : "")
           }
           checked={saved.enabled}
@@ -645,7 +645,7 @@ export default function PointsCard({
               {readOnly ? <p className="text-xs text-amber-500">Only the broadcaster can change these.</p> : null}
 
               <div className="grid gap-4 sm:grid-cols-2">
-                <Field label="Currency name" hint={`Chat command: !${commandPreview || "…"}`}>
+                <Field label="Currency name" hint={`Chat command: $${commandPreview || "…"}`}>
                   {text("currencyName", { maxLength: 24, placeholder: "$DON" })}
                 </Field>
                 <Field label="Command override" hint="Leave empty to use the currency name.">

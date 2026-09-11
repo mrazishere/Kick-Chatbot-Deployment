@@ -54,6 +54,7 @@ export const COMMAND_META: Record<string, CommandMeta> = {
   },
   numfacts: { label: "Number Facts", trigger: "!numfacts", description: "Trivia about a number." },
   ping: { label: "Ping", trigger: "!ping", description: "Health check — confirms the bot is alive." },
+  points: { label: "Loyalty Points", trigger: "$<currency> (e.g. $don)", description: "Balance, watch time, top 5, giving and mod adjustments." },
   pokecatch: { label: "Pokécatch", trigger: "!catch", description: "Pokémon catching mini-game." },
   topc: { label: "Top Chatters", trigger: "!topc", description: "Most active chatters." },
   translate: { label: "Translate", trigger: "!translate", description: "On-demand translation." },
