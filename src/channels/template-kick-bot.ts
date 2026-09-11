@@ -136,11 +136,8 @@ class KickChatBot {
 
   saveChatroomId(realId: number): void {
     try {
-      const configPath = path.join(process.cwd(), 'data', 'channel-configs', `${this.channelName}.json`);
-      if (fs.existsSync(configPath)) {
-        const config = JSON.parse(fs.readFileSync(configPath, 'utf8')) as ChannelConfig;
-        config.chatroomId = realId;
-        fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+      if (fs.existsSync(this.configPath())) {
+        this.updateConfig(config => { config.chatroomId = realId; });
         console.log(`[INFO] Corrected chatroom ID saved to config: ${realId}`);
       }
     } catch (e) {
@@ -231,9 +228,40 @@ class KickChatBot {
     this.setupCommands();
   }
 
-  saveConfig(): void {
-    const configPath = path.join(process.cwd(), 'data', 'channel-configs', `${this.channelName}.json`);
-    fs.writeFileSync(configPath, JSON.stringify(this.config, null, 2));
+  configPath(): string {
+    return path.join(process.cwd(), 'data', 'channel-configs', `${this.channelName}.json`);
+  }
+
+  /** The config as it is on disk right now, or null when it can't be read. */
+  readConfigFromDisk(): ChannelConfig | null {
+    try {
+      return JSON.parse(fs.readFileSync(this.configPath(), 'utf8')) as ChannelConfig;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+        console.error('[CONFIG] Could not read config:', err instanceof Error ? err.message : String(err));
+      }
+      return null;
+    }
+  }
+
+  /**
+   * Change the channel config on disk, then adopt the result.
+   *
+   * `this.config` is a snapshot, and the dashboard edits the same file while the
+   * bot runs. Writing the snapshot back — which every in-bot save used to do —
+   * reverted whatever the dashboard had saved since: managers, reward actions, the
+   * AI prompt. The change is applied to a fresh read instead, and written through
+   * a rename so no reader sees half a file. If the file can't be read, the
+   * in-memory copy is the fallback, because losing a rotated token is worse.
+   */
+  updateConfig(change: (config: ChannelConfig) => void): void {
+    const config = this.readConfigFromDisk() ?? this.config;
+    change(config);
+    const file = this.configPath();
+    const tmp = `${file}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(config, null, 2));
+    fs.renameSync(tmp, file);
+    this.config = config;
   }
 
   async ensureAuthenticated(): Promise<void> {
@@ -639,33 +667,44 @@ class KickChatBot {
           return { token: await this.auth.getAccessToken() ?? '', isChannelToken: false };
         }
       }
-      return { token: this.config.oauth.accessToken, isChannelToken: true };
+      // Read it again: a refresh replaces this.config.
+      const accessToken = this.config.oauth?.accessToken;
+      if (accessToken) return { token: accessToken, isChannelToken: true };
     }
     // Fallback to bot's token
     return { token: await this.auth.getAccessToken() ?? '', isChannelToken: false };
   }
 
-  async refreshChannelToken(): Promise<boolean> {
-    // Re-read from disk before touching the config. This method rewrites the
-    // whole file, and `this.config` is a snapshot from bot startup — without
-    // this reload, any edit made meanwhile (dashboard, manual JSON edit, another
-    // process) is silently reverted the next time a token refresh happens.
-    // checkAndRefreshToken() already reloads; the on-demand path through
-    // getChannelAccessToken() did not, which is how config edits went missing.
-    try {
-      const configPath = path.join(process.cwd(), 'data', 'channel-configs', `${this.channelName}.json`);
-      const raw = fs.readFileSync(configPath, 'utf8');
-      const onDisk = JSON.parse(raw) as ChannelConfig;
+  /** The refresh under way, shared by every caller that asks meanwhile. */
+  private refreshInFlight: Promise<boolean> | null = null;
+
+  /**
+   * Refresh the streamer's token, one refresh at a time.
+   *
+   * Kick rotates the refresh token on every use. Overlapping refreshes — a
+   * redemption, a chat reply and the scheduler can all ask at once — sent the
+   * same token, the loser was rejected, and three such losses deleted a grant
+   * that was perfectly healthy.
+   */
+  refreshChannelToken(): Promise<boolean> {
+    if (!this.refreshInFlight) {
+      this.refreshInFlight = this.doRefreshChannelToken().finally(() => { this.refreshInFlight = null; });
+    }
+    return this.refreshInFlight;
+  }
+
+  private async doRefreshChannelToken(): Promise<boolean> {
+    // Start from the file, not the snapshot: the dashboard may have stored a new
+    // grant or changed settings since this bot loaded its config.
+    const onDisk = this.readConfigFromDisk();
+    if (onDisk) {
       // Keep the in-memory oauth if the file somehow lost it mid-flight.
       if (!onDisk.oauth && this.config.oauth) onDisk.oauth = this.config.oauth;
       this.config = onDisk;
-    } catch (readErr) {
-      if (readErr instanceof Error && (readErr as NodeJS.ErrnoException).code !== 'ENOENT') {
-        console.error('[AUTH] Could not reload config before token refresh:', readErr.message);
-      }
     }
 
-    if (!this.config.oauth?.refreshToken) return false;
+    const usedRefreshToken = this.config.oauth?.refreshToken;
+    if (!usedRefreshToken) return false;
 
     try {
       const response = await axios.post('https://id.kick.com/oauth/token',
@@ -673,9 +712,11 @@ class KickChatBot {
           grant_type: 'refresh_token',
           client_id: process.env.CLIENT_ID || '',
           client_secret: process.env.CLIENT_SECRET || '',
-          refresh_token: this.config.oauth.refreshToken
+          refresh_token: usedRefreshToken
         }).toString(),
-        { headers: { 'Content-Type': 'application/x-www-form-urlencoded' } }
+        // Refreshes are shared, so one stalled connection with no timeout would leave
+        // every caller — chat replies, redemptions, the scheduler — waiting for good.
+        { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, timeout: 15_000 }
       );
 
       const newAccessToken = response.data.access_token as unknown;
@@ -687,18 +728,24 @@ class KickChatBot {
         return false;
       }
 
-      this.config.oauth.accessToken = newAccessToken;
-      // Only update refresh_token if the response provided one (some flows omit it)
-      if (typeof newRefreshToken === 'string' && newRefreshToken.length > 0) {
-        this.config.oauth.refreshToken = newRefreshToken;
-      }
-      this.config.oauth.expiresAt = Date.now() + ((typeof newExpiresIn === 'number' ? newExpiresIn : 3600) * 1000);
-      this.config.lastUpdated = new Date().toISOString();
-
-      // Save updated config
-      const configPath = path.join(process.cwd(), 'data', 'channel-configs', `${this.channelName}.json`);
-      fs.writeFileSync(configPath, JSON.stringify(this.config, null, 2));
-      console.log('[AUTH] Channel token refreshed');
+      const expiresAt = Date.now() + ((typeof newExpiresIn === 'number' ? newExpiresIn : 3600) * 1000);
+      let superseded = false;
+      this.updateConfig(config => {
+        // A grant stored while this refresh was in flight is the newer authorization; keep it.
+        if (config.oauth?.refreshToken && config.oauth.refreshToken !== usedRefreshToken) {
+          superseded = true;
+          return;
+        }
+        config.oauth = {
+          ...(config.oauth ?? {}),
+          accessToken: newAccessToken,
+          // Only update refresh_token if the response provided one (some flows omit it)
+          refreshToken: typeof newRefreshToken === 'string' && newRefreshToken.length > 0 ? newRefreshToken : usedRefreshToken,
+          expiresAt
+        };
+        config.lastUpdated = new Date().toISOString();
+      });
+      console.log(superseded ? '[AUTH] A newer grant was stored during the refresh — using it' : '[AUTH] Channel token refreshed');
       this.channelTokenFailStreak = 0;
       return true;
     } catch (error) {
@@ -710,10 +757,21 @@ class KickChatBot {
       // a network blip must not destroy a still-valid grant.
       const status = axios.isAxiosError(error) ? error.response?.status : undefined;
       if (status === 400 || status === 401 || status === 403) {
+        // Rejected because the token changed underneath this refresh — a
+        // re-authorization stored meanwhile — is no strike against the grant.
+        const latest = this.readConfigFromDisk();
+        if (latest?.oauth?.refreshToken && latest.oauth.refreshToken !== usedRefreshToken) {
+          console.log('[AUTH] Refresh token changed on disk during the refresh — using the newer grant');
+          this.config = latest;
+          this.channelTokenFailStreak = 0;
+          return (latest.oauth.expiresAt ?? 0) > Date.now();
+        }
         this.channelTokenFailStreak++;
         if (this.channelTokenFailStreak >= 3 && this.config.oauth) {
-          delete this.config.oauth;
-          this.saveConfig();
+          // Only the grant that failed. One stored meanwhile is left alone.
+          this.updateConfig(config => {
+            if (config.oauth?.refreshToken === usedRefreshToken) delete config.oauth;
+          });
           console.warn('[AUTH] Channel token dead — removed from config; using bot token until re-enrollment');
           const telegram = new TelegramNotifier();
           await telegram.notifyChannelTokenBroken(this.channelName, this.channelTokenFailStreak).catch(() => {});
@@ -728,9 +786,10 @@ class KickChatBot {
     const subcommand = (args[1] || '').toLowerCase();
 
     if (subcommand === 'exclude') {
-      if (!this.config.excludedCommands) this.config.excludedCommands = [];
       const action = (args[2] || '').toLowerCase();
       const rawCommandName = args[3];
+      const excludedOf = (config: ChannelConfig): string[] =>
+        Array.isArray(config.excludedCommands) ? (config.excludedCommands as string[]) : [];
 
       if (action === 'add' && rawCommandName) {
         const commandName = rawCommandName.toLowerCase();
@@ -738,10 +797,14 @@ class KickChatBot {
           await clientWrapper.say(`#${this.channelName}`, `Invalid command name: ${rawCommandName}`);
           return;
         }
-        const excludedList = this.config.excludedCommands as string[];
-        if (!excludedList.includes(commandName)) {
-          excludedList.push(commandName);
-          this.saveConfig();
+        let added = false;
+        this.updateConfig(config => {
+          const list = excludedOf(config);
+          if (list.some(c => c.toLowerCase() === commandName)) return;
+          config.excludedCommands = [...list, commandName];
+          added = true;
+        });
+        if (added) {
           this.reloadCommands();
           await clientWrapper.say(`#${this.channelName}`, `Command "${commandName}" disabled for this channel.`);
         } else {
@@ -754,11 +817,14 @@ class KickChatBot {
           await clientWrapper.say(`#${this.channelName}`, `Invalid command name: ${rawCommandName}`);
           return;
         }
-        const excludedList = this.config.excludedCommands as string[];
-        const index = excludedList.indexOf(commandName);
-        if (index > -1) {
-          excludedList.splice(index, 1);
-          this.saveConfig();
+        let removed = false;
+        this.updateConfig(config => {
+          const list = excludedOf(config);
+          const kept = list.filter(c => c.toLowerCase() !== commandName);
+          removed = kept.length !== list.length;
+          config.excludedCommands = kept;
+        });
+        if (removed) {
           this.reloadCommands();
           await clientWrapper.say(`#${this.channelName}`, `Command "${commandName}" re-enabled for this channel.`);
         } else {
@@ -766,7 +832,7 @@ class KickChatBot {
         }
 
       } else if (action === 'list') {
-        const excludedList = this.config.excludedCommands as string[];
+        const excludedList = excludedOf(this.config);
         const list = excludedList.length > 0
           ? excludedList.join(', ')
           : 'None';
@@ -781,13 +847,11 @@ class KickChatBot {
       const current = this.config.autoTranslate || { enabled: false };
 
       if (action === 'on') {
-        this.config.autoTranslate = { ...current, enabled: true };
-        this.saveConfig();
+        this.updateConfig(config => { config.autoTranslate = { ...(config.autoTranslate || { enabled: false }), enabled: true }; });
         await clientWrapper.say(`#${this.channelName}`, `Auto-translate enabled — non-English chat will be translated to English.`);
 
       } else if (action === 'off') {
-        this.config.autoTranslate = { ...current, enabled: false };
-        this.saveConfig();
+        this.updateConfig(config => { config.autoTranslate = { ...(config.autoTranslate || { enabled: false }), enabled: false }; });
         await clientWrapper.say(`#${this.channelName}`, `Auto-translate disabled.`);
 
       } else if (action === 'status') {
@@ -934,39 +998,14 @@ Rules:
     // Case 3 — Already nested v1.2 structure:
     //   Write directly to location[targetKey].
 
-    if (!this.config.location) {
-      // Case 1: no location field — create full nested structure
-      this.config.location = {
-        home:    { country: '', city: '', state: '', province: '' },
-        current: { country: '', city: '', state: '', province: '' }
-      };
-    } else if (!this.config.location.home && !this.config.location.current) {
-      // Case 2: flat v1.1 shape — migrate flat data to home, initialize current as empty
-      const flat = this.config.location as unknown as LocationSubfields;
-      this.config.location = {
-        home: {
-          country:  flat.country  || '',
-          city:     flat.city     || '',
-          state:    flat.state    || '',
-          province: flat.province || ''
-        },
-        current: { country: '', city: '', state: '', province: '' }
-      };
-    }
-    // Case 3: already nested — no migration needed, fall through
-
-    // Write to the target sub-object — go through ChannelLocation to bypass index signature
-    const channelLoc = this.config.location as ChannelLocation;
-    (channelLoc[targetKey as keyof ChannelLocation] as LocationSubfields) = {
+    const locSub: LocationSubfields = {
       country:  location.country  || '',
       city:     location.city     || '',
       state:    location.state    || '',
       province: location.province || ''
     };
-    this.config.lastUpdated = new Date().toISOString();
 
     // Build human-readable confirmation string (only non-empty fields)
-    const locSub = channelLoc[targetKey as keyof ChannelLocation] as LocationSubfields;
     const parts = [
       locSub.city,
       locSub.state || locSub.province,
@@ -980,27 +1019,49 @@ Rules:
     // Send confirmation BEFORE writing config (bot may restart on PM2 after write)
     await clientWrapper.say(`#${this.channelName}`, `${label}: ${display}`);
 
-    // Write config to disk (non-atomic — matches existing in-bot pattern per project decision)
-    const configPath = path.join(process.cwd(), 'data', 'channel-configs', `${this.channelName}.json`);
-    fs.writeFileSync(configPath, JSON.stringify(this.config, null, 2));
+    // Applied to the config as it is on disk now. Writing the startup snapshot
+    // back reverted dashboard edits made since (managers, reward actions, prompt).
+    this.updateConfig(config => {
+      if (!config.location) {
+        // Case 1: no location field — create full nested structure
+        config.location = {
+          home:    { country: '', city: '', state: '', province: '' },
+          current: { country: '', city: '', state: '', province: '' }
+        };
+      } else if (!config.location.home && !config.location.current) {
+        // Case 2: flat v1.1 shape — migrate flat data to home, initialize current as empty
+        const flat = config.location as unknown as LocationSubfields;
+        config.location = {
+          home: {
+            country:  flat.country  || '',
+            city:     flat.city     || '',
+            state:    flat.state    || '',
+            province: flat.province || ''
+          },
+          current: { country: '', city: '', state: '', province: '' }
+        };
+      }
+      // Case 3: already nested — no migration needed, fall through
+
+      // Write to the target sub-object — go through ChannelLocation to bypass index signature
+      const channelLoc = config.location as ChannelLocation;
+      (channelLoc[targetKey as keyof ChannelLocation] as LocationSubfields) = locSub;
+      config.lastUpdated = new Date().toISOString();
+    });
     console.log(`[LOCATION] Config written for ${this.channelName} (${targetKey}): ${display}`);
   }
 
   async checkAndRefreshToken(): Promise<void> {
+    // Reload config from disk in case it was updated externally — for every
+    // channel. This used to return first for channels without a streamer grant,
+    // which kept their startup snapshot for the life of the process.
+    const onDisk = this.readConfigFromDisk();
+    if (onDisk) this.config = onDisk;
+
     // Only check if we have OAuth configured
     if (!this.config.oauth?.accessToken) return;
 
     try {
-      // Reload config from disk in case it was updated externally
-      const configPath = path.join(process.cwd(), 'data', 'channel-configs', `${this.channelName}.json`);
-      try {
-        const raw = await fs.promises.readFile(configPath, 'utf8');
-        this.config = JSON.parse(raw) as ChannelConfig;
-      } catch (readErr) {
-        if (readErr instanceof Error && (readErr as NodeJS.ErrnoException).code !== 'ENOENT') {
-          console.error('[AUTH] Failed to reload config:', readErr.message);
-        }
-      }
 
       // Check if token needs refresh (within 1 hour of expiry)
       if (this.config.oauth?.expiresAt && this.config.oauth.expiresAt < Date.now() + 3600000) {

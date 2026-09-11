@@ -287,6 +287,13 @@ function validateChannelName(name: string): boolean {
   return /^[a-z0-9_]{1,30}$/.test(name);
 }
 
+/** Write JSON through a rename, so a process reading the file never sees half of it. */
+function writeJsonAtomic(file: string, data: unknown): void {
+  const tmp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
+  fs.renameSync(tmp, file);
+}
+
 /**
  * Write a channel config without discarding what is already there.
  *
@@ -313,7 +320,7 @@ function mergeChannelConfig(
     }
   }
   const merged = { ...defaults, ...existing, ...forced };
-  fs.writeFileSync(configPath, JSON.stringify(merged, null, 2));
+  writeJsonAtomic(configPath, merged);
   const kept = Object.keys(existing).filter(k => !(k in forced));
   if (kept.length) console.log(`[CONFIG] Preserved existing settings: ${kept.join(', ')}`);
   return merged;
@@ -1441,8 +1448,9 @@ function readChannelConfig(channel: string): Record<string, unknown> | null {
 }
 
 function writeChannelConfig(channel: string, config: Record<string, unknown>): void {
-  const p = path.join(KICK_BASE_PATH, 'data', 'channel-configs', `${channel}.json`);
-  fs.writeFileSync(p, JSON.stringify(config, null, 2));
+  // Atomic: the channel's bot reads this file while it runs, and a read that
+  // caught it half-written fell back to a stale copy the bot then saved over it.
+  writeJsonAtomic(path.join(KICK_BASE_PATH, 'data', 'channel-configs', `${channel}.json`), config);
 }
 
 /**
@@ -2576,11 +2584,15 @@ app.post('/internal/bot/:channel/managers/sync', internalGuard(true), async (req
   const channel = (typeof channelRaw === 'string' ? channelRaw : '').toLowerCase();
   if (!validateChannelName(channel)) return res.status(400).json({ error: 'Invalid channel name' });
 
+  if (!readChannelConfig(channel)) return res.status(404).json({ error: 'Not enrolled' });
+
+  // Read the config only after the slow log scan. Read before it, the write below
+  // put back whatever the file held a second earlier — including a refresh token
+  // the bot had just rotated out, which kills the grant at the next refresh.
+  const observed = await recentModerators(channel);
   const config = readChannelConfig(channel);
   if (!config) return res.status(404).json({ error: 'Not enrolled' });
-
   const existing = Array.isArray(config['managers']) ? (config['managers'] as string[]) : [];
-  const observed = await recentModerators(channel);
   const merged = Array.from(new Set([...existing, ...observed])).sort();
   const added = merged.filter(m => !existing.includes(m));
 

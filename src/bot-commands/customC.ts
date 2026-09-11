@@ -92,6 +92,34 @@ function validateChannelPath(channelName: string): string | null {
 }
 
 /**
+ * Change the stored commands and save them.
+ *
+ * Works on a fresh read, not the copy loaded when the message arrived: the
+ * dashboard writes this file too, and saving a stale copy undid its edits —
+ * routinely, since every use of a command saves its counter. Read, change and
+ * write are synchronous so nothing else in this bot interleaves, and the write
+ * goes through a rename so no reader sees half a file. A file that won't parse
+ * throws rather than being treated as empty, which would wipe every command.
+ *
+ * `change` returns false to skip the write.
+ */
+function mutateCommands(channelName: string, change: (commands: CustomCommands) => boolean | void): CustomCommands {
+  const file = path.join(CUSTOM_DIR, `${channelName}.json`);
+  let commands: CustomCommands = {};
+  try {
+    commands = JSON.parse(fs.readFileSync(file, 'utf8')) as CustomCommands;
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+  }
+  if (change(commands) === false) return commands;
+  fs.mkdirSync(CUSTOM_DIR, { recursive: true });
+  const tmp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(commands, null, 2), 'utf8');
+  fs.renameSync(tmp, file);
+  return commands;
+}
+
+/**
  * Kick only turns slash commands into actions when a person types them into its
  * own chat box. Sent through the API — which is how every bot talks — "/timeout"
  * is just text, so the bot performs the timeout itself.
@@ -174,15 +202,20 @@ export const customC: CommandFn = async function customC(client, message, channe
         return;
     }
 
+    const channelFile: string = validatedChannelName;
+
     let customCommands: CustomCommands = {};
     try {
-        const safePath = path.join(CUSTOM_DIR, `${validatedChannelName}.json`);
+        const safePath = path.join(CUSTOM_DIR, `${channelFile}.json`);
         const data = await readFileAsync(safePath, 'utf8');
         customCommands = JSON.parse(data) as CustomCommands;
     } catch (err) {
-        // File doesn't exist yet, start with empty commands
-        if (err instanceof Error && (err as NodeJS.ErrnoException).code !== 'ENOENT') {
-            console.error(`[CUSTOMC] Error loading commands for ${validatedChannelName}:`, err.message);
+        // A missing file just means no commands yet. An unreadable or corrupt one
+        // must not be treated as empty: !acomm would then save that empty set over
+        // every existing command.
+        if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+            console.error(`[CUSTOMC] Error loading commands for ${channelFile}:`, err instanceof Error ? err.message : String(err));
+            return;
         }
     }
 
@@ -215,80 +248,105 @@ export const customC: CommandFn = async function customC(client, message, channe
             return `@${tags.username}, Invalid command response!`;
         }
 
-        if (commandExists(sanitizedName)) {
-            return `@${tags.username}, That command already exists!`;
-        }
-
-        const commandCounter = 0;
-        customCommands[sanitizedName] = [modOnly, sanitizedResponse, commandCounter];
-
+        let exists = false;
         try {
-            const safePath = path.join(CUSTOM_DIR, `${validatedChannelName}.json`);
-            await writeFileAsync(safePath, JSON.stringify(customCommands, null, 2), 'utf8');
-            console.log(`[CUSTOMC] Command added: ${sanitizedName} by ${tags.username}`);
+            customCommands = mutateCommands(channelFile, commands => {
+                // Checked against the file as it is now, not as it was when this message arrived.
+                if (Object.prototype.hasOwnProperty.call(commands, sanitizedName)) {
+                    exists = true;
+                    return false;
+                }
+                commands[sanitizedName] = [modOnly, sanitizedResponse, 0];
+            });
         } catch (err) {
             if (err instanceof Error) {
                 console.error(`[CUSTOMC] Error saving command: ${err.message}`);
             }
             return `@${tags.username}, Error saving command!`;
         }
+        if (exists) {
+            return `@${tags.username}, That command already exists!`;
+        }
 
+        console.log(`[CUSTOMC] Command added: ${sanitizedName} by ${tags.username}`);
         return `@${tags.username}, !${sanitizedName} Command added!`;
     }
 
     async function removeCommand(commandName: string): Promise<string> {
         const sanitizedName = sanitizeCommandName(commandName);
-
-        if (!sanitizedName || !commandExists(sanitizedName)) {
+        if (!sanitizedName) {
             return `@${tags.username}, That command doesn't exist!`;
         }
 
-        delete customCommands[sanitizedName];
-
+        let missing = false;
         try {
-            const safePath = path.join(CUSTOM_DIR, `${validatedChannelName}.json`);
-            await writeFileAsync(safePath, JSON.stringify(customCommands, null, 2), 'utf8');
-            console.log(`[CUSTOMC] Command removed: ${sanitizedName} by ${tags.username}`);
+            customCommands = mutateCommands(channelFile, commands => {
+                if (!Object.prototype.hasOwnProperty.call(commands, sanitizedName)) {
+                    missing = true;
+                    return false;
+                }
+                delete commands[sanitizedName];
+            });
         } catch (err) {
             if (err instanceof Error) {
                 console.error(`[CUSTOMC] Error removing command: ${err.message}`);
             }
             return `@${tags.username}, Error removing command!`;
         }
+        if (missing) {
+            return `@${tags.username}, That command doesn't exist!`;
+        }
 
+        console.log(`[CUSTOMC] Command removed: ${sanitizedName} by ${tags.username}`);
         return `@${tags.username}, !${sanitizedName} Command removed!`;
     }
 
-    // Edit command function with security validation
-    async function editCommand(commandName: string, modOnly: string, commandResponse: string, commandCounter: number, respondToUser = false): Promise<string | null> {
+    /**
+     * Change one command. Anything left out of `changes` keeps its stored value —
+     * the counter especially, so an edit can't roll back uses counted since this
+     * message was read.
+     */
+    async function editCommand(
+        commandName: string,
+        changes: { modOnly?: string; response?: string; counter?: number },
+        respondToUser = false
+    ): Promise<string | null> {
         const sanitizedName = sanitizeCommandName(commandName);
-        const sanitizedResponse = sanitizeCommandResponse(commandResponse);
+        const sanitizedResponse = changes.response === undefined ? undefined : sanitizeCommandResponse(changes.response);
 
-        if (!sanitizedName || !commandExists(sanitizedName)) {
-            return `@${tags.username}, That command does not exist!`;
-        }
-
-        if (!sanitizedResponse || sanitizedResponse.length < 1) {
+        if (sanitizedResponse !== undefined && sanitizedResponse.length < 1) {
             return `@${tags.username}, Invalid command response!`;
         }
 
-        customCommands[sanitizedName] = [modOnly, sanitizedResponse, commandCounter];
-
-        try {
-            const safePath = path.join(CUSTOM_DIR, `${validatedChannelName}.json`);
-            await writeFileAsync(safePath, JSON.stringify(customCommands, null, 2), 'utf8');
-            if (respondToUser) {
-                console.log(`[CUSTOMC] Command updated: ${sanitizedName} by ${tags.username}`);
+        let missing = !sanitizedName;
+        if (!missing) {
+            try {
+                customCommands = mutateCommands(channelFile, commands => {
+                    const current = commands[sanitizedName];
+                    if (!Object.prototype.hasOwnProperty.call(commands, sanitizedName) || !Array.isArray(current)) {
+                        missing = true;
+                        return false;
+                    }
+                    commands[sanitizedName] = [
+                        changes.modOnly ?? current[0],
+                        sanitizedResponse ?? current[1],
+                        changes.counter ?? (Number.isFinite(current[2]) ? current[2] : 0)
+                    ];
+                });
+            } catch (err) {
+                if (err instanceof Error) {
+                    console.error(`[CUSTOMC] Error updating command: ${err.message}`);
+                }
+                return `@${tags.username}, Error updating command!`;
             }
-        } catch (err) {
-            if (err instanceof Error) {
-                console.error(`[CUSTOMC] Error updating command: ${err.message}`);
-            }
-            return `@${tags.username}, Error updating command!`;
+        }
+        if (missing) {
+            return `@${tags.username}, That command does not exist!`;
         }
 
         // Respond only when called by !ecomm
         if (respondToUser) {
+            console.log(`[CUSTOMC] Command updated: ${sanitizedName} by ${tags.username}`);
             return `@${tags.username}, !${sanitizedName} Command updated!`;
         }
         return null;
@@ -352,11 +410,9 @@ export const customC: CommandFn = async function customC(client, message, channe
             return;
         }
 
-        const commandCounter = Array.isArray(customCommands[sanitizedName]) ? (customCommands[sanitizedName][2] ?? 0) : 0;
-
-        // Edit the command (validation happens inside editCommand)
+        // Edit the command (validation happens inside editCommand). The stored counter is kept.
         try {
-            const response = await editCommand(sanitizedName, modOnly, commandResponse, commandCounter, true);
+            const response = await editCommand(sanitizedName, { modOnly, response: commandResponse }, true);
             if (response) {
                 client.say(channel, response);
             }
@@ -412,13 +468,10 @@ export const customC: CommandFn = async function customC(client, message, channe
             return;
         }
 
-        const modOnly = customCommands[sanitizedName][0];
-        const commandResponse = customCommands[sanitizedName][1];
-
-        // Update the commandCounter
+        // Update the commandCounter, leaving the access level and response as stored.
         try {
-            await editCommand(sanitizedName, modOnly, commandResponse, commandCounterNew, false);
-            client.say(channel, `@${tags.username}, Counter updated to ${commandCounterNew}!`);
+            const problem = await editCommand(sanitizedName, { counter: commandCounterNew }, false);
+            client.say(channel, problem ?? `@${tags.username}, Counter updated to ${commandCounterNew}!`);
         } catch (error) {
             if (error instanceof Error) {
                 console.error(`[CUSTOMC] Error updating counter:`, error.message);
@@ -447,15 +500,20 @@ export const customC: CommandFn = async function customC(client, message, channe
         const commandData = customCommands[commandName];
         const modOnly = commandData[0];
         const commandResponse = commandData[1];
-        const commandCounter = commandData[2];
-        const commandCounterNew = commandCounter + 1;
+        let commandCounterNew = (Number.isFinite(commandData[2]) ? commandData[2] : 0) + 1;
 
-        // Update the JSON file with the new counter value (async, don't wait)
-        editCommand(commandName, modOnly, commandResponse, commandCounterNew, false).catch(err => {
-            if (err instanceof Error) {
-                console.error(`[CUSTOMC] Error updating counter for ${commandName}:`, err.message);
-            }
-        });
+        // Count the use against the file as it is now, so it can't undo an edit made
+        // elsewhere since this message was read, and so $counter shows the real total.
+        try {
+            mutateCommands(channelFile, commands => {
+                const current = commands[commandName];
+                if (!Array.isArray(current)) return false;   // deleted meanwhile
+                current[2] = (Number.isFinite(current[2]) ? current[2] : 0) + 1;
+                commandCounterNew = current[2];
+            });
+        } catch (err) {
+            console.error(`[CUSTOMC] Error updating counter for ${commandName}:`, err instanceof Error ? err.message : String(err));
+        }
 
         // Process command response with variable substitution (securely)
         let response = sanitizeCommandResponse(commandResponse);
