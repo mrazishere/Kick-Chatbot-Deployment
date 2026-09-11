@@ -3119,8 +3119,20 @@ async function deployRemoveChannel(requester: string, args: string[], badges: Ar
       return;
     }
 
-    fs.unlinkSync(path.join(KICK_BASE_PATH, 'dist', 'channels', `${sanitized}.js`));
-    fs.unlinkSync(path.join(KICK_BASE_PATH, 'data', 'channel-configs', `${sanitized}.json`));
+    // A throw in this exec callback is uncaught and takes the whole enrollment
+    // service down, and a bot process can exist without either file.
+    for (const p of [
+      path.join(KICK_BASE_PATH, 'dist', 'channels', `${sanitized}.js`),
+      path.join(KICK_BASE_PATH, 'data', 'channel-configs', `${sanitized}.json`)
+    ]) {
+      try {
+        fs.unlinkSync(p);
+      } catch (e) {
+        if ((e as NodeJS.ErrnoException).code !== 'ENOENT') {
+          console.error(`[DEPLOY] Failed to remove ${p}:`, e instanceof Error ? e.message : String(e));
+        }
+      }
+    }
     removeFromEcosystem(sanitized);
 
     // Persist removal so the deleted entry doesn't resurrect on reboot.
@@ -3147,7 +3159,14 @@ async function deployStatus(requester: string, badges: Array<{ type: string }>, 
       return;
     }
 
-    const processList = JSON.parse(stdout) as Array<{ name?: string; pm2_env?: { status?: string } }>;
+    let processList: Array<{ name?: string; pm2_env?: { status?: string } }>;
+    try {
+      processList = JSON.parse(stdout) as Array<{ name?: string; pm2_env?: { status?: string } }>;
+    } catch {
+      // A throw in this exec callback is uncaught and would take the service down.
+      await sendDeploymentMessage(`@${requester}, failed to get status.`, sourceChatroomId);
+      return;
+    }
     const kickBots = processList.filter(p => p.name && p.name.startsWith('kick-'));
     const activeCount = kickBots.filter(p => p.pm2_env?.status === 'online').length;
 

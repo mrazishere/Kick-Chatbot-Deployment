@@ -112,7 +112,12 @@ class KickChatBot {
     this.webhookPoller = new WebhookPoller(
       this.channelName,
       (data) => this.handleChatMessage(data),
-      (event) => { void this.rewardHandler.handle(event); },
+      // Nothing awaits this, so a rejection would be unhandled — and Node exits on those.
+      (event) => {
+        this.rewardHandler.handle(event).catch(err => {
+          console.error(`[REWARD] Redemption ${event.id} failed:`, err instanceof Error ? err.message : String(err));
+        });
+      },
       (event) => this.moderator.noteBan(event)
     );
 
@@ -607,7 +612,9 @@ class KickChatBot {
     const clientWrapper: ClientWrapper = {
       say: async (_channel: string, msg: string): Promise<void> => {
         console.log(`[COMMAND RESPONSE] ${msg}`);
-        await this.sendMessage(msg);
+        // Most commands don't await say(). A rejected send had nothing to catch it, and
+        // Node exits on an unhandled rejection. sendMessage has already logged the failure.
+        await this.sendMessage(msg).catch(() => {});
       },
       // Lets custom commands issue real timeouts instead of posting "/timeout" as text.
       timeout: (request) => this.moderator.timeout(request)
@@ -648,7 +655,13 @@ class KickChatBot {
     // Execute ALL command functions for ALL messages (they handle their own filtering)
     this.commands.forEach((commandFunction, commandName) => {
       try {
-        void commandFunction(clientWrapper, message, `#${this.channelName}`, kickTags, this.config);
+        // Commands are async. A rejection nothing awaits is unhandled, and Node exits on
+        // those — one failing chat reply took the whole channel's bot down with it.
+        Promise.resolve(commandFunction(clientWrapper, message, `#${this.channelName}`, kickTags, this.config)).catch((error: unknown) => {
+          if (error instanceof Error && !error.message.includes('Not our command')) {
+            console.error(`[COMMANDS] Command ${commandName} failed: ${error.message}`);
+          }
+        });
       } catch (error) {
         // Only log actual errors, not "not our command" type messages
         if (error instanceof Error && !error.message.includes('Not our command')) {
