@@ -92,11 +92,11 @@ function writeConfig(root: string, channel: string, points: Record<string, unkno
 
 const badges = (...types: string[]): RawBadge[] => types.map(type => ({ type }));
 
-function makeService(channel: string, opts: { live?: () => Promise<LiveState | null>; now?: () => number; broadcaster?: number | null; dbProvider?: () => PointsDb | null; lookup?: (n: string) => Promise<number | null> } = {}) {
+function makeService(channel: string, opts: { live?: () => Promise<LiveState | null>; now?: () => number; broadcaster?: number | null; dbProvider?: () => PointsDb | null; lookup?: (n: string) => Promise<number | null>; sent?: string[] } = {}) {
   return new PointsService({
     channelName: channel,
     getBroadcasterUserId: () => opts.broadcaster ?? null,
-    sendMessage: async () => undefined,
+    sendMessage: async (message: string) => { opts.sent?.push(message); },
     lookupUser: opts.lookup,
     tokenFile: '/nonexistent',
     checkLive: opts.live ?? (async () => ({ isLive: true, startedAt: null })),
@@ -344,6 +344,24 @@ async function main(): Promise<void> {
     svc.onKicksGifted({ broadcaster: bc, sender: user(24, 'tipper2'), gift: { amount: 101 }, created_at: '2026-09-11T12:03:00Z' }, meta);
     check('kicks floor with fractional rate', balance(ch, 24) === 50);
 
+    // Announcements: one chat line per event, however many viewers it paid.
+    const ach = 'announcech';
+    writeConfig(root, ach, { enabled: true, currencyName: '$DON', bonuses: { announce: true } });
+    const sent: string[] = [];
+    const asvc = makeService(ach, { now: () => now, broadcaster: 999, sent });
+    const abc = user(999, ach);
+    asvc.onSubscriptionGifts({ broadcaster: abc, gifter: { user_id: null, username: 'Anonymous', is_anonymous: true }, giftees: Array.from({ length: 10 }, (_, i) => user(100 + i, `anon${i}`)), created_at: '2026-09-11T15:35:18Z' }, meta);
+    check('anonymous 10-sub gift announces in one line', sent.length === 1 && sent[0] === `enjoy your gifted subs ${Array.from({ length: 10 }, (_, i) => `anon${i}`).join(', ')} +100 $DON each`, sent);
+    sent.length = 0;
+    asvc.onSubscriptionGifts({ broadcaster: abc, gifter: user(200, 'bigspender'), giftees: [user(201, 'r1'), user(202, 'r2')], created_at: '2026-09-11T15:40:00Z' }, meta);
+    check('named gift thanks the gifter and names recipients in one line', sent.length === 1 && sent[0] === 'thanks for the 2 gifted subs bigspender +500 $DON, and +100 $DON each to r1, r2', sent);
+    sent.length = 0;
+    asvc.onSubscriptionGifts({ broadcaster: abc, gifter: null, giftees: Array.from({ length: 100 }, (_, i) => user(300 + i, `a_long_recipient_name_${i}`)), created_at: '2026-09-11T15:45:00Z' }, meta);
+    check('a 100-sub gift stays one line under the chat limit', sent.length === 1 && sent[0].length <= 500 && / and \d+ more \+100 \$DON each$/.test(sent[0]), sent);
+    sent.length = 0;
+    asvc.onFollow({ broadcaster: abc, follower: user(400, 'newfan') }, { ageMs: 0, messageId: 'fa1' });
+    check('single-grant announcement unchanged', sent.length === 1 && sent[0] === 'thanks for the follow newfan +50 $DON', sent);
+
     // Chat-socket fallback only when the webhook subscription failed.
     writeConfig(root, ch, { enabled: true });
     now += 60 * MIN;
@@ -401,12 +419,15 @@ async function main(): Promise<void> {
     const lines = [
       { __event: 'channel.mystery.event', receivedAt: now, payload: { message_id: 'm1', sender: { username: 'x' }, content: 'hi' } },
       { __event: 'channel.followed', receivedAt: now, messageId: 'k1', payload: { broadcaster: { user_id: 1, username: ch }, follower: { user_id: 50, username: 'pollfan' } } },
-      { __event: 'chat.message.sent', receivedAt: now, payload: { message_id: 'm2', sender: { user_id: 51, username: 'chatter' }, content: 'hello' } }
+      { __event: 'chat.message.sent', receivedAt: now, payload: { message_id: 'm2', sender: { user_id: 51, username: 'chatter' }, content: 'hello' } },
+      { __event: 'channel.subscription.gifts', receivedAt: now, messageId: 'g1', payload: { broadcaster: { user_id: 1, username: ch }, gifter: { user_id: null, username: null, is_anonymous: true }, giftees: [{ user_id: 52, username: 'giftee' }] } }
     ];
     fs.writeFileSync(path.join(dir, `${ch}.jsonl`), lines.map(l => JSON.stringify(l)).join('\n') + '\n');
     poller.poll();
     check('unknown event never reaches chat', calls.chat === 1, calls);
     check('follow reaches its handler', calls.follow === 1, calls);
+    const samples = fs.readFileSync(path.join(root, 'gift-samples.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
+    check('gifted subs keep a raw payload sample', samples.length === 1 && samples[0].messageId === 'g1' && samples[0].payload.gifter.is_anonymous === true, samples);
     const follow = JSON.stringify(lines[1]) + '\n';
     fs.writeFileSync(path.join(dir, `${ch}.jsonl.proc`), follow);
     poller.poll();

@@ -74,7 +74,8 @@ function spool(ctx: BonusContext, type: SpoolType, payload: unknown, meta: Queue
 
 /**
  * The shared path for every bonus: settings checks, the database (or the
- * spool), the idempotency key, and the announcement.
+ * spool), the idempotency key, and the announcement. An event announces in one
+ * chat line however many viewers it paid; `describe` writes that line.
  */
 function grantBonus(
   ctx: BonusContext,
@@ -82,7 +83,8 @@ function grantBonus(
   payload: unknown,
   meta: QueueMeta,
   key: string,
-  build: (db: PointsDb, now: number, ex: Exclusions) => BonusGrant[]
+  build: (db: PointsDb, now: number, ex: Exclusions) => BonusGrant[],
+  describe: (grants: BonusGrant[], currency: string) => string = (grants, currency) => announcement(grants[0], currency)
 ): BonusOutcome {
   const { cfg, broadcasterUserId } = ctx.config();
   if (!cfg.enabled) return { status: 'skipped', detail: 'points disabled' };
@@ -105,11 +107,36 @@ function grantBonus(
 
   const grants = res.result ?? [];
   if (!grants.length) return { status: 'skipped', detail: 'nothing to grant' };
-  for (const g of grants) {
-    console.log(`[POINTS] +${g.points} ${cfg.currencyName} to ${g.username} (${g.reason})`);
-    if (cfg.bonuses.announce) ctx.announce(announcement(g, cfg.currencyName));
-  }
+  for (const g of grants) console.log(`[POINTS] +${g.points} ${cfg.currencyName} to ${g.username} (${g.reason})`);
+  if (cfg.bonuses.announce) ctx.announce(describe(grants, cfg.currencyName));
   return { status: 'granted', grants };
+}
+
+/** Kick cuts a chat message at 500 characters; recipients past this become "and N more". */
+const ANNOUNCE_MAX_CHARS = 450;
+
+/**
+ * One line for a whole gifted-subs event. It used to be a line per recipient,
+ * so a 10-sub gift flooded chat with 10 (2026-09-11).
+ */
+function giftAnnouncement(grants: BonusGrant[], subs: number, currency: string): string {
+  const gifter = grants.find(g => g.reason === 'gift_sub');
+  const recipients = grants.filter(g => g.reason === 'gift_recv');
+  const thanks = gifter ? `thanks for the ${subs} gifted ${subs === 1 ? 'sub' : 'subs'} ${gifter.username} +${gifter.points} ${currency}` : '';
+  if (!recipients.length) return thanks;
+  // The recipient bonus is one setting, so everyone in an event gets the same amount.
+  const each = `+${recipients[0].points} ${currency}${recipients.length > 1 ? ' each' : ''}`;
+  const lead = gifter ? `${thanks}, and ${each} to ` : `enjoy your gifted ${recipients.length === 1 ? 'sub' : 'subs'} `;
+  const tail = gifter ? '' : ` ${each}`;
+  return lead + nameList(recipients.map(r => r.username), ANNOUNCE_MAX_CHARS - lead.length - tail.length) + tail;
+}
+
+/** "a, b, c", or "a, b and 8 more" when the full list is longer than `budget`. */
+function nameList(names: string[], budget: number): string {
+  const text = (shown: number) => names.slice(0, shown).join(', ') + (shown < names.length ? ` and ${names.length - shown} more` : '');
+  let shown = names.length;
+  while (shown > 1 && text(shown).length > budget) shown--;
+  return text(shown);
 }
 
 function announcement(g: BonusGrant, currency: string): string {
@@ -194,7 +221,7 @@ export function onGifts(ctx: BonusContext, e: SubscriptionGiftsEvent, meta: Queu
       }
     }
     return grants;
-  });
+  }, (grants, currency) => giftAnnouncement(grants, giftees.length, currency));
 }
 
 export function onKicks(ctx: BonusContext, e: KicksGiftedEvent, meta: QueueMeta): BonusOutcome {

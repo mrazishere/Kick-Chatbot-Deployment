@@ -72,6 +72,8 @@ export class WebhookPoller {
   private channelName: string;
   private handlers: WebhookHandlers;
   private queuePath: string;
+  /** Raw gifted-subs payloads, next to the queue directory (data/gift-samples.jsonl). */
+  private giftSamplePath: string;
   private interval: NodeJS.Timeout | null = null;
   private seenIds: string[] = [];
   /** Event names already reported as unhandled, so each is logged once. */
@@ -81,7 +83,27 @@ export class WebhookPoller {
   constructor(channelName: string, handlers: WebhookHandlers, queueDir?: string) {
     this.channelName = channelName;
     this.handlers = handlers;
-    this.queuePath = path.join(queueDir ?? path.join(process.cwd(), 'data', 'webhook-events'), `${channelName}.jsonl`);
+    const dir = queueDir ?? path.join(process.cwd(), 'data', 'webhook-events');
+    this.queuePath = path.join(dir, `${channelName}.jsonl`);
+    this.giftSamplePath = path.join(path.dirname(dir), 'gift-samples.jsonl');
+  }
+
+  /**
+   * Keep every gifted-subs payload as Kick sent it (the enrollment service queues
+   * it unchanged). Whether Kick still names the gifter when `is_anonymous` is true
+   * decides how anonymous gifts can be credited, and only a real payload says.
+   */
+  private recordGiftSample(event: Record<string, unknown>, meta: QueueMeta): void {
+    console.log(`[WEBHOOK] gifted subs, gifter as sent: ${JSON.stringify(event.gifter ?? null).slice(0, 300)}`);
+    try {
+      fs.appendFileSync(
+        this.giftSamplePath,
+        JSON.stringify({ receivedAt: new Date().toISOString(), channelName: this.channelName, messageId: meta.messageId, payload: event }) + '\n',
+        'utf8'
+      );
+    } catch (err) {
+      console.error(`[WEBHOOK] Could not record a gift sample: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   start(): void {
@@ -178,6 +200,7 @@ export class WebhookPoller {
           case 'channel.subscription.renewal':
           case 'channel.subscription.gifts':
           case 'kicks.gifted': {
+            if (eventName === 'channel.subscription.gifts') this.recordGiftSample(event, meta);
             if (age !== null && age > MAX_BONUS_AGE_MS) {
               console.log(`[WEBHOOK] Skipping ${eventName} queued ${Math.round(age / 3_600_000)} h ago`);
               break;
