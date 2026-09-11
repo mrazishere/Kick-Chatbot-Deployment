@@ -26,6 +26,18 @@ const API = 'https://api.kick.com/public/v1';
 /** Redemption ids already acted on. The webhook re-fires on every status change. */
 const SEEN_LIMIT = 500;
 
+/**
+ * A timeout or roulette only lands on someone who chatted this recently.
+ *
+ * On 2026-09-11 viewers aimed "Timeout someone" at a troll called BetterCaIISauI
+ * (capital I's) but typed BetterCallSaul. That is a real, different account that
+ * wasn't in chat, so it got muted while the troll kept chatting and mocked them
+ * for 25,000 wasted points. A name that hasn't chatted is now refunded instead.
+ */
+const RECENT_CHAT_WINDOW_MS = 30 * 60 * 1000;
+/** How much of the channel log to scan for recent chat. 30 minutes of a busy chat is a few hundred KB. */
+const CHAT_LOG_TAIL_BYTES = 4 * 1024 * 1024;
+
 /** What one redemption did, or why it didn't. A failure is refunded. */
 type Outcome =
   | { ok: true; announce: string; log: string }
@@ -265,6 +277,10 @@ export class RewardRedemptionHandler {
 
         const blocked = moderator.protectionReason(target, redeemer);
         if (blocked) return { ok: false, reason: `${target} cannot be timed out (${blocked})` };
+        // Checked before the shield: an absent name must not bounce a timeout back onto the redeemer.
+        if (!sameUser(target, redeemer) && (await chattedRecently(this.deps.channelName, target)) === false) {
+          return { ok: false, reason: absentReason(target) };
+        }
         const shield = sameUser(target, redeemer) ? null : moderator.shieldOf(target);
         if (shield && !shield.reflect) return { ok: false, reason: `${target} is shielded` };
 
@@ -299,6 +315,10 @@ export class RewardRedemptionHandler {
         }
         const blocked = moderator.protectionReason(target, redeemer);
         if (blocked) return { ok: false, reason: `${target} cannot be timed out (${blocked})` };
+        // Before the spin, so an absent name is refunded rather than a coin flip on the redeemer.
+        if (!sameUser(target, redeemer) && (await chattedRecently(this.deps.channelName, target)) === false) {
+          return { ok: false, reason: absentReason(target) };
+        }
         if (!(await moderator.lookupUser(target))) {
           return { ok: false, reason: `I could not find a Kick user called "${target}"` };
         }
@@ -404,4 +424,56 @@ export function parseTargetUsername(userInput: string | undefined): string | nul
 
 function sameUser(a: string, b: string): boolean {
   return a.replace(/^@+/, '').toLowerCase() === b.replace(/^@+/, '').toLowerCase();
+}
+
+function absentReason(target: string): string {
+  return `${target} hasn't chatted in the last ${Math.round(RECENT_CHAT_WINDOW_MS / 60000)} minutes, so nobody was timed out`;
+}
+
+/** "2026-09-11 22:08:41: [vip,founder] BetterCaIISauI: text" — the badge list is absent for badgeless viewers. */
+const CHAT_LOG_LINE = /^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2}): (?:\[[a-z0-9_]+(?:,[a-z0-9_]+)*\] )?([A-Za-z0-9_]{2,25}): /;
+
+/**
+ * Whether `username` chatted in this channel within the window, read from the
+ * channel's own log, where every chat message is written as it's handled.
+ *
+ * Returns null when the log can't be read. Callers treat that as "don't know" and
+ * let the redemption through: refusing every redemption because a log rotated
+ * would be worse than the occasional miss.
+ */
+export async function chattedRecently(channelName: string, username: string, windowMs = RECENT_CHAT_WINDOW_MS, now = Date.now()): Promise<boolean | null> {
+  const logPath = path.join(process.cwd(), 'logs', `kick-${channelName}-out.log`);
+  const wanted = username.replace(/^@+/, '').toLowerCase();
+  let handle: fs.promises.FileHandle | null = null;
+  try {
+    handle = await fs.promises.open(logPath, 'r');
+    const { size } = await handle.stat();
+    const length = Math.min(size, CHAT_LOG_TAIL_BYTES);
+    const buf = Buffer.alloc(length);
+    await handle.read(buf, 0, length, size - length);
+    const lines = buf.toString('utf8').split('\n');
+    if (length < size) lines.shift();   // started mid-line
+
+    // Newest first, stopping at the first line older than the window.
+    const cutoff = now - windowMs;
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const m = CHAT_LOG_LINE.exec(lines[i]);
+      if (!m) continue;
+      // pm2 writes these stamps in the server's local time, which is how Date parses them.
+      const at = new Date(`${m[1]}T${m[2]}`).getTime();
+      if (at < cutoff) return false;
+      if (m[3].toLowerCase() === wanted) return true;
+    }
+    // The whole log is newer than the window, so its start is the start of the
+    // channel's history: the name really isn't there.
+    if (length === size) return false;
+    // The scanned tail never reached back past the window: a log busy enough that
+    // the name could have chatted in the part not read. Don't refund on a guess.
+    return null;
+  } catch (err) {
+    console.error(`[REWARD] Could not read ${logPath} to check recent chat — allowing the redemption:`, err instanceof Error ? err.message : String(err));
+    return null;
+  } finally {
+    await handle?.close().catch(() => {});
+  }
 }
