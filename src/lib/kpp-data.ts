@@ -312,7 +312,9 @@ export function upsertPayout(channel: string, date: string, actualCents: number 
   writeJson(channel, "payouts.json", payouts);
 }
 
-export function computeLiveEstimate(live: LiveSession, centsPerAuthVH: number): number {
+/** null without a calibrated rate, like a finished session: a guessed rate is a made-up number. */
+export function computeLiveEstimate(live: LiveSession, centsPerAuthVH: number | null): number | null {
+  if (centsPerAuthVH == null) return null;
   const POLL_HOURS = 5 / 60;
   const totalWindows = Object.values(live.chatterActiveWindows).reduce((a, b) => a + b, 0);
   const authVH = totalWindows * POLL_HOURS;

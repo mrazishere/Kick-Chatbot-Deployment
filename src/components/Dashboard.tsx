@@ -71,7 +71,8 @@ interface LiveSummary {
   totalMessages: number;
   uniqueChatters: number;
   chatRate: number;
-  estimatedCents: number;
+  /** null while the channel has no calibrated rate. */
+  estimatedCents: number | null;
 }
 
 function dollars(cents: number) {
@@ -949,6 +950,9 @@ export default function Dashboard({
                   <div className="text-xl font-bold text-[#53FC18]">
                     {kpp(live.estimatedCents)}
                   </div>
+                  {showKPP && live.estimatedCents == null ? (
+                    <div className="text-xs text-neutral-500">not calibrated</div>
+                  ) : null}
                 </div>
               </div>
             </div>

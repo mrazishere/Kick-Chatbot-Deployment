@@ -88,6 +88,8 @@ export interface BotChannel {
   earnings: EarningsSettings | null;
   claudeDefaults?: ClaudeSettings;
   kpp: KppSettings | null;
+  /** A stop by the owner or an admin still in force; absent from older bot services. */
+  stopped?: { by: string | null; at: string } | null;
   token: TokenHealth;
 }
 
@@ -1186,9 +1188,22 @@ export default function BotManager({
                     ) : null}
                   </>
                 ) : (
-                  <Button variant="primary" onClick={() => control("start")} busy={busy === "start"} disabled={!!busy}>
-                    <Play className="h-4 w-4" /> Start
-                  </Button>
+                  <>
+                    {/* A manager may start a bot that crashed, not one the broadcaster switched off. */}
+                    {!canAdminister && bot.stopped ? (
+                      <span className="text-xs text-neutral-500">
+                        Stopped by {bot.stopped.by ?? "the broadcaster"} — only the broadcaster can start it
+                      </span>
+                    ) : null}
+                    <Button
+                      variant="primary"
+                      onClick={() => control("start")}
+                      busy={busy === "start"}
+                      disabled={!!busy || (!canAdminister && !!bot.stopped)}
+                    >
+                      <Play className="h-4 w-4" /> Start
+                    </Button>
+                  </>
                 )}
               </div>
             }
@@ -2047,9 +2062,12 @@ export default function BotManager({
               <div className="border-t border-neutral-800" />
               <Toggle
                 label="KPP recording"
-                description="Tracks engagement for Kick Partner Program estimates. Required for !kpp and !topc to respond."
+                description={
+                  "Tracks engagement for Kick Partner Program estimates. Required for !kpp and !topc to respond." +
+                  (canAdminister ? "" : " Only the broadcaster can change this.")
+                }
                 checked={bot.kpp?.enabled ?? false}
-                disabled={!!busy}
+                disabled={!!busy || !canAdminister}
                 onChange={toggleKpp}
               />
               <div className="border-t border-neutral-800" />

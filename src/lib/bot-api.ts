@@ -101,6 +101,11 @@ export interface BotChannel {
   earnings: EarningsSettings | null;
   claudeDefaults?: ClaudeSettings;
   kpp: KppSettings | null;
+  /**
+   * Set while a stop by the owner or an admin is in force — managers can't start
+   * the bot until the broadcaster does. Absent from bot services older than this.
+   */
+  stopped?: { by: string | null; at: string } | null;
   token: BotTokenHealth;
   availableCommands?: string[];
 }
@@ -192,13 +197,15 @@ export function getChannel(channel: string): Promise<BotChannel> {
   return request<BotChannel>(`/internal/bot/${encodeURIComponent(channel)}`);
 }
 
+/** `actor` lets the service record who stopped a bot and hold managers to the same rules. */
 export function controlBot(
   channel: string,
   action: "start" | "stop" | "restart",
+  actor: { username: string; role: "owner" | "admin" | "manager" },
 ): Promise<BotChannel & { ok: true }> {
   return request(`/internal/bot/${encodeURIComponent(channel)}/control`, {
     method: "POST",
-    body: { action },
+    body: { action, actor },
   });
 }
 

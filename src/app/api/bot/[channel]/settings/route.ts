@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { updateSettings, type SettingsPatch } from "@/lib/bot-api";
-import { authorizeChannel, errorResponse, validChannel, visibleTo } from "@/lib/bot-auth";
+import { authorizeChannel, errorResponse, requireAdminister, validChannel, visibleTo } from "@/lib/bot-auth";
 
 type Params = { params: Promise<{ channel: string }> };
 
@@ -39,6 +39,13 @@ export async function POST(req: Request, { params }: Params): Promise<NextRespon
   }
   if (keys.length === 0) {
     return NextResponse.json({ error: "No settings provided" }, { status: 400 });
+  }
+
+  // KPP recording and its calibration decide what the channel's public earnings
+  // page claims, so they're the broadcaster's call, not a moderator's.
+  if (keys.includes("kpp")) {
+    const denied = requireAdminister(gate.auth);
+    if (denied) return denied;
   }
 
   try {

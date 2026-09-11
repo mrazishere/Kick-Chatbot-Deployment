@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { controlBot } from "@/lib/bot-api";
+import { controlBot, getChannel } from "@/lib/bot-api";
 import { authorizeChannel, errorResponse, requireAdminister, validChannel, visibleTo } from "@/lib/bot-auth";
 
 type Params = { params: Promise<{ channel: string }> };
@@ -37,8 +37,28 @@ export async function POST(req: Request, { params }: Params): Promise<NextRespon
     if (denied) return denied;
   }
 
+  // Managers can bring back a bot that crashed, but not one the broadcaster
+  // switched off — that would undo the owner's decision. The bot service checks
+  // this as well; checking here too keeps the rule even against an older service.
+  if (!gate.auth.canAdminister) {
+    try {
+      const bot = await getChannel(channel);
+      if (bot.stopped) {
+        return NextResponse.json(
+          { error: `${bot.stopped.by ?? "The broadcaster"} stopped this bot — only the broadcaster can start it again` },
+          { status: 403 },
+        );
+      }
+    } catch (e) {
+      return errorResponse(e);
+    }
+  }
+
   try {
-    const result = await controlBot(channel, action as "start" | "stop" | "restart");
+    const result = await controlBot(channel, action as "start" | "stop" | "restart", {
+      username: gate.auth.username,
+      role: gate.auth.role,
+    });
     console.log(`[dashboard] ${gate.auth.username} ran ${action} on ${channel}`);
     return NextResponse.json(visibleTo(gate.auth, result));
   } catch (e) {
