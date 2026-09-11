@@ -15,6 +15,11 @@
  * fire-and-forget task, which batches unscored events to the Anthropic API,
  * asks for a dumb/trolled score per item, and folds the results into state.json.
  * Nothing runs on the !claude hot path except a best-effort appendFileSync.
+ *
+ * A reset starts a new generation, recorded in state.json and stamped on every
+ * event. Only the current generation's events are scored, and a scoring run
+ * that finds the generation changed under it stops without writing — so a reset
+ * sticks even when a run was waiting on the API as it landed.
  */
 
 import fetch from 'node-fetch';
@@ -29,6 +34,8 @@ export interface ShameEvent {
   user: string;
   prompt: string;
   response: string;
+  /** The reset generation it was recorded in. Absent on events from before resets were tracked (generation 0). */
+  gen?: number;
 }
 
 export interface UserStats {
@@ -46,6 +53,7 @@ export interface ShameState {
   scoredCursor: number;                 // highest seq already scored
   users: Record<string, UserStats>;
   generatedAt: string;
+  generation: number;                   // bumped by every reset
 }
 
 interface ItemScore {
@@ -99,6 +107,20 @@ function ensureDir(channel: string): void {
 // In-memory next-seq cache per channel (one bot process per channel).
 const seqCache = new Map<string, number>();
 
+// Current reset generation per channel, loaded from state.json on first use and
+// moved forward by resetChannel.
+const genCache = new Map<string, number>();
+
+function currentGeneration(channel: string): number {
+  const key = cleanChannel(channel);
+  if (!genCache.has(key)) genCache.set(key, readState(channel).generation);
+  return genCache.get(key) as number;
+}
+
+function eventGen(e: ShameEvent): number {
+  return typeof e.gen === 'number' ? e.gen : 0;
+}
+
 function readEvents(channel: string): ShameEvent[] {
   const p = eventsPath(channel);
   if (!fs.existsSync(p)) return [];
@@ -145,7 +167,8 @@ export function recordLeaderboardEvent(
       ts: new Date().toISOString(),
       user,
       prompt: prompt.slice(0, 500),
-      response: response.slice(0, 500)
+      response: response.slice(0, 500),
+      gen: currentGeneration(channel)
     };
     fs.appendFileSync(eventsPath(channel), JSON.stringify(entry) + '\n');
   } catch {
@@ -156,15 +179,17 @@ export function recordLeaderboardEvent(
 /**
  * Trim the event log: keep every unscored event plus the newest SCORED_KEEP
  * scored ones. If unscored events exceed MAX_UNSCORED (command never used),
- * drop the oldest unscored too. Atomic write.
+ * drop the oldest unscored too. Events from before the last reset are dropped
+ * outright. Atomic write.
  */
-function trimEvents(channel: string, scoredCursor: number): void {
+function trimEvents(channel: string, scoredCursor: number, generation: number): void {
   try {
     const events = readEvents(channel);
     if (events.length === 0) return;
 
-    let unscored = events.filter(e => e.seq > scoredCursor);
-    const scored = events.filter(e => e.seq <= scoredCursor);
+    const current = events.filter(e => eventGen(e) === generation);
+    let unscored = current.filter(e => e.seq > scoredCursor);
+    const scored = current.filter(e => e.seq <= scoredCursor);
 
     if (unscored.length > MAX_UNSCORED) {
       unscored = unscored.slice(-MAX_UNSCORED);
@@ -175,8 +200,8 @@ function trimEvents(channel: string, scoredCursor: number): void {
     if (kept.length === events.length) return; // nothing to drop
 
     const p = eventsPath(channel);
-    const tmp = `${p}.tmp`;
-    fs.writeFileSync(tmp, kept.map(e => JSON.stringify(e)).join('\n') + '\n');
+    const tmp = `${p}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, kept.length ? kept.map(e => JSON.stringify(e)).join('\n') + '\n' : '');
     fs.renameSync(tmp, p);
   } catch {
     // best-effort
@@ -185,8 +210,8 @@ function trimEvents(channel: string, scoredCursor: number): void {
 
 // ─── State ──────────────────────────────────────────────────────────────────
 
-function emptyState(): ShameState {
-  return { scoredCursor: 0, users: {}, generatedAt: new Date().toISOString() };
+function emptyState(generation = 0): ShameState {
+  return { scoredCursor: 0, users: {}, generatedAt: new Date().toISOString(), generation };
 }
 
 export function readState(channel: string): ShameState {
@@ -196,6 +221,7 @@ export function readState(channel: string): ShameState {
     const parsed = JSON.parse(fs.readFileSync(p, 'utf8')) as ShameState;
     if (!parsed.users) parsed.users = {};
     if (typeof parsed.scoredCursor !== 'number') parsed.scoredCursor = 0;
+    if (typeof parsed.generation !== 'number') parsed.generation = 0;
     return parsed;
   } catch {
     return emptyState();
@@ -206,21 +232,37 @@ function writeState(channel: string, state: ShameState): void {
   ensureDir(channel);
   state.generatedAt = new Date().toISOString();
   const p = statePath(channel);
-  const tmp = `${p}.tmp`;
+  const tmp = `${p}.${process.pid}.tmp`;
   fs.writeFileSync(tmp, JSON.stringify(state, null, 2));
   fs.renameSync(tmp, p);
 }
 
-/** Wipe all leaderboard data for a channel (mods only, via the command). */
-export function resetChannel(channel: string): void {
+/**
+ * Wipe all leaderboard data for a channel (mods only, via the command). Returns
+ * false when the wipe could not be saved.
+ *
+ * The new generation is written first. Once it's on disk nothing older counts —
+ * not an event left in the file, not a scoring run that was waiting on the API
+ * when the reset landed — so a failed cleanup below can't bring the board back.
+ */
+export function resetChannel(channel: string): boolean {
+  const key = cleanChannel(channel);
+  let next: number;
   try {
-    writeState(channel, emptyState());
+    next = readState(channel).generation + 1;
+    writeState(channel, emptyState(next));
+  } catch {
+    return false;
+  }
+  genCache.set(key, next);
+  seqCache.delete(key);
+  try {
     const p = eventsPath(channel);
     if (fs.existsSync(p)) fs.unlinkSync(p);
-    seqCache.delete(cleanChannel(channel));
   } catch {
-    // best-effort
+    // Leftover events belong to the old generation: never scored, trimmed away later.
   }
+  return true;
 }
 
 function foldIn(state: ShameState, ev: ShameEvent, score: ItemScore): void {
@@ -341,8 +383,9 @@ export async function scoreBacklog(channel: string, apiKey: string): Promise<num
   scoring.add(key);
   try {
     const state = readState(channel);
+    const generation = state.generation;
     const pending = readEvents(channel)
-      .filter(e => e.seq > state.scoredCursor)
+      .filter(e => eventGen(e) === generation && e.seq > state.scoredCursor)
       .sort((a, b) => a.seq - b.seq);
     if (pending.length === 0) return 0;
 
@@ -357,6 +400,9 @@ export async function scoreBacklog(channel: string, apiKey: string): Promise<num
         // Skip this batch on API failure; leave cursor so it retries next time.
         break;
       }
+      // A reset while the API call was out has moved to a new generation. Saving
+      // this run's state now would put the wiped board back, so stop here.
+      if (readState(channel).generation !== generation) return scoredCount;
       for (let i = 0; i < group.length; i++) {
         foldIn(state, group[i], groupScores[i]);
       }
@@ -365,8 +411,10 @@ export async function scoreBacklog(channel: string, apiKey: string): Promise<num
       writeState(channel, state); // checkpoint each batch
     }
 
-    if (scoredCount > 0) {
-      trimEvents(channel, state.scoredCursor);
+    // A failed batch awaited the API too, so check again: trimming by the old
+    // generation after a reset would delete the new generation's events.
+    if (scoredCount > 0 && readState(channel).generation === generation) {
+      trimEvents(channel, state.scoredCursor, generation);
     }
     return scoredCount;
   } finally {
@@ -377,7 +425,7 @@ export async function scoreBacklog(channel: string, apiKey: string): Promise<num
 /** True if there are events waiting to be scored. */
 export function hasPending(channel: string): boolean {
   const state = readState(channel);
-  return readEvents(channel).some(e => e.seq > state.scoredCursor);
+  return readEvents(channel).some(e => eventGen(e) === state.generation && e.seq > state.scoredCursor);
 }
 
 // ─── Leaderboard queries ────────────────────────────────────────────────────

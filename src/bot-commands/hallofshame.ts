@@ -192,7 +192,10 @@ export const hallofshame: CommandFn = async function hallofshame(client, message
       client.say(channel, `@${tags.username}, !hallofshame reset is for Moderators & above.`);
       return;
     }
-    resetChannel(channel);
+    if (!resetChannel(channel)) {
+      client.say(channel, `@${tags.username}, could not wipe the AI Hall of Shame. Try again in a moment.`);
+      return;
+    }
     client.say(channel, `@${tags.username}, AI Hall of Shame wiped clean. Fresh clowns incoming.`);
     return;
   }
