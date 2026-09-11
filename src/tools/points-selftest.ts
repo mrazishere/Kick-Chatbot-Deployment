@@ -496,10 +496,14 @@ async function main(): Promise<void> {
     check('giver without a balance', none[0] === '@newbie you only have 0 $DON', none);
 
     check('non-mod add is silent', (await run('$don add bob 5', tags('carol', 4))).length === 0);
-    check('mod add', (await run('$don add bob 5', tags('mod1', 90, true)))[0] === 'Added 5 $DON to bob, now 95');
-    check('owner counts as mod', (await run('$don remove bob 1000', tags('ownerx', 91)))[0] === 'Removed 95 $DON from bob, now 0');
-    check('mod set', (await run('$don set @bob 7', tags('mod1', 90, true)))[0] === 'bob now has 7 $DON');
-    check('mod adjust needs a user and amount', (await run('$don add bob', tags('mod1', 90, true)))[0] === 'Usage: $don add user amount');
+    // Only the broadcaster and the bot owner change balances; moderators can only read.
+    const broadcasterTags: KickTags = { ...tags('cmdch', 999), isBroadcaster: true, isModUp: true };
+    check('mod add is silent: mods can only read', (await run('$don add bob 5', tags('mod1', 90, true))).length === 0 && balance(ch, 2) === 90);
+    check('mod set is silent', (await run('$don set @bob 1', tags('mod1', 90, true))).length === 0 && balance(ch, 2) === 90);
+    check('broadcaster add', (await run('$don add bob 5', broadcasterTags))[0] === 'Added 5 $DON to bob, now 95');
+    check('bot owner can remove', (await run('$don remove bob 1000', tags('ownerx', 91)))[0] === 'Removed 95 $DON from bob, now 0');
+    check('broadcaster set', (await run('$don set @bob 7', broadcasterTags))[0] === 'bob now has 7 $DON');
+    check('adjust needs a user and amount', (await run('$don add bob', tags('ownerx', 91)))[0] === 'Usage: $don add user amount');
     check('leaderboard link', (await run('$don leaderboard', tags('mod1', 90, true)))[0] === '$DON leaderboard https://example.test/kick/cmdch/leaderboard');
     const watch = await run('$don activetime', tags('bob', 2));
     check('no active time yet', watch[0] === '@bob has no active time yet', watch);
@@ -563,16 +567,16 @@ async function main(): Promise<void> {
       return out;
     };
 
-    const add1 = await run('$don add bob 5', tagsFor('mod1', 90, true, 'msg-a'));
-    const add2 = await run('$don add bob 5', tagsFor('mod1', 90, true, 'msg-a'));
-    check('replayed mod add applies once, replay silent', add1.length === 1 && add2.length === 0 && balance(ch, 2) === 55, { add1, add2, bal: balance(ch, 2) });
+    const add1 = await run('$don add bob 5', tagsFor('ownerx', 91, false, 'msg-a'));
+    const add2 = await run('$don add bob 5', tagsFor('ownerx', 91, false, 'msg-a'));
+    check('replayed owner add applies once, replay silent', add1.length === 1 && add2.length === 0 && balance(ch, 2) === 55, { add1, add2, bal: balance(ch, 2) });
     const give1 = await run('$don give bob 10', tagsFor('alice', 1, false, 'msg-b'));
     const give2 = await run('$don give bob 10', tagsFor('alice', 1, false, 'msg-b'));
     check('replayed give applies once, replay silent', /gave 10/.test(give1[0] ?? '') && give2.length === 0 && balance(ch, 1) === 90 && balance(ch, 2) === 65, { give1, give2 });
 
-    const num = await run('$don add 12345 7', tagsFor('mod1', 90, true));
+    const num = await run('$don add 12345 7', tagsFor('ownerx', 91));
     check('all-digit username read by position', num[0] === 'Added 7 $DON to 12345, now 7', num);
-    const swapped = await run('$don add 8 @bob', tagsFor('mod1', 90, true));
+    const swapped = await run('$don add 8 @bob', tagsFor('ownerx', 91));
     check('@name marks the name in either order', swapped[0] === 'Added 8 $DON to bob, now 73', swapped);
 
     writeConfig(root, ch, { enabled: true, currencyName: '$DON', give: { enabled: true, cooldownSeconds: 30 } });

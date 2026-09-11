@@ -8,7 +8,8 @@
  * Permission required:
  *          $<cmd>, activetime, top, leaderboard: all users
  *          $<cmd> give: all users, when giving is enabled
- *          $<cmd> add/remove/set: moderators and above
+ *          $<cmd> add/remove/set: the broadcaster and the bot owner only
+ *          (moderators can read and skip read cooldowns, but not change balances)
  *
  * Usage:   $don [@user]               - balance and rank
  *          $don activetime [@user]    - active time and rank
@@ -99,7 +100,11 @@ export const points: CommandFn = async function points(client, message, channel,
   const say = (text: string) => client.say(channel, text);
   const args = words.slice(1);
   const sub = SUBCOMMANDS.has((args[0] ?? '').toLowerCase()) ? args[0].toLowerCase() : null;
-  const isModUp = tags.isModUp || (!!process.env.KICK_OWNER && meLc === process.env.KICK_OWNER.toLowerCase());
+  const isOwner = !!process.env.KICK_OWNER && meLc === process.env.KICK_OWNER.toLowerCase();
+  // Moderators skip the read cooldowns. Changing balances is only for the broadcaster
+  // and the bot owner (user, 2026-09-12): a mod could otherwise mint up to modMaxAdjust at will.
+  const isModUp = tags.isModUp || isOwner;
+  const canWrite = tags.isBroadcaster || isOwner;
 
   try {
     svc.flushPresence();
@@ -251,7 +256,7 @@ export const points: CommandFn = async function points(client, message, channel,
     }
 
     // ── add / remove / set ──
-    if (!isModUp) return;
+    if (!canWrite) return;
     const t = target(args.slice(1));
     if (!t || (sub !== 'set' && t.amount < 1)) return void say(`Usage: $${cmd} ${sub} user amount`);
     if (t.amount > cfg.modMaxAdjust) return void say(`@${me} the most you can adjust at once is ${cfg.modMaxAdjust}`);
