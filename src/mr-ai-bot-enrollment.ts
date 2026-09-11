@@ -133,15 +133,22 @@ async function getKickPublicKey(): Promise<string> {
   }
   try {
     const response = await axios.get('https://api.kick.com/public/v1/public-key', { timeout: 5000 });
-    const pem = (response.data as { public_key?: string }).public_key
-      || (response.data as string);
-    if (pem && typeof pem === 'string') {
+    // Kick wraps the key as { data: { public_key } }. Reading it from the top
+    // level never found it, so the cache never filled and every webhook fetched
+    // the key again — each Kick timeout stalled that event by five seconds.
+    const body = response.data as { data?: { public_key?: unknown }; public_key?: unknown };
+    const pem = body?.data?.public_key ?? body?.public_key;
+    if (typeof pem === 'string' && pem.includes('BEGIN PUBLIC KEY')) {
       cachedPublicKey = pem;
       publicKeyFetchedAt = now;
+      return cachedPublicKey;
     }
+    console.error('[WEBHOOK] Public key response had no key, using cached:', JSON.stringify(body).slice(0, 200));
   } catch (e) {
     console.error('[WEBHOOK] Failed to refresh public key, using cached:', e instanceof Error ? e.message : String(e));
   }
+  // Retry in ten minutes rather than on the very next webhook.
+  publicKeyFetchedAt = now - PUBLIC_KEY_TTL_MS + 10 * 60 * 1000;
   return cachedPublicKey;
 }
 
@@ -3310,9 +3317,21 @@ app.post('/kick-webhook', express.raw({ type: '*/*' }), async (req: express.Requ
     fs.mkdirSync(eventsDir, { recursive: true });
   }
   const queueFile = path.join(eventsDir, `${channelName}.jsonl`);
-  // Wrapped so the channel-side poller can tell event types apart. Bare
-  // payloads written by an older build are still read as chat messages.
-  fs.appendFileSync(queueFile, JSON.stringify({ __event: eventType, payload }) + '\n', 'utf8');
+  // A stopped bot doesn't drain its queue. Past this size it's hours of chat the
+  // poller would skip as stale anyway, so start over rather than grow without limit.
+  const MAX_QUEUE_BYTES = 5 * 1024 * 1024;
+  try {
+    if (fs.statSync(queueFile).size > MAX_QUEUE_BYTES) {
+      fs.writeFileSync(queueFile, '', 'utf8');
+      console.warn(`[WEBHOOK] ${channelName}'s queue passed 5 MB without being drained — is its bot running? Cleared it.`);
+    }
+  } catch {
+    // No queue file yet.
+  }
+  // Wrapped so the channel-side poller can tell event types apart, and stamped
+  // so it can skip what waited out a stopped bot. Bare payloads written by an
+  // older build are still read as chat messages.
+  fs.appendFileSync(queueFile, JSON.stringify({ __event: eventType, receivedAt: Date.now(), payload }) + '\n', 'utf8');
 });
 
 // ==================== START SERVICES ====================

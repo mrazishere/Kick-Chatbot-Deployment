@@ -483,8 +483,11 @@ class KickChatBot {
         const eventData = (typeof message.data === 'string'
           ? JSON.parse(message.data)
           : message.data) as Record<string, unknown>;
-        this.webhookPoller.markSeen(eventData?.id as string | undefined);
-        this.handleChatMessage(eventData);
+        // The webhook often delivers a message first. Handling it again here ran every
+        // command twice and double-counted KPP chat.
+        if (this.webhookPoller.markSeen(eventData?.id as string | undefined)) {
+          this.handleChatMessage(eventData);
+        }
       } else if (message.event === 'App\\Events\\SubscriptionEvent') {
         const eventData = (typeof message.data === 'string'
           ? JSON.parse(message.data)
