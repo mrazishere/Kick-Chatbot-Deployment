@@ -6,7 +6,7 @@
  *
  * Usage: !kpp
  *
- * Scope: sukasblood only (channel-name guarded). Returns silently on other channels.
+ * Scope: channels with kpp.enabled in their config. Silent everywhere else.
  *
  * Data source:
  *   data/kpp/<channel>/current.json   (live session)
@@ -50,6 +50,9 @@ export const kpp: CommandFn = async function kpp(client, message, channel, tags,
 
   const channelName = config.channelName;
   if ((config.kpp as KPPConfig | undefined)?.enabled !== true) return;
+  // Replies name the streamer. "Don" was hardcoded from when only sukasblood had this
+  // command; now it's his config's streamerName, and other channels use their own name.
+  const streamer = config.streamerName?.trim() || channelName;
 
   const cfg = (config.kpp as KPPConfig | undefined) || {};
   const chatNormalRate = cfg.chatNormalRate ?? DEFAULT_CHAT_NORMAL_RATE;
@@ -105,7 +108,7 @@ export const kpp: CommandFn = async function kpp(client, message, channel, tags,
 
       await client.say(
         channel,
-        `@${tags.username} Don is LIVE: ${estPart}, score ${score.toFixed(0)}, ${cumulativeChatters} chatters ${(chatRate * 100).toFixed(1)}pct ${chatHealthLabel(chatRate)}, ${formatDuration(durationSeconds)}, ${current.lastViewerCount} viewers peak ${current.peakViewers}`
+        `@${tags.username} ${streamer} is LIVE: ${estPart}, score ${score.toFixed(0)}, ${cumulativeChatters} chatters ${(chatRate * 100).toFixed(1)}pct ${chatHealthLabel(chatRate)}, ${formatDuration(durationSeconds)}, ${current.lastViewerCount} viewers peak ${current.peakViewers}`
       );
       return;
     }
@@ -122,7 +125,7 @@ export const kpp: CommandFn = async function kpp(client, message, channel, tags,
     }
 
     if (sessions.length === 0) {
-      await client.say(channel, `@${tags.username}, Don isn't streaming and no KPP sessions have been logged yet.`);
+      await client.say(channel, `@${tags.username}, ${streamer} isn't streaming and no KPP sessions have been logged yet.`);
       return;
     }
 
@@ -133,7 +136,7 @@ export const kpp: CommandFn = async function kpp(client, message, channel, tags,
     const estPart = lastEstCents != null ? formatDollars(lastEstCents) + ' est' : 'pending';
     await client.say(
       channel,
-      `@${tags.username} Don is offline, last session: ${estPart}, score ${last.engagementScore}, ${last.uniqueChatters} chatters ${(last.chatActivityRate * 100).toFixed(1)}pct ${chatHealthLabel(last.chatActivityRate)}, ${formatDuration(last.durationSeconds)} avg ${Math.round(last.avgViewers)} peak ${last.peakViewers}`
+      `@${tags.username} ${streamer} is offline, last session: ${estPart}, score ${last.engagementScore}, ${last.uniqueChatters} chatters ${(last.chatActivityRate * 100).toFixed(1)}pct ${chatHealthLabel(last.chatActivityRate)}, ${formatDuration(last.durationSeconds)} avg ${Math.round(last.avgViewers)} peak ${last.peakViewers}`
     );
   } catch (err) {
     if (err instanceof Error) console.error('[KPP CMD] Command error:', err.message);

@@ -58,6 +58,8 @@ export const earnings: CommandFn = async function earnings(client, message, chan
   // Availability follows the channel config, not a hardcoded allowlist — the
   // dashboard's command toggle would otherwise be a no-op on other channels.
   if ((config.earnings as { enabled?: boolean } | undefined)?.enabled !== true) return;
+  // Replies name the streamer: the config's streamerName (sukasblood's is "Don"), else the channel.
+  const streamer = config.streamerName?.trim() || channelName;
 
   const rate = earningsRate(config);
   // A figure from an uncalibrated default rate is labelled as one, not passed off as real earnings.
@@ -80,7 +82,7 @@ export const earnings: CommandFn = async function earnings(client, message, chan
 
       await client.say(
         channel,
-        `@${tags.username}, Don is LIVE — earnings so far: ${formatDollars(displayCents)} over ${formatDuration(durationSeconds)} (${current.lastViewerCount} viewers, peak ${current.peakViewers}).${rateNote}`
+        `@${tags.username}, ${streamer} is LIVE — earnings so far: ${formatDollars(displayCents)} over ${formatDuration(durationSeconds)} (${current.lastViewerCount} viewers, peak ${current.peakViewers}).${rateNote}`
       );
       return;
     }
@@ -99,14 +101,14 @@ export const earnings: CommandFn = async function earnings(client, message, chan
     }
 
     if (sessions.length === 0) {
-      await client.say(channel, `@${tags.username}, Don isn't streaming and no earnings data has been logged yet.`);
+      await client.say(channel, `@${tags.username}, ${streamer} isn't streaming and no earnings data has been logged yet.`);
       return;
     }
 
     const last = sessions[sessions.length - 1];
     await client.say(
       channel,
-      `@${tags.username}, Don isn't streaming. Last session: ${formatDollars(last.totalCents)} over ${formatDuration(last.durationSeconds)} (peak ${last.peakViewers} viewers).${rateNote}`
+      `@${tags.username}, ${streamer} isn't streaming. Last session: ${formatDollars(last.totalCents)} over ${formatDuration(last.durationSeconds)} (peak ${last.peakViewers} viewers).${rateNote}`
     );
   } catch (err) {
     if (err instanceof Error) {

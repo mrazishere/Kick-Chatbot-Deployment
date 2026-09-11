@@ -128,6 +128,8 @@ export interface ChannelConfig {
   kpp?: KPPConfig;
   earnings?: EarningsConfig;
   rewardActions?: RewardAction[];
+  /** What !kpp and !earnings call the streamer ("Don" for sukasblood). Defaults to channelName. */
+  streamerName?: string;
   [key: string]: unknown;
 }
 
