@@ -3,16 +3,16 @@
  * sukasblood's $DON answers to $don. It starts with $ where other
  * commands use !, so the command reads like the currency.
  *
- * Description: Balances, watch time, leaderboards, giving, and moderator adjustments.
+ * Description: Balances, active time, leaderboards, giving, and moderator adjustments.
  *
  * Permission required:
- *          $<cmd>, watchtime, top, leaderboard: all users
+ *          $<cmd>, activetime, top, leaderboard: all users
  *          $<cmd> give: all users, when giving is enabled
  *          $<cmd> add/remove/set: moderators and above
  *
  * Usage:   $don [@user]               - balance and rank
- *          $don watchtime [@user]     - watch time and rank
- *          $don top [watchtime]       - top 5
+ *          $don activetime [@user]    - active time and rank
+ *          $don top [activetime]      - top 5
  *          $don leaderboard           - link to the public leaderboard
  *          $don give @user 100        - send points to someone
  *          $don add|remove|set @user 500
@@ -20,6 +20,10 @@
  * A subcommand word wins over a username; write @top to look up a user called top.
  * Chat also writes $DON in sentences ("$DON to the moon"), so a name without @
  * that isn't a known viewer gets no reply.
+ *
+ * Active time is time spent chatting while live, in 10-minute steps. Kick has no
+ * viewer list, so a viewer who watches without chatting can't be counted, and
+ * calling it watch time would claim more than the bot knows.
  */
 
 import { CommandFn } from '../types';
@@ -30,7 +34,7 @@ import { reportDbError, runWrite } from '../points/db';
 import { getPointsService } from '../points/service';
 import { applyOnce, countRanked, creditTx, debitTx, ensureUserTx, findUserByName, getUser, isExcluded, rankBy, setTx, topBy, transfer } from '../points/store';
 
-const SUBCOMMANDS = new Set(['watchtime', 'top', 'leaderboard', 'give', 'add', 'remove', 'set']);
+const SUBCOMMANDS = new Set(['activetime', 'top', 'leaderboard', 'give', 'add', 'remove', 'set']);
 const AMOUNT_RE = /^\d{1,9}$/;
 const NAME_RE = /^@?[A-Za-z0-9_]{2,25}$/;
 
@@ -159,9 +163,9 @@ export const points: CommandFn = async function points(client, message, channel,
       return void say(rank === null ? `@${me} has ${self.balance} ${cur}` : `@${me} has ${self.balance} ${cur}, rank ${rank} of ${total()}`);
     }
 
-    // ── watchtime ──
-    if (sub === 'watchtime') {
-      if (cooldownLeft(`${channelName}:${meLc}:watchtime`, USER_COOLDOWN_MS, true)) return;
+    // ── activetime ──
+    if (sub === 'activetime') {
+      if (cooldownLeft(`${channelName}:${meLc}:activetime`, USER_COOLDOWN_MS, true)) return;
       const named = args[1];
       let u = self;
       let label = `@${me}`;
@@ -170,21 +174,21 @@ export const points: CommandFn = async function points(client, message, channel,
         u = who ? getUser(db, who.userId) : undefined;
         label = u?.username ?? named.replace(/^@+/, '');
       }
-      if (!u || u.watch_seconds <= 0) return void say(`${label} has no watch time yet`);
+      if (!u || u.watch_seconds <= 0) return void say(`${label} has no active time yet`);
       const rank = rankBy(db, u.user_id, 'watch_seconds', ex);
-      return void say(`${label} has watched ${watchLong(u.watch_seconds)}${rank === null ? '' : `, rank ${rank}`}`);
+      return void say(`${label} has ${watchLong(u.watch_seconds)} of active time${rank === null ? '' : `, rank ${rank}`}`);
     }
 
     // ── top ──
     if (sub === 'top') {
       if (!isModUp && cooldownLeft(`${channelName}:top`, CHANNEL_COOLDOWN_MS, true)) return;
-      const byWatch = /^watch/i.test(args[1] ?? '');
+      const byWatch = /^active/i.test(args[1] ?? '');
       const rows = topBy(db, byWatch ? 'watch_seconds' : 'balance', 5, ex);
-      if (!rows.length) return void say(byWatch ? 'No watch time recorded yet' : `No ${cur} earned yet`);
+      if (!rows.length) return void say(byWatch ? 'No active time recorded yet' : `No ${cur} earned yet`);
       // "·" separates entries because Kick doesn't count it toward the symbol limit.
       // When names bring their own symbols, later entries are dropped rather than
       // letting the sanitiser strip characters out of a name.
-      let text = byWatch ? 'Top watch time' : `Top ${cur}`;
+      let text = byWatch ? 'Top active time' : `Top ${cur}`;
       let used = asciiSymbols(text);
       for (const [i, u] of rows.entries()) {
         const entry = ` · ${i + 1} ${u.username} ${byWatch ? watchShort(u.watch_seconds) : u.balance}`;

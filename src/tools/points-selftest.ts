@@ -501,8 +501,10 @@ async function main(): Promise<void> {
     check('mod set', (await run('$don set @bob 7', tags('mod1', 90, true)))[0] === 'bob now has 7 $DON');
     check('mod adjust needs a user and amount', (await run('$don add bob', tags('mod1', 90, true)))[0] === 'Usage: $don add user amount');
     check('leaderboard link', (await run('$don leaderboard', tags('mod1', 90, true)))[0] === '$DON leaderboard https://example.test/kick/cmdch/leaderboard');
-    const watch = await run('$don watchtime', tags('bob', 2));
-    check('no watch time yet', watch[0] === '@bob has no watch time yet', watch);
+    const watch = await run('$don activetime', tags('bob', 2));
+    check('no active time yet', watch[0] === '@bob has no active time yet', watch);
+    check('old watchtime word is just an unknown name now', (await run('$don watchtime', tags('gina', 68))).length === 0);
+    check('top by active time', (await run('$don top activetime', tags('mod1', 90, true)))[0] === 'No active time recorded yet');
 
     writeConfig(root, ch, { enabled: false, currencyName: '$DON' });
     check('disabled is silent', (await run('$don top', tags('mod1', 90, true))).length === 0);

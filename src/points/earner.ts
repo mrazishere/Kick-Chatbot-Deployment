@@ -1,6 +1,7 @@
 /**
- * The watch-time loop: every interval while live, viewers who chatted recently
- * earn points and watch time.
+ * The earning loop: every interval while live, viewers who chatted recently
+ * earn points and active time. Kick has no viewer list, so chatting is the only
+ * sign of watching the bot has; the database column is still watch_seconds.
  *
  * Ticks line up with the wall clock (10:00, 10:10, ...), and each boundary is a
  * slot granted at most once, enforced by the database, not by timers. A restart
