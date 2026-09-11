@@ -20,8 +20,14 @@ export default function SiteHeader({
   status,
   switcher,
   showEarnings = true,
+  variant = "default",
   children,
 }: {
+  /**
+   * "public" is for pages anyone can open signed out (the leaderboard): just the
+   * channel name and a sign-in link, with no nav, switcher or sign-out.
+   */
+  variant?: "default" | "public";
   /** Off for managers: the earnings page is the broadcaster's and would only bounce them. */
   showEarnings?: boolean;
   channel: string;
@@ -29,7 +35,7 @@ export default function SiteHeader({
   avatarUrl?: string | null;
   isAdmin: boolean;
   /** Which page is showing, so its own nav entry renders as the active one. */
-  current: "bot" | "earnings" | "channels";
+  current: "bot" | "earnings" | "channels" | "leaderboard";
   /** Overrides the displayed name — the channels page isn't about one channel. */
   title?: string;
   /** Optional element shown beside the channel name (e.g. the live indicator). */
@@ -41,6 +47,29 @@ export default function SiteHeader({
   switcher?: { channel: string; isSelf: boolean }[];
   children?: ReactNode;
 }) {
+  if (variant === "public") {
+    return (
+      <header className="border-b border-neutral-800 bg-neutral-950/80 backdrop-blur">
+        <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-6 sm:py-4">
+          <div className="flex min-w-0 items-center gap-3">
+            <span className="truncate font-semibold text-[#53FC18]">{title ?? channel}</span>
+            {status}
+          </div>
+          {username ? (
+            <span className="text-sm text-neutral-500">{username}</span>
+          ) : (
+            <a
+              href={`${BASE_PATH}/api/auth/login`}
+              className="rounded-lg border border-neutral-700 px-3 py-2 text-sm text-neutral-400 transition hover:border-neutral-500 hover:text-neutral-200"
+            >
+              Sign in
+            </a>
+          )}
+        </div>
+      </header>
+    );
+  }
+
   const link = "px-3 py-2 text-sm transition rounded-lg";
   const active = "text-[#53FC18]";
   const idle = "text-neutral-400 hover:text-neutral-200";

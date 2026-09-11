@@ -4,7 +4,7 @@ import { authorizeChannel, errorResponse, requireAdminister, validChannel, visib
 
 type Params = { params: Promise<{ channel: string }> };
 
-const ALLOWED_KEYS = new Set(["chatOnly", "location", "autoTranslate", "kpp", "claude", "earnings"]);
+const ALLOWED_KEYS = new Set(["chatOnly", "location", "autoTranslate", "kpp", "claude", "earnings", "points"]);
 
 export async function POST(req: Request, { params }: Params): Promise<NextResponse> {
   const { channel: raw } = await params;
@@ -42,8 +42,10 @@ export async function POST(req: Request, { params }: Params): Promise<NextRespon
   }
 
   // KPP recording and its calibration decide what the channel's public earnings
-  // page claims, so they're the broadcaster's call, not a moderator's.
-  if (keys.includes("kpp")) {
+  // page claims, so they're the broadcaster's call, not a moderator's. So is the
+  // points economy: rates and bonuses set what every viewer's balance is worth.
+  // Managers can still adjust individual balances, through /points/adjust.
+  if (keys.includes("kpp") || keys.includes("points")) {
     const denied = requireAdminister(gate.auth);
     if (denied) return denied;
   }

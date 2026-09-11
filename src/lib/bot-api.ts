@@ -57,6 +57,131 @@ export interface SettingsPatch {
   kpp?: KppSettings;
   claude?: ClaudeConfig;
   earnings?: EarningsSettings;
+  points?: PointsSettingsPatch;
+}
+
+export interface PointsBonuses {
+  /** Once per viewer, ever. */
+  follow: number;
+  subNew: number;
+  subRenewal: number;
+  /** To the gifter, per sub gifted. */
+  giftSubGifterPerSub: number;
+  /** To each viewer who received a gifted sub. */
+  giftSubRecipient: number;
+  pointsPerKick: number;
+  onlyWhileLive: boolean;
+  announce: boolean;
+}
+
+export interface PointsGive {
+  enabled: boolean;
+  minAmount: number;
+  /** 0 means no maximum. */
+  maxAmount: number;
+  cooldownSeconds: number;
+}
+
+/** A channel's loyalty points settings, with the bot's defaults already applied. */
+export interface PointsConfig {
+  enabled: boolean;
+  currencyName: string;
+  /** null means the command is derived from the currency name. */
+  currencyCommand: string | null;
+  /** The chat command the bot actually answers, without the "!". */
+  effectiveCommand: string;
+  pointsPerInterval: number;
+  intervalMinutes: number;
+  activeWindowMinutes: number;
+  subscriberMultiplier: number;
+  excludeBroadcaster: boolean;
+  ignoreUsers: string[];
+  bonuses: PointsBonuses;
+  give: PointsGive;
+  modMaxAdjust: number;
+  publicLeaderboard: boolean;
+}
+
+/** Omitted keys are left alone; nested blocks merge rather than replace. */
+export type PointsSettingsPatch = Partial<Omit<PointsConfig, "effectiveCommand" | "bonuses" | "give">> & {
+  bonuses?: Partial<PointsBonuses>;
+  give?: Partial<PointsGive>;
+};
+
+export interface PointsSubscriptionStatus {
+  ok: boolean;
+  error?: string;
+  at: string;
+}
+
+export interface PointsSummary {
+  enabled: boolean;
+  currencyName: string;
+  effectiveCommand: string;
+  dbAvailable: boolean;
+  users: number;
+  totalPoints: number;
+  lastTickAt: string | null;
+  lastTickUsers: number | null;
+  /** Keyed by Kick event name; empty until the bot service has subscribed. */
+  subscriptions: Record<string, PointsSubscriptionStatus>;
+}
+
+export interface PointsUserRow {
+  userId: number;
+  username: string;
+  balance: number;
+  watchSeconds: number;
+  rank: number;
+  lastSeenAt: string | null;
+}
+
+export interface PointsLedgerEntry {
+  id: number;
+  ts: string;
+  delta: number;
+  balanceAfter: number;
+  reason: string;
+  actor: string | null;
+  note: string | null;
+}
+
+export interface PointsUserDetail {
+  user: PointsUserRow & {
+    lifetimeEarned: number;
+    isSub: boolean;
+    followBonusAt: string | null;
+    firstSeenAt: string;
+  };
+  /** Newest first, at most 50. */
+  ledger: PointsLedgerEntry[];
+}
+
+export type PointsAdjustMode = "add" | "remove" | "set";
+
+export interface PointsAdjustInput {
+  userId: number;
+  mode: PointsAdjustMode;
+  amount: number;
+  reason: string;
+  actor: { username: string; role: "owner" | "admin" | "manager" };
+  /** Makes the change idempotent: a retry with the same id is not applied twice. */
+  requestId: string;
+}
+
+export interface PointsLeaderboardEntry {
+  rank: number;
+  username: string;
+  /** Points, or seconds of watch time. */
+  value: number;
+}
+
+export interface PointsLeaderboard {
+  channel: string;
+  currencyName: string;
+  updatedAt: string;
+  points: PointsLeaderboardEntry[];
+  watchtime: PointsLeaderboardEntry[];
 }
 
 export interface EarningsSettings {
@@ -101,6 +226,8 @@ export interface BotChannel {
   earnings: EarningsSettings | null;
   claudeDefaults?: ClaudeSettings;
   kpp: KppSettings | null;
+  /** Loyalty points settings with defaults applied. Absent from bot services older than points. */
+  points?: PointsConfig | null;
   /**
    * Set while a stop by the owner or an admin is in force — managers can't start
    * the bot until the broadcaster does. Absent from bot services older than this.
@@ -342,6 +469,44 @@ export function deleteReward(channel: string, rewardId: string): Promise<Channel
   return request(`/internal/bot/${encodeURIComponent(channel)}/rewards/${encodeURIComponent(rewardId)}`, {
     method: "DELETE",
     timeoutMs: REWARD_WRITE_TIMEOUT_MS,
+  });
+}
+
+export function getPointsSummary(channel: string): Promise<PointsSummary> {
+  return request(`/internal/bot/${encodeURIComponent(channel)}/points`);
+}
+
+/** Prefix search on username; an empty query returns the top balances. */
+export function searchPointsUsers(
+  channel: string,
+  q: string,
+  limit = 20,
+): Promise<{ users: PointsUserRow[] }> {
+  const query = new URLSearchParams({ q, limit: String(limit) });
+  return request(`/internal/bot/${encodeURIComponent(channel)}/points/users?${query.toString()}`);
+}
+
+export function getPointsUser(channel: string, userId: number): Promise<PointsUserDetail> {
+  return request(`/internal/bot/${encodeURIComponent(channel)}/points/users/${userId}`);
+}
+
+export function adjustPoints(
+  channel: string,
+  input: PointsAdjustInput,
+): Promise<{ ok: true; applied: boolean; user: PointsUserRow }> {
+  return request(`/internal/bot/${encodeURIComponent(channel)}/points/adjust`, {
+    method: "POST",
+    body: input,
+  });
+}
+
+/**
+ * The public top lists. No secret needed, and a short timeout: this backs a page
+ * anyone can open, which should say "unavailable" quickly rather than hang.
+ */
+export function getPointsLeaderboard(channel: string, limit = 100): Promise<PointsLeaderboard> {
+  return request(`/internal/bot/${encodeURIComponent(channel)}/points/leaderboard?limit=${limit}`, {
+    timeoutMs: 10_000,
   });
 }
 

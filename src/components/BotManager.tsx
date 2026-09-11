@@ -2,10 +2,12 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Activity, AlertTriangle, Check, ChevronDown, KeyRound, Loader2,
+  Activity, AlertTriangle, Check, ChevronDown, KeyRound,
   Gift, MapPin, Pencil, Play, Plus, Power, RefreshCw, ScrollText, ShieldCheck, Sparkles, Terminal, Trash2, Users, X,
 } from "lucide-react";
 import SiteHeader from "./SiteHeader";
+import PointsCard, { type PointsConfig } from "./PointsCard";
+import { Button, Card, Checkbox, Stat, Toggle } from "./ui";
 
 const BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
 const ENROLL_URL = "/kick-bot-enroll/start";
@@ -88,6 +90,8 @@ export interface BotChannel {
   earnings: EarningsSettings | null;
   claudeDefaults?: ClaudeSettings;
   kpp: KppSettings | null;
+  /** Loyalty points settings with defaults applied; absent from bot services older than points. */
+  points?: PointsConfig | null;
   /** A stop by the owner or an admin still in force; absent from older bot services. */
   stopped?: { by: string | null; at: string } | null;
   token: TokenHealth;
@@ -287,123 +291,7 @@ function formatDate(iso: string | null): string {
 }
 
 /* ---------------------------------------------------------------- primitives */
-
-function Card({
-  title, icon, children, actions,
-}: {
-  title: string;
-  icon: React.ReactNode;
-  children: React.ReactNode;
-  actions?: React.ReactNode;
-}) {
-  return (
-    <section className="rounded-xl border border-neutral-800 bg-neutral-950/60">
-      <header className="flex flex-wrap items-center justify-between gap-3 border-b border-neutral-800 px-5 py-3.5">
-        <h2 className="flex items-center gap-2.5 text-sm font-semibold tracking-wide text-neutral-200">
-          <span className="text-neutral-500">{icon}</span>
-          {title}
-        </h2>
-        {actions}
-      </header>
-      <div className="px-5 py-4">{children}</div>
-    </section>
-  );
-}
-
-function Stat({ label, value, tone = "default" }: { label: string; value: string; tone?: "default" | "warn" }) {
-  return (
-    <div>
-      <dt className="text-xs uppercase tracking-wider text-neutral-500">{label}</dt>
-      <dd className={`mt-1 text-sm tabular-nums ${tone === "warn" ? "text-amber-400" : "text-neutral-200"}`}>
-        {value}
-      </dd>
-    </div>
-  );
-}
-
-function Button({
-  children, onClick, disabled, busy, variant = "default",
-}: {
-  children: React.ReactNode;
-  onClick?: () => void;
-  disabled?: boolean;
-  busy?: boolean;
-  variant?: "default" | "primary" | "danger";
-}) {
-  const base =
-    "inline-flex items-center gap-2 rounded-lg px-3.5 py-2 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-40";
-  const styles = {
-    default: "border border-neutral-700 bg-neutral-900 text-neutral-200 hover:border-neutral-600 hover:bg-neutral-800",
-    primary: "bg-[#53FC18] text-black hover:brightness-90",
-    danger: "border border-red-900 bg-red-950/50 text-red-400 hover:bg-red-950",
-  }[variant];
-
-  return (
-    <button type="button" onClick={onClick} disabled={disabled || busy} className={`${base} ${styles}`}>
-      {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-      {children}
-    </button>
-  );
-}
-
-function Checkbox({
-  label, checked, disabled, onChange,
-}: {
-  label: string;
-  checked: boolean;
-  disabled?: boolean;
-  onChange: (checked: boolean) => void;
-}) {
-  return (
-    <label
-      className={`flex items-center gap-2.5 text-sm text-neutral-300 ${disabled ? "cursor-not-allowed opacity-40" : "cursor-pointer"}`}
-    >
-      <input
-        type="checkbox"
-        checked={checked}
-        disabled={disabled}
-        onChange={(e) => onChange(e.target.checked)}
-        className="h-4 w-4 accent-[#53FC18]"
-      />
-      {label}
-    </label>
-  );
-}
-
-function Toggle({
-  label, description, checked, disabled, onChange,
-}: {
-  label: string;
-  description: string;
-  checked: boolean;
-  disabled?: boolean;
-  onChange: () => void;
-}) {
-  return (
-    <div className="flex items-start justify-between gap-6">
-      <div>
-        <div className="text-sm font-medium text-neutral-200">{label}</div>
-        <p className="mt-1 text-xs leading-relaxed text-neutral-500">{description}</p>
-      </div>
-      <button
-        type="button"
-        onClick={onChange}
-        disabled={disabled}
-        aria-pressed={checked}
-        aria-label={label}
-        className={`relative h-6 w-11 shrink-0 rounded-full transition disabled:opacity-40 ${
-          checked ? "bg-[#53FC18]" : "bg-neutral-700"
-        }`}
-      >
-        <span
-          className={`absolute top-0.5 h-5 w-5 rounded-full bg-white transition-all ${
-            checked ? "left-[22px]" : "left-0.5"
-          }`}
-        />
-      </button>
-    </div>
-  );
-}
+// Card, Stat, Button, Checkbox and Toggle live in ./ui so other cards can share them.
 
 function LivePill({ isLive, viewers }: { isLive: boolean; viewers: number }) {
   if (!isLive) {
@@ -2040,6 +1928,14 @@ export default function BotManager({
               </>
             )}
           </Card>
+
+          {/* -------------------------------------------------- loyalty points */}
+          <PointsCard
+            channel={channel}
+            canAdminister={canAdminister}
+            points={bot.points ?? null}
+            onSaved={(data) => setBot(data as unknown as BotChannel)}
+          />
 
           {/* -------------------------------------------------------- settings */}
           <Card title="Settings" icon={<ShieldCheck className="h-4 w-4" />}>
