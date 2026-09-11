@@ -42,7 +42,7 @@ export class PresenceTracker {
   /**
    * Keep a name resolvable without noting presence. A message that doesn't count
    * toward earning (a repeat, an emote, a command) still identifies its sender,
-   * and `!don add @name` should find them.
+   * and `$don add @name` should find them.
    */
   rememberName(userId: number, username: string): void {
     const lc = username.toLowerCase();

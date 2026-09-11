@@ -35,12 +35,12 @@ export type PresenceVerdict =
 /**
  * Whether `text` refreshes presence, given the normalized form of the same
  * viewer's previous message (undefined when there is none) and the channel's
- * points command word without the `!`.
+ * points command word without its `$`.
  */
 export function presenceVerdict(text: string, previousNormalized: string | undefined, command: string): PresenceVerdict {
   const normalized = normalizeChat(text);
   const firstWord = text.trim().split(/\s+/)[0]?.toLowerCase() ?? '';
-  if (command && firstWord === `!${command.toLowerCase()}`) return { counts: false, reason: 'command', normalized };
+  if (command && firstWord === `$${command.toLowerCase()}`) return { counts: false, reason: 'command', normalized };
   // Counted before squeezing repeats, so "aaa" is three characters of text.
   const textChars = Array.from(text.replace(EMOTE_TOKEN, '').replace(/\s+/g, '')).length;
   if (textChars < MIN_TEXT_CHARS) return { counts: false, reason: 'low_effort', normalized };

@@ -1,22 +1,25 @@
 /**
  * Loyalty points command. The trigger is the channel's currency command:
- * sukasblood's $DON answers to !don.
+ * sukasblood's $DON answers to $don. It starts with $ where other
+ * commands use !, so the command reads like the currency.
  *
  * Description: Balances, watch time, leaderboards, giving, and moderator adjustments.
  *
  * Permission required:
- *          !<cmd>, watchtime, top, leaderboard: all users
- *          !<cmd> give: all users, when giving is enabled
- *          !<cmd> add/remove/set: moderators and above
+ *          $<cmd>, watchtime, top, leaderboard: all users
+ *          $<cmd> give: all users, when giving is enabled
+ *          $<cmd> add/remove/set: moderators and above
  *
- * Usage:   !don [@user]               - balance and rank
- *          !don watchtime [@user]     - watch time and rank
- *          !don top [watchtime]       - top 5
- *          !don leaderboard           - link to the public leaderboard
- *          !don give @user 100        - send points to someone
- *          !don add|remove|set @user 500
+ * Usage:   $don [@user]               - balance and rank
+ *          $don watchtime [@user]     - watch time and rank
+ *          $don top [watchtime]       - top 5
+ *          $don leaderboard           - link to the public leaderboard
+ *          $don give @user 100        - send points to someone
+ *          $don add|remove|set @user 500
  *
  * A subcommand word wins over a username; write @top to look up a user called top.
+ * Chat also writes $DON in sentences ("$DON to the moon"), so a name without @
+ * that isn't a known viewer gets no reply.
  */
 
 import { CommandFn } from '../types';
@@ -76,7 +79,7 @@ function watchShort(seconds: number): string {
 export const points: CommandFn = async function points(client, message, channel, tags, config) {
   const words = message.trim().split(/\s+/);
   const first = (words[0] ?? '').toLowerCase();
-  if (!first.startsWith('!')) return;
+  if (!first.startsWith('$')) return;
 
   const channelName = (config.channelName || channel.replace(/^#/, '')).toLowerCase();
   const svc = getPointsService(channelName);
@@ -84,7 +87,7 @@ export const points: CommandFn = async function points(client, message, channel,
   const cfg = svc.config();
   if (!cfg.enabled) return;
   const cmd = effectiveCommand(cfg);
-  if (first !== `!${cmd}`) return;
+  if (first !== `$${cmd}`) return;
 
   const cur = cfg.currencyName;
   const me = tags.username;
@@ -98,7 +101,7 @@ export const points: CommandFn = async function points(client, message, channel,
     svc.flushPresence();
     const db = svc.db();
     if (!db) {
-      console.error(`[POINTS] !${cmd} from ${me} ignored: database unavailable`);
+      console.error(`[POINTS] $${cmd} from ${me} ignored: database unavailable`);
       return;
     }
     const ex = svc.exclusions();
@@ -145,7 +148,8 @@ export const points: CommandFn = async function points(client, message, channel,
         const lc = named.replace(/^@+/, '').toLowerCase();
         const who = await svc.resolveUser(lc, false);
         const u = who ? getUser(db, who.userId) : undefined;
-        if (!u) return void say(`${named.replace(/^@+/, '')} has no ${cur} yet`);
+        // Only an @name that isn't found gets a reply: "$DON to the moon" isn't a lookup of "to".
+        if (!u) return named.startsWith('@') ? void say(`${named.replace(/^@+/, '')} has no ${cur} yet`) : undefined;
         const rank = rankBy(db, u.user_id, 'balance', ex);
         return void say(rank === null ? `${u.username} has ${u.balance} ${cur}` : `${u.username} has ${u.balance} ${cur}, rank ${rank} of ${total()}`);
       }
@@ -209,7 +213,7 @@ export const points: CommandFn = async function points(client, message, channel,
       }
       if (isExcluded(ex, self?.user_id ?? null, meLc) || isBotSender(me, tags.senderId)) return;
       const t = target(args.slice(1));
-      if (!t) return void say(`Usage: !${cmd} give user amount`);
+      if (!t) return void say(`Usage: $${cmd} give user amount`);
       if (t.amount < cfg.give.minAmount) return void say(`@${me} the minimum is ${cfg.give.minAmount}`);
       if (cfg.give.maxAmount > 0 && t.amount > cfg.give.maxAmount) return void say(`@${me} the maximum is ${cfg.give.maxAmount}`);
       if (t.name.toLowerCase() === meLc) return void say(`@${me} you cannot give to yourself`);
@@ -245,7 +249,7 @@ export const points: CommandFn = async function points(client, message, channel,
     // ── add / remove / set ──
     if (!isModUp) return;
     const t = target(args.slice(1));
-    if (!t || (sub !== 'set' && t.amount < 1)) return void say(`Usage: !${cmd} ${sub} user amount`);
+    if (!t || (sub !== 'set' && t.amount < 1)) return void say(`Usage: $${cmd} ${sub} user amount`);
     if (t.amount > cfg.modMaxAdjust) return void say(`@${me} the most you can adjust at once is ${cfg.modMaxAdjust}`);
     const who = await svc.resolveUser(t.name, true);
     if (!who) return void say(`@${me} I could not find ${t.name}`);
@@ -282,6 +286,6 @@ export const points: CommandFn = async function points(client, message, channel,
     return void say(`${who.username} now has ${t.amount} ${cur}`);
   } catch (err) {
     reportDbError(channelName, err);
-    console.error(`[POINTS] !${cmd} failed for ${me}: ${err instanceof Error ? err.message : String(err)}`);
+    console.error(`[POINTS] $${cmd} failed for ${me}: ${err instanceof Error ? err.message : String(err)}`);
   }
 };

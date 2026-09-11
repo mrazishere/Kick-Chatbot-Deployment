@@ -185,8 +185,9 @@ async function main(): Promise<void> {
     check('k and ?? ignored', v('k').counts === false && v('??').counts === false);
     check('three characters of text count', v('abc').counts === true && v('aaa').counts === true);
     check('emote plus short text ignored', v('[emote:1:x] ok').counts === false);
-    check('!don and !don top ignored', v('!don').counts === false && v('!DON top').counts === false);
-    check('a word starting with the command still counts', v('!donate now please').counts === true);
+    check('$don and $don top ignored', v('$don').counts === false && v('$DON top').counts === false);
+    check('a word starting with the command still counts', v('$donate now please').counts === true);
+    check('!don is ordinary chat now', v('!don').counts === true);
 
     // At tick time: ignored messages must not extend the window.
     const ch = 'spamch';
@@ -200,7 +201,7 @@ async function main(): Promise<void> {
     say(42, 'emoter', B - 40 * MIN, 'first message');
     say(42, 'emoter', B - 5 * MIN, '[emote:1:x] [emote:2:y]');
     say(43, 'commander', B - 40 * MIN, 'hi everyone');
-    say(43, 'commander', B - 5 * MIN, '!don top');
+    say(43, 'commander', B - 5 * MIN, '$don top');
     say(44, 'alternator', B - 40 * MIN, 'aaa');
     say(44, 'alternator', B - 35 * MIN, 'bbb');
     say(44, 'alternator', B - 5 * MIN, 'aaa');
@@ -211,7 +212,7 @@ async function main(): Promise<void> {
     await svc.runTick(B);
     check('repeat does not extend the window', balance(ch, 41) === 0);
     check('emote-only does not extend the window', balance(ch, 42) === 0);
-    check('!don does not extend the window', balance(ch, 43) === 0);
+    check('$don does not extend the window', balance(ch, 43) === 0);
     check('alternating message extends the window', balance(ch, 44) === 5);
     check('short message never earns', balance(ch, 45) === 0);
     check('ordinary message earns', balance(ch, 46) === 5);
@@ -458,48 +459,53 @@ async function main(): Promise<void> {
     const run = async (msg: string, t: KickTags) => { out.length = 0; await pointsCommand(client, msg, `#${ch}`, t, config); return out.slice(); };
 
     check('other triggers ignored', (await run('!points', tags('alice', 1))).length === 0);
-    const self = await run('!don', tags('alice', 1));
+    check('!don no longer triggers', (await run('!don', tags('alice', 1))).length === 0);
+    const self = await run('$don', tags('alice', 1));
     check('balance with rank', self[0] === '@alice has 100 $DON, rank 1 of 4', self);
-    const other = await run('!don @bob', tags('carol', 4));
+    const other = await run('$don @bob', tags('carol', 4));
     check('other user balance', other[0] === 'bob has 50 $DON, rank 3 of 4', other);
-    const topList = await run('!don top', tags('mod1', 90, true));
+    const topList = await run('$don top', tags('mod1', 90, true));
     check('subcommand wins over a user named top', topList[0] === 'Top $DON · 1 alice 100 · 2 top 70 · 3 bob 50 · 4 poor 15', topList);
-    const atTop = await run('!don @top', tags('dave', 5));
+    const atTop = await run('$don @top', tags('dave', 5));
     check('@name forces a lookup', atTop[0] === 'top has 70 $DON, rank 2 of 4', atTop);
-    const noRow = await run('!don', tags('newbie', 77));
+    const sentence = await run('$DON to the moon', tags('erin', 66));
+    check('a sentence starting with $DON stays silent', sentence.length === 0, sentence);
+    const ghost = await run('$don @ghost', tags('frank', 67));
+    check('an unknown @name still gets a reply', ghost[0] === 'ghost has no $DON yet', ghost);
+    const noRow = await run('$don', tags('newbie', 77));
     check('no balance yet', noRow[0] === '@newbie has no $DON yet', noRow);
-    const cooled = await run('!don', tags('alice', 1));
+    const cooled = await run('$don', tags('alice', 1));
     check('balance cooldown is silent', cooled.length === 0);
 
-    const off = await run('!don give @bob 20', tags('alice', 1));
+    const off = await run('$don give @bob 20', tags('alice', 1));
     check('give off by default', off[0] === '@alice giving $DON is turned off', off);
     writeConfig(root, ch, { enabled: true, currencyName: '$DON', give: { enabled: true } });
-    check('give minimum', (await run('!don give bob 5', tags('alice', 1)))[0] === '@alice the minimum is 10');
-    check('give to self refused', (await run('!don give alice 20', tags('alice', 1)))[0] === '@alice you cannot give to yourself');
-    check('give to unknown user', (await run('!don give ghost 20', tags('alice', 1)))[0] === '@alice I could not find ghost');
-    check('give to a system bot refused', (await run('!don give botrix 20', tags('alice', 1)))[0] === '@alice botrix cannot receive $DON');
-    const gave = await run('!don give 20 @bob', tags('alice', 1));
+    check('give minimum', (await run('$don give bob 5', tags('alice', 1)))[0] === '@alice the minimum is 10');
+    check('give to self refused', (await run('$don give alice 20', tags('alice', 1)))[0] === '@alice you cannot give to yourself');
+    check('give to unknown user', (await run('$don give ghost 20', tags('alice', 1)))[0] === '@alice I could not find ghost');
+    check('give to a system bot refused', (await run('$don give botrix 20', tags('alice', 1)))[0] === '@alice botrix cannot receive $DON');
+    const gave = await run('$don give 20 @bob', tags('alice', 1));
     check('give either argument order', gave[0] === '@alice gave 20 $DON to bob' && balance(ch, 1) === 80 && balance(ch, 2) === 70, gave);
-    const again = await run('!don give bob 20', tags('alice', 1));
+    const again = await run('$don give bob 20', tags('alice', 1));
     check('give cooldown after success', /^@alice wait \d+s before giving again$/.test(again[0] ?? ''), again);
-    const gave2 = await run('!don give bob 20', tags('top', 3));
+    const gave2 = await run('$don give bob 20', tags('top', 3));
     check('second giver unaffected by first cooldown', gave2[0] === '@top gave 20 $DON to bob', gave2);
-    const broke = await run('!don give bob 60', tags('poor', 8));
+    const broke = await run('$don give bob 60', tags('poor', 8));
     check('insufficient balance', broke[0] === '@poor you only have 15 $DON' && balance(ch, 8) === 15, broke);
-    const none = await run('!don give bob 60', tags('newbie', 77));
+    const none = await run('$don give bob 60', tags('newbie', 77));
     check('giver without a balance', none[0] === '@newbie you only have 0 $DON', none);
 
-    check('non-mod add is silent', (await run('!don add bob 5', tags('carol', 4))).length === 0);
-    check('mod add', (await run('!don add bob 5', tags('mod1', 90, true)))[0] === 'Added 5 $DON to bob, now 95');
-    check('owner counts as mod', (await run('!don remove bob 1000', tags('ownerx', 91)))[0] === 'Removed 95 $DON from bob, now 0');
-    check('mod set', (await run('!don set @bob 7', tags('mod1', 90, true)))[0] === 'bob now has 7 $DON');
-    check('mod adjust needs a user and amount', (await run('!don add bob', tags('mod1', 90, true)))[0] === 'Usage: !don add user amount');
-    check('leaderboard link', (await run('!don leaderboard', tags('mod1', 90, true)))[0] === '$DON leaderboard https://example.test/kick/cmdch/leaderboard');
-    const watch = await run('!don watchtime', tags('bob', 2));
+    check('non-mod add is silent', (await run('$don add bob 5', tags('carol', 4))).length === 0);
+    check('mod add', (await run('$don add bob 5', tags('mod1', 90, true)))[0] === 'Added 5 $DON to bob, now 95');
+    check('owner counts as mod', (await run('$don remove bob 1000', tags('ownerx', 91)))[0] === 'Removed 95 $DON from bob, now 0');
+    check('mod set', (await run('$don set @bob 7', tags('mod1', 90, true)))[0] === 'bob now has 7 $DON');
+    check('mod adjust needs a user and amount', (await run('$don add bob', tags('mod1', 90, true)))[0] === 'Usage: $don add user amount');
+    check('leaderboard link', (await run('$don leaderboard', tags('mod1', 90, true)))[0] === '$DON leaderboard https://example.test/kick/cmdch/leaderboard');
+    const watch = await run('$don watchtime', tags('bob', 2));
     check('no watch time yet', watch[0] === '@bob has no watch time yet', watch);
 
     writeConfig(root, ch, { enabled: false, currencyName: '$DON' });
-    check('disabled is silent', (await run('!don top', tags('mod1', 90, true))).length === 0);
+    check('disabled is silent', (await run('$don top', tags('mod1', 90, true))).length === 0);
     check('invariant holds (commands)', invariantViolations(db).length === 0, invariantViolations(db));
     void svc;
   }
@@ -555,24 +561,24 @@ async function main(): Promise<void> {
       return out;
     };
 
-    const add1 = await run('!don add bob 5', tagsFor('mod1', 90, true, 'msg-a'));
-    const add2 = await run('!don add bob 5', tagsFor('mod1', 90, true, 'msg-a'));
+    const add1 = await run('$don add bob 5', tagsFor('mod1', 90, true, 'msg-a'));
+    const add2 = await run('$don add bob 5', tagsFor('mod1', 90, true, 'msg-a'));
     check('replayed mod add applies once, replay silent', add1.length === 1 && add2.length === 0 && balance(ch, 2) === 55, { add1, add2, bal: balance(ch, 2) });
-    const give1 = await run('!don give bob 10', tagsFor('alice', 1, false, 'msg-b'));
-    const give2 = await run('!don give bob 10', tagsFor('alice', 1, false, 'msg-b'));
+    const give1 = await run('$don give bob 10', tagsFor('alice', 1, false, 'msg-b'));
+    const give2 = await run('$don give bob 10', tagsFor('alice', 1, false, 'msg-b'));
     check('replayed give applies once, replay silent', /gave 10/.test(give1[0] ?? '') && give2.length === 0 && balance(ch, 1) === 90 && balance(ch, 2) === 65, { give1, give2 });
 
-    const num = await run('!don add 12345 7', tagsFor('mod1', 90, true));
+    const num = await run('$don add 12345 7', tagsFor('mod1', 90, true));
     check('all-digit username read by position', num[0] === 'Added 7 $DON to 12345, now 7', num);
-    const swapped = await run('!don add 8 @bob', tagsFor('mod1', 90, true));
+    const swapped = await run('$don add 8 @bob', tagsFor('mod1', 90, true));
     check('@name marks the name in either order', swapped[0] === 'Added 8 $DON to bob, now 73', swapped);
 
     writeConfig(root, ch, { enabled: true, currencyName: '$DON', give: { enabled: true, cooldownSeconds: 30 } });
-    const [r1, r2] = await Promise.all([run('!don give slowguy 10', tagsFor('racer', 3)), run('!don give slowgal 10', tagsFor('racer', 3))]);
+    const [r1, r2] = await Promise.all([run('$don give slowguy 10', tagsFor('racer', 3)), run('$don give slowgal 10', tagsFor('racer', 3))]);
     const gaveCount = [r1, r2].filter(o => /gave 10/.test(o[0] ?? '')).length;
     check('concurrent gives respect the cooldown', gaveCount === 1 && balance(ch, 3) === 90, { r1, r2, bal: balance(ch, 3) });
-    const miss = await run('!don give ghost 10', tagsFor('alice', 1));
-    const after = await run('!don give bob 10', tagsFor('alice', 1));
+    const miss = await run('$don give ghost 10', tagsFor('alice', 1));
+    const after = await run('$don give bob 10', tagsFor('alice', 1));
     check('failed give hands the cooldown back', /could not find/.test(miss[0] ?? '') && /gave 10/.test(after[0] ?? ''), { miss, after });
 
     runWrite(db, () => {
@@ -580,7 +586,7 @@ async function main(): Promise<void> {
       creditTx(db, { userId: 11, username: 'f_g_h_i_j', amount: 4000, reason: 'mod_add', now: 1 });
       creditTx(db, { userId: 12, username: 'k_l_m', amount: 3000, reason: 'mod_add', now: 1 });
     });
-    const top = (await run('!don top', tagsFor('mod1', 90, true)))[0] ?? '';
+    const top = (await run('$don top', tagsFor('mod1', 90, true)))[0] ?? '';
     const symbols = (top.match(/[\x21-\x2f\x3a-\x40\x5b-\x60\x7b-\x7e]/g) ?? []).length;
     check('top drops entries instead of mangling names past 10 symbols', top === 'Top $DON · 1 a_b_c_d_e 5000 · 2 f_g_h_i_j 4000' && symbols <= 10, { top, symbols });
 

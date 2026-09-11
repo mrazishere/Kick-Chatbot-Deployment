@@ -142,7 +142,7 @@ export function effectivePointsConfig(raw: unknown): PointsConfig {
   return cfg;
 }
 
-/** The chat command word, without the `!`: "$DON" → "don". */
+/** The chat command word, without its `$`: "$DON" → "don", typed as $don. */
 export function effectiveCommand(cfg: Pick<PointsConfig, 'currencyName' | 'currencyCommand'>): string {
   if (typeof cfg.currencyCommand === 'string' && COMMAND_RE.test(cfg.currencyCommand)) return cfg.currencyCommand;
   const derived = cfg.currencyName.toLowerCase().replace(/[^a-z0-9_]/g, '').slice(0, 20);

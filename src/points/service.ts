@@ -261,7 +261,7 @@ export class PointsService {
     try {
       const cfg = this.config();
       console.log(cfg.enabled
-        ? `[POINTS] enabled for ${this.channel}: ${cfg.currencyName}, command !${effectiveCommand(cfg)}`
+        ? `[POINTS] enabled for ${this.channel}: ${cfg.currencyName}, command $${effectiveCommand(cfg)}`
         : `[POINTS] disabled for ${this.channel}`);
       this.presence.start();
       this.earner.start();
