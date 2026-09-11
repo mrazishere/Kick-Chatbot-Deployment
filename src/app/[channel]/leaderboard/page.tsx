@@ -96,18 +96,24 @@ export default async function LeaderboardPage({ params, searchParams }: Props) {
                 {currency}
               </a>
               <a href={tabLink("watchtime")} className={tabClass("watchtime")}>
-                Watch time
+                Active time
               </a>
               <span className="ml-auto text-xs text-neutral-600">
                 {result.kind === "ok" && result.stale ? "Showing an earlier copy · " : ""}
                 Updated {formatUpdated(data.updatedAt)}
               </span>
             </nav>
+            {tab === "watchtime" ? (
+              <p className="text-xs text-neutral-500">
+                Time spent chatting while {slug} is live, counted in 10-minute steps. Kick doesn&apos;t share who is
+                watching, so viewers who don&apos;t chat aren&apos;t counted.
+              </p>
+            ) : null}
 
             <section className="overflow-hidden rounded-xl border border-neutral-800 bg-neutral-950/60">
               {rows.length === 0 ? (
                 <p className="px-5 py-8 text-center text-sm text-neutral-500">
-                  {tab === "watchtime" ? "No watch time recorded yet." : `Nobody has earned ${currency} yet.`}
+                  {tab === "watchtime" ? "No active time recorded yet." : `Nobody has earned ${currency} yet.`}
                 </p>
               ) : (
                 <ol className="divide-y divide-neutral-800">

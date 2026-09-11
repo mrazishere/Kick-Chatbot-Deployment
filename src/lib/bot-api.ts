@@ -172,7 +172,7 @@ export interface PointsAdjustInput {
 export interface PointsLeaderboardEntry {
   rank: number;
   username: string;
-  /** Points, or seconds of watch time. */
+  /** Points, or seconds of active time (chatting while live). */
   value: number;
 }
 

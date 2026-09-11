@@ -825,7 +825,7 @@ export default function PointsCard({
                   </div>
                   <dl className="grid grid-cols-2 gap-4 sm:grid-cols-4">
                     <Stat label="Balance" value={`${detail.user.balance.toLocaleString()} · #${detail.user.rank}`} />
-                    <Stat label="Watch time" value={formatWatch(detail.user.watchSeconds)} />
+                    <Stat label="Active time" value={formatWatch(detail.user.watchSeconds)} />
                     <Stat label="Lifetime earned" value={detail.user.lifetimeEarned.toLocaleString()} />
                     <Stat label="Last seen" value={formatDate(detail.user.lastSeenAt)} />
                   </dl>
@@ -877,7 +877,7 @@ export default function PointsCard({
                   <div className="border-t border-neutral-800 pt-4">
                     <h4 className={LABEL}>History</h4>
                     {detail.ledger.length === 0 ? (
-                      <p className="text-sm text-neutral-500">No changes besides watch time yet.</p>
+                      <p className="text-sm text-neutral-500">No changes besides active-time earnings yet.</p>
                     ) : (
                       <ul className="divide-y divide-neutral-800">
                         {detail.ledger.map((entry) => (
