@@ -26,6 +26,12 @@ export const COMMAND_META: Record<string, CommandMeta> = {
     trigger: "!claude or @MrAIisHere",
     description: "Ask the AI a question. Uses channel chat history and lore for context. With Vision on, @mentions also see the live stream.",
   },
+  clip: {
+    label: "Clip",
+    trigger: "!clip",
+    description:
+      "Clips the last 30 seconds of the stream and posts the link. Open to everyone; the stream must be live.",
+  },
   countd: { label: "Countdown", trigger: "!countd", description: "Countdown timer overlay." },
   customC: {
     label: "Custom Commands",
