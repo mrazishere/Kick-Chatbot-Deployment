@@ -114,6 +114,26 @@ export function cleanTitle(raw: string, fallback: string): string {
 }
 
 /**
+ * The title for a clip nobody named: the stream title plus who clipped it.
+ *
+ * Kick caps titles at 50 characters, so the stream title is what gets cut (on a
+ * word boundary) — the credit is the part worth keeping.
+ */
+export function fallbackTitle(sessionTitle: string, username: string): string {
+  const suffix = ` - clipped by ${username}`.replace(/\s+/g, ' ');
+  const stream = (sessionTitle || '').replace(/\s+/g, ' ').trim();
+  const room = MAX_TITLE - suffix.length;
+  if (!stream || room < 8) return cleanTitle(`Clipped by ${username}`, 'Clip');
+  let head = Array.from(stream).slice(0, room).join('').trim();
+  // Don't end on half a word unless trimming would leave almost nothing.
+  if (head.length < stream.length) {
+    const cut = head.replace(/\s+\S*$/, '');
+    if (cut.length >= 8) head = cut;
+  }
+  return cleanTitle(head + suffix, `Clipped by ${username}`);
+}
+
+/**
  * Clip the last `durationMs` of a live stream.
  *
  * Two calls, as the site does: initiate reserves a clip against the livestream,

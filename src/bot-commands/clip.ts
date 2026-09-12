@@ -9,13 +9,15 @@
  * Usage:   !clip            - clip the last 30 seconds
  *          !clip <title>    - same, with your own title (50 chars max)
  *
+ * With no title the clip is named "<stream title> - clipped by <user>", trimmed to fit.
+ *
  * Kick has no public clips API, so this drives the same internal calls the site
  * makes when a viewer presses the clip button, authenticated as the bot account
  * (see channels/kick-clips.ts). Clips therefore show the bot as their creator.
  */
 
 import { CommandFn } from '../types';
-import { clipLiveStream, cleanTitle, currentLivestream, sessionToken, DEFAULT_CLIP_SECONDS } from '../channels/kick-clips';
+import { clipLiveStream, cleanTitle, currentLivestream, fallbackTitle, sessionToken, DEFAULT_CLIP_SECONDS } from '../channels/kick-clips';
 import { checkClipSession, clipSessionHealthy, startClipSessionWatchdog } from '../channels/clip-session';
 
 /** One clip at a time per channel: Kick takes a second or two, and chat can spam. */
@@ -64,7 +66,8 @@ export const clip: CommandFn = async function clip(client, message, channel, tag
       return void say(`@${me} clipping is down right now, the bot is fixing it`);
     }
 
-    const title = cleanTitle(words.slice(1).join(' '), live.sessionTitle);
+    const typed = words.slice(1).join(' ').trim();
+    const title = typed ? cleanTitle(typed, live.sessionTitle) : fallbackTitle(live.sessionTitle, me);
     const made = await clipLiveStream({ channelSlug: channelName, token, title, seconds: DEFAULT_CLIP_SECONDS });
     console.log(`[CLIP] ${me} clipped ${made.durationSeconds}s of ${channelName}: ${made.id} "${made.title}"`);
     return void say(`@${me} clipped the last ${made.durationSeconds}s ${made.url}`);
