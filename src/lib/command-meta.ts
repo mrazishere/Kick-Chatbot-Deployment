@@ -20,6 +20,12 @@ export const COMMAND_META: Record<string, CommandMeta> = {
     trigger: "automatic",
     description: "Automatically translates non-English chat messages.",
   },
+  blerp: {
+    label: "Blerp",
+    trigger: "!blerp",
+    description:
+      "Clips the last 30 seconds and files it in the streamer's Blerp soundboard queue for approval. Moderators and above; needs a Blerp account linked to the channel.",
+  },
   catfacts: { label: "Cat Facts", trigger: "!catfacts", description: "Random cat fact." },
   claude: {
     label: "Claude AI",

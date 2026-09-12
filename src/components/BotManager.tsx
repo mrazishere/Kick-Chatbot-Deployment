@@ -243,6 +243,7 @@ interface CommandMeta {
 // this stays a pure client component with no server-only dependency chain.
 const COMMAND_META: Record<string, CommandMeta> = {
   autotranslate: { label: "Auto Translate", trigger: "automatic", description: "Translates non-English chat automatically." },
+  blerp: { label: "Blerp", trigger: "!blerp", description: "Clips the stream and suggests it as a sound for the streamer's Blerp soundboard. Mods and above." },
   catfacts: { label: "Cat Facts", trigger: "!catfacts", description: "Random cat fact." },
   claude: { label: "Claude AI", trigger: "!claude", description: "Ask the AI. Uses chat history and channel lore." },
   clip: { label: "Clip", trigger: "!clip", description: "Clips the last 30 seconds of the stream and posts the link." },
