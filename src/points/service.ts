@@ -10,11 +10,12 @@
  */
 
 import { isBotSender } from '../bot-identity';
-import { FollowEvent, KicksGiftedEvent, LivestreamStatusEvent, QueueMeta, RawBadge, SubscriptionEvent, SubscriptionGiftsEvent } from '../types';
+import { FollowEvent, KicksGiftedEvent, LivestreamStatusEvent, QueueMeta, RawBadge, SubscriptionEvent, SubscriptionGiftsEvent, ModerationBannedEvent } from '../types';
 import { InternalPointsConfig, LivePointsConfig, effectiveCommand, readLivePointsConfig } from './config';
 import { PointsDb, closePointsDb, configurePointsDb, openPointsDb, reportDbError, runWrite } from './db';
 import { Earner } from './earner';
 import * as bonuses from './events';
+import * as penalties from './penalties';
 import { LiveState, checkLive } from './live';
 import { PresenceTracker } from './presence';
 import { LastMessages, presenceVerdict } from './presence-rules';
@@ -202,6 +203,15 @@ export class PointsService {
       console.error(`[POINTS] ${what} failed for ${this.channel}: ${err instanceof Error ? err.message : String(err)}`);
       return undefined;
     }
+  }
+
+  /**
+   * Charge the banned viewer for a timeout. `issuedByBot` comes from
+   * ChannelModerator.noteBan, which is the only reliable way to tell the bot's
+   * own reward timeouts from a moderator's.
+   */
+  onBan(e: ModerationBannedEvent, issuedByBot: boolean): penalties.PenaltyOutcome | undefined {
+    return this.guard('timeout penalty', () => penalties.onBan(this.bonusContext(), e, issuedByBot));
   }
 
   onFollow(e: FollowEvent, meta: QueueMeta): bonuses.BonusOutcome | undefined {

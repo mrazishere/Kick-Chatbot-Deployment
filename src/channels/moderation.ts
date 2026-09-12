@@ -347,25 +347,28 @@ export class ChannelModerator {
   /**
    * Forget a timeout the bot gave out once someone else bans the same user.
    *
+   * Returns true when the ban is the bot's own timeout coming back as a webhook,
+   * which is how the points penalty knows not to charge for it twice.
+   *
    * Kick's unban lifts whatever ban a user has now, not a particular one. Without
    * this, a moderator who banned someone the bot had timed out would have that
    * ban quietly lifted by the bot's early unban, or by a viewer's pardon.
    */
-  noteBan(event: ModerationBannedEvent): void {
+  noteBan(event: ModerationBannedEvent): boolean {
     const name = event?.banned_user?.username;
-    if (!name) return;
+    if (!name) return false;
     const key = name.replace(/^@+/, '').toLowerCase();
     const entry = this.getState().timeouts[key];
-    if (!entry) return;
+    if (!entry) return false;
 
     // An unrecognised payload leaves the bot's state alone. Guessing wrong would
     // drop the bot's own timeouts on Kick's echo of them, and with them every
     // early unban and pardon.
     const meta = event.metadata;
-    if (!meta || !('expires_at' in meta)) return;
+    if (!meta || !('expires_at' in meta)) return false;
     const permanent = meta.expires_at === null;
     const expiresAt = typeof meta.expires_at === 'string' ? Date.parse(meta.expires_at) : NaN;
-    if (!permanent && !Number.isFinite(expiresAt)) return;
+    if (!permanent && !Number.isFinite(expiresAt)) return false;
 
     // Kick reports the bot's own ban as well. That one expires with the bot's
     // entry and was created when the bot issued it; anything else is someone else's.
@@ -373,7 +376,10 @@ export class ChannelModerator {
     const createdAt = typeof meta.created_at === 'string' ? Date.parse(meta.created_at) : NaN;
     const sameExpiry = !permanent && Math.abs(expiresAt - entry.expiresAt) < ECHO_TOLERANCE_MS;
     const sameIssue = !entry.issuedAt || !Number.isFinite(createdAt) || Math.abs(createdAt - entry.issuedAt) < ECHO_TOLERANCE_MS;
-    if (sameExpiry && sameIssue) return;
+    // The bot's own echo. Reported to the caller, because a reward timeout is
+    // issued as the broadcaster when the bot's token lacks moderation:ban, so
+    // the moderator name alone cannot tell you who really issued it.
+    if (sameExpiry && sameIssue) return true;
 
     this.clearLiftTimer(key);
     delete this.getState().timeouts[key];
@@ -382,6 +388,7 @@ export class ChannelModerator {
       `[MODERATION] ${entry.name} was ${permanent ? 'banned' : 'timed out again'} by ${event.moderator?.username ?? 'someone else'} — ` +
       `the bot will not lift that, or pardon its own timeout on them`
     );
+    return false;
   }
 
   /**

@@ -142,7 +142,12 @@ class KickChatBot {
           console.error(`[REWARD] Redemption ${event.id} failed:`, err instanceof Error ? err.message : String(err));
         });
       },
-      ban: (event) => this.moderator.noteBan(event),
+      ban: (event) => {
+        // noteBan decides whether this was the bot's own timeout, which is what
+        // keeps a reward timeout from being charged on top of the points it cost.
+        const mine = this.moderator.noteBan(event);
+        this.points.onBan(event, mine);
+      },
       follow: (event, meta) => { this.points.onFollow(event, meta); },
       subscriptionNew: (event, meta) => { this.points.onSubscriptionNew(event, meta); },
       subscriptionRenewal: (event, meta) => { this.points.onSubscriptionRenewal(event, meta); },

@@ -9,7 +9,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { PointsBonusesConfig, PointsConfig, PointsGiveConfig, StoredPointsConfig } from '../types';
+import { PointsBonusesConfig, PointsConfig, PointsGiveConfig, StoredPointsConfig, PointsTimeoutPenaltyConfig } from '../types';
 
 export function defaultPointsConfig(): PointsConfig {
   return {
@@ -34,7 +34,15 @@ export function defaultPointsConfig(): PointsConfig {
     },
     give: { enabled: false, minAmount: 10, maxAmount: 0, cooldownSeconds: 30 },
     modMaxAdjust: 1_000_000,
-    publicLeaderboard: true
+    publicLeaderboard: true,
+    timeoutPenalty: {
+      enabled: false,
+      pointsPerSecond: 1,
+      maxDeduction: 0,
+      includeBotTimeouts: false,
+      permanentBanCost: 0,
+      announce: true
+    }
   };
 }
 
@@ -95,6 +103,7 @@ export function internalPointsConfig(raw: unknown): InternalPointsConfig {
   const r = obj(raw);
   const b = obj(r.bonuses);
   const g = obj(r.give);
+  const tp = obj(r.timeoutPenalty);
 
   const name = typeof r.currencyName === 'string' && r.currencyName.trim() ? r.currencyName.trim().slice(0, 24) : d.currencyName;
   const command = typeof r.currencyCommand === 'string' && COMMAND_RE.test(r.currencyCommand) ? r.currencyCommand : null;
@@ -117,6 +126,15 @@ export function internalPointsConfig(raw: unknown): InternalPointsConfig {
     maxAmount: num(g.maxAmount, d.give.maxAmount, 0, 1_000_000_000, true),
     cooldownSeconds: num(g.cooldownSeconds, d.give.cooldownSeconds, 0, 3600, true)
   };
+  const timeoutPenalty: PointsTimeoutPenaltyConfig = {
+    enabled: bool(tp.enabled, d.timeoutPenalty.enabled),
+    // Fractional rates are allowed: 0.5/second halves the cost of long timeouts.
+    pointsPerSecond: num(tp.pointsPerSecond, d.timeoutPenalty.pointsPerSecond, 0, 10_000, false),
+    maxDeduction: num(tp.maxDeduction, d.timeoutPenalty.maxDeduction, 0, 1_000_000_000, true),
+    includeBotTimeouts: bool(tp.includeBotTimeouts, d.timeoutPenalty.includeBotTimeouts),
+    permanentBanCost: num(tp.permanentBanCost, d.timeoutPenalty.permanentBanCost, 0, 1_000_000_000, true),
+    announce: bool(tp.announce, d.timeoutPenalty.announce)
+  };
 
   return {
     enabled: bool(r.enabled, d.enabled),
@@ -130,6 +148,7 @@ export function internalPointsConfig(raw: unknown): InternalPointsConfig {
     ignoreUsers: r.ignoreUsers === undefined ? d.ignoreUsers : normalizeIgnoreUsers(r.ignoreUsers),
     bonuses,
     give,
+    timeoutPenalty,
     modMaxAdjust: num(r.modMaxAdjust, d.modMaxAdjust, 1, 1_000_000_000, true),
     publicLeaderboard: bool(r.publicLeaderboard, d.publicLeaderboard),
     debugForceLive: r.debugForceLive === true
@@ -167,6 +186,12 @@ const TOP_NUMBERS: Record<string, Rule> = {
   activeWindowMinutes: { min: 5, max: 240, integer: true },
   subscriberMultiplier: { min: 1, max: 10, integer: false },
   modMaxAdjust: { min: 1, max: 1_000_000_000, integer: true }
+};
+const PENALTY_NUMBERS: Record<string, Rule> = {
+  // Fractional rates are allowed so long timeouts can be softened (0.5/second).
+  pointsPerSecond: { min: 0, max: 10_000, integer: false },
+  maxDeduction: { min: 0, max: 1_000_000_000, integer: true },
+  permanentBanCost: { min: 0, max: 1_000_000_000, integer: true }
 };
 const BONUS_NUMBERS: Record<string, Rule> = {
   follow: { min: 0, max: 1_000_000, integer: true },
@@ -207,7 +232,12 @@ export function validatePointsPatch(current: unknown, patch: unknown): { next?: 
   }
   const p = patch as Record<string, unknown>;
   const cur = obj(current) as StoredPointsConfig;
-  const next: StoredPointsConfig = { ...cur, bonuses: { ...(cur.bonuses ?? {}) }, give: { ...(cur.give ?? {}) } };
+  const next: StoredPointsConfig = {
+    ...cur,
+    bonuses: { ...(cur.bonuses ?? {}) },
+    give: { ...(cur.give ?? {}) },
+    timeoutPenalty: { ...(cur.timeoutPenalty ?? {}) }
+  };
 
   for (const key of ['enabled', 'excludeBroadcaster', 'publicLeaderboard'] as const) {
     if (p[key] === undefined) continue;
@@ -256,6 +286,24 @@ export function validatePointsPatch(current: unknown, patch: unknown): { next?: 
         if (b[key] === undefined) continue;
         if (typeof b[key] !== 'boolean') errors.push(`bonuses.${key} must be true or false`);
         else next.bonuses![key] = b[key] as boolean;
+      }
+    }
+  }
+
+  if (p.timeoutPenalty !== undefined) {
+    if (!p.timeoutPenalty || typeof p.timeoutPenalty !== 'object' || Array.isArray(p.timeoutPenalty)) {
+      errors.push('timeoutPenalty must be an object');
+    } else {
+      const t = p.timeoutPenalty as Record<string, unknown>;
+      for (const [key, rule] of Object.entries(PENALTY_NUMBERS)) {
+        if (t[key] === undefined) continue;
+        const v = checkNumber(`timeoutPenalty.${key}`, t[key], rule, errors);
+        if (v !== undefined) (next.timeoutPenalty as Record<string, unknown>)[key] = v;
+      }
+      for (const key of ['enabled', 'includeBotTimeouts', 'announce'] as const) {
+        if (t[key] === undefined) continue;
+        if (typeof t[key] !== 'boolean') errors.push(`timeoutPenalty.${key} must be true or false`);
+        else next.timeoutPenalty![key] = t[key] as boolean;
       }
     }
   }

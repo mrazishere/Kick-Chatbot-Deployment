@@ -170,6 +170,31 @@ export interface PointsGiveConfig {
 }
 
 /** Effective points settings: every field present, defaults applied. */
+/**
+ * Deducting points when a viewer is timed out, so a punishment costs something.
+ *
+ * Scaled per second of the timeout: Kick's `moderation.banned` carries the
+ * expiry, so a 120-second timeout at 1/second costs 120. A permanent ban has no
+ * duration to scale from and is charged its own flat amount instead.
+ */
+export interface PointsTimeoutPenaltyConfig {
+  enabled: boolean;
+  /** Deducted per second of the timeout. */
+  pointsPerSecond: number;
+  /** Never take more than this in one timeout. 0 means no cap. */
+  maxDeduction: number;
+  /**
+   * Also charge for timeouts the bot issued itself from reward redemptions.
+   * Off by default: a roulette already cost the redeemer points, and charging
+   * again bills them twice for one event.
+   */
+  includeBotTimeouts: boolean;
+  /** Flat cost of a permanent ban, which has no duration. 0 ignores them. */
+  permanentBanCost: number;
+  /** Say in chat what was deducted. */
+  announce: boolean;
+}
+
 export interface PointsConfig {
   enabled: boolean;
   currencyName: string;
@@ -187,12 +212,15 @@ export interface PointsConfig {
   give: PointsGiveConfig;
   modMaxAdjust: number;
   publicLeaderboard: boolean;
+  /** What a timeout costs the viewer who got it. */
+  timeoutPenalty: PointsTimeoutPenaltyConfig;
 }
 
 /** The `points` block as stored in a channel config: any subset of the fields. */
-export type StoredPointsConfig = Partial<Omit<PointsConfig, 'bonuses' | 'give'>> & {
+export type StoredPointsConfig = Partial<Omit<PointsConfig, 'bonuses' | 'give' | 'timeoutPenalty'>> & {
   bonuses?: Partial<PointsBonusesConfig>;
   give?: Partial<PointsGiveConfig>;
+  timeoutPenalty?: Partial<PointsTimeoutPenaltyConfig>;
   /** Staging only, set by editing the file: treat the channel as live. Never exposed by the API. */
   debugForceLive?: boolean;
 };
