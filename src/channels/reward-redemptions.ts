@@ -64,7 +64,14 @@ const PAUSE_DRIFT_CYCLES = 10;
 
 /** What one redemption did, or why it didn't. A failure is refunded. */
 type Outcome =
-  | { ok: true; announce: string; log: string }
+  /**
+   * `quiet` marks an outcome Kick already announces itself — it posts its own
+   * "X timed out Y for N minutes" notice — so repeating it puts the same
+   * sentence in chat twice. Only set it where the bot adds nothing: a plain
+   * timeout that landed on its target. A shield bounce, a roulette result or
+   * a failure each explain something Kick's notice does not.
+   */
+  | { ok: true; announce: string; log: string; quiet?: boolean }
   | { ok: false; reason: string };
 
 /** Scopes a reward action cannot work without. */
@@ -306,7 +313,9 @@ export class RewardRedemptionHandler {
     // A test run rejects rather than accepts, which is what refunds the points.
     const resolved = canResolve ? await this.resolve(event.id, !isTest) : false;
 
-    if (action.announce !== false) {
+    // A test still speaks up even when quiet: its line carries the refund result,
+    // which Kick's own notice says nothing about.
+    if (action.announce !== false && !(outcome.quiet && !isTest)) {
       const lead = `@${redeemer} ${isTest ? 'TEST — ' : `redeemed "${event.reward.title}" — `}`;
       const tail = isTest
         ? (resolved ? ', points refunded.' : ', but the refund failed — resolve it manually.')
@@ -350,6 +359,7 @@ export class RewardRedemptionHandler {
             }
           : {
               ok: true,
+              quiet: true,
               announce: `${result.target} is timed out for ${dur}`,
               log: `${redeemer} timed out ${result.target} for ${result.seconds}s (as ${result.actor})`
             };
