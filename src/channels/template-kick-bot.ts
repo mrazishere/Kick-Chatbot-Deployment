@@ -148,7 +148,11 @@ class KickChatBot {
       subscriptionRenewal: (event, meta) => { this.points.onSubscriptionRenewal(event, meta); },
       subscriptionGifts: (event, meta) => { this.points.onSubscriptionGifts(event, meta); },
       kicksGifted: (event, meta) => { this.points.onKicksGifted(event, meta); },
-      livestreamStatus: (event, meta) => this.points.onLivestreamStatus(event, meta)
+      livestreamStatus: (event, meta) => {
+        this.points.onLivestreamStatus(event, meta);
+        // Rewards the bot acts on are paused on Kick while the channel is offline.
+        this.rewardHandler.setLive(event?.is_live === true);
+      }
     });
 
 

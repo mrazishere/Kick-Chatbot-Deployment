@@ -52,6 +52,16 @@ const RECONCILE_ACT_MAX_MS = 10 * 60 * 1000;
 /** Redeemer names resolved by id, so a busy queue doesn't re-ask Kick for each one. */
 const NAME_CACHE_LIMIT = 500;
 
+/**
+ * Rewards the bot acts on are paused on Kick while the channel is offline, so
+ * viewers can't spend points on a timeout nobody will see (user, 2026-09-12).
+ * Only rewards this bot paused are resumed; one the streamer paused by hand
+ * stays paused.
+ */
+const PAUSE_STATE_DIR = 'reward-pause';
+/** Re-read Kick's reward list this often even when the live state hasn't changed, to catch drift. */
+const PAUSE_DRIFT_CYCLES = 10;
+
 /** What one redemption did, or why it didn't. A failure is refunded. */
 type Outcome =
   | { ok: true; announce: string; log: string }
@@ -80,6 +90,11 @@ export class RewardRedemptionHandler {
   private reconciling = false;
   private reconcileErrorNotified = false;
   private nameCache = new Map<number, string>();
+  /** Last known live state: null until a webhook or a live check says. */
+  private isLive: boolean | null = null;
+  private lastSyncedLive: boolean | null = null;
+  private syncCycles = 0;
+  private syncing = false;
 
   constructor(deps: RewardHandlerDeps) {
     this.deps = deps;
@@ -93,6 +108,8 @@ export class RewardRedemptionHandler {
       this.reconcileTimer = setInterval(() => {
         this.reconcilePending().catch(err =>
           console.error(`[REWARD] Reconcile failed: ${err instanceof Error ? err.message : String(err)}`));
+        this.syncPauseState().catch(err =>
+          console.error(`[REWARD] Pause sync failed: ${err instanceof Error ? err.message : String(err)}`));
       }, RECONCILE_MS);
       this.reconcileTimer.unref();
     }
@@ -253,6 +270,14 @@ export class RewardRedemptionHandler {
         await this.deps.sendMessage(`@${redeemer} ${reason}${suffix}`).catch(() => {});
       }
     };
+
+    // Paused-while-offline rewards are unpaused on Kick a moment after the stream
+    // starts and paused again after it ends, so a redemption can still land in the
+    // gap. Acting on it would time someone out for an empty channel.
+    if (this.isLive === false && action.pauseWhenOffline !== false) {
+      await fail(`that reward is paused while ${this.deps.channelName} is offline`);
+      return;
+    }
 
     // Trial run: shortened, refunded, and optionally limited to named testers
     // so a reward that has never fired in production can't catch real viewers.
@@ -494,6 +519,120 @@ export class RewardRedemptionHandler {
     }
   }
 
+  /** Told by the livestream webhook; also refreshed from Kick on each sync. */
+  setLive(isLive: boolean): void {
+    if (this.isLive === isLive) return;
+    this.isLive = isLive;
+    this.syncPauseState().catch(err =>
+      console.error(`[REWARD] Pause sync failed: ${err instanceof Error ? err.message : String(err)}`));
+  }
+
+  private pauseStatePath(): string {
+    return path.join(process.cwd(), 'data', PAUSE_STATE_DIR, `${this.deps.channelName}.json`);
+  }
+
+  private loadPausedByBot(): string[] {
+    try {
+      const raw = JSON.parse(fs.readFileSync(this.pauseStatePath(), 'utf8')) as { pausedByBot?: unknown };
+      return Array.isArray(raw.pausedByBot) ? raw.pausedByBot.filter((x): x is string => typeof x === 'string') : [];
+    } catch {
+      return [];
+    }
+  }
+
+  private savePausedByBot(ids: string[]): void {
+    try {
+      const file = this.pauseStatePath();
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, JSON.stringify({ pausedByBot: ids }, null, 2));
+    } catch (err) {
+      console.error(`[REWARD] Could not save the paused-reward list: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /** Kick's own view of whether the channel is live, for restarts and missed webhooks. */
+  private async liveFromApi(token: string): Promise<boolean | null> {
+    try {
+      const res = await axios.get(`${API}/channels`, {
+        headers: { Authorization: `Bearer ${token}` },
+        params: { slug: this.deps.channelName },
+        timeout: 15_000
+      });
+      const rows = (res.data as { data?: Array<{ stream?: { is_live?: unknown } | null }> })?.data ?? [];
+      const isLive = rows[0]?.stream?.is_live;
+      return typeof isLive === 'boolean' ? isLive : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Pause the configured rewards while the channel is offline and resume them
+   * when it is live again. Rewards the streamer paused are never resumed here:
+   * only ids this bot paused, recorded on disk, are undone.
+   */
+  private async syncPauseState(): Promise<void> {
+    if (this.syncing || !this.started) return;
+    const targets = pauseTargetIds(this.currentActions());
+    if (targets.length === 0) return;
+    this.syncing = true;
+    try {
+      const { token, isChannelToken } = await this.deps.getToken().catch(() => ({ token: '', isChannelToken: false }));
+      if (!isChannelToken || !token) return;
+
+      const live = await this.liveFromApi(token);
+      if (live !== null) this.isLive = live;
+      if (this.isLive === null) return;
+
+      // Kick's list is only re-read when the state changed, or occasionally to catch drift.
+      this.syncCycles++;
+      const drift = this.syncCycles % PAUSE_DRIFT_CYCLES === 0;
+      if (this.isLive === this.lastSyncedLive && !drift) return;
+
+      const res = await axios.get(`${API}/channels/rewards`, {
+        headers: { Authorization: `Bearer ${token}` },
+        timeout: 15_000
+      });
+      const rewards = rewardsFromApi(res.data);
+      const pausedByBot = this.loadPausedByBot();
+      const { toPause, toResume } = pauseDecisions({ targets, rewards, pausedByBot, isLive: this.isLive });
+
+      let state = pausedByBot.slice();
+      for (const id of toPause) {
+        if (await this.setPaused(token, id, true)) {
+          state.push(id);
+          console.log(`[REWARD] Paused "${titleOf(rewards, id)}" — ${this.deps.channelName} is offline.`);
+        }
+      }
+      for (const id of toResume) {
+        if (await this.setPaused(token, id, false)) {
+          state = state.filter(x => x !== id);
+          console.log(`[REWARD] Resumed "${titleOf(rewards, id)}" — ${this.deps.channelName} is live.`);
+        }
+      }
+      if (state.length !== pausedByBot.length || state.some((x, i) => x !== pausedByBot[i])) this.savePausedByBot(state);
+      this.lastSyncedLive = this.isLive;
+    } finally {
+      this.syncing = false;
+    }
+  }
+
+  private async setPaused(token: string, rewardId: string, paused: boolean): Promise<boolean> {
+    try {
+      await axios.patch(`${API}/channels/rewards/${rewardId}`, { is_paused: paused }, {
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        timeout: 15_000
+      });
+      return true;
+    } catch (err) {
+      const detail = axios.isAxiosError(err)
+        ? `${err.response?.status ?? ''} ${JSON.stringify(err.response?.data ?? err.message)}`
+        : (err instanceof Error ? err.message : String(err));
+      console.error(`[REWARD] Could not ${paused ? 'pause' : 'resume'} reward ${rewardId}: ${detail}`);
+      return false;
+    }
+  }
+
   /** Kick's pending list carries the redeemer's id but no name, and the handler needs the name. */
   private async usernameFor(userId: number, token: string): Promise<string | null> {
     if (!userId) return null;
@@ -617,6 +756,83 @@ export function pendingVerdict(redeemedAt: string | null, now: number, maxAgeMs:
   const at = redeemedAt ? Date.parse(redeemedAt) : NaN;
   if (!Number.isFinite(at)) return 'refund';
   return now - at <= maxAgeMs ? 'act' : 'refund';
+}
+
+/** One reward as Kick lists it. */
+export interface RewardState {
+  id: string;
+  title: string;
+  isEnabled: boolean;
+  isPaused: boolean;
+}
+
+/** Rows out of `GET /channels/rewards`. Anything without an id is dropped. */
+export function rewardsFromApi(payload: unknown): RewardState[] {
+  const rows = (payload as { data?: unknown } | null)?.data;
+  if (!Array.isArray(rows)) return [];
+  const out: RewardState[] = [];
+  for (const r of rows) {
+    const row = (r ?? {}) as Record<string, unknown>;
+    if (typeof row['id'] !== 'string' || !row['id']) continue;
+    out.push({
+      id: row['id'],
+      title: typeof row['title'] === 'string' ? row['title'] : '',
+      isEnabled: row['is_enabled'] !== false,
+      isPaused: row['is_paused'] === true
+    });
+  }
+  return out;
+}
+
+function titleOf(rewards: RewardState[], id: string): string {
+  return rewards.find(r => r.id === id)?.title || id;
+}
+
+/**
+ * Which rewards follow the stream: those pinned by id, unless the action opts
+ * out with `pauseWhenOffline: false`. An action matched only by title is left
+ * alone — a title substring can match the wrong reward, and pausing the wrong
+ * one is the streamer's problem, not a redemption that can be refunded.
+ */
+export function pauseTargetIds(actions: RewardAction[]): string[] {
+  const ids: string[] = [];
+  for (const a of actions) {
+    if (!a.rewardId || a.pauseWhenOffline === false) continue;
+    if (!ids.includes(a.rewardId)) ids.push(a.rewardId);
+  }
+  return ids;
+}
+
+/**
+ * What to pause and what to resume.
+ *
+ * Offline: pause targets that are enabled and not already paused. Live: resume
+ * only ids this bot paused — a reward the streamer paused stays paused, and one
+ * they disabled entirely is never touched.
+ */
+export function pauseDecisions(args: {
+  targets: string[];
+  rewards: RewardState[];
+  pausedByBot: string[];
+  isLive: boolean;
+}): { toPause: string[]; toResume: string[] } {
+  const byId = new Map(args.rewards.map(r => [r.id, r]));
+  if (!args.isLive) {
+    return {
+      toPause: args.targets.filter(id => {
+        const r = byId.get(id);
+        return !!r && r.isEnabled && !r.isPaused && !args.pausedByBot.includes(id);
+      }),
+      toResume: []
+    };
+  }
+  return {
+    toPause: [],
+    toResume: args.pausedByBot.filter(id => {
+      const r = byId.get(id);
+      return !!r && r.isPaused;
+    })
+  };
 }
 
 function sameUser(a: string, b: string): boolean {

@@ -280,6 +280,12 @@ export interface RewardAction {
   durationSeconds?: number;
   /** shield only: a timeout or roulette aimed at the holder lands on whoever redeemed it. */
   reflect?: boolean;
+  /**
+   * Pause this reward on Kick while the channel is offline, and resume it when
+   * the stream starts (default true). Only rewards pinned by `rewardId` follow
+   * the stream, and only a pause this bot made is ever undone.
+   */
+  pauseWhenOffline?: boolean;
   /** Post the outcome in chat. Defaults to true. */
   announce?: boolean;
 

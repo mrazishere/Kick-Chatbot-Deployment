@@ -9,7 +9,11 @@
  * Exits non-zero when any check fails.
  */
 
-import { pendingRedemptionsFromApi, pendingVerdict, parseTargetUsername } from '../channels/reward-redemptions';
+import {
+  pendingRedemptionsFromApi, pendingVerdict, parseTargetUsername,
+  rewardsFromApi, pauseTargetIds, pauseDecisions
+} from '../channels/reward-redemptions';
+import { RewardAction } from '../types';
 
 let passed = 0;
 let failed = 0;
@@ -96,6 +100,63 @@ check('an unknown timestamp is refunded, never fired blind',
   pendingVerdict(null, now, 10 * MIN) === 'refund' && pendingVerdict('not a date', now, 10 * MIN) === 'refund');
 check("Cyturn's stuck redemption would have been refunded, not acted on",
   pendingVerdict(rows[0]?.redeemedAt ?? null, Date.parse('2026-09-11T22:48:13Z'), 10 * MIN) === 'refund');
+
+// ─── Pausing the bot's rewards while the channel is offline ──────────────────
+
+const rewardList = {
+  data: [
+    { id: 'roulette', title: 'Huat or Kena', is_enabled: true, is_paused: false },
+    { id: 'timeout', title: 'Timeout someone 120 seconds', is_enabled: true, is_paused: false },
+    { id: 'streamer-paused', title: 'VEE EYE PEE', is_enabled: true, is_paused: true },
+    { id: 'disabled', title: 'Date night', is_enabled: false, is_paused: false }
+  ]
+};
+const rewards = rewardsFromApi(rewardList);
+check('rewards parse with their paused and enabled flags',
+  rewards.length === 4 && rewards[0].isPaused === false && rewards[2].isPaused === true && rewards[3].isEnabled === false, rewards);
+check('a reward with no id is dropped', rewardsFromApi({ data: [{ title: 'x' }] }).length === 0);
+
+const actions = [
+  { rewardId: 'roulette', action: 'roulette', durationSeconds: 60 },
+  { rewardId: 'timeout', action: 'timeout', durationSeconds: 120 }
+] as RewardAction[];
+check('both configured rewards follow the stream', pauseTargetIds(actions).join(',') === 'roulette,timeout');
+check('an action can opt out',
+  pauseTargetIds([{ rewardId: 'roulette', action: 'roulette', durationSeconds: 60, pauseWhenOffline: false }] as RewardAction[]).length === 0);
+check('an action matched only by title is left alone',
+  pauseTargetIds([{ rewardTitle: 'Huat', action: 'roulette', durationSeconds: 60 }] as RewardAction[]).length === 0);
+
+const targets = pauseTargetIds(actions);
+const offline = pauseDecisions({ targets, rewards, pausedByBot: [], isLive: false });
+check('going offline pauses both configured rewards',
+  offline.toPause.join(',') === 'roulette,timeout' && offline.toResume.length === 0, offline);
+check('nothing outside the configured rewards is touched',
+  !offline.toPause.includes('streamer-paused') && !offline.toPause.includes('disabled'), offline);
+
+const alreadyPaused = pauseDecisions({
+  targets,
+  rewards: rewardsFromApi({ data: [{ id: 'roulette', is_enabled: true, is_paused: true }, { id: 'timeout', is_enabled: true, is_paused: false }] }),
+  pausedByBot: ['roulette'],
+  isLive: false
+});
+check('a reward already paused is not paused again', alreadyPaused.toPause.join(',') === 'timeout', alreadyPaused);
+
+const live = pauseDecisions({
+  targets,
+  rewards: rewardsFromApi({ data: [{ id: 'roulette', is_enabled: true, is_paused: true }, { id: 'timeout', is_enabled: true, is_paused: true }] }),
+  pausedByBot: ['roulette'],
+  isLive: true
+});
+check('going live resumes only what the bot paused', live.toResume.join(',') === 'roulette' && live.toPause.length === 0, live);
+check("a reward the streamer paused is never resumed",
+  pauseDecisions({ targets, rewards, pausedByBot: [], isLive: true }).toResume.length === 0);
+check('a reward the bot paused that someone already resumed is dropped quietly',
+  pauseDecisions({
+    targets,
+    rewards: rewardsFromApi({ data: [{ id: 'roulette', is_enabled: true, is_paused: false }] }),
+    pausedByBot: ['roulette'],
+    isLive: true
+  }).toResume.length === 0);
 
 console.log(`\n[rewards-selftest] ${passed} passed, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);
