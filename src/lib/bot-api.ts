@@ -100,12 +100,26 @@ export interface PointsConfig {
   give: PointsGive;
   modMaxAdjust: number;
   publicLeaderboard: boolean;
+  timeoutPenalty: PointsTimeoutPenalty;
+}
+
+/** What a timeout costs the viewer who got it, scaled per second. */
+export interface PointsTimeoutPenalty {
+  enabled: boolean;
+  pointsPerSecond: number;
+  /** 0 means no cap. */
+  maxDeduction: number;
+  includeBotTimeouts: boolean;
+  /** Flat cost of a permanent ban, which has no duration. 0 ignores them. */
+  permanentBanCost: number;
+  announce: boolean;
 }
 
 /** Omitted keys are left alone; nested blocks merge rather than replace. */
-export type PointsSettingsPatch = Partial<Omit<PointsConfig, "effectiveCommand" | "bonuses" | "give">> & {
+export type PointsSettingsPatch = Partial<Omit<PointsConfig, "effectiveCommand" | "bonuses" | "give" | "timeoutPenalty">> & {
   bonuses?: Partial<PointsBonuses>;
   give?: Partial<PointsGive>;
+  timeoutPenalty?: Partial<PointsTimeoutPenalty>;
 };
 
 export interface PointsSubscriptionStatus {

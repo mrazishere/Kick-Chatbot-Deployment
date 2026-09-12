@@ -26,6 +26,18 @@ export interface PointsGive {
   cooldownSeconds: number;
 }
 
+/** What a timeout costs the viewer who got it, scaled per second. */
+export interface PointsTimeoutPenalty {
+  enabled: boolean;
+  pointsPerSecond: number;
+  /** 0 means no cap. */
+  maxDeduction: number;
+  includeBotTimeouts: boolean;
+  /** Flat cost of a permanent ban, which has no duration. 0 ignores them. */
+  permanentBanCost: number;
+  announce: boolean;
+}
+
 export interface PointsConfig {
   enabled: boolean;
   currencyName: string;
@@ -41,11 +53,13 @@ export interface PointsConfig {
   give: PointsGive;
   modMaxAdjust: number;
   publicLeaderboard: boolean;
+  timeoutPenalty: PointsTimeoutPenalty;
 }
 
-type PointsSettingsPatch = Partial<Omit<PointsConfig, "effectiveCommand" | "bonuses" | "give">> & {
+type PointsSettingsPatch = Partial<Omit<PointsConfig, "effectiveCommand" | "bonuses" | "give" | "timeoutPenalty">> & {
   bonuses?: Partial<PointsBonuses>;
   give?: Partial<PointsGive>;
+  timeoutPenalty?: Partial<PointsTimeoutPenalty>;
 };
 
 interface PointsSummary {
@@ -113,6 +127,12 @@ interface SettingsForm {
   giveCooldown: string;
   modMaxAdjust: string;
   publicLeaderboard: boolean;
+  penaltyEnabled: boolean;
+  penaltyPerSecond: string;
+  penaltyMax: string;
+  penaltyIncludeBot: boolean;
+  penaltyPermanentBan: string;
+  penaltyAnnounce: boolean;
 }
 
 function formFromConfig(c: PointsConfig): SettingsForm {
@@ -139,6 +159,12 @@ function formFromConfig(c: PointsConfig): SettingsForm {
     giveCooldown: String(c.give.cooldownSeconds),
     modMaxAdjust: String(c.modMaxAdjust),
     publicLeaderboard: c.publicLeaderboard,
+    penaltyEnabled: c.timeoutPenalty.enabled,
+    penaltyPerSecond: String(c.timeoutPenalty.pointsPerSecond),
+    penaltyMax: String(c.timeoutPenalty.maxDeduction),
+    penaltyIncludeBot: c.timeoutPenalty.includeBotTimeouts,
+    penaltyPermanentBan: String(c.timeoutPenalty.permanentBanCost),
+    penaltyAnnounce: c.timeoutPenalty.announce,
   };
 }
 
@@ -228,11 +254,30 @@ function buildPatch(f: SettingsForm): { patch: PointsSettingsPatch } | { error: 
       maxAmount: whole(f.giveMax, "Maximum give", 0, 1_000_000_000),
       cooldownSeconds: whole(f.giveCooldown, "Give cooldown", 0, 3600),
     },
+    timeoutPenalty: {
+      enabled: f.penaltyEnabled,
+      pointsPerSecond: decimal(f.penaltyPerSecond, "Cost per second", 0, 10_000),
+      maxDeduction: whole(f.penaltyMax, "Maximum deduction", 0, 1_000_000_000),
+      includeBotTimeouts: f.penaltyIncludeBot,
+      permanentBanCost: whole(f.penaltyPermanentBan, "Permanent ban cost", 0, 1_000_000_000),
+      announce: f.penaltyAnnounce,
+    },
     modMaxAdjust: whole(f.modMaxAdjust, "Max per mod adjustment", 1, 1_000_000_000),
     publicLeaderboard: f.publicLeaderboard,
   };
 
   return errors.length > 0 ? { error: errors.join("; ") } : { patch };
+}
+
+/** Turn the rate into something concrete, since "per second" is easy to misjudge. */
+function costExample(perSecond: string, max: string, currency: string): string {
+  const rate = Number(perSecond);
+  if (!Number.isFinite(rate) || rate <= 0) return "Free at 0.";
+  const cap = Number(max);
+  const capped = (n: number) => (Number.isFinite(cap) && cap > 0 ? Math.min(n, cap) : n);
+  const unit = currency.trim() || "points";
+  const min5 = capped(Math.floor(rate * 300)).toLocaleString();
+  return `1 min costs ${capped(Math.floor(rate * 60)).toLocaleString()}, 5 min costs ${min5} ${unit}.`;
 }
 
 function formatWatch(seconds: number): string {
@@ -724,6 +769,54 @@ export default function PointsCard({
                   <Field label="Maximum (0 = none)">{text("giveMax", { inputMode: "numeric" })}</Field>
                   <Field label="Cooldown (s)">{text("giveCooldown", { inputMode: "numeric" })}</Field>
                 </div>
+              </div>
+
+              <div>
+                <h4 className={LABEL}>Timeout penalty</h4>
+                <Checkbox
+                  label={`Deduct ${form.currencyName.trim() || "points"} when a viewer is timed out`}
+                  checked={form.penaltyEnabled}
+                  disabled={readOnly || !!busy}
+                  onChange={(v) => set("penaltyEnabled", v)}
+                />
+                <div className="mt-3 grid gap-4 sm:grid-cols-3">
+                  <Field
+                    label="Cost per second"
+                    hint={costExample(form.penaltyPerSecond, form.penaltyMax, form.currencyName)}
+                  >
+                    {text("penaltyPerSecond", { inputMode: "decimal" })}
+                  </Field>
+                  <Field label="Maximum per timeout (0 = none)">
+                    {text("penaltyMax", { inputMode: "numeric" })}
+                  </Field>
+                  <Field label="Permanent ban (0 = ignore)" hint="A ban has no length to charge for.">
+                    {text("penaltyPermanentBan", { inputMode: "numeric" })}
+                  </Field>
+                </div>
+                <div className="mt-3 space-y-2">
+                  <Checkbox
+                    label="Say in chat what was deducted"
+                    checked={form.penaltyAnnounce}
+                    disabled={readOnly || !!busy}
+                    onChange={(v) => set("penaltyAnnounce", v)}
+                  />
+                  <Checkbox
+                    label="Also charge for timeouts from reward redemptions"
+                    checked={form.penaltyIncludeBot}
+                    disabled={readOnly || !!busy}
+                    onChange={(v) => set("penaltyIncludeBot", v)}
+                  />
+                  {form.penaltyIncludeBot ? (
+                    <p className="text-xs text-amber-500/80">
+                      A roulette or timeout reward already costs the redeemer points. With this
+                      on they pay twice for one redemption.
+                    </p>
+                  ) : null}
+                </div>
+                <p className="mt-3 text-xs text-neutral-500">
+                  A viewer never goes below zero — someone with less than the penalty loses what
+                  they have. Anyone excluded from earning is excluded from being charged.
+                </p>
               </div>
 
               <div className="grid gap-4 sm:grid-cols-2">
