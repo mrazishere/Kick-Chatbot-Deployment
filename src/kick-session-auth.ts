@@ -144,6 +144,17 @@ class KickSessionAuth {
       throw err;
     }
   }
+
+  /** Forget the cached token so the next getToken() logs in again — call this after a 401. */
+  clearCache(): void {
+    this._token = null;
+    this._savedAt = null;
+    try {
+      if (fs.existsSync(SESSION_FILE)) fs.unlinkSync(SESSION_FILE);
+    } catch (e) {
+      if (e instanceof Error) console.warn('[SESSION] Could not remove', SESSION_FILE + ':', e.message);
+    }
+  }
 }
 
 export = KickSessionAuth;
