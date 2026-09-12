@@ -89,6 +89,7 @@ export class RewardRedemptionHandler {
   private reconcileTimer: NodeJS.Timeout | null = null;
   private reconciling = false;
   private reconcileErrorNotified = false;
+  private reconcileFirstPass = true;
   private nameCache = new Map<number, string>();
   /** Last known live state: null until a webhook or a live check says. */
   private isLive: boolean | null = null;
@@ -463,6 +464,12 @@ export class RewardRedemptionHandler {
         });
         pending = pendingRedemptionsFromApi(res.data);
         this.reconcileErrorNotified = false;
+        if (this.reconcileFirstPass) {
+          // Success is otherwise silent, so there is no way to tell a healthy
+          // backstop from one that never ran. Say so once per start.
+          this.reconcileFirstPass = false;
+          console.log(`[REWARD] Reconcile: watching Kick's pending queue for ${this.deps.channelName} (${pending.length} pending now).`);
+        }
       } catch (err) {
         // Every two minutes forever: say it once, then again only after a success.
         if (!this.reconcileErrorNotified) {
