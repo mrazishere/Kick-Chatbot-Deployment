@@ -237,6 +237,46 @@ Everything else keeps running; only clipping is affected.
     return await this.sendOnce(alertKey('clip-session-down'), 12 * HOUR, message, false);
   }
 
+  // Alert: the Blerp login could not be renewed and !blerp will stop working.
+  // Sent days ahead of the deadline: the token usually still works meanwhile,
+  // so this is a reminder to act, not an outage.
+  async notifyBlerpSessionDown(reason: string, daysLeft: number | null): Promise<boolean> {
+    const clock = daysLeft === null ? 'Expiry unknown.'
+      : daysLeft > 0 ? `The current token still works for about <b>${daysLeft} day(s)</b>.`
+        : 'The current token has <b>already expired</b>.';
+    const message = `
+\u{1F6D1} <b>Kick Bot - Blerp Login Needs Renewing</b>
+
+<b>Reason:</b> <code>${esc(reason.substring(0, 200))}</code>
+
+${clock}
+
+<b>Permanent fix (about a minute):</b>
+Put the bot's Blerp account into <code>.env</code> and the bot renews itself from then on:
+<code>BLERP_EMAIL=...</code>
+<code>BLERP_PASSWORD=...</code>
+
+<b>Stopgap:</b>
+1. Log in to blerp.com as MrAIisHere
+2. F12 → Application → Cookies → blerp.com → copy <code>jwt</code>
+3. Put it in <code>.blerp-session.json</code> as the <code>jwt</code> field
+
+Everything else keeps running; only <code>!blerp</code> is affected.
+    `.trim();
+    return await this.sendOnce(alertKey('blerp-session-down'), 24 * HOUR, message, false);
+  }
+
+  // Informational: the Blerp login works again.
+  async notifyBlerpSessionRestored(how: string): Promise<boolean> {
+    await this.forget([alertKey('blerp-session-down')]);
+    const message = `
+\u{2705} <b>Kick Bot - Blerp Login Restored</b>
+
+The Blerp session works again (${esc(how)}). <code>!blerp</code> is back. No action needed.
+    `.trim();
+    return await this.sendMessage(message, true);
+  }
+
   // Informational: clipping can authenticate again.
   async notifyClipSessionRestored(how: string): Promise<boolean> {
     await this.forget([alertKey('clip-session-down')]);

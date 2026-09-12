@@ -30,6 +30,11 @@ import { CommandFn } from '../types';
 import { clipLiveStream, cleanTitle as cleanClipTitle, currentLivestream, fallbackTitle, sessionToken, DEFAULT_CLIP_SECONDS } from '../channels/kick-clips';
 import { checkClipSession, clipSessionHealthy } from '../channels/clip-session';
 import { usableJwt, createBlerpFromUrl, suggestToStreamer, removeBlerp, cleanTitle, blerpErrorDetail } from '../channels/blerp';
+import { checkBlerpSession, startBlerpSessionWatchdog } from '../channels/blerp-session';
+
+// Loaded once per bot: renew the Blerp login long before a mod runs into a
+// dead one, the same shape as the clip session watchdog.
+startBlerpSessionWatchdog();
 
 /** Blerp does real work per import, and a queue of junk is the failure mode. */
 const USER_COOLDOWN_MS = 5 * 60_000;
@@ -86,7 +91,8 @@ export const blerp: CommandFn = async function blerp(client, message, channel, t
     // Blerp first: a dead session should not leave an orphan clip behind.
     const jwt = await usableJwt();
     if (!jwt) {
-      console.error('[BLERP] No usable Blerp session — paste a fresh jwt into .blerp-session.json.');
+      console.error('[BLERP] No usable Blerp session — renewing now.');
+      void checkBlerpSession(true);
       return void say(`@${me} the bot can't reach Blerp right now`);
     }
 
@@ -127,7 +133,9 @@ export const blerp: CommandFn = async function blerp(client, message, channel, t
     }
 
     if (/blerp session expired|unauthenticated/i.test(why)) {
-      return void say(`@${me} the bot's Blerp login needs renewing, tell mrazishere`);
+      // Renew immediately rather than waiting for the next scheduled check.
+      void checkBlerpSession(true);
+      return void say(`@${me} the bot's Blerp login is being renewed, try again shortly`);
     }
     if (/401|403/.test(why)) void checkClipSession(true);
     return void say(`@${me} could not make that blerp, try again in a moment`);

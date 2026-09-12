@@ -18,10 +18,16 @@
  *      rejects it in their own Blerp dashboard. Nothing reaches a stream
  *      without them saying yes.
  *
- * Auth is a JWT pasted once into .blerp-session.json (the same shape as the
- * Kick .session.json). It carries a 20-day expiry. If BLERP_EMAIL and
- * BLERP_PASSWORD are set the bot signs itself back in when the JWT dies;
- * without them it warns over Telegram while there is still time to act.
+ * Auth is a JWT with a 20-day life, kept in .blerp-session.json (the same
+ * shape as the Kick .session.json). Renewal is tried in order:
+ *
+ *   1. the stored refresh token, which Blerp rotates on every use
+ *   2. BLERP_EMAIL / BLERP_PASSWORD, which also mints a fresh refresh token
+ *
+ * A password sign-in therefore seeds the refresh chain as a side effect, so
+ * the credentials are the safety net rather than the routine path. With
+ * neither available the watchdog warns over Telegram while there is still
+ * time to act (see blerp-session.ts).
  */
 
 import axios from 'axios';
@@ -98,6 +104,15 @@ export function jwtExpiresAt(token = blerpJwt()): number | null {
   }
 }
 
+/** Renew this far ahead of expiry rather than waiting for the cliff. */
+export const RENEW_AHEAD_MS = 3 * 24 * 60 * 60_000;
+
+/** True when the token dies inside `ms`. Unknown expiry counts as fine. */
+export function expiringWithin(ms: number, token = blerpJwt()): boolean {
+  const exp = jwtExpiresAt(token);
+  return exp === null ? false : exp - Date.now() < ms;
+}
+
 export function jwtIsLive(token = blerpJwt()): boolean {
   const exp = jwtExpiresAt(token);
   // No readable expiry: let the call itself decide rather than blocking it here.
@@ -151,9 +166,47 @@ export async function signedInAs(token = blerpJwt()): Promise<string | null> {
 }
 
 /**
- * Trade the stored credentials for a fresh JWT. Blerp's refresh mutation wants
- * a refresh token that their web client keeps httpOnly, so a password sign-in
- * is the path that actually works unattended.
+ * Spend the stored refresh token for a new JWT. Blerp rotates the refresh
+ * token on every use, so the replacement is saved or the chain breaks.
+ *
+ * Their web client keeps this token httpOnly, which is why it cannot simply be
+ * copied out of a browser — the first one has to come from a password sign-in.
+ */
+export async function refreshJwt(): Promise<string | null> {
+  const stored = (readSession().refreshToken || '').trim();
+  if (!stored) return null;
+  try {
+    const res = await axios.post(
+      API,
+      {
+        query: `mutation($r:String!){web{userRefreshToken(record:{refreshToken:$r}){jwt refreshToken user{_id username}}}}`,
+        variables: { r: stored }
+      },
+      { headers: { 'Content-Type': 'application/json' }, timeout: TIMEOUT_MS }
+    );
+    const body = res.data as {
+      data?: { web?: { userRefreshToken?: { jwt?: string; refreshToken?: string; user?: { username?: string } } } };
+      errors?: Array<{ message?: string }>;
+    };
+    if (body.errors?.length) return null;
+    const out = body.data?.web?.userRefreshToken;
+    if (!out?.jwt) return null;
+    writeSession({
+      ...readSession(),
+      jwt: out.jwt,
+      // Keep the old token if none came back rather than losing the chain.
+      refreshToken: out.refreshToken || stored,
+      username: out.user?.username
+    });
+    return out.jwt;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Sign in with credentials. Slower and heavier than a refresh, but it is what
+ * mints the first refresh token and what recovers once the chain is broken.
  */
 export async function signIn(): Promise<string | null> {
   const usernameOrEmail = (process.env.BLERP_EMAIL || '').trim();
@@ -188,8 +241,10 @@ export async function signIn(): Promise<string | null> {
  */
 export async function usableJwt(): Promise<string | null> {
   const current = blerpJwt();
-  if (current && jwtIsLive(current)) return current;
-  return await signIn();
+  // Renew a little before the deadline: a token that dies mid-command reads to
+  // chat as a broken feature, and renewing early costs one extra call a month.
+  if (current && jwtIsLive(current) && !expiringWithin(RENEW_AHEAD_MS, current)) return current;
+  return (await refreshJwt()) ?? (await signIn()) ?? (current && jwtIsLive(current) ? current : null);
 }
 
 /**
