@@ -5,6 +5,7 @@ logs/
 *.log
 .DS_Store
 .session.json
+.blerp-session.json
 
 # Channel files (keep only template)
 channels/*.js
@@ -23,6 +24,7 @@ src/channels/*.ts
 !src/channels/reward-redemptions.ts
 !src/channels/kick-clips.ts
 !src/channels/clip-session.ts
+!src/channels/blerp.ts
 !src/channels/moderation.ts
 
 # Custom command data and runtime channel configs (contain OAuth tokens)

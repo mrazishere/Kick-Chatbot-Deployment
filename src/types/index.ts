@@ -132,6 +132,12 @@ export interface ChannelConfig {
   streamerName?: string;
   /** Loyalty points. Stored partially; read through points/config effectivePointsConfig. */
   points?: StoredPointsConfig;
+  /**
+   * The Blerp account !blerp files suggestions with. Set explicitly rather
+   * than resolved from the Kick username: a streamer may hold several Blerp
+   * accounts and the one their Kick name sits on can be dormant.
+   */
+  blerpStreamerId?: string;
   [key: string]: unknown;
 }
 
