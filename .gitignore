@@ -22,6 +22,7 @@ src/channels/*.ts
 !src/channels/kpp-tracker.ts
 !src/channels/reward-redemptions.ts
 !src/channels/kick-clips.ts
+!src/channels/clip-session.ts
 !src/channels/moderation.ts
 
 # Custom command data and runtime channel configs (contain OAuth tokens)

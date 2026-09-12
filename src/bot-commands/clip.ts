@@ -16,10 +16,15 @@
 
 import { CommandFn } from '../types';
 import { clipLiveStream, cleanTitle, currentLivestream, sessionToken, DEFAULT_CLIP_SECONDS } from '../channels/kick-clips';
+import { checkClipSession, clipSessionHealthy, startClipSessionWatchdog } from '../channels/clip-session';
 
 /** One clip at a time per channel: Kick takes a second or two, and chat can spam. */
 const USER_COOLDOWN_MS = 60_000;
 const CHANNEL_COOLDOWN_MS = 15_000;
+
+// Loaded once per bot: watch the session so a dead token is found and renewed
+// before a viewer runs into it, not after.
+startClipSessionWatchdog();
 
 const cooldowns = new Map<string, number>();
 const inFlight = new Set<string>();
@@ -53,9 +58,10 @@ export const clip: CommandFn = async function clip(client, message, channel, tag
     if (!live) return void say(`@${me} nothing to clip, the stream is offline`);
 
     const token = sessionToken();
-    if (!token) {
-      console.error('[CLIP] No Kick session token on disk — put the session_token cookie in .session.json.');
-      return void say(`@${me} clipping is not set up right now`);
+    if (!token || !clipSessionHealthy()) {
+      console.error('[CLIP] No usable Kick session token — the watchdog has been told to renew it.');
+      void checkClipSession(true);
+      return void say(`@${me} clipping is down right now, the bot is fixing it`);
     }
 
     const title = cleanTitle(words.slice(1).join(' '), live.sessionTitle);
@@ -67,7 +73,8 @@ export const clip: CommandFn = async function clip(client, message, channel, tag
     console.error(`[CLIP] ${channelName} clip for ${me} failed: ${why}`);
     // A rejected token means the pasted session has expired and needs replacing.
     if (/401|403|unauthenticated/i.test(why)) {
-      console.error('[CLIP] Kick rejected the session token — it has expired; replace .session.json.');
+      // Renew immediately rather than waiting for the hourly check.
+      void checkClipSession(true);
     }
     return void say(`@${me} could not make a clip just now, try again in a moment`);
   } finally {

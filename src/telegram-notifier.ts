@@ -215,6 +215,39 @@ The HLS resolver is working again. No action needed.
     return await this.sendMessage(message, true);
   }
 
+  // Alert: the Kick session token that !clip depends on stopped working and the
+  // bot could not renew it. Kick rate-limits logins from this host, so a human
+  // may have to paste a fresh cookie; nothing else on the bot is affected.
+  async notifyClipSessionDown(reason: string): Promise<boolean> {
+    const message = `
+\u{1F6D1} <b>Kick Bot - Clipping Down</b>
+
+<b>Reason:</b> <code>${esc(reason.substring(0, 200))}</code>
+
+<code>!clip</code> needs a Kick session token and the bot could not renew it by itself.
+
+<b>To fix (about two minutes):</b>
+1. Log in to kick.com as MrAIisHere in a private window
+2. F12 → Application → Cookies → kick.com → copy <code>session_token</code>
+3. Put it in <code>.session.json</code> as <code>{"token":"...","savedAt":0}</code>
+4. Close that window WITHOUT logging out
+
+Everything else keeps running; only clipping is affected.
+    `.trim();
+    return await this.sendOnce(alertKey('clip-session-down'), 12 * HOUR, message, false);
+  }
+
+  // Informational: clipping can authenticate again.
+  async notifyClipSessionRestored(how: string): Promise<boolean> {
+    await this.forget([alertKey('clip-session-down')]);
+    const message = `
+\u{2705} <b>Kick Bot - Clipping Restored</b>
+
+The Kick session works again (${esc(how)}). <code>!clip</code> is back. No action needed.
+    `.trim();
+    return await this.sendMessage(message, true);
+  }
+
   // Alert: earnings poller has been failing for several consecutive cycles.
   // Most likely cause: enrollment service is down and dist/.tokens.json went
   // stale. Earnings poller only reads tokens, so it can't self-recover.
