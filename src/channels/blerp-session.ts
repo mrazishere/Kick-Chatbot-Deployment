@@ -18,7 +18,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import TelegramNotifier = require('../telegram-notifier');
-import { blerpJwt, jwtExpiresAt, jwtIsLive, expiringWithin, refreshJwt, signIn, signedInAs, RENEW_AHEAD_MS } from './blerp';
+import { blerpJwt, jwtExpiresAt, jwtIsLive, expiringWithin, refreshJwt, signIn, signedInAs, mintRefreshToken, hasRefreshToken, RENEW_AHEAD_MS } from './blerp';
 
 const CHECK_EVERY_MS = 6 * 60 * 60_000;
 /** Only one process does the work per window; the others see a recent check and skip. */
@@ -76,6 +76,14 @@ export async function checkBlerpSession(force = false): Promise<boolean> {
     // revoked token stays well-formed and would otherwise look healthy here.
     const who = await signedInAs(current);
     if (who) {
+      // Seed the refresh chain the moment there is a session to seed it from;
+      // without it the next expiry needs a human and a browser.
+      if (!hasRefreshToken()) {
+        const seeded = await mintRefreshToken(current);
+        console.log(seeded
+          ? '[BLERP] Refresh token minted — renewals are self-service from now on.'
+          : '[BLERP] No refresh token and none could be minted (login already completed); a fresh blerp.com login is needed to seed one.');
+      }
       if (state.healthy === false) {
         await new TelegramNotifier().notifyBlerpSessionRestored('the existing login still works').catch(() => {});
       }

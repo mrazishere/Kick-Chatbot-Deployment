@@ -78,6 +78,11 @@ export function writeSession(next: BlerpSession): void {
   try { fs.writeFileSync(sessionPath(), payload, { mode: 0o600 }); } catch { /* best effort */ }
 }
 
+/** Whether a refresh token is stored, i.e. whether renewal can happen unattended. */
+export function hasRefreshToken(): boolean {
+  return !!(readSession().refreshToken || '').trim();
+}
+
 /** Order: BLERP_JWT in the environment, then .blerp-session.json. */
 export function blerpJwt(): string | null {
   const fromEnv = (process.env.BLERP_JWT || '').trim();
@@ -166,6 +171,35 @@ export async function signedInAs(token = blerpJwt()): Promise<string | null> {
 }
 
 /**
+ * Ask Blerp for a refresh token using nothing but the current JWT.
+ *
+ * This is how their browser extension bootstraps itself after a website login,
+ * and it is the only way to obtain a refresh token for an account that signs in
+ * through Kick OAuth and therefore has no password.
+ *
+ * It works once per login session — a second call answers "Already completed
+ * login" — so it is fired automatically whenever a JWT is present without a
+ * refresh token. Waste it and the account has to be logged in again.
+ */
+export async function mintRefreshToken(token = blerpJwt()): Promise<string | null> {
+  if (!token) return null;
+  try {
+    const d = await gql<{ web: { completeLogin: { accessToken?: string; refreshToken?: string } | null } }>(
+      'mutation{web{completeLogin{accessToken refreshToken}}}', {}, token
+    );
+    const out = d.web.completeLogin;
+    if (!out?.refreshToken) return null;
+    // Save before returning: a caller that logs instead of storing would burn
+    // the single use for nothing.
+    writeSession({ ...readSession(), jwt: out.accessToken || token, refreshToken: out.refreshToken });
+    return out.refreshToken;
+  } catch {
+    // "Already completed login" lands here; the stored token, if any, still works.
+    return null;
+  }
+}
+
+/**
  * Spend the stored refresh token for a new JWT. Blerp rotates the refresh
  * token on every use, so the replacement is saved or the chain breaks.
  *
@@ -241,6 +275,11 @@ export async function signIn(): Promise<string | null> {
  */
 export async function usableJwt(): Promise<string | null> {
   const current = blerpJwt();
+  // A live JWT with no refresh token is one login away from being stranded:
+  // seed the chain now, while there is still a session to seed it from.
+  if (current && jwtIsLive(current) && !(readSession().refreshToken || '').trim()) {
+    await mintRefreshToken(current);
+  }
   // Renew a little before the deadline: a token that dies mid-command reads to
   // chat as a broken feature, and renewing early costs one extra call a month.
   if (current && jwtIsLive(current) && !expiringWithin(RENEW_AHEAD_MS, current)) return current;
