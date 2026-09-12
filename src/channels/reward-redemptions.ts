@@ -38,6 +38,20 @@ const RECENT_CHAT_WINDOW_MS = 30 * 60 * 1000;
 /** How much of the channel log to scan for recent chat. 30 minutes of a busy chat is a few hundred KB. */
 const CHAT_LOG_TAIL_BYTES = 4 * 1024 * 1024;
 
+/**
+ * How often to check Kick for redemptions whose webhook never arrived.
+ *
+ * On 2026-09-12 Cyturn's "Timeout someone 120 seconds" sat pending for an hour:
+ * follows and chat either side of it were delivered, that one redemption never
+ * was, so the bot neither timed anyone out nor refunded, and 10,000 points were
+ * stuck until it was rejected by hand.
+ */
+const RECONCILE_MS = 2 * 60 * 1000;
+/** Past this age a missed redemption is refunded instead of carried out — the moment has passed. */
+const RECONCILE_ACT_MAX_MS = 10 * 60 * 1000;
+/** Redeemer names resolved by id, so a busy queue doesn't re-ask Kick for each one. */
+const NAME_CACHE_LIMIT = 500;
+
 /** What one redemption did, or why it didn't. A failure is refunded. */
 type Outcome =
   | { ok: true; announce: string; log: string }
@@ -62,6 +76,10 @@ export class RewardRedemptionHandler {
   private seen: string[] = [];
   private started = false;
   private scopeGapNotified = false;
+  private reconcileTimer: NodeJS.Timeout | null = null;
+  private reconciling = false;
+  private reconcileErrorNotified = false;
+  private nameCache = new Map<number, string>();
 
   constructor(deps: RewardHandlerDeps) {
     this.deps = deps;
@@ -71,11 +89,22 @@ export class RewardRedemptionHandler {
     if (this.started) return;
     this.started = true;
     void this.preflightScopes();
+    if (!this.reconcileTimer) {
+      this.reconcileTimer = setInterval(() => {
+        this.reconcilePending().catch(err =>
+          console.error(`[REWARD] Reconcile failed: ${err instanceof Error ? err.message : String(err)}`));
+      }, RECONCILE_MS);
+      this.reconcileTimer.unref();
+    }
   }
 
-  /** Nothing to tear down here — pending unbans belong to the moderator. */
+  /** Pending unbans belong to the moderator; only the reconcile loop is ours. */
   stop(): void {
     this.started = false;
+    if (this.reconcileTimer) {
+      clearInterval(this.reconcileTimer);
+      this.reconcileTimer = null;
+    }
   }
 
   /** Give up a claim whose checks then failed, so a later event for the redemption can still act. */
@@ -384,6 +413,115 @@ export class RewardRedemptionHandler {
     }
   }
 
+  /**
+   * Handle redemptions Kick never sent a webhook for.
+   *
+   * Kick's pending queue is the backstop: anything matching a configured action
+   * that this process has not already seen is carried out when it is still
+   * recent, and refunded when it is not. Redemptions for rewards with no action
+   * are left alone — they are the streamer's to resolve.
+   */
+  private async reconcilePending(): Promise<void> {
+    if (this.reconciling || !this.started) return;
+    if (this.currentActions().length === 0) return;
+    this.reconciling = true;
+    try {
+      const { token, isChannelToken } = await this.deps.getToken().catch(() => ({ token: '', isChannelToken: false }));
+      if (!isChannelToken || !token) return;
+
+      let pending: PendingRedemption[];
+      try {
+        const res = await axios.get(`${API}/channels/rewards/redemptions`, {
+          headers: { Authorization: `Bearer ${token}` },
+          params: { status: 'pending' },
+          timeout: 15_000
+        });
+        pending = pendingRedemptionsFromApi(res.data);
+        this.reconcileErrorNotified = false;
+      } catch (err) {
+        // Every two minutes forever: say it once, then again only after a success.
+        if (!this.reconcileErrorNotified) {
+          this.reconcileErrorNotified = true;
+          const detail = axios.isAxiosError(err)
+            ? `${err.response?.status ?? ''} ${JSON.stringify(err.response?.data ?? err.message)}`
+            : (err instanceof Error ? err.message : String(err));
+          console.error(`[REWARD] Could not list ${this.deps.channelName}'s pending redemptions: ${detail}`);
+        }
+        return;
+      }
+
+      for (const row of pending) {
+        if (this.seen.includes(row.id)) continue;
+        const action = this.matchAction({ id: row.rewardId, title: row.rewardTitle });
+        if (!action) continue;
+
+        const username = await this.usernameFor(row.redeemerId, token);
+        if (pendingVerdict(row.redeemedAt, Date.now(), RECONCILE_ACT_MAX_MS) === 'act') {
+          // Acting on "someone" would aim a shield or a roulette backfire at nobody;
+          // leave it pending and try again on the next pass instead.
+          if (!username) continue;
+          console.log(`[REWARD] Reconcile: "${row.rewardTitle}" by ${username} arrived with no webhook — handling it now.`);
+          await this.handle({
+            id: row.id,
+            user_input: row.userInput,
+            status: 'pending',
+            redeemed_at: row.redeemedAt ?? undefined,
+            reward: { id: row.rewardId, title: row.rewardTitle, cost: row.rewardCost },
+            redeemer: { user_id: row.redeemerId, username },
+            // Never read by the handler; the real webhook carries the channel here.
+            broadcaster: { user_id: 0, username: this.deps.channelName }
+          });
+          continue;
+        }
+
+        this.seen.push(row.id);
+        if (this.seen.length > SEEN_LIMIT) this.seen.shift();
+        const refunded = await this.resolve(row.id, false);
+        console.log(
+          `[REWARD] Reconcile: "${row.rewardTitle}" by ${username ?? row.redeemerId} was never delivered and is too old to act on ` +
+          `(redeemed ${row.redeemedAt ?? 'at an unknown time'}) — ${refunded ? 'points refunded' : 'REFUND FAILED, resolve it by hand'}.`
+        );
+        if (!refunded) {
+          this.release(row.id);
+        } else if (username && action.announce !== false) {
+          await this.deps.sendMessage(
+            `@${username} your "${row.rewardTitle}" never reached the bot, so nobody was timed out — your points have been refunded.`
+          ).catch(() => {});
+        }
+      }
+    } finally {
+      this.reconciling = false;
+    }
+  }
+
+  /** Kick's pending list carries the redeemer's id but no name, and the handler needs the name. */
+  private async usernameFor(userId: number, token: string): Promise<string | null> {
+    if (!userId) return null;
+    const cached = this.nameCache.get(userId);
+    if (cached) return cached;
+    try {
+      const res = await axios.get(`${API}/users`, {
+        headers: { Authorization: `Bearer ${token}` },
+        params: { id: userId },
+        timeout: 15_000
+      });
+      const rows = (res.data as { data?: Array<Record<string, unknown>> })?.data ?? [];
+      const first = rows[0] ?? {};
+      const name = typeof first['name'] === 'string' && first['name']
+        ? first['name']
+        : (typeof first['username'] === 'string' ? first['username'] : '');
+      if (!name) return null;
+      this.nameCache.set(userId, name);
+      if (this.nameCache.size > NAME_CACHE_LIMIT) {
+        const oldest = this.nameCache.keys().next().value;
+        if (oldest !== undefined) this.nameCache.delete(oldest);
+      }
+      return name;
+    } catch {
+      return null;
+    }
+  }
+
   /** Accept (fulfil) or reject (refund) the queued redemption. Returns success. */
   private async resolve(redemptionId: string, accept: boolean): Promise<boolean> {
     try {
@@ -420,6 +558,65 @@ export function parseTargetUsername(userInput: string | undefined): string | nul
     .replace(/[^A-Za-z0-9_]+$/, '');
   // Kick usernames: letters, digits and underscores.
   return /^[A-Za-z0-9_]{2,25}$/.test(cleaned) ? cleaned : null;
+}
+
+/** One redemption sitting in Kick's pending queue. */
+export interface PendingRedemption {
+  id: string;
+  rewardId: string;
+  rewardTitle: string;
+  rewardCost?: number;
+  userInput: string;
+  redeemerId: number;
+  redeemedAt: string | null;
+}
+
+/**
+ * Rows out of `GET /channels/rewards/redemptions?status=pending`, which nests
+ * redemptions under their reward rather than repeating the webhook's shape.
+ * Anything unrecognisable is dropped rather than guessed at.
+ */
+export function pendingRedemptionsFromApi(payload: unknown): PendingRedemption[] {
+  const groups = (payload as { data?: unknown } | null)?.data;
+  if (!Array.isArray(groups)) return [];
+  const out: PendingRedemption[] = [];
+  for (const g of groups) {
+    const reward = (g as { reward?: Record<string, unknown> } | null)?.reward ?? {};
+    const rewardId = typeof reward['id'] === 'string' ? reward['id'] : '';
+    const rewardTitle = typeof reward['title'] === 'string' ? reward['title'] : '';
+    if (!rewardId && !rewardTitle) continue;
+    const rows = (g as { redemptions?: unknown }).redemptions;
+    if (!Array.isArray(rows)) continue;
+    for (const r of rows) {
+      const row = (r ?? {}) as Record<string, unknown>;
+      if (typeof row['id'] !== 'string' || !row['id']) continue;
+      if (typeof row['status'] === 'string' && row['status'].toLowerCase() !== 'pending') continue;
+      const redeemer = (row['redeemer'] ?? {}) as Record<string, unknown>;
+      const redeemerId = Number(redeemer['user_id']);
+      out.push({
+        id: row['id'],
+        rewardId,
+        rewardTitle,
+        rewardCost: typeof reward['cost'] === 'number' ? reward['cost'] : undefined,
+        userInput: typeof row['user_input'] === 'string' ? row['user_input'] : '',
+        redeemerId: Number.isInteger(redeemerId) && redeemerId > 0 ? redeemerId : 0,
+        redeemedAt: typeof row['redeemed_at'] === 'string' ? row['redeemed_at'] : null
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * Whether a redemption the bot never saw is still worth carrying out.
+ *
+ * A missing or unreadable timestamp counts as too old: a refund costs the
+ * viewer nothing, while a timeout fired blind lands on a third party.
+ */
+export function pendingVerdict(redeemedAt: string | null, now: number, maxAgeMs: number): 'act' | 'refund' {
+  const at = redeemedAt ? Date.parse(redeemedAt) : NaN;
+  if (!Number.isFinite(at)) return 'refund';
+  return now - at <= maxAgeMs ? 'act' : 'refund';
 }
 
 function sameUser(a: string, b: string): boolean {
