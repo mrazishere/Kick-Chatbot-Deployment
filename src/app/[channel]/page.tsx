@@ -1,6 +1,7 @@
 import { getSession, isAdmin } from "@/lib/session";
 import { channelHasData } from "@/lib/kpp-data";
 import { getChannel, channelsReachableBy } from "@/lib/bot-api";
+import { fetchChannelInfo, fetchUserAvatar } from "@/lib/kick-api";
 import { notFound, redirect } from "next/navigation";
 import Dashboard from "@/components/Dashboard";
 
@@ -48,11 +49,21 @@ export default async function ChannelPage({
     // Navigation aid only.
   }
 
+  // The channel's own photo for the header — not the signed-in user's.
+  let channelAvatarUrl: string | null = null;
+  try {
+    const info = await fetchChannelInfo(slug);
+    if (info?.broadcasterUserId) channelAvatarUrl = await fetchUserAvatar(info.broadcasterUserId);
+  } catch {
+    // Decoration only.
+  }
+
   return (
     <Dashboard
       channel={slug}
       username={session.username}
       avatarUrl={session.avatarUrl}
+      channelAvatarUrl={channelAvatarUrl}
       isAdmin={admin}
       isOwner={isOwner}
       isLoggedIn={true}

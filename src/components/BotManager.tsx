@@ -336,13 +336,15 @@ function StatusPill({ status }: { status: string }) {
 /* ------------------------------------------------------------------- main UI */
 
 export default function BotManager({
-  channel, username, avatarUrl, isAdmin, role, canAdminister,
+  channel, username, avatarUrl, channelAvatarUrl, isAdmin, role, canAdminister,
   initialBot, availableCommands, initialManagers, managerSuggestions, managersError, switcher,
   isLive, viewerCount, loadError, initialCustomCommands, customCommandsError,
 }: {
   channel: string;
   username: string;
   avatarUrl: string | null;
+  /** The channel's own photo, for the header. */
+  channelAvatarUrl: string | null;
   isAdmin: boolean;
   role: "owner" | "admin" | "manager";
   /** Owner/admin only: remove, stop, re-authorize, and edit the manager list. */
@@ -993,6 +995,7 @@ export default function BotManager({
         channel={channel}
         username={username}
         avatarUrl={avatarUrl}
+        channelAvatarUrl={channelAvatarUrl}
         isAdmin={isAdmin}
         current="bot"
         switcher={switcher}

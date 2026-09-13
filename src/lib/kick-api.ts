@@ -130,6 +130,25 @@ export async function fetchChannelInfo(slug: string): Promise<KickChannelInfo | 
   }
 }
 
+// ─── Profile photos ───────────────────────────────────────────────────────────
+
+/**
+ * A Kick user's profile photo. Kick answers a user with no photo of their own with
+ * its default avatar URL rather than nothing, so null only means the lookup failed.
+ */
+export async function fetchUserAvatar(userId: number): Promise<string | null> {
+  try {
+    // An hour: photos rarely change, and the header asks on every page load.
+    const res = await kickGet(`${API_BASE}/users?id=${encodeURIComponent(String(userId))}`, 3600);
+    if (!res.ok) return null;
+    const body = (await res.json()) as { data?: Array<{ user_id?: number; profile_picture?: string | null }> };
+    const user = body.data?.find((u) => u.user_id === userId) ?? body.data?.[0];
+    return user?.profile_picture || null;
+  } catch {
+    return null;
+  }
+}
+
 // ─── VOD scrape from the videos page HTML ────────────────────────────────────
 // Kick's /videos page is Next.js — video data lives in <script id="__NEXT_DATA__">.
 // This works server-side as long as Cloudflare doesn't challenge the request.

@@ -684,6 +684,7 @@ export default function Dashboard({
   channel,
   username,
   avatarUrl,
+  channelAvatarUrl,
   isAdmin = false,
   isOwner = false,
   isLoggedIn = false,
@@ -693,6 +694,7 @@ export default function Dashboard({
   channel: string;        // the channel whose data is displayed
   username: string | null;
   avatarUrl?: string;
+  channelAvatarUrl?: string | null;
   isAdmin?: boolean;
   isOwner?: boolean;      // logged-in user owns this channel (can edit payouts)
   isLoggedIn?: boolean;
@@ -837,6 +839,7 @@ export default function Dashboard({
         channel={activeChannel}
         username={username}
         avatarUrl={avatarUrl}
+        channelAvatarUrl={channelAvatarUrl}
         isAdmin={isAdmin}
         current="earnings"
         switcher={switcher}

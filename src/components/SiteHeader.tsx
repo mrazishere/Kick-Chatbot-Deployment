@@ -14,6 +14,7 @@ export default function SiteHeader({
   channel,
   username,
   avatarUrl,
+  channelAvatarUrl,
   isAdmin,
   current,
   title,
@@ -32,7 +33,14 @@ export default function SiteHeader({
   showEarnings?: boolean;
   channel: string;
   username: string | null;
+  /** The signed-in user's photo. Shown beside their name, never the channel's. */
   avatarUrl?: string | null;
+  /**
+   * The channel's own photo, shown beside the channel name. It used to be the
+   * signed-in user's photo there, so an admin viewing another channel saw their
+   * own face next to that channel's name.
+   */
+  channelAvatarUrl?: string | null;
   isAdmin: boolean;
   /** Which page is showing, so its own nav entry renders as the active one. */
   current: "bot" | "earnings" | "channels" | "leaderboard";
@@ -78,9 +86,9 @@ export default function SiteHeader({
     <header className="border-b border-neutral-800 bg-neutral-950/80 backdrop-blur">
       <div className="mx-auto flex max-w-6xl flex-wrap items-center justify-between gap-3 px-4 py-3 sm:px-6 sm:py-4">
         <div className="flex min-w-0 items-center gap-3">
-          {avatarUrl ? (
+          {channelAvatarUrl && !title ? (
             // eslint-disable-next-line @next/next/no-img-element
-            <img src={avatarUrl} alt="" className="h-8 w-8 shrink-0 rounded-full" />
+            <img src={channelAvatarUrl} alt={channel} className="h-8 w-8 shrink-0 rounded-full" />
           ) : null}
           <span className="truncate font-semibold text-[#53FC18]">{title ?? channel}</span>
           {status}
@@ -111,7 +119,13 @@ export default function SiteHeader({
           <span className="hidden text-neutral-700 sm:inline">|</span>
 
           {username ? (
-            <span className="hidden text-sm text-neutral-500 sm:inline">{username}</span>
+            <span className="flex items-center gap-2" title={`Signed in as ${username}`}>
+              {avatarUrl ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img src={avatarUrl} alt="" className="h-6 w-6 shrink-0 rounded-full" />
+              ) : null}
+              <span className="hidden text-sm text-neutral-500 sm:inline">{username}</span>
+            </span>
           ) : null}
 
           <form action={`${BASE_PATH}/api/auth/logout`} method="POST">

@@ -1,7 +1,7 @@
 import { getSession, isAdmin } from "@/lib/session";
 import { getChannel, listChannels, getManagers, syncManagers, channelsReachableBy, getCustomCommands, BotApiError, type BotChannel, type CustomCommand } from "@/lib/bot-api";
 import { authorizeChannel, validChannel, visibleTo } from "@/lib/bot-auth";
-import { fetchChannelInfo } from "@/lib/kick-api";
+import { fetchChannelInfo, fetchUserAvatar } from "@/lib/kick-api";
 import { notFound, redirect } from "next/navigation";
 import BotManager from "@/components/BotManager";
 
@@ -95,10 +95,13 @@ export default async function BotPage({
   // up, which is what the header used to show (and was therefore always green).
   let isLive = false;
   let viewerCount = 0;
+  let channelAvatarUrl: string | null = null;
   try {
     const info = await fetchChannelInfo(slug);
     isLive = info?.isLive ?? false;
     viewerCount = info?.viewerCount ?? 0;
+    const broadcasterUserId = info?.broadcasterUserId ?? bot?.broadcasterUserId ?? null;
+    if (broadcasterUserId) channelAvatarUrl = await fetchUserAvatar(broadcasterUserId);
   } catch {
     // Kick being unreachable shouldn't stop the page rendering.
   }
@@ -108,6 +111,7 @@ export default async function BotPage({
       channel={slug}
       username={session.username}
       avatarUrl={session.avatarUrl ?? null}
+      channelAvatarUrl={channelAvatarUrl}
       isAdmin={admin}
       role={role}
       canAdminister={canAdminister}
