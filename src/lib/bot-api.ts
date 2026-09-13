@@ -109,7 +109,6 @@ export interface PointsTimeoutPenalty {
   pointsPerSecond: number;
   /** 0 means no cap. */
   maxDeduction: number;
-  includeBotTimeouts: boolean;
   /** Flat cost of a permanent ban, which has no duration. 0 ignores them. */
   permanentBanCost: number;
   announce: boolean;

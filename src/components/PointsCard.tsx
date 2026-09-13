@@ -32,7 +32,6 @@ export interface PointsTimeoutPenalty {
   pointsPerSecond: number;
   /** 0 means no cap. */
   maxDeduction: number;
-  includeBotTimeouts: boolean;
   /** Flat cost of a permanent ban, which has no duration. 0 ignores them. */
   permanentBanCost: number;
   announce: boolean;
@@ -130,7 +129,6 @@ interface SettingsForm {
   penaltyEnabled: boolean;
   penaltyPerSecond: string;
   penaltyMax: string;
-  penaltyIncludeBot: boolean;
   penaltyPermanentBan: string;
   penaltyAnnounce: boolean;
 }
@@ -162,7 +160,6 @@ function formFromConfig(c: PointsConfig): SettingsForm {
     penaltyEnabled: c.timeoutPenalty.enabled,
     penaltyPerSecond: String(c.timeoutPenalty.pointsPerSecond),
     penaltyMax: String(c.timeoutPenalty.maxDeduction),
-    penaltyIncludeBot: c.timeoutPenalty.includeBotTimeouts,
     penaltyPermanentBan: String(c.timeoutPenalty.permanentBanCost),
     penaltyAnnounce: c.timeoutPenalty.announce,
   };
@@ -258,7 +255,6 @@ function buildPatch(f: SettingsForm): { patch: PointsSettingsPatch } | { error: 
       enabled: f.penaltyEnabled,
       pointsPerSecond: decimal(f.penaltyPerSecond, "Cost per second", 0, 10_000),
       maxDeduction: whole(f.penaltyMax, "Maximum deduction", 0, 1_000_000_000),
-      includeBotTimeouts: f.penaltyIncludeBot,
       permanentBanCost: whole(f.penaltyPermanentBan, "Permanent ban cost", 0, 1_000_000_000),
       announce: f.penaltyAnnounce,
     },
@@ -800,20 +796,9 @@ export default function PointsCard({
                     disabled={readOnly || !!busy}
                     onChange={(v) => set("penaltyAnnounce", v)}
                   />
-                  <Checkbox
-                    label="Also charge for timeouts from reward redemptions"
-                    checked={form.penaltyIncludeBot}
-                    disabled={readOnly || !!busy}
-                    onChange={(v) => set("penaltyIncludeBot", v)}
-                  />
-                  {form.penaltyIncludeBot ? (
-                    <p className="text-xs text-amber-500/80">
-                      A roulette or timeout reward already costs the redeemer points. With this
-                      on they pay twice for one redemption.
-                    </p>
-                  ) : null}
                 </div>
                 <p className="mt-3 text-xs text-neutral-500">
+                  Every timeout counts, whether a moderator, the streamer or a reward gave it.
                   A viewer never goes below zero — someone with less than the penalty loses what
                   they have. Anyone excluded from earning is excluded from being charged.
                 </p>
