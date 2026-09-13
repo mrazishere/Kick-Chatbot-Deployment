@@ -642,33 +642,33 @@ async function main(): Promise<void> {
     });
 
     runWrite(db, () => creditTx(db, { userId: 101, username: 'richguy', amount: 5000, reason: 'test', now: Date.now() }));
-    svc.onBan(ban(101, 'richguy', 120, '2026-09-13T00:00:00.000Z'), false);
+    svc.onBan(ban(101, 'richguy', 120, '2026-09-13T00:00:00.000Z'));
     check('a 120s timeout costs 120 at 1/second', balance(ch, 101) === 4880, balance(ch, 101));
     check('the deduction is announced once', sent.filter(m => m.includes('richguy')).length === 1, sent);
 
     // The same webhook again: Kick re-delivers, and the bot replays its queue.
-    svc.onBan(ban(101, 'richguy', 120, '2026-09-13T00:00:00.000Z'), false);
+    svc.onBan(ban(101, 'richguy', 120, '2026-09-13T00:00:00.000Z'));
     check('the same ban event charges only once', balance(ch, 101) === 4880, balance(ch, 101));
 
     // A second, different timeout on the same viewer must still charge.
-    svc.onBan(ban(101, 'richguy', 60, '2026-09-13T00:05:00.000Z'), false);
+    svc.onBan(ban(101, 'richguy', 60, '2026-09-13T00:05:00.000Z'));
     check('a later timeout on the same viewer charges again', balance(ch, 101) === 4820, balance(ch, 101));
 
     runWrite(db, () => creditTx(db, { userId: 102, username: 'brokeguy', amount: 40, reason: 'test', now: Date.now() }));
-    svc.onBan(ban(102, 'brokeguy', 600, '2026-09-13T00:00:00.000Z'), false);
+    svc.onBan(ban(102, 'brokeguy', 600, '2026-09-13T00:00:00.000Z'));
     check('a penalty larger than the balance takes what is there, never negative', balance(ch, 102) === 0, balance(ch, 102));
 
     runWrite(db, () => creditTx(db, { userId: 103, username: 'rouletteguy', amount: 1000, reason: 'test', now: Date.now() }));
-    svc.onBan(ban(103, 'rouletteguy', 120, '2026-09-13T00:00:00.000Z'), true);
-    check('a timeout the bot issued is not charged by default', balance(ch, 103) === 1000, balance(ch, 103));
+    svc.onBan({ ...ban(103, 'rouletteguy', 120, '2026-09-13T00:00:00.000Z'), moderator: { user_id: 83432826, username: 'MrAIisHere' } });
+    check('a reward timeout issued by the bot is charged like any other', balance(ch, 103) === 880, balance(ch, 103));
 
     runWrite(db, () => creditTx(db, { userId: 104, username: 'permaguy', amount: 800, reason: 'test', now: Date.now() }));
-    svc.onBan(ban(104, 'permaguy', null, '2026-09-13T00:00:00.000Z'), false);
+    svc.onBan(ban(104, 'permaguy', null, '2026-09-13T00:00:00.000Z'));
     check('a permanent ban costs nothing while permanentBanCost is 0', balance(ch, 104) === 800, balance(ch, 104));
 
     // The broadcaster is excluded from earning, so they are excluded from losing.
     runWrite(db, () => creditTx(db, { userId: 999, username: ch, amount: 500, reason: 'test', now: Date.now() }));
-    svc.onBan(ban(999, ch, 120, '2026-09-13T00:00:00.000Z'), false);
+    svc.onBan(ban(999, ch, 120, '2026-09-13T00:00:00.000Z'));
     check('an excluded user is not charged', balance(ch, 999) === 500, balance(ch, 999));
 
     // Rate and cap.
@@ -678,14 +678,14 @@ async function main(): Promise<void> {
     });
     const svc2 = makeService(ch, { broadcaster: 999, sent });
     runWrite(db, () => creditTx(db, { userId: 105, username: 'cappedguy', amount: 5000, reason: 'test', now: Date.now() }));
-    svc2.onBan(ban(105, 'cappedguy', 300, '2026-09-13T00:00:00.000Z'), false);
+    svc2.onBan(ban(105, 'cappedguy', 300, '2026-09-13T00:00:00.000Z'));
     check('maxDeduction caps a long timeout', balance(ch, 105) === 4900, balance(ch, 105));
 
     // Off by default.
     writeConfig(root, ch, { enabled: true, currencyName: '$DON' });
     const svc3 = makeService(ch, { broadcaster: 999 });
     runWrite(db, () => creditTx(db, { userId: 106, username: 'safeguy', amount: 300, reason: 'test', now: Date.now() }));
-    svc3.onBan(ban(106, 'safeguy', 120, '2026-09-13T00:00:00.000Z'), false);
+    svc3.onBan(ban(106, 'safeguy', 120, '2026-09-13T00:00:00.000Z'));
     check('no penalty when timeoutPenalty is off', balance(ch, 106) === 300, balance(ch, 106));
   }
 

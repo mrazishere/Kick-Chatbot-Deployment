@@ -143,10 +143,8 @@ class KickChatBot {
         });
       },
       ban: (event) => {
-        // noteBan decides whether this was the bot's own timeout, which is what
-        // keeps a reward timeout from being charged on top of the points it cost.
-        const mine = this.moderator.noteBan(event);
-        this.points.onBan(event, mine);
+        this.moderator.noteBan(event);
+        this.points.onBan(event);
       },
       follow: (event, meta) => { this.points.onFollow(event, meta); },
       subscriptionNew: (event, meta) => { this.points.onSubscriptionNew(event, meta); },

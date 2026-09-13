@@ -205,13 +205,9 @@ export class PointsService {
     }
   }
 
-  /**
-   * Charge the banned viewer for a timeout. `issuedByBot` comes from
-   * ChannelModerator.noteBan, which is the only reliable way to tell the bot's
-   * own reward timeouts from a moderator's.
-   */
-  onBan(e: ModerationBannedEvent, issuedByBot: boolean): penalties.PenaltyOutcome | undefined {
-    return this.guard('timeout penalty', () => penalties.onBan(this.bonusContext(), e, issuedByBot));
+  /** Charge the banned viewer for a timeout, whoever issued it. */
+  onBan(e: ModerationBannedEvent): penalties.PenaltyOutcome | undefined {
+    return this.guard('timeout penalty', () => penalties.onBan(this.bonusContext(), e));
   }
 
   onFollow(e: FollowEvent, meta: QueueMeta): bonuses.BonusOutcome | undefined {

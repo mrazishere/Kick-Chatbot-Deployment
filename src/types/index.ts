@@ -183,12 +183,6 @@ export interface PointsTimeoutPenaltyConfig {
   pointsPerSecond: number;
   /** Never take more than this in one timeout. 0 means no cap. */
   maxDeduction: number;
-  /**
-   * Also charge for timeouts the bot issued itself from reward redemptions.
-   * Off by default: a roulette already cost the redeemer points, and charging
-   * again bills them twice for one event.
-   */
-  includeBotTimeouts: boolean;
   /** Flat cost of a permanent ban, which has no duration. 0 ignores them. */
   permanentBanCost: number;
   /** Say in chat what was deducted. */

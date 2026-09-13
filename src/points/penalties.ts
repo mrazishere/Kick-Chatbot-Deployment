@@ -12,9 +12,9 @@
  *     so every charge is claimed through store.applyOnce under a key built from
  *     the ban itself. A viewer is charged once per timeout however many times
  *     the event arrives.
- *   - The bot's own reward timeouts are skipped unless includeBotTimeouts is
- *     on. A roulette already cost the redeemer points; charging again bills
- *     them twice for the same event, and a backfire twice over.
+ *   - Every timeout counts, whoever issued it: a moderator's, the streamer's,
+ *     or the bot's own from a reward. Rewards spend Kick channel points, a
+ *     separate currency from these, so a reward timeout is not a double charge.
  *   - A balance is never driven negative. Someone with 40 points who earns a
  *     120 point timeout loses the 40 they have, and the rest is not carried.
  */
@@ -53,13 +53,7 @@ export function timeoutSeconds(event: ModerationBannedEvent, now: number): numbe
  */
 export function onBan(
   ctx: BonusContext,
-  event: ModerationBannedEvent,
-  /**
-   * Whether the bot issued this ban itself, as decided by ChannelModerator —
-   * the moderator name cannot answer it, since a reward timeout goes out under
-   * the broadcaster's name when the bot's own token lacks moderation:ban.
-   */
-  issuedByBot: boolean
+  event: ModerationBannedEvent
 ): PenaltyOutcome {
   const { cfg, broadcasterUserId } = ctx.config();
   const pen = cfg.timeoutPenalty;
@@ -70,9 +64,6 @@ export function onBan(
   const userId = victim?.user_id;
   if (typeof userId !== 'number' || !Number.isFinite(userId) || userId <= 0) {
     return { status: 'skipped', detail: 'no banned user id' };
-  }
-  if (!pen.includeBotTimeouts && issuedByBot) {
-    return { status: 'skipped', detail: 'the bot issued this one' };
   }
 
   const now = ctx.now();

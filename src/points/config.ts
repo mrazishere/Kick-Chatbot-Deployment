@@ -39,7 +39,6 @@ export function defaultPointsConfig(): PointsConfig {
       enabled: false,
       pointsPerSecond: 1,
       maxDeduction: 0,
-      includeBotTimeouts: false,
       permanentBanCost: 0,
       announce: true
     }
@@ -131,7 +130,6 @@ export function internalPointsConfig(raw: unknown): InternalPointsConfig {
     // Fractional rates are allowed: 0.5/second halves the cost of long timeouts.
     pointsPerSecond: num(tp.pointsPerSecond, d.timeoutPenalty.pointsPerSecond, 0, 10_000, false),
     maxDeduction: num(tp.maxDeduction, d.timeoutPenalty.maxDeduction, 0, 1_000_000_000, true),
-    includeBotTimeouts: bool(tp.includeBotTimeouts, d.timeoutPenalty.includeBotTimeouts),
     permanentBanCost: num(tp.permanentBanCost, d.timeoutPenalty.permanentBanCost, 0, 1_000_000_000, true),
     announce: bool(tp.announce, d.timeoutPenalty.announce)
   };
@@ -300,7 +298,7 @@ export function validatePointsPatch(current: unknown, patch: unknown): { next?: 
         const v = checkNumber(`timeoutPenalty.${key}`, t[key], rule, errors);
         if (v !== undefined) (next.timeoutPenalty as Record<string, unknown>)[key] = v;
       }
-      for (const key of ['enabled', 'includeBotTimeouts', 'announce'] as const) {
+      for (const key of ['enabled', 'announce'] as const) {
         if (t[key] === undefined) continue;
         if (typeof t[key] !== 'boolean') errors.push(`timeoutPenalty.${key} must be true or false`);
         else next.timeoutPenalty![key] = t[key] as boolean;
