@@ -37,3 +37,6 @@ dist/
 *.tsbuildinfo
 graphify-out/
 ws-test.js
+
+# Internal planning notes, kept out of the public repo
+.planning/
