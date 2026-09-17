@@ -8,8 +8,9 @@
  * Permission required:
  *          !blerp: moderators and above (user, 2026-09-12)
  *
- * Usage:   !blerp            - suggest the last 30 seconds
- *          !blerp <title>    - same, with your own title
+ * Usage:   !blerp                - suggest the last 30 seconds
+ *          !blerp <title>        - same, with your own title
+ *          !blerp 11s [title]    - the last 11 seconds instead (5–30s; Blerp's cap is 30)
  *
  * Nothing here plays on stream by itself. The suggestion sits as PENDING until
  * the streamer approves it in their own Blerp dashboard, so the worst a bad
@@ -27,9 +28,12 @@
  */
 
 import { CommandFn } from '../types';
-import { clipLiveStream, cleanTitle as cleanClipTitle, currentLivestream, fallbackTitle, sessionToken, DEFAULT_CLIP_SECONDS } from '../channels/kick-clips';
+import { clipLiveStream, cleanTitle as cleanClipTitle, currentLivestream, fallbackTitle, sessionToken } from '../channels/kick-clips';
 import { checkClipSession, clipSessionHealthy } from '../channels/clip-session';
-import { usableJwt, createBlerpFromUrl, suggestToStreamer, removeBlerp, cleanTitle, blerpErrorDetail } from '../channels/blerp';
+import {
+  usableJwt, createBlerpFromUrl, suggestToStreamer, removeBlerp, cleanTitle, blerpErrorDetail,
+  parseBlerpArgs, MIN_BLERP_SECONDS, MAX_BLERP_SECONDS
+} from '../channels/blerp';
 import { checkBlerpSession, startBlerpSessionWatchdog } from '../channels/blerp-session';
 
 // Loaded once per bot: renew the Blerp login long before a mod runs into a
@@ -64,6 +68,10 @@ export const blerp: CommandFn = async function blerp(client, message, channel, t
   const isOwner = !!process.env.KICK_OWNER && me.toLowerCase() === process.env.KICK_OWNER.toLowerCase();
   if (!tags.isModUp && !isOwner) return;
 
+  // Checked before any cooldown, so a typo doesn't cost the five-minute wait.
+  const { seconds, title: typed } = parseBlerpArgs(words.slice(1));
+  if (seconds === null) return void say(`@${me} pick ${MIN_BLERP_SECONDS} to ${MAX_BLERP_SECONDS} seconds, like !blerp 11s`);
+
   const streamerId = typeof config.blerpStreamerId === 'string' ? config.blerpStreamerId.trim() : '';
   if (!streamerId) {
     console.error(`[BLERP] ${channelName} has no blerpStreamerId configured — command ignored.`);
@@ -96,9 +104,9 @@ export const blerp: CommandFn = async function blerp(client, message, channel, t
       return void say(`@${me} the bot can't reach Blerp right now`);
     }
 
-    const typed = words.slice(1).join(' ').trim();
     const clipTitle = typed ? cleanClipTitle(typed, live.sessionTitle) : fallbackTitle(live.sessionTitle, me);
-    const made = await clipLiveStream({ channelSlug: channelName, token, title: clipTitle, seconds: DEFAULT_CLIP_SECONDS });
+    // The end of Kick's buffer: `seconds` of what just happened, and the sound keeps all of it.
+    const made = await clipLiveStream({ channelSlug: channelName, token, title: clipTitle, seconds });
     console.log(`[BLERP] ${me} clipped ${made.durationSeconds}s of ${channelName}: ${made.id}`);
 
     const soundTitle = cleanTitle(typed, made.title);

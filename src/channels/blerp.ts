@@ -33,11 +33,27 @@
 import axios from 'axios';
 import * as fs from 'fs';
 import * as path from 'path';
+import { DEFAULT_CLIP_SECONDS } from './kick-clips';
 
 const API = 'https://api.blerp.com/graphql';
 const TIMEOUT_MS = 30_000;
 /** Blerp rejects anything longer; Kick's 30s clips land right on the edge. */
 export const MAX_BLERP_SECONDS = 30;
+/** Kick doesn't document its shortest clip, so !blerp stays at a safe 5s. */
+export const MIN_BLERP_SECONDS = 5;
+
+/**
+ * `!blerp [11s] [title]` after the trigger word: an optional length first, then
+ * the title. The `s` is required, so a title that starts with a number
+ * ("100 percent") stays a title. `seconds` is null when the length is outside
+ * 5–30; no length means Kick's default 30.
+ */
+export function parseBlerpArgs(words: string[]): { seconds: number | null; title: string } {
+  const m = /^(\d{1,3})s$/i.exec(words[0] ?? '');
+  if (!m) return { seconds: DEFAULT_CLIP_SECONDS, title: words.join(' ').trim() };
+  const n = Number(m[1]);
+  return { seconds: n >= MIN_BLERP_SECONDS && n <= MAX_BLERP_SECONDS ? n : null, title: words.slice(1).join(' ').trim() };
+}
 /** Their title field is generous but chat is not. */
 export const MAX_TITLE = 100;
 
