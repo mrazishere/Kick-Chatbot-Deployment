@@ -157,8 +157,8 @@ export interface CreditArgs {
 export function creditTx(db: PointsDb, a: CreditArgs): number {
   const amount = Math.max(0, Math.floor(a.amount));
   ensureUserTx(db, a.userId, a.username ?? null, a.now);
-  // A transfer moves points that were already earned once.
-  const earned = a.reason === 'give_in' ? 0 : amount;
+  // A transfer moves points that were already earned once, and game winnings are luck, not earnings.
+  const earned = a.reason === 'give_in' || a.reason.startsWith('game:') ? 0 : amount;
   db.prepare('UPDATE users SET balance = balance + ?, lifetime_earned = lifetime_earned + ? WHERE user_id = ?').run(amount, earned, a.userId);
   const balance = (db.prepare('SELECT balance FROM users WHERE user_id = ?').get(a.userId) as { balance: number }).balance;
   db.prepare('INSERT INTO ledger (ts, user_id, delta, balance_after, reason, ref, actor, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
@@ -238,6 +238,11 @@ export function applyOnce<T>(db: PointsDb, key: string, now: number, fn: () => T
   });
 }
 
+/** Whether applyOnce already ran for `key`, e.g. a chat message handled from the other source. */
+export function isApplied(db: PointsDb, key: string): boolean {
+  return !!db.prepare('SELECT 1 FROM applied WHERE key = ?').get(key);
+}
+
 /** Move points between viewers atomically. Fails without side effects when the sender is short. */
 export function transfer(
   db: PointsDb,
@@ -250,6 +255,155 @@ export function transfer(
     const toBalance = creditTx(db, { userId: a.toId, username: a.toName, amount: a.amount, reason: 'give_in', ref, actor: a.actor, now: a.now });
     return { ok: true, fromBalance: out.balance, toBalance, ref };
   });
+}
+
+/** Ledger reasons for the gamble game: every gamble writes a stake, and a win adds a payout. */
+export const GAMBLE_STAKE = 'game:gamble';
+export const GAMBLE_WIN = 'game:gamble_win';
+
+/**
+ * One even-money gamble, already rolled. The stake comes off with a conditional
+ * debit, so a short balance fails without side effects; a win pays the stake back
+ * doubled in the same transaction. Both rows share the ref.
+ */
+export function gamble(
+  db: PointsDb,
+  a: { userId: number; amount: number; win: boolean; actor: string; now: number }
+): { ok: boolean; balance: number; ref: string } {
+  const ref = `gamble:${crypto.randomUUID()}`;
+  return runWrite(db, () => {
+    const stake = debitTx(db, { userId: a.userId, amount: a.amount, reason: GAMBLE_STAKE, ref, actor: a.actor, now: a.now });
+    if (!stake.ok || !a.win) return { ok: stake.ok, balance: stake.balance, ref };
+    const balance = creditTx(db, { userId: a.userId, amount: a.amount * 2, reason: GAMBLE_WIN, ref, actor: a.actor, now: a.now });
+    return { ok: true, balance, ref };
+  });
+}
+
+/** Channel-wide gamble results. `net` is what viewers gained in total; negative means they lost. */
+export interface GambleStats {
+  gambles: number;
+  wins: number;
+  staked: number;
+  net: number;
+}
+
+export function gambleStats(db: PointsDb, sinceMs = 0): GambleStats {
+  return db.prepare(
+    `SELECT COALESCE(SUM(reason = ?), 0) AS gambles, COALESCE(SUM(reason = ?), 0) AS wins,
+       COALESCE(SUM(CASE WHEN reason = ? THEN -delta ELSE 0 END), 0) AS staked, COALESCE(SUM(delta), 0) AS net
+     FROM ledger WHERE reason IN (?, ?) AND ts >= ?`
+  ).get(GAMBLE_STAKE, GAMBLE_WIN, GAMBLE_STAKE, GAMBLE_STAKE, GAMBLE_WIN, sinceMs) as GambleStats;
+}
+
+/** Ledger reasons for duels. Every row of one duel has the duel id as its ref. */
+export const DUEL_HOLD = 'game:duel_hold';
+export const DUEL_STAKE = 'game:duel_stake';
+export const DUEL_WIN = 'game:duel_win';
+export const DUEL_REFUND = 'game:duel_refund';
+
+export interface DuelRow {
+  id: string;
+  challenger_id: number;
+  opponent_id: number;
+  amount: number;
+  created_at: number;
+  expires_at: number;
+  status: 'pending' | 'accepted' | 'denied' | 'cancelled' | 'expired';
+  winner_id: number | null;
+  resolved_at: number | null;
+}
+
+/** The challenger's pending duel, if any. There is at most one. */
+export function outgoingDuel(db: PointsDb, challengerId: number): DuelRow | undefined {
+  return db.prepare("SELECT * FROM duels WHERE challenger_id = ? AND status = 'pending'").get(challengerId) as DuelRow | undefined;
+}
+
+/** Pending duels waiting on this viewer, oldest first. */
+export function incomingDuels(db: PointsDb, opponentId: number): DuelRow[] {
+  return db.prepare("SELECT * FROM duels WHERE opponent_id = ? AND status = 'pending' ORDER BY created_at, rowid").all(opponentId) as DuelRow[];
+}
+
+/** Pending duels whose time to answer has run out. */
+export function expiredDuels(db: PointsDb, now: number): DuelRow[] {
+  return db.prepare("SELECT * FROM duels WHERE status = 'pending' AND expires_at <= ? ORDER BY expires_at").all(now) as DuelRow[];
+}
+
+export type CreateDuelResult =
+  | { ok: true; duel: DuelRow }
+  | { ok: false; reason: 'pending'; pending: DuelRow }
+  | { ok: false; reason: 'short'; balance: number };
+
+/**
+ * A challenge: hold the challenger's stake and record the duel in one transaction.
+ * Fails without side effects when they already have a pending duel or can't cover
+ * the stake.
+ */
+export function createDuel(
+  db: PointsDb,
+  a: { challengerId: number; opponentId: number; amount: number; expiresAt: number; actor: string; now: number }
+): CreateDuelResult {
+  return runWrite<CreateDuelResult>(db, () => {
+    const pending = outgoingDuel(db, a.challengerId);
+    if (pending) return { ok: false, reason: 'pending', pending };
+    const id = `duel:${crypto.randomUUID()}`;
+    const hold = debitTx(db, { userId: a.challengerId, amount: a.amount, reason: DUEL_HOLD, ref: id, actor: a.actor, now: a.now });
+    if (!hold.ok) return { ok: false, reason: 'short', balance: hold.balance };
+    db.prepare("INSERT INTO duels (id, challenger_id, opponent_id, amount, created_at, expires_at, status) VALUES (?, ?, ?, ?, ?, ?, 'pending')")
+      .run(id, a.challengerId, a.opponentId, a.amount, a.now, a.expiresAt);
+    return { ok: true, duel: db.prepare('SELECT * FROM duels WHERE id = ?').get(id) as DuelRow };
+  });
+}
+
+export type AcceptDuelResult =
+  | { ok: true; duel: DuelRow; winnerId: number; loserId: number; winnerBalance: number }
+  | { ok: false; reason: 'gone' }
+  | { ok: false; reason: 'short'; balance: number };
+
+/**
+ * Accept a duel, already rolled: take the opponent's stake and pay the winner both.
+ * Only a duel still pending and not yet expired can be accepted, so an accept racing
+ * a deny, a cancel or the expiry sweep resolves once. An opponent who can't cover
+ * the stake leaves the duel pending.
+ */
+export function acceptDuel(db: PointsDb, a: { id: string; challengerWins: boolean; actor: string; now: number }): AcceptDuelResult {
+  return runWrite<AcceptDuelResult>(db, () => {
+    const d = db.prepare("SELECT * FROM duels WHERE id = ? AND status = 'pending'").get(a.id) as DuelRow | undefined;
+    if (!d || d.expires_at <= a.now) return { ok: false, reason: 'gone' };
+    const stake = debitTx(db, { userId: d.opponent_id, amount: d.amount, reason: DUEL_STAKE, ref: d.id, actor: a.actor, now: a.now });
+    if (!stake.ok) return { ok: false, reason: 'short', balance: stake.balance };
+    const winnerId = a.challengerWins ? d.challenger_id : d.opponent_id;
+    const loserId = a.challengerWins ? d.opponent_id : d.challenger_id;
+    const winnerBalance = creditTx(db, { userId: winnerId, amount: d.amount * 2, reason: DUEL_WIN, ref: d.id, actor: a.actor, now: a.now });
+    db.prepare("UPDATE duels SET status = 'accepted', winner_id = ?, resolved_at = ? WHERE id = ?").run(winnerId, a.now, d.id);
+    return { ok: true, duel: { ...d, status: 'accepted', winner_id: winnerId, resolved_at: a.now }, winnerId, loserId, winnerBalance };
+  });
+}
+
+/** Deny, cancel or expire a pending duel and refund the held stake. null when it was no longer pending. */
+export function refundDuel(db: PointsDb, a: { id: string; status: 'denied' | 'cancelled' | 'expired'; actor: string; now: number }): DuelRow | null {
+  return runWrite(db, () => {
+    const res = db.prepare("UPDATE duels SET status = ?, resolved_at = ? WHERE id = ? AND status = 'pending'").run(a.status, a.now, a.id);
+    if (res.changes !== 1) return null;
+    const d = db.prepare('SELECT * FROM duels WHERE id = ?').get(a.id) as DuelRow;
+    creditTx(db, { userId: d.challenger_id, amount: d.amount, reason: DUEL_REFUND, ref: d.id, actor: a.actor, now: a.now });
+    return d;
+  });
+}
+
+/** Duels made since `sinceMs`: how many were played, what both sides put in, and how many still wait. */
+export interface DuelStats {
+  duels: number;
+  staked: number;
+  pending: number;
+}
+
+export function duelStats(db: PointsDb, sinceMs = 0): DuelStats {
+  return db.prepare(
+    `SELECT COALESCE(SUM(status = 'accepted'), 0) AS duels,
+       COALESCE(SUM(CASE WHEN status = 'accepted' THEN amount * 2 ELSE 0 END), 0) AS staked,
+       COALESCE(SUM(status = 'pending'), 0) AS pending
+     FROM duels WHERE created_at >= ?`
+  ).get(sinceMs) as DuelStats;
 }
 
 export function tickExists(db: PointsDb, slotKey: string): boolean {
@@ -363,19 +517,42 @@ function withReadDb<T>(channel: string, empty: T, fn: (db: PointsDb) => T): T {
   }
 }
 
-export function pointsSummary(channel: string): { dbAvailable: boolean; users: number; totalPoints: number; lastTickAt: string | null; lastTickUsers: number | null } {
+export function pointsSummary(channel: string): {
+  dbAvailable: boolean;
+  users: number;
+  totalPoints: number;
+  lastTickAt: string | null;
+  lastTickUsers: number | null;
+  /** thisStream is null while the channel isn't known to be live. */
+  gamble: { allTime: GambleStats; thisStream: GambleStats | null };
+  duel: { allTime: DuelStats; thisStream: DuelStats | null };
+} {
   const dbAvailable = driverAvailable();
-  const empty = { dbAvailable, users: 0, totalPoints: 0, lastTickAt: null, lastTickUsers: null };
+  const none: GambleStats = { gambles: 0, wins: 0, staked: 0, net: 0 };
+  const noDuels: DuelStats = { duels: 0, staked: 0, pending: 0 };
+  const empty = {
+    dbAvailable, users: 0, totalPoints: 0, lastTickAt: null, lastTickUsers: null,
+    gamble: { allTime: none, thisStream: null }, duel: { allTime: noDuels, thisStream: null }
+  };
   return withReadDb(channel, empty, db => {
     const row = db.prepare('SELECT COUNT(*) AS n, COALESCE(SUM(balance), 0) AS total FROM users').get() as { n: number; total: number };
     const lastTick = getMeta(db, 'last_tick_at');
     const lastUsers = getMeta(db, 'last_tick_users');
+    const liveSince = Number(getMeta(db, 'live_since'));
     return {
       dbAvailable,
       users: row.n,
       totalPoints: row.total,
       lastTickAt: lastTick ? iso(Number(lastTick)) : null,
-      lastTickUsers: lastUsers === null ? null : Number(lastUsers)
+      lastTickUsers: lastUsers === null ? null : Number(lastUsers),
+      gamble: {
+        allTime: gambleStats(db),
+        thisStream: Number.isFinite(liveSince) && liveSince > 0 ? gambleStats(db, liveSince) : null
+      },
+      duel: {
+        allTime: duelStats(db),
+        thisStream: Number.isFinite(liveSince) && liveSince > 0 ? duelStats(db, liveSince) : null
+      }
     };
   });
 }

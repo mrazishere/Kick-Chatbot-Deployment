@@ -9,6 +9,7 @@
  * restart.
  */
 
+import * as crypto from 'crypto';
 import { isBotSender } from '../bot-identity';
 import { FollowEvent, KicksGiftedEvent, LivestreamStatusEvent, QueueMeta, RawBadge, SubscriptionEvent, SubscriptionGiftsEvent, ModerationBannedEvent } from '../types';
 import { InternalPointsConfig, LivePointsConfig, effectiveCommand, readLivePointsConfig } from './config';
@@ -19,13 +20,15 @@ import * as penalties from './penalties';
 import { LiveState, checkLive } from './live';
 import { PresenceTracker } from './presence';
 import { LastMessages, presenceVerdict } from './presence-rules';
-import { Exclusions, exclusionsFor, findUserByName, getUser, isExcluded, pruneApplied, setMetaTx } from './store';
+import { Exclusions, exclusionsFor, expiredDuels, findUserByName, getUser, isExcluded, pruneApplied, refundDuel, setMetaTx } from './store';
 
 const USERNAME_RE = /^[a-z0-9_]{2,25}$/;
 /** Idempotency keys are kept this long; Kick re-delivers within hours, not weeks. */
 const APPLIED_KEEP_MS = 30 * 24 * 60 * 60_000;
 /** A livestream status webhook older than this says nothing about now. */
 const STATUS_MAX_AGE_MS = 30 * 60_000;
+/** How long a live check made for a command is trusted, so a burst of gambles asks Kick once. */
+const LIVE_PROBE_MS = 60_000;
 
 export interface PointsServiceDeps {
   channelName: string;
@@ -39,6 +42,8 @@ export interface PointsServiceDeps {
   checkLive?: () => Promise<LiveState | null>;
   /** Replaces opening the channel's database (selftest: simulate it being unavailable). */
   dbProvider?: () => PointsDb | null;
+  /** Replaces the gamble roll's randomness with a value in [0, 1) (selftest). */
+  random?: () => number;
   now?: () => number;
   /** Write wait for the other process. Short by default: a waiting bot stalls its chat. */
   busyTimeoutMs?: number;
@@ -61,6 +66,10 @@ export class PointsService {
   private started = false;
   private dbReady = false;
   private lastLive: boolean | null = null;
+  /** A live check a command asked for, while nothing else knew; see isLiveNow. */
+  private liveProbe: { at: number; value: boolean | null } | null = null;
+  private liveProbeInFlight: Promise<boolean | null> | null = null;
+  private duelTimer: NodeJS.Timeout | null = null;
   private pruneTimer: NodeJS.Timeout | null = null;
   private startRetry: NodeJS.Timeout | null = null;
   private exclusionCache: { source: LivePointsConfig; broadcasterUserId: number | null; value: Exclusions } | null = null;
@@ -185,6 +194,76 @@ export class PointsService {
     return null;
   }
 
+  /**
+   * Roll one gamble at the channel's win chance: a whole number from 0 to 9999,
+   * winning below chance × 100. Every gamble is independent.
+   */
+  rollGamble(winChancePercent: number): { win: boolean; roll: number; threshold: number } {
+    const roll = this.deps.random ? Math.min(9999, Math.floor(this.deps.random() * 10_000)) : crypto.randomInt(0, 10_000);
+    const threshold = Math.round(Math.min(100, Math.max(0, winChancePercent)) * 100);
+    return { win: roll < threshold, roll, threshold };
+  }
+
+  /**
+   * Whether the channel is live, for commands that only work while it is. The
+   * last tick or livestream webhook usually knows. Right after a restart nothing
+   * does for up to one interval, so Kick is asked once, and the answer kept for
+   * a minute. null when that fails too; callers treat it as offline.
+   */
+  async isLiveNow(): Promise<boolean | null> {
+    if (this.config().debugForceLive) return true;
+    if (this.lastLive !== null) return this.lastLive;
+    const now = this.now();
+    if (this.liveProbe && now - this.liveProbe.at < LIVE_PROBE_MS) return this.liveProbe.value;
+    if (!this.liveProbeInFlight) {
+      const check = this.deps.checkLive ?? (() => checkLive(this.channel, this.deps.tokenFile, 1, 0));
+      this.liveProbeInFlight = check()
+        .catch(() => null)
+        .then(state => {
+          const value = state ? state.isLive : null;
+          // A real answer is as good as a tick's; don't overwrite one that arrived meanwhile.
+          if (value !== null && this.lastLive === null) this.lastLive = value;
+          this.liveProbe = { at: this.now(), value };
+          return value;
+        })
+        .finally(() => { this.liveProbeInFlight = null; });
+    }
+    return this.liveProbeInFlight;
+  }
+
+  /** A duel's coin flip: true when the challenger wins. Always 50/50. */
+  rollDuel(): boolean {
+    return this.rollGamble(50).win;
+  }
+
+  /**
+   * Refund every pending duel past its time to answer, and say so in chat. Runs on
+   * a timer and before each duel command; after a restart the first run refunds
+   * duels that expired while the bot was down. Returns how many. Never throws.
+   */
+  sweepDuels(): number {
+    const db = this.db();
+    if (!db) return 0;
+    try {
+      const now = this.now();
+      const cur = this.config().currencyName;
+      let refunded = 0;
+      for (const d of expiredDuels(db, now)) {
+        if (!refundDuel(db, { id: d.id, status: 'expired', actor: 'expiry', now })) continue;
+        refunded++;
+        const challenger = getUser(db, d.challenger_id)?.username ?? String(d.challenger_id);
+        const opponent = getUser(db, d.opponent_id)?.username ?? String(d.opponent_id);
+        console.log(`[POINTS] ${d.id} expired unanswered by ${opponent}: ${d.amount} ${cur} refunded to ${challenger}`);
+        this.deps.sendMessage(`@${challenger} ${opponent} didn't answer, ${d.amount} ${cur} refunded`).catch(() => {});
+      }
+      return refunded;
+    } catch (err) {
+      reportDbError(this.channel, err);
+      console.error(`[POINTS] Duel expiry sweep failed for ${this.channel}: ${err instanceof Error ? err.message : String(err)}`);
+      return 0;
+    }
+  }
+
   private bonusContext(): bonuses.BonusContext {
     return {
       channel: this.channel,
@@ -279,6 +358,11 @@ export class PointsService {
         }, 6 * 60 * 60_000);
         this.pruneTimer.unref();
       }
+      if (!this.duelTimer) {
+        // Holds must come back even if nobody types a duel command again.
+        this.duelTimer = setInterval(() => { this.sweepDuels(); }, 15_000);
+        this.duelTimer.unref();
+      }
       this.started = true;
     } catch (err) {
       console.error(`[POINTS] Could not start points for ${this.channel}, retrying in a minute: ${err instanceof Error ? err.message : String(err)}`);
@@ -301,6 +385,10 @@ export class PointsService {
     if (this.pruneTimer) {
       clearInterval(this.pruneTimer);
       this.pruneTimer = null;
+    }
+    if (this.duelTimer) {
+      clearInterval(this.duelTimer);
+      this.duelTimer = null;
     }
     closePointsDb(this.channel);
     this.dbReady = false;

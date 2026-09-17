@@ -9,7 +9,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { PointsBonusesConfig, PointsConfig, PointsGiveConfig, StoredPointsConfig, PointsTimeoutPenaltyConfig } from '../types';
+import { PointsBonusesConfig, PointsConfig, PointsDuelConfig, PointsGambleConfig, PointsGiveConfig, StoredPointsConfig, PointsTimeoutPenaltyConfig } from '../types';
 
 export function defaultPointsConfig(): PointsConfig {
   return {
@@ -41,6 +41,22 @@ export function defaultPointsConfig(): PointsConfig {
       maxDeduction: 0,
       permanentBanCost: 0,
       announce: true
+    },
+    gamble: {
+      enabled: false,
+      winChancePercent: 50,
+      minAmount: 1,
+      maxAmount: 0,
+      cooldownSeconds: 60,
+      onlyWhileLive: true
+    },
+    duel: {
+      enabled: false,
+      minAmount: 1,
+      maxAmount: 0,
+      cooldownSeconds: 60,
+      expirySeconds: 120,
+      onlyWhileLive: true
     }
   };
 }
@@ -133,6 +149,24 @@ export function internalPointsConfig(raw: unknown): InternalPointsConfig {
     permanentBanCost: num(tp.permanentBanCost, d.timeoutPenalty.permanentBanCost, 0, 1_000_000_000, true),
     announce: bool(tp.announce, d.timeoutPenalty.announce)
   };
+  const gm = obj(r.gamble);
+  const gamble: PointsGambleConfig = {
+    enabled: bool(gm.enabled, d.gamble.enabled),
+    winChancePercent: num(gm.winChancePercent, d.gamble.winChancePercent, 0, 100, false),
+    minAmount: num(gm.minAmount, d.gamble.minAmount, 1, 1_000_000_000, true),
+    maxAmount: num(gm.maxAmount, d.gamble.maxAmount, 0, 1_000_000_000, true),
+    cooldownSeconds: num(gm.cooldownSeconds, d.gamble.cooldownSeconds, 0, 3600, true),
+    onlyWhileLive: bool(gm.onlyWhileLive, d.gamble.onlyWhileLive)
+  };
+  const du = obj(r.duel);
+  const duel: PointsDuelConfig = {
+    enabled: bool(du.enabled, d.duel.enabled),
+    minAmount: num(du.minAmount, d.duel.minAmount, 1, 1_000_000_000, true),
+    maxAmount: num(du.maxAmount, d.duel.maxAmount, 0, 1_000_000_000, true),
+    cooldownSeconds: num(du.cooldownSeconds, d.duel.cooldownSeconds, 0, 3600, true),
+    expirySeconds: num(du.expirySeconds, d.duel.expirySeconds, 30, 600, true),
+    onlyWhileLive: bool(du.onlyWhileLive, d.duel.onlyWhileLive)
+  };
 
   return {
     enabled: bool(r.enabled, d.enabled),
@@ -147,6 +181,8 @@ export function internalPointsConfig(raw: unknown): InternalPointsConfig {
     bonuses,
     give,
     timeoutPenalty,
+    gamble,
+    duel,
     modMaxAdjust: num(r.modMaxAdjust, d.modMaxAdjust, 1, 1_000_000_000, true),
     publicLeaderboard: bool(r.publicLeaderboard, d.publicLeaderboard),
     debugForceLive: r.debugForceLive === true
@@ -204,6 +240,19 @@ const GIVE_NUMBERS: Record<string, Rule> = {
   maxAmount: { min: 0, max: 1_000_000_000, integer: true },
   cooldownSeconds: { min: 0, max: 3600, integer: true }
 };
+const DUEL_NUMBERS: Record<string, Rule> = {
+  minAmount: { min: 1, max: 1_000_000_000, integer: true },
+  maxAmount: { min: 0, max: 1_000_000_000, integer: true },
+  cooldownSeconds: { min: 0, max: 3600, integer: true },
+  expirySeconds: { min: 30, max: 600, integer: true }
+};
+const GAMBLE_NUMBERS: Record<string, Rule> = {
+  // Decimals allowed, e.g. 47.5; the roll has 0.01% steps.
+  winChancePercent: { min: 0, max: 100, integer: false },
+  minAmount: { min: 1, max: 1_000_000_000, integer: true },
+  maxAmount: { min: 0, max: 1_000_000_000, integer: true },
+  cooldownSeconds: { min: 0, max: 3600, integer: true }
+};
 
 function checkNumber(label: string, v: unknown, rule: Rule, errors: string[]): number | undefined {
   if (typeof v !== 'number' || !Number.isFinite(v) || v < rule.min || v > rule.max || (rule.integer && !Number.isInteger(v))) {
@@ -234,7 +283,9 @@ export function validatePointsPatch(current: unknown, patch: unknown): { next?: 
     ...cur,
     bonuses: { ...(cur.bonuses ?? {}) },
     give: { ...(cur.give ?? {}) },
-    timeoutPenalty: { ...(cur.timeoutPenalty ?? {}) }
+    timeoutPenalty: { ...(cur.timeoutPenalty ?? {}) },
+    gamble: { ...(cur.gamble ?? {}) },
+    duel: { ...(cur.duel ?? {}) }
   };
 
   for (const key of ['enabled', 'excludeBroadcaster', 'publicLeaderboard'] as const) {
@@ -322,6 +373,40 @@ export function validatePointsPatch(current: unknown, patch: unknown): { next?: 
     }
   }
 
+  if (p.gamble !== undefined) {
+    if (!p.gamble || typeof p.gamble !== 'object' || Array.isArray(p.gamble)) errors.push('gamble must be an object');
+    else {
+      const gm = p.gamble as Record<string, unknown>;
+      for (const [key, rule] of Object.entries(GAMBLE_NUMBERS)) {
+        if (gm[key] === undefined) continue;
+        const v = checkNumber(`gamble.${key}`, gm[key], rule, errors);
+        if (v !== undefined) (next.gamble as Record<string, unknown>)[key] = v;
+      }
+      for (const key of ['enabled', 'onlyWhileLive'] as const) {
+        if (gm[key] === undefined) continue;
+        if (typeof gm[key] !== 'boolean') errors.push(`gamble.${key} must be true or false`);
+        else next.gamble![key] = gm[key] as boolean;
+      }
+    }
+  }
+
+  if (p.duel !== undefined) {
+    if (!p.duel || typeof p.duel !== 'object' || Array.isArray(p.duel)) errors.push('duel must be an object');
+    else {
+      const du = p.duel as Record<string, unknown>;
+      for (const [key, rule] of Object.entries(DUEL_NUMBERS)) {
+        if (du[key] === undefined) continue;
+        const v = checkNumber(`duel.${key}`, du[key], rule, errors);
+        if (v !== undefined) (next.duel as Record<string, unknown>)[key] = v;
+      }
+      for (const key of ['enabled', 'onlyWhileLive'] as const) {
+        if (du[key] === undefined) continue;
+        if (typeof du[key] !== 'boolean') errors.push(`duel.${key} must be true or false`);
+        else next.duel![key] = du[key] as boolean;
+      }
+    }
+  }
+
   // Rules that span fields are checked against the settings as they'd end up. The
   // window is read before clamping: effective values would quietly stretch it to
   // the interval and hide the mistake.
@@ -333,9 +418,17 @@ export function validatePointsPatch(current: unknown, patch: unknown): { next?: 
   if (eff.give.maxAmount > 0 && eff.give.maxAmount < eff.give.minAmount) {
     errors.push(`give.maxAmount (${eff.give.maxAmount}) can't be below give.minAmount (${eff.give.minAmount})`);
   }
+  if (eff.gamble.maxAmount > 0 && eff.gamble.maxAmount < eff.gamble.minAmount) {
+    errors.push(`gamble.maxAmount (${eff.gamble.maxAmount}) can't be below gamble.minAmount (${eff.gamble.minAmount})`);
+  }
 
   if (!Object.keys(next.bonuses ?? {}).length) delete next.bonuses;
   if (!Object.keys(next.give ?? {}).length) delete next.give;
+  if (!Object.keys(next.gamble ?? {}).length) delete next.gamble;
+  if (eff.duel.maxAmount > 0 && eff.duel.maxAmount < eff.duel.minAmount) {
+    errors.push(`duel.maxAmount (${eff.duel.maxAmount}) can't be below duel.minAmount (${eff.duel.minAmount})`);
+  }
+  if (!Object.keys(next.duel ?? {}).length) delete next.duel;
   return errors.length ? { errors } : { next, errors };
 }
 

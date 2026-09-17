@@ -3,11 +3,12 @@
  * sukasblood's $DON answers to $don. It starts with $ where other
  * commands use !, so the command reads like the currency.
  *
- * Description: Balances, active time, leaderboards, giving, and moderator adjustments.
+ * Description: Balances, active time, leaderboards, giving, gambling, and moderator adjustments.
  *
  * Permission required:
  *          $<cmd>, activetime, top, leaderboard: all users
  *          $<cmd> give: all users, when giving is enabled
+ *          $<cmd> gamble: all users, when gambling is enabled
  *          $<cmd> add/remove/set: the broadcaster and the bot owner only
  *          (moderators can read and skip read cooldowns, but not change balances)
  *
@@ -15,8 +16,17 @@
  *          $don activetime [@user]    - active time and rank
  *          $don top [activetime]      - top 5
  *          $don leaderboard           - link to the public leaderboard
- *          $don give @user 100        - send points to someone
+ *          $don give @user 100|5k|50%|all - send points to someone
+ *          $don gamble 100|5k|50%|all - even money at the channel's win chance
+ *          $don duel @user 100        - challenge a viewer; 50/50, winner takes both
+ *          $don accept|deny [@user]   - answer a challenge
+ *          $don cancel                - withdraw your challenge
  *          $don add|remove|set @user 500
+ *
+ * Gambling and duels stay silent when off, on cooldown, or the stream is offline
+ * (the user's choice, to keep chat clean); the log says why each was ignored. A
+ * challenger's stake is held until the duel is accepted, denied, cancelled or
+ * expires; pending duels are stored, so a restart still refunds them.
  *
  * A subcommand word wins over a username; write @top to look up a user called top.
  * Chat also writes $DON in sentences ("$DON to the moon"), so a name without @
@@ -33,9 +43,12 @@ import { isBotSender } from '../bot-identity';
 import { effectiveCommand } from '../points/config';
 import { reportDbError, runWrite } from '../points/db';
 import { getPointsService } from '../points/service';
-import { applyOnce, countRanked, creditTx, debitTx, ensureUserTx, findUserByName, getUser, isExcluded, rankBy, setTx, topBy, transfer } from '../points/store';
+import {
+  acceptDuel, applyOnce, countRanked, createDuel, creditTx, debitTx, ensureUserTx, findUserByName, gamble, getUser,
+  incomingDuels, isApplied, isExcluded, outgoingDuel, rankBy, refundDuel, setTx, topBy, transfer
+} from '../points/store';
 
-const SUBCOMMANDS = new Set(['activetime', 'top', 'leaderboard', 'give', 'add', 'remove', 'set']);
+const SUBCOMMANDS = new Set(['activetime', 'top', 'leaderboard', 'give', 'gamble', 'duel', 'accept', 'deny', 'cancel', 'add', 'remove', 'set']);
 const AMOUNT_RE = /^\d{1,9}$/;
 const NAME_RE = /^@?[A-Za-z0-9_]{2,25}$/;
 
@@ -47,6 +60,29 @@ const MAX_SYMBOLS = 10;
 
 function asciiSymbols(text: string): number {
   return (text.match(/[\x21-\x2f\x3a-\x40\x5b-\x60\x7b-\x7e]/g) ?? []).length;
+}
+
+/**
+ * A gamble amount against a balance, the forms StreamElements takes: 250, 5k,
+ * 1.5m, 50% (rounded down) or all. null when it's none of those. Can be 0,
+ * which the minimum then refuses.
+ */
+export function parseBet(raw: string, balance: number): number | null {
+  const t = raw.trim().toLowerCase();
+  if (t === 'all') return balance;
+  const pct = /^(\d{1,3}(?:\.\d+)?)%$/.exec(t);
+  if (pct) {
+    const p = Number(pct[1]);
+    return p > 0 && p <= 100 ? Math.floor((balance * p) / 100) : null;
+  }
+  const short = /^(\d{1,9}(?:\.\d+)?)([km])$/.exec(t);
+  if (short) return Math.floor(Number(short[1]) * (short[2] === 'k' ? 1_000 : 1_000_000));
+  return /^\d{1,12}$/.test(t) ? Number(t) : null;
+}
+
+/** A duel's time to answer as chat reads it: 120 → "2 min", 90 → "90s". */
+function expiryText(seconds: number): string {
+  return seconds % 60 === 0 ? `${seconds / 60} min` : `${seconds}s`;
 }
 
 const USER_COOLDOWN_MS = 10_000;
@@ -221,8 +257,18 @@ export const points: CommandFn = async function points(client, message, channel,
         return;
       }
       if (isExcluded(ex, self?.user_id ?? null, meLc) || isBotSender(me, tags.senderId)) return;
-      const t = target(args.slice(1));
-      if (!t) return void say(`Usage: $${cmd} give user amount`);
+      // A replay must stay silent, e.g. not answer "the minimum is 10" after its own give-all emptied the balance.
+      if (tags.messageId && isApplied(db, `chat:${tags.messageId}`)) return;
+      // "user amount" in either order; an @ marks the name. The amount takes the same
+      // forms as gamble (100, 5k, 50%, all), measured against the giver's balance.
+      const [a, b] = args.slice(1);
+      if (a === undefined || b === undefined) return void say(`Usage: $${cmd} give user amount`);
+      const [nameRaw, amountRaw] = a.startsWith('@') ? [a, b] : b.startsWith('@') ? [b, a] : parseBet(b, 0) !== null ? [a, b] : [b, a];
+      const have = self?.balance ?? 0;
+      const amount = parseBet(amountRaw, have);
+      if (!NAME_RE.test(nameRaw) || amount === null) return void say(`Usage: $${cmd} give user amount`);
+      if (have === 0 && amount === 0) return void say(`@${me} you only have 0 ${cur}`);
+      const t = { name: nameRaw.replace(/^@+/, ''), amount };
       if (t.amount < cfg.give.minAmount) return void say(`@${me} the minimum is ${cfg.give.minAmount}`);
       if (cfg.give.maxAmount > 0 && t.amount > cfg.give.maxAmount) return void say(`@${me} the maximum is ${cfg.give.maxAmount}`);
       if (t.name.toLowerCase() === meLc) return void say(`@${me} you cannot give to yourself`);
@@ -250,6 +296,178 @@ export const points: CommandFn = async function points(client, message, channel,
         keepCooldown = true;
         console.log(`[POINTS] ${me} gave ${t.amount} ${cur} to ${to.username} (${res.ref})`);
         return void say(`@${me} gave ${t.amount} ${cur} to ${to.username}`);
+      } finally {
+        if (!keepCooldown) cooldowns.delete(cdKey);
+      }
+    }
+
+    // ── gamble ──
+    if (sub === 'gamble') {
+      const g = cfg.gamble;
+      // Silent by choice (user, 2026-09-15); the log keeps it debuggable.
+      const ignore = (why: string) => void console.log(`[POINTS] gamble from ${me} ignored: ${why}`);
+      if (!g.enabled) return ignore('disabled');
+      if (isExcluded(ex, self?.user_id ?? null, meLc) || isBotSender(me, tags.senderId)) return ignore('excluded');
+      // A replay must stay silent, e.g. not answer "you have no $DON" after its own all-in loss.
+      if (tags.messageId && isApplied(db, `chat:${tags.messageId}`)) return ignore('already handled');
+      const raw = args[1];
+      if (raw === undefined) return void say(`Usage: $${cmd} gamble amount`);
+      // Reserved before the live check awaits, so a burst can't all pass at once.
+      // Handed back unless a bet is actually placed.
+      const cdKey = `${channelName}:${meLc}:gamble`;
+      const wait = cooldownLeft(cdKey, g.cooldownSeconds * 1000, g.cooldownSeconds > 0);
+      if (wait) return ignore(`cooldown ${wait}s`);
+
+      let keepCooldown = false;
+      try {
+        if (g.onlyWhileLive) {
+          const live = await svc.isLiveNow();
+          if (live !== true) return ignore(live === null ? 'live state unknown' : 'offline');
+        }
+        // Read after the await: a tick or another bet may have changed the balance.
+        const player = self ? getUser(db, self.user_id) : undefined;
+        if (!player || player.balance <= 0) return void say(`@${me} you have no ${cur} to gamble`);
+        const bet = parseBet(raw, player.balance);
+        if (bet === null) return void say(`Usage: $${cmd} gamble amount`);
+        if (bet < g.minAmount) return void say(`@${me} the minimum is ${g.minAmount}`);
+        if (g.maxAmount > 0 && bet > g.maxAmount) return void say(`@${me} the maximum is ${g.maxAmount}`);
+        if (bet > player.balance) return void say(`@${me} you only have ${player.balance} ${cur}`);
+
+        const roll = svc.rollGamble(g.winChancePercent);
+        const run = once(() => gamble(db, { userId: player.user_id, amount: bet, win: roll.win, actor: `chat:${me}`, now: Date.now() }));
+        if (!run.applied) {
+          keepCooldown = true;
+          return;
+        }
+        const res = run.result!;
+        if (!res.ok) return void say(`@${me} you only have ${res.balance} ${cur}`);
+        keepCooldown = true;
+        console.log(`[POINTS] ${me} gambled ${bet} ${cur}: ${roll.win ? 'won' : 'lost'} (roll ${roll.roll}/10000, wins below ${roll.threshold}), now ${res.balance} (${res.ref})`);
+        if (bet === player.balance) {
+          return void say(roll.win ? `@${me} went all in and won, now has ${res.balance} ${cur}` : `@${me} went all in and lost ${bet} ${cur}`);
+        }
+        return void say(roll.win ? `@${me} won ${bet} ${cur} and now has ${res.balance}` : `@${me} lost ${bet} ${cur} and now has ${res.balance}`);
+      } finally {
+        if (!keepCooldown) cooldowns.delete(cdKey);
+      }
+    }
+
+    // ── duel / accept / deny / cancel ──
+    if (sub === 'duel' || sub === 'accept' || sub === 'deny' || sub === 'cancel') {
+      const d = cfg.duel;
+      // Cooldown, offline and duels-off stay silent like gamble (user, 2026-09-15); the log says why.
+      const ignore = (why: string) => void console.log(`[POINTS] ${sub} from ${me} ignored: ${why}`);
+      if (!d.enabled) return ignore('duels disabled');
+      if (isExcluded(ex, self?.user_id ?? null, meLc) || isBotSender(me, tags.senderId)) return ignore('excluded');
+      // A replay must stay silent, not answer "you already challenged…" about the duel it made.
+      if (tags.messageId && isApplied(db, `chat:${tags.messageId}`)) return ignore('already handled');
+      // Refund whatever ran out first, so nobody accepts or waits on a dead duel.
+      svc.sweepDuels();
+      const nameOf = (userId: number) => getUser(db, userId)?.username ?? String(userId);
+
+      if (sub === 'cancel') {
+        const mine = self ? outgoingDuel(db, self.user_id) : undefined;
+        if (!mine) return void say(`@${me} you have no duel to cancel`);
+        const run = once(() => refundDuel(db, { id: mine.id, status: 'cancelled', actor: `chat:${me}`, now: Date.now() }));
+        if (!run.applied) return;
+        if (!run.result) return void say(`@${me} you have no duel to cancel`);
+        console.log(`[POINTS] ${me} cancelled ${mine.id}: ${mine.amount} ${cur} refunded`);
+        return void say(`@${me} duel cancelled, ${mine.amount} ${cur} refunded`);
+      }
+
+      if (sub === 'accept' || sub === 'deny') {
+        const named = args[1] && NAME_RE.test(args[1]) ? args[1].replace(/^@+/, '') : null;
+        let incoming = self ? incomingDuels(db, self.user_id) : [];
+        if (named) incoming = incoming.filter(x => nameOf(x.challenger_id).toLowerCase() === named.toLowerCase());
+        if (!incoming.length) return void say(named ? `@${me} ${named} has not challenged you` : `@${me} you have no duel to ${sub}`);
+        if (incoming.length > 1) {
+          const names = incoming.slice(0, 3).map(x => `@${nameOf(x.challenger_id)}`);
+          const list = names.length > 2 ? `${names.slice(0, -1).join(', ')} or ${names[names.length - 1]}` : names.join(' or ');
+          return void say(`@${me} pick one: $${cmd} ${sub} ${list}`);
+        }
+        const duel = incoming[0];
+        const challenger = nameOf(duel.challenger_id);
+
+        if (sub === 'deny') {
+          const run = once(() => refundDuel(db, { id: duel.id, status: 'denied', actor: `chat:${me}`, now: Date.now() }));
+          if (!run.applied) return;
+          if (!run.result) return void say(`@${me} you have no duel to deny`);
+          console.log(`[POINTS] ${me} denied ${duel.id}: ${duel.amount} ${cur} refunded to ${challenger}`);
+          return void say(`@${challenger} ${me} declined the duel, ${duel.amount} ${cur} refunded`);
+        }
+
+        if (d.onlyWhileLive) {
+          const live = await svc.isLiveNow();
+          if (live !== true) return ignore(live === null ? 'live state unknown' : 'offline');
+        }
+        const challengerWins = svc.rollDuel();
+        const run = once(() => acceptDuel(db, { id: duel.id, challengerWins, actor: `chat:${me}`, now: Date.now() }));
+        if (!run.applied) return;
+        const res = run.result!;
+        if (!res.ok) {
+          return void say(res.reason === 'short' ? `@${me} you only have ${res.balance} ${cur}` : `@${me} you have no duel to accept`);
+        }
+        const winner = res.winnerId === duel.challenger_id ? challenger : me;
+        const loser = res.winnerId === duel.challenger_id ? me : challenger;
+        console.log(`[POINTS] ${duel.id}: ${winner} beat ${loser} for ${duel.amount} ${cur}, winner now has ${res.winnerBalance}`);
+        return void say(`${winner} won the duel against ${loser} and takes ${duel.amount} ${cur}, now has ${res.winnerBalance}`);
+      }
+
+      // duel: an @ marks the name, otherwise the name comes first.
+      const [first, second] = args.slice(1);
+      if (first === undefined || second === undefined) return void say(`Usage: $${cmd} duel @user amount`);
+      const [nameRaw, amountRaw] = second.startsWith('@') && !first.startsWith('@') ? [second, first] : [first, second];
+      if (!NAME_RE.test(nameRaw)) return void say(`Usage: $${cmd} duel @user amount`);
+      const targetName = nameRaw.replace(/^@+/, '');
+      if (targetName.toLowerCase() === meLc) return void say(`@${me} you cannot duel yourself`);
+      // Reserved before the awaits below, so a burst can't all pass; handed back unless a challenge is made.
+      const cdKey = `${channelName}:${meLc}:duel`;
+      const wait = cooldownLeft(cdKey, d.cooldownSeconds * 1000, d.cooldownSeconds > 0);
+      if (wait) return ignore(`cooldown ${wait}s`);
+
+      let keepCooldown = false;
+      try {
+        if (d.onlyWhileLive) {
+          const live = await svc.isLiveNow();
+          if (live !== true) return ignore(live === null ? 'live state unknown' : 'offline');
+        }
+        // No Kick lookup: someone with no balance couldn't match a stake anyway.
+        const who = await svc.resolveUser(targetName, false);
+        const opponent = who ? getUser(db, who.userId) : undefined;
+        if (!who || !opponent || isExcluded(ex, who.userId, who.username) || isBotSender(who.username, who.userId) || SYSTEM_BOTS.has(who.username.toLowerCase())) {
+          return void say(`@${me} you cannot duel ${targetName}`);
+        }
+        // Read after the awaits: a tick or another bet may have changed the balances.
+        const player = self ? getUser(db, self.user_id) : undefined;
+        if (player && opponent.user_id === player.user_id) return void say(`@${me} you cannot duel yourself`);
+        if (!player || player.balance <= 0) return void say(`@${me} you have no ${cur} to duel`);
+        const bet = parseBet(amountRaw, player.balance);
+        if (bet === null) return void say(`Usage: $${cmd} duel @user amount`);
+        if (bet < d.minAmount) return void say(`@${me} the minimum is ${d.minAmount}`);
+        if (d.maxAmount > 0 && bet > d.maxAmount) return void say(`@${me} the maximum is ${d.maxAmount}`);
+        if (bet > player.balance) return void say(`@${me} you only have ${player.balance} ${cur}`);
+        if (opponent.balance < bet) return void say(`@${me} ${opponent.username} only has ${opponent.balance} ${cur}`);
+        const pending = outgoingDuel(db, player.user_id);
+        if (pending) return void say(`@${me} you already challenged ${nameOf(pending.opponent_id)}, $${cmd} cancel first`);
+
+        const now = Date.now();
+        const run = once(() => createDuel(db, {
+          challengerId: player.user_id, opponentId: opponent.user_id, amount: bet,
+          expiresAt: now + d.expirySeconds * 1000, actor: `chat:${me}`, now
+        }));
+        if (!run.applied) {
+          keepCooldown = true;
+          return;
+        }
+        const res = run.result!;
+        if (!res.ok) {
+          return void say(res.reason === 'pending'
+            ? `@${me} you already challenged ${nameOf(res.pending.opponent_id)}, $${cmd} cancel first`
+            : `@${me} you only have ${res.balance} ${cur}`);
+        }
+        keepCooldown = true;
+        console.log(`[POINTS] ${me} challenged ${opponent.username} for ${bet} ${cur} (${res.duel.id}, ${d.expirySeconds}s to answer)`);
+        return void say(`@${opponent.username} ${me} challenges you to a duel for ${bet} ${cur}, type $${cmd} accept or $${cmd} deny within ${expiryText(d.expirySeconds)}`);
       } finally {
         if (!keepCooldown) cooldowns.delete(cdKey);
       }

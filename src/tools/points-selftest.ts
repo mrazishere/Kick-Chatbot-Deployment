@@ -13,12 +13,13 @@ import * as path from 'path';
 import { spawn } from 'child_process';
 import { ChannelConfig, ClientWrapper, KickTags, RawBadge } from '../types';
 import { effectiveCommand, effectivePointsConfig, invalidateLivePointsConfig, validatePointsPatch } from '../points/config';
-import { closeAllPointsDbs, openPointsDb, PointsDb, reportDbError, runWrite } from '../points/db';
+import { closeAllPointsDbs, closePointsDb, openPointsDb, PointsDb, reportDbError, runWrite } from '../points/db';
 import { LiveState } from '../points/live';
 import { PointsService } from '../points/service';
 import { normalizeChat, presenceVerdict } from '../points/presence-rules';
 import {
-  adjustPoints, backupPoints, creditTx, debitTx, getUser, grantTick, invariantViolations,
+  acceptDuel, adjustPoints, backupPoints, createDuel, creditTx, debitTx, duelStats, gambleStats, getUser, grantTick, invariantViolations,
+  outgoingDuel, refundDuel,
   pointsLeaderboard, pointsSummary, searchPointsUsers, getPointsUserDetail, transfer
 } from '../points/store';
 import { WebhookPoller } from '../channels/webhook-poller';
@@ -92,7 +93,7 @@ function writeConfig(root: string, channel: string, points: Record<string, unkno
 
 const badges = (...types: string[]): RawBadge[] => types.map(type => ({ type }));
 
-function makeService(channel: string, opts: { live?: () => Promise<LiveState | null>; now?: () => number; broadcaster?: number | null; dbProvider?: () => PointsDb | null; lookup?: (n: string) => Promise<number | null>; sent?: string[] } = {}) {
+function makeService(channel: string, opts: { live?: () => Promise<LiveState | null>; now?: () => number; broadcaster?: number | null; dbProvider?: () => PointsDb | null; lookup?: (n: string) => Promise<number | null>; sent?: string[]; random?: () => number } = {}) {
   return new PointsService({
     channelName: channel,
     getBroadcasterUserId: () => opts.broadcaster ?? null,
@@ -101,7 +102,8 @@ function makeService(channel: string, opts: { live?: () => Promise<LiveState | n
     tokenFile: '/nonexistent',
     checkLive: opts.live ?? (async () => ({ isLive: true, startedAt: null })),
     now: opts.now,
-    dbProvider: opts.dbProvider
+    dbProvider: opts.dbProvider,
+    random: opts.random
   });
 }
 
@@ -134,12 +136,32 @@ async function main(): Promise<void> {
     const staging = validatePointsPatch({ debugForceLive: true }, { debugForceLive: false, enabled: true });
     check('debugForceLive survives but cannot be set by patch', staging.next?.debugForceLive === true);
     check('effective config strips debugForceLive', !('debugForceLive' in effectivePointsConfig({ debugForceLive: true })));
+    const gDefaults = effectivePointsConfig({}).gamble;
+    check('gamble defaults: off, 50%, min 1, no cap, 60s, live only',
+      !gDefaults.enabled && gDefaults.winChancePercent === 50 && gDefaults.minAmount === 1 && gDefaults.maxAmount === 0 && gDefaults.cooldownSeconds === 60 && gDefaults.onlyWhileLive, gDefaults);
+    const gOk = validatePointsPatch({ gamble: { enabled: true } }, { gamble: { winChancePercent: 45.5 } });
+    check('gamble patch merges field by field', gOk.errors.length === 0 && gOk.next?.gamble?.enabled === true && gOk.next?.gamble?.winChancePercent === 45.5, gOk);
+    const gBad = validatePointsPatch({}, { gamble: { winChancePercent: 101, onlyWhileLive: 'yes' } });
+    check('gamble out-of-range chance and non-boolean rejected', !gBad.next && gBad.errors.length === 2, gBad.errors);
+    const gCross = validatePointsPatch({}, { gamble: { minAmount: 50, maxAmount: 10 } });
+    check('gamble maximum below minimum rejected', !gCross.next && gCross.errors.some(e => e.includes('gamble.maxAmount')), gCross.errors);
+    check('hand-edited chance is clamped', effectivePointsConfig({ gamble: { winChancePercent: 150 } }).gamble.winChancePercent === 100);
+    const dDefaults = effectivePointsConfig({}).duel;
+    check('duel defaults: off, min 1, no cap, 60s cooldown, 120s to answer, live only',
+      !dDefaults.enabled && dDefaults.minAmount === 1 && dDefaults.maxAmount === 0 && dDefaults.cooldownSeconds === 60 && dDefaults.expirySeconds === 120 && dDefaults.onlyWhileLive, dDefaults);
+    const dOk = validatePointsPatch({ duel: { enabled: true } }, { duel: { expirySeconds: 90 } });
+    check('duel patch merges field by field', dOk.errors.length === 0 && dOk.next?.duel?.enabled === true && dOk.next?.duel?.expirySeconds === 90, dOk);
+    const dBad = validatePointsPatch({}, { duel: { expirySeconds: 10, enabled: 'on' } });
+    check('duel expiry under 30s and non-boolean rejected', !dBad.next && dBad.errors.length === 2, dBad.errors);
+    const dCross = validatePointsPatch({}, { duel: { minAmount: 50, maxAmount: 10 } });
+    check('duel maximum below minimum rejected', !dCross.next && dCross.errors.some(e => e.includes('duel.maxAmount')), dCross.errors);
+    check('hand-edited expiry is clamped', effectivePointsConfig({ duel: { expirySeconds: 5 } }).duel.expirySeconds === 30);
   }
 
   // Store basics
   {
     const db = openPointsDb('basics', { create: true })!;
-    check('migrated to user_version 1', db.pragma('user_version', { simple: true }) === 1);
+    check('migrated to user_version 2', db.pragma('user_version', { simple: true }) === 2);
     runWrite(db, () => creditTx(db, { userId: 1, username: 'alice', amount: 100, reason: 'mod_add', now: 1 }));
     const over = runWrite(db, () => debitTx(db, { userId: 1, amount: 150, reason: 'mod_remove', now: 2 }));
     check('debit beyond balance refused', !over.ok && over.balance === 100);
@@ -516,6 +538,272 @@ async function main(): Promise<void> {
     void svc;
   }
 
+  // Gamble
+  {
+    const ch = 'gamblech';
+    const gambleOn = (extra: Record<string, unknown> = {}) =>
+      writeConfig(root, ch, { enabled: true, currencyName: '$DON', gamble: { enabled: true, cooldownSeconds: 0, ...extra } });
+    gambleOn();
+    // The next roll(s), replacing whatever is left: a replayed message still rolls before it's found to be a replay.
+    const rolls: number[] = [];
+    const setRoll = (...v: number[]) => { rolls.length = 0; rolls.push(...v); };
+    let live: LiveState | null = { isLive: true, startedAt: null };
+    const fresh = () => makeService(ch, { broadcaster: 999, random: () => rolls.shift() ?? 0.5, live: async () => live });
+    let svc = fresh();
+    const db = openPointsDb(ch, { create: true })!;
+    runWrite(db, () => {
+      creditTx(db, { userId: 1, username: 'alice', amount: 100, reason: 'mod_add', now: 1 });
+      creditTx(db, { userId: 2, username: 'bob', amount: 50, reason: 'mod_add', now: 1 });
+      creditTx(db, { userId: 3, username: 'carol', amount: 30, reason: 'mod_add', now: 1 });
+      creditTx(db, { userId: 4, username: 'dave', amount: 1000, reason: 'mod_add', now: 1 });
+    });
+    const config = { channelName: ch } as ChannelConfig;
+    const t = (username: string, id: number, messageId?: string): KickTags => ({
+      username, 'display-name': username, badges: {}, isBroadcaster: false, isModUp: false, isVIPUp: false, rawBadges: [], senderId: id, messageId
+    });
+    const run = async (msg: string, tags: KickTags) => {
+      const out: string[] = [];
+      await pointsCommand({ say: async (_c, m) => { out.push(m); } }, msg, `#${ch}`, tags, config);
+      return out;
+    };
+
+    setRoll(0.1);
+    const won = await run('$don gamble 40', t('alice', 1));
+    check('gamble win adds the bet', won[0] === '@alice won 40 $DON and now has 140' && balance(ch, 1) === 140, won);
+    const rows = db.prepare("SELECT reason, delta, ref FROM ledger WHERE user_id = 1 AND reason LIKE 'game:%' ORDER BY id").all() as Array<{ reason: string; delta: number; ref: string }>;
+    check('a win writes stake and payout sharing a ref',
+      rows.length === 2 && rows[0].delta === -40 && rows[1].delta === 80 && rows[0].ref === rows[1].ref && rows[0].ref.startsWith('gamble:'), rows);
+    check('winnings do not count as lifetime earned', getUser(db, 1)?.lifetime_earned === 100, getUser(db, 1));
+
+    setRoll(0.9);
+    const lost = await run('$don gamble 50%', t('alice', 1));
+    check('gamble 50% of the balance, loss takes the bet', lost[0] === '@alice lost 70 $DON and now has 70' && balance(ch, 1) === 70, lost);
+    setRoll(0.2);
+    const allWin = await run('$don gamble all', t('alice', 1));
+    check('all in and won', allWin[0] === '@alice went all in and won, now has 140 $DON' && balance(ch, 1) === 140, allWin);
+    setRoll(0.7);
+    const allLose = await run('$DON GAMBLE ALL', t('bob', 2));
+    check('all in and lost, any case', allLose[0] === '@bob went all in and lost 50 $DON' && balance(ch, 2) === 0, allLose);
+    check('nothing to gamble', (await run('$don gamble 10', t('bob', 2)))[0] === '@bob you have no $DON to gamble');
+    check('no row at all is nothing to gamble', (await run('$don gamble 10', t('newbie', 77)))[0] === '@newbie you have no $DON to gamble');
+    check('bet over the balance', (await run('$don gamble 31', t('carol', 3)))[0] === '@carol you only have 30 $DON' && balance(ch, 3) === 30);
+    check('missing amount gets usage', (await run('$don gamble', t('carol', 3)))[0] === 'Usage: $don gamble amount');
+    for (const bad of ['abc', '101%', '0%', '-5', '1e3', '5x']) {
+      check(`unreadable amount "${bad}" gets usage`, (await run(`$don gamble ${bad}`, t('carol', 3)))[0] === 'Usage: $don gamble amount');
+    }
+    setRoll(0.9);
+    const k = await run('$don gamble 0.5k', t('dave', 4));
+    check('0.5k reads as 500', k[0] === '@dave lost 500 $DON and now has 500', k);
+    check('zero is under the minimum', (await run('$don gamble 0', t('carol', 3)))[0] === '@carol the minimum is 1');
+
+    gambleOn({ minAmount: 10, maxAmount: 20 });
+    check('gamble minimum', (await run('$don gamble 5', t('carol', 3)))[0] === '@carol the minimum is 10');
+    check('gamble maximum', (await run('$don gamble 25', t('carol', 3)))[0] === '@carol the maximum is 20');
+    check('refusals leave the balance alone', balance(ch, 3) === 30);
+
+    gambleOn();
+    setRoll(0.9);
+    const r1 = await run('$don gamble 5', t('carol', 3, 'gmsg-1'));
+    setRoll(0.1);
+    const r2 = await run('$don gamble 5', t('carol', 3, 'gmsg-1'));
+    check('replayed gamble message applies once, replay silent', r1.length === 1 && r2.length === 0 && balance(ch, 3) === 25, { r1, r2, bal: balance(ch, 3) });
+    runWrite(db, () => creditTx(db, { userId: 9, username: 'eve', amount: 20, reason: 'mod_add', now: 1 }));
+    setRoll(0.9);
+    const e1 = await run('$don gamble all', t('eve', 9, 'gmsg-2'));
+    const e2 = await run('$don gamble all', t('eve', 9, 'gmsg-2'));
+    check('replay of an all-in loss stays silent', e1[0] === '@eve went all in and lost 20 $DON' && e2.length === 0 && balance(ch, 9) === 0, { e1, e2 });
+
+    gambleOn({ cooldownSeconds: 60 });
+    const bad = await run('$don gamble abc', t('carol', 3));
+    setRoll(0.9);
+    const first = await run('$don gamble 5', t('carol', 3));
+    const second = await run('$don gamble 5', t('carol', 3));
+    check('a failed gamble hands the cooldown back; cooldown is silent', bad.length === 1 && first.length === 1 && second.length === 0 && balance(ch, 3) === 20, { bad, first, second });
+
+    gambleOn();
+    live = { isLive: false, startedAt: null };
+    svc = fresh();
+    const offline = await run('$don gamble 5', t('dave', 4));
+    check('offline gamble is silent and free', offline.length === 0 && balance(ch, 4) === 500, offline);
+    live = null;
+    svc = fresh();
+    check('unknown live state counts as offline', (await run('$don gamble 5', t('dave', 4))).length === 0 && balance(ch, 4) === 500);
+    gambleOn({ onlyWhileLive: false });
+    setRoll(0.1);
+    check('onlyWhileLive off allows gambling offline', (await run('$don gamble 5', t('dave', 4)))[0] === '@dave won 5 $DON and now has 505');
+    writeConfig(root, ch, { enabled: true, currencyName: '$DON', debugForceLive: true, gamble: { enabled: true, cooldownSeconds: 0 } });
+    setRoll(0.9);
+    check('debugForceLive counts as live for staging', (await run('$don gamble 5', t('dave', 4)))[0] === '@dave lost 5 $DON and now has 500');
+    live = { isLive: true, startedAt: null };
+    svc = fresh();
+
+    gambleOn({ winChancePercent: 0 });
+    setRoll(0);
+    check('0% never wins, even on the lowest roll', /^@dave lost/.test((await run('$don gamble 5', t('dave', 4)))[0] ?? ''));
+    gambleOn({ winChancePercent: 100 });
+    setRoll(0.99999);
+    check('100% always wins, even on the highest roll', /^@dave won/.test((await run('$don gamble 5', t('dave', 4)))[0] ?? ''));
+
+    writeConfig(root, ch, { enabled: true, currencyName: '$DON' });
+    check('gambling off is silent', (await run('$don gamble 5', t('dave', 4))).length === 0 && balance(ch, 4) === 500);
+    gambleOn();
+    check('the bot account cannot gamble', (await run('$don gamble 5', t('thebotacct', 5))).length === 0);
+
+    const stats = gambleStats(db);
+    const expected = db.prepare("SELECT SUM(reason = 'game:gamble') AS g, SUM(reason = 'game:gamble_win') AS w, SUM(delta) AS net FROM ledger WHERE reason LIKE 'game:%'").get() as { g: number; w: number; net: number };
+    check('gamble stats: 12 gambles, 4 wins, net matches the ledger',
+      stats.gambles === 12 && stats.wins === 4 && stats.net === expected.net && stats.gambles === expected.g && stats.wins === expected.w, { stats, expected });
+    check('summary carries gamble stats', pointsSummary(ch).gamble.allTime.gambles === 12);
+    void svc;
+    check('invariant holds (gamble)', invariantViolations(db).length === 0, invariantViolations(db));
+
+    // Real randomness: 100,000 rolls at 50% across the channel land within a point of 50%.
+    const realSvc = makeService('rollch');
+    let wins = 0;
+    for (let i = 0; i < 100_000; i++) if (realSvc.rollGamble(50).win) wins++;
+    check('100,000 real rolls at 50% win 49–51%', wins > 49_000 && wins < 51_000, wins);
+    let wins30 = 0;
+    for (let i = 0; i < 100_000; i++) if (realSvc.rollGamble(30).win) wins30++;
+    check('100,000 real rolls at 30% win 29–31%', wins30 > 29_000 && wins30 < 31_000, wins30);
+    makeService(ch, { broadcaster: 999 });
+  }
+
+  // Duel
+  {
+    const ch = 'duelch';
+    const duelOn = (extra: Record<string, unknown> = {}) =>
+      writeConfig(root, ch, { enabled: true, currencyName: '$DON', duel: { enabled: true, cooldownSeconds: 0, ...extra } });
+    writeConfig(root, ch, { enabled: true, currencyName: '$DON' });
+    let roll = 0.5;
+    let live: LiveState | null = { isLive: true, startedAt: null };
+    const sent: string[] = [];
+    const fresh = () => makeService(ch, { broadcaster: 999, sent, random: () => roll, live: async () => live });
+    let svc = fresh();
+    const db = openPointsDb(ch, { create: true })!;
+    runWrite(db, () => {
+      creditTx(db, { userId: 1, username: 'alice', amount: 1000, reason: 'mod_add', now: 1 });
+      creditTx(db, { userId: 2, username: 'bob', amount: 500, reason: 'mod_add', now: 1 });
+      creditTx(db, { userId: 3, username: 'carol', amount: 300, reason: 'mod_add', now: 1 });
+      creditTx(db, { userId: 4, username: 'dave', amount: 50, reason: 'mod_add', now: 1 });
+      creditTx(db, { userId: 6, username: 'botrix', amount: 5000, reason: 'mod_add', now: 1 });
+    });
+    const config = { channelName: ch } as ChannelConfig;
+    const t = (username: string, id: number, messageId?: string): KickTags => ({
+      username, 'display-name': username, badges: {}, isBroadcaster: false, isModUp: false, isVIPUp: false, rawBadges: [], senderId: id, messageId
+    });
+    const run = async (msg: string, tags: KickTags) => {
+      const out: string[] = [];
+      await pointsCommand({ say: async (_c, m) => { out.push(m); } }, msg, `#${ch}`, tags, config);
+      return out;
+    };
+    const bal = () => [1, 2, 3, 4].map(id => balance(ch, id)).join(',');
+
+    check('duels off by default are silent', (await run('$don duel @bob 100', t('alice', 1))).length === 0 && bal() === '1000,500,300,50');
+    duelOn();
+    check('duel usage without a name or amount', (await run('$don duel', t('alice', 1)))[0] === 'Usage: $don duel @user amount'
+      && (await run('$don duel @bob', t('alice', 1)))[0] === 'Usage: $don duel @user amount'
+      && (await run('$don duel @bob abc', t('alice', 1)))[0] === 'Usage: $don duel @user amount');
+    check('cannot duel yourself', (await run('$don duel @alice 10', t('alice', 1)))[0] === '@alice you cannot duel yourself');
+    check('cannot duel a system bot', (await run('$don duel @botrix 10', t('alice', 1)))[0] === '@alice you cannot duel botrix');
+    check('cannot duel an unknown viewer', (await run('$don duel ghost 10', t('alice', 1)))[0] === '@alice you cannot duel ghost');
+    check('opponent must be able to match', (await run('$don duel @dave 100', t('alice', 1)))[0] === '@alice dave only has 50 $DON' && bal() === '1000,500,300,50');
+    check('challenger must cover the stake', (await run('$don duel @alice 60', t('dave', 4)))[0] === '@dave you only have 50 $DON');
+
+    const challenge = await run('$don duel @bob 100', t('alice', 1));
+    check('challenge holds the stake and tells the opponent',
+      challenge[0] === '@bob alice challenges you to a duel for 100 $DON, type $don accept or $don deny within 2 min' && bal() === '900,500,300,50', challenge);
+    check('one pending challenge per challenger', (await run('$don duel @carol 10', t('alice', 1)))[0] === '@alice you already challenged bob, $don cancel first');
+    const second = await run('$don duel 50% @bob', t('carol', 3));
+    check('amount before @name, 50% of the challenger', /for 150 \$DON/.test(second[0] ?? '') && balance(ch, 3) === 150, second);
+    check('several incoming: bare accept asks to pick', (await run('$don accept', t('bob', 2)))[0] === '@bob pick one: $don accept @alice or @carol');
+    check('deny by name refunds', (await run('$don deny @carol', t('bob', 2)))[0] === '@carol bob declined the duel, 150 $DON refunded' && balance(ch, 3) === 300);
+    check('accept by an unknown name', (await run('$don accept @dave', t('bob', 2)))[0] === '@bob dave has not challenged you');
+
+    roll = 0.1; // below 5000: the challenger wins
+    const won = await run('$don accept', t('bob', 2));
+    check('accept: challenger wins both stakes', won[0] === 'alice won the duel against bob and takes 100 $DON, now has 1100' && bal() === '1100,400,300,50', won);
+    check('nothing left to accept', (await run('$don accept', t('bob', 2)))[0] === '@bob you have no duel to accept');
+    const rows = db.prepare("SELECT reason, delta FROM ledger WHERE reason LIKE 'game:duel%' ORDER BY id").all() as Array<{ reason: string; delta: number }>;
+    check('duel ledger: hold, hold, refund, stake, win', rows.map(r => `${r.reason.slice(10)}${r.delta}`).join(' ') === 'hold-100 hold-150 refund150 stake-100 win200', rows);
+
+    check('challenge then cancel refunds', (await run('$don duel @bob 100', t('carol', 3))).length === 1
+      && (await run('$don cancel', t('carol', 3)))[0] === '@carol duel cancelled, 100 $DON refunded' && balance(ch, 3) === 300);
+    check('nothing to cancel', (await run('$don cancel', t('carol', 3)))[0] === '@carol you have no duel to cancel');
+
+    await run('$don duel @dave 50', t('carol', 3));
+    runWrite(db, () => debitTx(db, { userId: 4, amount: 40, reason: 'mod_remove', now: Date.now() }));
+    check('opponent short at accept: reply, duel stays pending',
+      (await run('$don accept', t('dave', 4)))[0] === '@dave you only have 10 $DON' && !!outgoingDuel(db, 3) && balance(ch, 3) === 250);
+
+    db.prepare("UPDATE duels SET expires_at = ? WHERE status = 'pending'").run(Date.now() - 1);
+    sent.length = 0;
+    const swept = svc.sweepDuels();
+    check('expiry refunds and says so', swept === 1 && sent[0] === "@carol dave didn't answer, 50 $DON refunded" && balance(ch, 3) === 300, { swept, sent });
+    check('a second sweep finds nothing', svc.sweepDuels() === 0);
+
+    const raced = createDuel(db, { challengerId: 1, opponentId: 2, amount: 10, expiresAt: Date.now() + 60_000, actor: 'test', now: Date.now() });
+    const id = raced.ok ? raced.duel.id : '';
+    const refunded = refundDuel(db, { id, status: 'expired', actor: 'test', now: Date.now() });
+    const late = acceptDuel(db, { id, challengerWins: true, actor: 'test', now: Date.now() });
+    check('accept after expiry is gone; refunded once', !!refunded && !late.ok && late.reason === 'gone' && refundDuel(db, { id, status: 'denied', actor: 'test', now: Date.now() }) === null && balance(ch, 1) === 1100, late);
+
+    createDuel(db, { challengerId: 1, opponentId: 3, amount: 20, expiresAt: Date.now() - 1, actor: 'test', now: Date.now() - 120_000 });
+    svc = fresh(); // a restarted bot: the pending duel is only in the database
+    check('the stake is held while the bot is down', balance(ch, 1) === 1080);
+    check('after a restart, a duel that expired meanwhile is refunded', svc.sweepDuels() === 1 && balance(ch, 1) === 1100);
+
+    roll = 0.9; // at or above 5000: the opponent wins
+    const c1 = await run('$don duel @bob 30', t('alice', 1, 'dmsg-1'));
+    const c2 = await run('$don duel @bob 30', t('alice', 1, 'dmsg-1'));
+    const a1 = await run('$don accept', t('bob', 2, 'dmsg-2'));
+    const a2 = await run('$don accept', t('bob', 2, 'dmsg-2'));
+    check('replayed challenge and accept act once', c1.length === 1 && c2.length === 0 && a2.length === 0
+      && a1[0] === 'bob won the duel against alice and takes 30 $DON, now has 430' && bal() === '1070,430,300,10', { c1, c2, a1, a2, bal: bal() });
+
+    live = { isLive: false, startedAt: null };
+    svc = fresh();
+    check('offline challenge is silent and holds nothing', (await run('$don duel @bob 10', t('carol', 3))).length === 0 && balance(ch, 3) === 300);
+    live = { isLive: true, startedAt: null };
+    svc = fresh();
+    await run('$don duel @bob 10', t('alice', 1));
+    live = null;
+    svc = fresh();
+    check('accept while live state is unknown is silent, duel stays pending', (await run('$don accept', t('bob', 2))).length === 0 && !!outgoingDuel(db, 1));
+    check('cancel works offline', (await run('$don cancel', t('alice', 1)))[0] === '@alice duel cancelled, 10 $DON refunded' && balance(ch, 1) === 1070);
+    live = { isLive: true, startedAt: null };
+    svc = fresh();
+
+    duelOn({ cooldownSeconds: 60, minAmount: 5, maxAmount: 200 });
+    check('duel minimum and maximum', (await run('$don duel @bob 1', t('carol', 3)))[0] === '@carol the minimum is 5'
+      && (await run('$don duel @bob 201', t('carol', 3)))[0] === '@carol the maximum is 200');
+    const cd1 = await run('$don duel @bob 10', t('carol', 3));
+    await run('$don cancel', t('carol', 3));
+    const cd2 = await run('$don duel @bob 10', t('carol', 3));
+    check('failed challenges hand the cooldown back; cooldown is silent', cd1.length === 1 && cd2.length === 0 && balance(ch, 3) === 300, { cd1, cd2 });
+
+    writeConfig(root, ch, { enabled: true, currencyName: '$DON' });
+    check('accept with duels off is silent', (await run('$don accept', t('bob', 2))).length === 0);
+
+    check('refunds and wins do not count as lifetime earned', getUser(db, 1)?.lifetime_earned === 1000 && getUser(db, 2)?.lifetime_earned === 500);
+    const ds = duelStats(db);
+    check('duel stats: 2 played, 260 staked, none pending', ds.duels === 2 && ds.staked === 260 && ds.pending === 0, ds);
+    check('summary carries duel stats', pointsSummary(ch).duel.allTime.duels === 2);
+    check('invariant holds (duel)', invariantViolations(db).length === 0, invariantViolations(db));
+
+    // v1 → v2 migration on an existing database keeps its rows.
+    const mch = 'migrate1ch';
+    const mdb = openPointsDb(mch, { create: true })!;
+    runWrite(mdb, () => creditTx(mdb, { userId: 1, username: 'old', amount: 77, reason: 'mod_add', now: 1 }));
+    mdb.exec('DROP TABLE duels');
+    mdb.pragma('user_version = 1');
+    closePointsDb(mch);
+    const reopened = openPointsDb(mch, { create: false })!;
+    check('v1 database migrates to v2 keeping balances',
+      reopened.pragma('user_version', { simple: true }) === 2 && balance(mch, 1) === 77 && !!reopened.prepare("SELECT 1 FROM sqlite_master WHERE name = 'duels'").get());
+    void svc;
+    makeService(ch, { broadcaster: 999 });
+  }
+
   // Dashboard API
   {
     const ch = 'cmdch';
@@ -618,6 +906,40 @@ async function main(): Promise<void> {
 
     const codes = await Promise.all([1, 2, 3, 4].map(i => runChild('opencreate', root, i)));
     check('concurrent first opens migrate cleanly', codes.every(c => c === 0), codes);
+  }
+
+  // Give amounts: the same forms as gamble, against the giver's balance
+  {
+    const ch = 'givech';
+    writeConfig(root, ch, { enabled: true, currencyName: '$DON', give: { enabled: true, cooldownSeconds: 0 } });
+    makeService(ch, { broadcaster: 999 });
+    const db = openPointsDb(ch, { create: true })!;
+    runWrite(db, () => {
+      creditTx(db, { userId: 1, username: 'alice', amount: 100, reason: 'mod_add', now: 1 });
+      creditTx(db, { userId: 2, username: 'bob', amount: 10, reason: 'mod_add', now: 1 });
+    });
+    const config = { channelName: ch } as ChannelConfig;
+    const t = (username: string, id: number, messageId?: string): KickTags => ({
+      username, 'display-name': username, badges: {}, isBroadcaster: false, isModUp: false, isVIPUp: false, rawBadges: [], senderId: id, messageId
+    });
+    const run = async (msg: string, tags: KickTags) => {
+      const out: string[] = [];
+      await pointsCommand({ say: async (_c, m) => { out.push(m); } }, msg, `#${ch}`, tags, config);
+      return out;
+    };
+    const bal = () => `${balance(ch, 1)},${balance(ch, 2)}`;
+
+    check('give 50%', (await run('$don give bob 50%', t('alice', 1)))[0] === '@alice gave 50 $DON to bob' && bal() === '50,60', bal());
+    check('give all, amount before @name', (await run('$don give all @bob', t('alice', 1)))[0] === '@alice gave 50 $DON to bob' && bal() === '0,110', bal());
+    check('give 0.05k, amount after a bare name', (await run('$don give alice 0.05k', t('bob', 2)))[0] === '@bob gave 50 $DON to alice' && bal() === '50,60', bal());
+    check('give all without a balance', (await run('$don give alice all', t('newbie', 77)))[0] === '@newbie you only have 0 $DON');
+    check('give with an unreadable amount', (await run('$don give alice abc', t('bob', 2)))[0] === 'Usage: $don give user amount'
+      && (await run('$don give alice 200%', t('bob', 2)))[0] === 'Usage: $don give user amount');
+    check('give a percentage under the minimum', (await run('$don give alice 5%', t('bob', 2)))[0] === '@bob the minimum is 10');
+    const g1 = await run('$don give bob all', t('alice', 1, 'gv-1'));
+    const g2 = await run('$don give bob all', t('alice', 1, 'gv-1'));
+    check('replayed give all acts once and stays silent', g1[0] === '@alice gave 50 $DON to bob' && g2.length === 0 && bal() === '0,110', { g1, g2, bal: bal() });
+    check('invariant holds (give amounts)', invariantViolations(db).length === 0, invariantViolations(db));
   }
 
   // ─── Timeout penalties ──────────────────────────────────────────────────

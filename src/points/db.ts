@@ -111,15 +111,40 @@ CREATE TABLE meta (
 );
 `;
 
+/**
+ * v2: duels. A challenger's stake is held until the duel is answered, so pending
+ * duels live here rather than in a bot's memory, where a restart would strand the
+ * stake. The partial unique index allows one pending challenge per challenger.
+ */
+const SCHEMA_V2 = `
+CREATE TABLE duels (
+  id TEXT PRIMARY KEY,
+  challenger_id INTEGER NOT NULL REFERENCES users(user_id),
+  opponent_id INTEGER NOT NULL REFERENCES users(user_id),
+  amount INTEGER NOT NULL CHECK (amount > 0),
+  created_at INTEGER NOT NULL,
+  expires_at INTEGER NOT NULL,
+  status TEXT NOT NULL,
+  winner_id INTEGER,
+  resolved_at INTEGER
+);
+CREATE INDEX duels_pending ON duels(status, expires_at);
+CREATE INDEX duels_opponent ON duels(opponent_id, status);
+CREATE UNIQUE INDEX duels_one_outgoing ON duels(challenger_id) WHERE status = 'pending';
+`;
+
+const SCHEMA_VERSION = 2;
+
 export function migrate(db: PointsDb): void {
-  if ((db.pragma('user_version', { simple: true }) as number) >= 1) return;
+  if ((db.pragma('user_version', { simple: true }) as number) >= SCHEMA_VERSION) return;
   db.transaction(() => {
     // Read again under the write lock. The bot and the enrollment service can open a
-    // new database at the same moment; whichever gets here second must not create
-    // the tables again ("table users already exists").
-    if ((db.pragma('user_version', { simple: true }) as number) >= 1) return;
-    db.exec(SCHEMA_V1);
-    db.pragma('user_version = 1');
+    // database at the same moment; whichever gets here second must not create the
+    // tables again ("table users already exists"). Each step is additive.
+    const version = db.pragma('user_version', { simple: true }) as number;
+    if (version < 1) db.exec(SCHEMA_V1);
+    if (version < 2) db.exec(SCHEMA_V2);
+    if (version < SCHEMA_VERSION) db.pragma(`user_version = ${SCHEMA_VERSION}`);
   }).immediate();
 }
 

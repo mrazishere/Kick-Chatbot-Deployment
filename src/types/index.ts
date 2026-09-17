@@ -189,6 +189,41 @@ export interface PointsTimeoutPenaltyConfig {
   announce: boolean;
 }
 
+/**
+ * `$<cmd> gamble <amount>`: an even-money bet. A win adds the amount, a loss takes
+ * it. One win chance for the whole channel; every gamble is its own roll.
+ */
+export interface PointsGambleConfig {
+  enabled: boolean;
+  /** Chance each gamble wins, 0–100. The same for every viewer in the channel. */
+  winChancePercent: number;
+  minAmount: number;
+  /** 0 means no maximum. */
+  maxAmount: number;
+  /** Per viewer. */
+  cooldownSeconds: number;
+  /** Ignore gambles while the stream is offline. */
+  onlyWhileLive: boolean;
+}
+
+/**
+ * `$<cmd> duel @user <amount>`: two viewers put in the same amount, 50/50, and the
+ * winner takes both. The challenger's stake is held until the duel is answered or
+ * expires, then paid out or refunded.
+ */
+export interface PointsDuelConfig {
+  enabled: boolean;
+  minAmount: number;
+  /** 0 means no maximum. */
+  maxAmount: number;
+  /** Per challenger, after a challenge is made. */
+  cooldownSeconds: number;
+  /** How long the opponent has to answer before the stake is refunded. */
+  expirySeconds: number;
+  /** Ignore challenges and accepts while the stream is offline. Refunds happen regardless. */
+  onlyWhileLive: boolean;
+}
+
 export interface PointsConfig {
   enabled: boolean;
   currencyName: string;
@@ -208,13 +243,17 @@ export interface PointsConfig {
   publicLeaderboard: boolean;
   /** What a timeout costs the viewer who got it. */
   timeoutPenalty: PointsTimeoutPenaltyConfig;
+  gamble: PointsGambleConfig;
+  duel: PointsDuelConfig;
 }
 
 /** The `points` block as stored in a channel config: any subset of the fields. */
-export type StoredPointsConfig = Partial<Omit<PointsConfig, 'bonuses' | 'give' | 'timeoutPenalty'>> & {
+export type StoredPointsConfig = Partial<Omit<PointsConfig, 'bonuses' | 'give' | 'timeoutPenalty' | 'gamble' | 'duel'>> & {
   bonuses?: Partial<PointsBonusesConfig>;
   give?: Partial<PointsGiveConfig>;
   timeoutPenalty?: Partial<PointsTimeoutPenaltyConfig>;
+  gamble?: Partial<PointsGambleConfig>;
+  duel?: Partial<PointsDuelConfig>;
   /** Staging only, set by editing the file: treat the channel as live. Never exposed by the API. */
   debugForceLive?: boolean;
 };
