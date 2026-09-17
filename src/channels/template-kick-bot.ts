@@ -35,6 +35,14 @@ import { PointsService } from '../points/service';
 
 const CHANNEL_NAME = '$$UPDATEHERE$$';
 
+/**
+ * Chat extensions append a lone invisible character (U+E0021 after a space) so Kick
+ * accepts a repeated message. Left in, "$don <U+E0021>" reads as $don with one argument and
+ * gets no reply. Drops words made only of format characters; ones inside a word
+ * (emoji joiners, flag tags) stay.
+ */
+const INVISIBLE_WORD = /(^|\s+)\p{Cf}+(?=\s|$)/gu;
+
 /** How often the bot pings Pusher. */
 const PING_INTERVAL_MS = 30_000;
 /** Silence on the socket, pongs included, after which it is treated as dead: two missed pongs plus slack. */
@@ -632,7 +640,8 @@ class KickChatBot {
       return;
     }
     const username = sender.username;
-    const message = content;
+    const message = content.replace(INVISIBLE_WORD, '').trim();
+    if (!message) return;
     const badges = sender?.identity?.badges || [];
 
     // Keep the reward handler's moderator set current so a mod who was promoted
