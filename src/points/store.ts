@@ -406,6 +406,143 @@ export function duelStats(db: PointsDb, sinceMs = 0): DuelStats {
   ).get(sinceMs) as DuelStats;
 }
 
+/** A raffle prize is minted when it is drawn, so it has one ledger reason and no stake. */
+export const RAFFLE_WIN = 'game:raffle_win';
+
+export interface RaffleRow {
+  id: string;
+  prize: number;
+  winners: number;
+  stream_key: string;
+  opened_by: string;
+  created_at: number;
+  closes_at: number;
+  status: 'open' | 'drawn' | 'cancelled';
+  resolved_at: number | null;
+}
+
+export interface RaffleEntryRow {
+  raffle_id: string;
+  user_id: number;
+  username: string;
+  joined_at: number;
+}
+
+/** The channel's open raffle, if any. There is at most one. */
+export function openRaffle(db: PointsDb): RaffleRow | undefined {
+  return db.prepare("SELECT * FROM raffles WHERE status = 'open'").get() as RaffleRow | undefined;
+}
+
+/** Open raffles whose time is up, oldest first. */
+export function dueRaffles(db: PointsDb, now: number): RaffleRow[] {
+  return db.prepare("SELECT * FROM raffles WHERE status = 'open' AND closes_at <= ? ORDER BY closes_at").all(now) as RaffleRow[];
+}
+
+/** Everyone entered in a raffle, in the order they joined. */
+export function raffleEntries(db: PointsDb, raffleId: string): RaffleEntryRow[] {
+  return db.prepare('SELECT * FROM raffle_entries WHERE raffle_id = ? ORDER BY joined_at, rowid').all(raffleId) as RaffleEntryRow[];
+}
+
+/** How many raffles have been opened during this stream, drawn or not. Cancelled ones don't count. */
+export function rafflesThisStream(db: PointsDb, streamKey: string): number {
+  return (db.prepare("SELECT COUNT(*) AS n FROM raffles WHERE stream_key = ? AND status <> 'cancelled'").get(streamKey) as { n: number }).n;
+}
+
+export type OpenRaffleResult =
+  | { ok: true; raffle: RaffleRow }
+  | { ok: false; reason: 'already'; raffle: RaffleRow }
+  | { ok: false; reason: 'per_stream'; opened: number };
+
+/**
+ * Open a raffle. Fails without side effects when one is already open or the
+ * per-stream allowance is used up. Nothing is debited: the prize is minted at the
+ * draw, so an abandoned raffle costs nobody anything.
+ */
+export function createRaffle(
+  db: PointsDb,
+  a: { prize: number; winners: number; streamKey: string; openedBy: string; closesAt: number; maxPerStream: number; now: number }
+): OpenRaffleResult {
+  return runWrite<OpenRaffleResult>(db, () => {
+    const live = openRaffle(db);
+    if (live) return { ok: false, reason: 'already', raffle: live };
+    if (a.maxPerStream > 0) {
+      const opened = rafflesThisStream(db, a.streamKey);
+      if (opened >= a.maxPerStream) return { ok: false, reason: 'per_stream', opened };
+    }
+    const id = `raffle:${crypto.randomUUID()}`;
+    db.prepare(
+      "INSERT INTO raffles (id, prize, winners, stream_key, opened_by, created_at, closes_at, status) VALUES (?, ?, ?, ?, ?, ?, ?, 'open')"
+    ).run(id, a.prize, a.winners, a.streamKey, a.openedBy, a.now, a.closesAt);
+    return { ok: true, raffle: db.prepare('SELECT * FROM raffles WHERE id = ?').get(id) as RaffleRow };
+  });
+}
+
+export type JoinRaffleResult = 'joined' | 'already' | 'closed';
+
+/**
+ * Enter the open raffle. Entry is free and one per viewer: a second join is
+ * reported rather than adding a ticket. Joining a raffle whose time has passed is
+ * refused, so a message that arrives during the draw doesn't slip in.
+ */
+export function joinRaffle(db: PointsDb, a: { userId: number; username: string; now: number }): JoinRaffleResult {
+  return runWrite<JoinRaffleResult>(db, () => {
+    const r = openRaffle(db);
+    if (!r || r.closes_at <= a.now) return 'closed';
+    // A viewer who has never earned has no row yet, and entry is free, so the row
+    // is made here rather than turning them away from a raffle they can win.
+    const user = ensureUserTx(db, a.userId, a.username, a.now);
+    const res = db.prepare('INSERT OR IGNORE INTO raffle_entries (raffle_id, user_id, username, joined_at) VALUES (?, ?, ?, ?)')
+      .run(r.id, user.user_id, user.username, a.now);
+    return res.changes === 1 ? 'joined' : 'already';
+  });
+}
+
+export interface RaffleDrawResult {
+  raffle: RaffleRow;
+  paid: Array<{ userId: number; username: string; amount: number; balance: number }>;
+}
+
+/**
+ * Pay the winners and close the raffle, in one transaction. The winners are chosen
+ * by the caller so the pick can be seeded in tests. An uneven prize goes to the
+ * earlier winners first, a $DON at a time, so the whole prize is always paid out.
+ * Returns null when the raffle was already drawn or cancelled, which is what makes
+ * a sweep racing a manual draw resolve once.
+ */
+export function drawRaffle(
+  db: PointsDb,
+  a: { id: string; winners: Array<{ userId: number; username: string }>; actor: string; now: number }
+): RaffleDrawResult | null {
+  return runWrite<RaffleDrawResult | null>(db, () => {
+    const claim = db.prepare("UPDATE raffles SET status = 'drawn', resolved_at = ? WHERE id = ? AND status = 'open'").run(a.now, a.id);
+    if (claim.changes !== 1) return null;
+    const r = db.prepare('SELECT * FROM raffles WHERE id = ?').get(a.id) as RaffleRow;
+    const paid: RaffleDrawResult['paid'] = [];
+    const n = a.winners.length;
+    if (n > 0) {
+      const each = Math.floor(r.prize / n);
+      let extra = r.prize - each * n;
+      for (const w of a.winners) {
+        const amount = each + (extra > 0 ? 1 : 0);
+        if (extra > 0) extra--;
+        if (amount <= 0) continue;
+        const balance = creditTx(db, { userId: w.userId, amount, reason: RAFFLE_WIN, ref: r.id, actor: a.actor, now: a.now });
+        paid.push({ userId: w.userId, username: w.username, amount, balance });
+      }
+    }
+    return { raffle: { ...r, status: 'drawn', resolved_at: a.now }, paid };
+  });
+}
+
+/** Close a raffle without drawing. null when it was no longer open. Nothing to refund: entry was free. */
+export function cancelRaffle(db: PointsDb, a: { id: string; now: number }): RaffleRow | null {
+  return runWrite(db, () => {
+    const res = db.prepare("UPDATE raffles SET status = 'cancelled', resolved_at = ? WHERE id = ? AND status = 'open'").run(a.now, a.id);
+    if (res.changes !== 1) return null;
+    return db.prepare('SELECT * FROM raffles WHERE id = ?').get(a.id) as RaffleRow;
+  });
+}
+
 export function tickExists(db: PointsDb, slotKey: string): boolean {
   return !!db.prepare('SELECT 1 FROM ticks WHERE slot_key = ?').get(slotKey);
 }

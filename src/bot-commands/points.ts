@@ -45,10 +45,10 @@ import { reportDbError, runWrite } from '../points/db';
 import { getPointsService } from '../points/service';
 import {
   acceptDuel, applyOnce, countRanked, createDuel, creditTx, debitTx, ensureUserTx, findUserByName, gamble, getUser,
-  incomingDuels, isApplied, isExcluded, outgoingDuel, rankBy, refundDuel, setTx, topBy, transfer
+  cancelRaffle, createRaffle, incomingDuels, isApplied, isExcluded, joinRaffle, openRaffle, outgoingDuel, rankBy, refundDuel, setTx, topBy, transfer
 } from '../points/store';
 
-const SUBCOMMANDS = new Set(['activetime', 'top', 'leaderboard', 'give', 'gamble', 'duel', 'accept', 'deny', 'cancel', 'add', 'remove', 'set']);
+const SUBCOMMANDS = new Set(['activetime', 'top', 'leaderboard', 'give', 'gamble', 'duel', 'accept', 'deny', 'cancel', 'raffle', 'sraffle', 'join', 'add', 'remove', 'set']);
 const AMOUNT_RE = /^\d{1,9}$/;
 const NAME_RE = /^@?[A-Za-z0-9_]{2,25}$/;
 
@@ -471,6 +471,73 @@ export const points: CommandFn = async function points(client, message, channel,
       } finally {
         if (!keepCooldown) cooldowns.delete(cdKey);
       }
+    }
+
+    // ── raffle / sraffle / join ──
+    if (sub === 'raffle' || sub === 'sraffle' || sub === 'join') {
+      const rc = cfg.raffle;
+      const ignore = (why: string) => void console.log(`[POINTS] ${sub} from ${me} ignored: ${why}`);
+      if (!rc.enabled) return ignore('raffles disabled');
+      // Resolve anything that has already run out before reading the open raffle,
+      // so a closed one is never treated as still taking entries.
+      svc.sweepRaffles();
+
+      if (sub === 'join') {
+        if (isExcluded(ex, self?.user_id ?? null, meLc) || isBotSender(me, tags.senderId)) return ignore('excluded');
+        const open = openRaffle(db);
+        if (!open) return ignore('no raffle open');
+        const uid = self?.user_id ?? (Number.isInteger(senderId) && senderId > 0 ? senderId : null);
+        if (uid === null) return ignore('no user id on the message');
+        const res = joinRaffle(db, { userId: uid, username: me, now: Date.now() });
+        // Entries are silent by design: a busy raffle would otherwise flood chat
+        // with one line per viewer. The count is announced when it draws.
+        return ignore(res === 'joined' ? `entered ${open.id}` : res === 'already' ? 'already entered' : 'raffle closed');
+      }
+
+      // Opening and cancelling are moderators and above.
+      if (!isModUp) return ignore('not a moderator');
+
+      if ((args[1] ?? '').toLowerCase() === 'cancel') {
+        const open = openRaffle(db);
+        if (!open) return void say(`@${me} no raffle is open`);
+        if (!cancelRaffle(db, { id: open.id, now: Date.now() })) return void say(`@${me} no raffle is open`);
+        console.log(`[POINTS] ${open.id} cancelled by ${me}`);
+        return void say(`Raffle cancelled by ${me}, no ${cur} paid`);
+      }
+
+      if (rc.onlyWhileLive) {
+        const live = await svc.isLiveNow();
+        if (live !== true) return ignore(live === null ? 'live state unknown' : 'offline');
+      }
+      const prize = Number(args[1]);
+      if (!Number.isInteger(prize) || prize <= 0) return void say(`Usage: $${cmd} ${sub} prize [seconds]`);
+      if (prize < rc.minPrize) return void say(`@${me} the smallest prize is ${rc.minPrize} ${cur}`);
+      if (rc.maxPrize > 0 && prize > rc.maxPrize) return void say(`@${me} the biggest prize is ${rc.maxPrize} ${cur}`);
+
+      const typedSeconds = args[2] === undefined ? rc.defaultDurationSeconds : Number(args[2]);
+      if (!Number.isInteger(typedSeconds) || typedSeconds <= 0) return void say(`Usage: $${cmd} ${sub} prize [seconds]`);
+      if (typedSeconds > rc.maxDurationSeconds) return void say(`@${me} a raffle can run for at most ${rc.maxDurationSeconds}s`);
+
+      const winners = sub === 'sraffle' ? 1 : rc.winners;
+      const run = once(() => createRaffle(db, {
+        prize,
+        winners,
+        streamKey: svc.raffleStreamKey(),
+        openedBy: me,
+        closesAt: Date.now() + typedSeconds * 1000,
+        maxPerStream: rc.maxPerStream,
+        now: Date.now()
+      }));
+      if (!run.applied) return;
+      const res = run.result!;
+      if (!res.ok) {
+        return void say(res.reason === 'already'
+          ? `@${me} a raffle is already running, $${cmd} raffle cancel to stop it`
+          : `@${me} that's all ${res.opened} raffles for this stream`);
+      }
+      console.log(`[POINTS] ${me} opened ${res.raffle.id}: ${prize} ${cur}, ${winners} winner(s), ${typedSeconds}s`);
+      const share = winners === 1 ? `${prize} ${cur}` : `${prize} ${cur} split ${winners} ways`;
+      return void say(`Raffle open — ${share}, type $${cmd} join within ${expiryText(typedSeconds)}`);
     }
 
     // ── add / remove / set ──

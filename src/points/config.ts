@@ -9,7 +9,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { PointsBonusesConfig, PointsConfig, PointsDuelConfig, PointsGambleConfig, PointsGiveConfig, StoredPointsConfig, PointsTimeoutPenaltyConfig } from '../types';
+import { PointsBonusesConfig, PointsConfig, PointsDuelConfig, PointsGambleConfig, PointsGiveConfig, PointsRaffleConfig, StoredPointsConfig, PointsTimeoutPenaltyConfig } from '../types';
 
 export function defaultPointsConfig(): PointsConfig {
   return {
@@ -56,6 +56,16 @@ export function defaultPointsConfig(): PointsConfig {
       maxAmount: 0,
       cooldownSeconds: 60,
       expirySeconds: 120,
+      onlyWhileLive: true
+    },
+    raffle: {
+      enabled: false,
+      minPrize: 1,
+      maxPrize: 100_000,
+      maxPerStream: 5,
+      defaultDurationSeconds: 120,
+      maxDurationSeconds: 600,
+      winners: 3,
       onlyWhileLive: true
     }
   };
@@ -168,6 +178,18 @@ export function internalPointsConfig(raw: unknown): InternalPointsConfig {
     onlyWhileLive: bool(du.onlyWhileLive, d.duel.onlyWhileLive)
   };
 
+  const ra = obj(r.raffle);
+  const raffle: PointsRaffleConfig = {
+    enabled: bool(ra.enabled, d.raffle.enabled),
+    minPrize: num(ra.minPrize, d.raffle.minPrize, 1, 1_000_000_000, true),
+    maxPrize: num(ra.maxPrize, d.raffle.maxPrize, 0, 1_000_000_000, true),
+    maxPerStream: num(ra.maxPerStream, d.raffle.maxPerStream, 0, 100, true),
+    defaultDurationSeconds: num(ra.defaultDurationSeconds, d.raffle.defaultDurationSeconds, 10, 3600, true),
+    maxDurationSeconds: num(ra.maxDurationSeconds, d.raffle.maxDurationSeconds, 10, 3600, true),
+    winners: num(ra.winners, d.raffle.winners, 1, 50, true),
+    onlyWhileLive: bool(ra.onlyWhileLive, d.raffle.onlyWhileLive)
+  };
+
   return {
     enabled: bool(r.enabled, d.enabled),
     currencyName: name,
@@ -183,6 +205,7 @@ export function internalPointsConfig(raw: unknown): InternalPointsConfig {
     timeoutPenalty,
     gamble,
     duel,
+    raffle,
     modMaxAdjust: num(r.modMaxAdjust, d.modMaxAdjust, 1, 1_000_000_000, true),
     publicLeaderboard: bool(r.publicLeaderboard, d.publicLeaderboard),
     debugForceLive: r.debugForceLive === true
@@ -246,6 +269,14 @@ const DUEL_NUMBERS: Record<string, Rule> = {
   cooldownSeconds: { min: 0, max: 3600, integer: true },
   expirySeconds: { min: 30, max: 600, integer: true }
 };
+const RAFFLE_NUMBERS: Record<string, Rule> = {
+  minPrize: { min: 1, max: 1_000_000_000, integer: true },
+  maxPrize: { min: 0, max: 1_000_000_000, integer: true },
+  maxPerStream: { min: 0, max: 100, integer: true },
+  defaultDurationSeconds: { min: 10, max: 3600, integer: true },
+  maxDurationSeconds: { min: 10, max: 3600, integer: true },
+  winners: { min: 1, max: 50, integer: true }
+};
 const GAMBLE_NUMBERS: Record<string, Rule> = {
   // Decimals allowed, e.g. 47.5; the roll has 0.01% steps.
   winChancePercent: { min: 0, max: 100, integer: false },
@@ -285,7 +316,8 @@ export function validatePointsPatch(current: unknown, patch: unknown): { next?: 
     give: { ...(cur.give ?? {}) },
     timeoutPenalty: { ...(cur.timeoutPenalty ?? {}) },
     gamble: { ...(cur.gamble ?? {}) },
-    duel: { ...(cur.duel ?? {}) }
+    duel: { ...(cur.duel ?? {}) },
+    raffle: { ...(cur.raffle ?? {}) }
   };
 
   for (const key of ['enabled', 'excludeBroadcaster', 'publicLeaderboard'] as const) {
@@ -407,6 +439,23 @@ export function validatePointsPatch(current: unknown, patch: unknown): { next?: 
     }
   }
 
+  if (p.raffle !== undefined) {
+    if (!p.raffle || typeof p.raffle !== 'object' || Array.isArray(p.raffle)) errors.push('raffle must be an object');
+    else {
+      const ra = p.raffle as Record<string, unknown>;
+      for (const [key, rule] of Object.entries(RAFFLE_NUMBERS)) {
+        if (ra[key] === undefined) continue;
+        const v = checkNumber(`raffle.${key}`, ra[key], rule, errors);
+        if (v !== undefined) (next.raffle as Record<string, unknown>)[key] = v;
+      }
+      for (const key of ['enabled', 'onlyWhileLive'] as const) {
+        if (ra[key] === undefined) continue;
+        if (typeof ra[key] !== 'boolean') errors.push(`raffle.${key} must be true or false`);
+        else next.raffle![key] = ra[key] as boolean;
+      }
+    }
+  }
+
   // Rules that span fields are checked against the settings as they'd end up. The
   // window is read before clamping: effective values would quietly stretch it to
   // the interval and hide the mistake.
@@ -429,6 +478,13 @@ export function validatePointsPatch(current: unknown, patch: unknown): { next?: 
     errors.push(`duel.maxAmount (${eff.duel.maxAmount}) can't be below duel.minAmount (${eff.duel.minAmount})`);
   }
   if (!Object.keys(next.duel ?? {}).length) delete next.duel;
+  if (eff.raffle.maxPrize > 0 && eff.raffle.maxPrize < eff.raffle.minPrize) {
+    errors.push(`raffle.maxPrize (${eff.raffle.maxPrize}) can't be below raffle.minPrize (${eff.raffle.minPrize})`);
+  }
+  if (eff.raffle.defaultDurationSeconds > eff.raffle.maxDurationSeconds) {
+    errors.push(`raffle.defaultDurationSeconds (${eff.raffle.defaultDurationSeconds}) can't be above raffle.maxDurationSeconds (${eff.raffle.maxDurationSeconds})`);
+  }
+  if (!Object.keys(next.raffle ?? {}).length) delete next.raffle;
   return errors.length ? { errors } : { next, errors };
 }
 

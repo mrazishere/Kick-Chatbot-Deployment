@@ -496,6 +496,10 @@ $don gamble 100               → even money at the channel's win chance
 $don duel @user 100           → challenge a viewer; 50/50, winner takes both
 $don accept|deny [@user]      → answer a challenge
 $don cancel                   → withdraw your own challenge
+$don raffle 5000 120          → open a raffle: 5000 split between winners, 120s (Mods+)
+$don sraffle 5000 120         → same, but one winner takes it all (Mods+)
+$don join                     → enter the open raffle, free, one entry each
+$don raffle cancel            → close it without drawing (Mods+)
 $don add|remove|set @user 500 → adjust a balance (broadcaster and bot owner only)
 ```
 
@@ -507,6 +511,7 @@ Amounts accept `100`, `5k`, `1.5m`, `50%` and `all`.
 |---|---|
 | balance, `activetime`, `top`, `leaderboard` | All users |
 | `give`, `gamble`, `duel` / `accept` / `deny` / `cancel` | All users, when that feature is enabled |
+| `raffle`, `sraffle`, `raffle cancel` | Moderators and above |
 | `add`, `remove`, `set` | Broadcaster and bot owner only — **not** moderators |
 
 Moderators skip the read cooldowns but cannot change balances.
@@ -521,6 +526,30 @@ Timeouts charge the viewer per second.
 **Active time** is time spent chatting while live, counted in 10-minute steps. Kick exposes
 no viewer list, so someone who watches in silence cannot be counted — which is why it is
 called active time and not watch time.
+
+### Raffles
+
+Modelled on the StreamElements raffle. A moderator opens one with a prize and a duration,
+viewers enter **free** with `$don join` — one entry each, however often they type it — and
+the prize is paid when it closes. `raffle` splits between `winners` people (3 by default),
+`sraffle` gives it all to one.
+
+The prize is **minted**, not taken from anyone, which is why it is capped three ways:
+
+| Setting | Default | What it stops |
+|---|---|---|
+| `raffle.maxPrize` | 100000 | One mod minting an unbounded prize |
+| `raffle.maxPerStream` | 5 | Raffle after raffle inflating the economy |
+| `raffle.maxDurationSeconds` | 600 | One left open all stream, blocking the next |
+
+Cancelled raffles don't count against the per-stream allowance, since nothing was paid.
+
+Only one raffle runs at a time, enforced in the schema rather than in memory, so a restart
+mid-raffle cannot produce two. Entries and the open raffle live in SQLite: a raffle that
+closes while the bot is down is drawn on the next sweep rather than lost. Joins are silent
+by design — a busy raffle would otherwise post one line per viewer — and the entry count is
+announced with the result. If fewer people enter than there are winner slots, everyone wins;
+an uneven split gives the odd points to the earliest entrants, so the whole prize is paid.
 
 ### Notes
 

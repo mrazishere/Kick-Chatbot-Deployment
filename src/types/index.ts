@@ -224,6 +224,30 @@ export interface PointsDuelConfig {
   onlyWhileLive: boolean;
 }
 
+/**
+ * `$<cmd> raffle <prize> [seconds]` and `$<cmd> sraffle <prize> [seconds]`: a
+ * moderator opens a raffle, viewers enter free with `$<cmd> join`, one entry each,
+ * and the prize is paid when it closes. `raffle` splits between `winners` people,
+ * `sraffle` gives it all to one. The prize is minted, not taken from anyone, which
+ * is why the caps below exist.
+ */
+export interface PointsRaffleConfig {
+  enabled: boolean;
+  minPrize: number;
+  /** Most a single raffle can pay out in total. 0 means no maximum. */
+  maxPrize: number;
+  /** How many raffles may be opened per stream. 0 means no limit. */
+  maxPerStream: number;
+  /** Used when the opener names no duration. */
+  defaultDurationSeconds: number;
+  /** Longest a raffle may stay open, so one can't be left running all stream. */
+  maxDurationSeconds: number;
+  /** How many win a multi-winner `raffle`. `sraffle` always draws one. */
+  winners: number;
+  /** Ignore opening and joining while the stream is offline. A draw still happens. */
+  onlyWhileLive: boolean;
+}
+
 export interface PointsConfig {
   enabled: boolean;
   currencyName: string;
@@ -245,15 +269,17 @@ export interface PointsConfig {
   timeoutPenalty: PointsTimeoutPenaltyConfig;
   gamble: PointsGambleConfig;
   duel: PointsDuelConfig;
+  raffle: PointsRaffleConfig;
 }
 
 /** The `points` block as stored in a channel config: any subset of the fields. */
-export type StoredPointsConfig = Partial<Omit<PointsConfig, 'bonuses' | 'give' | 'timeoutPenalty' | 'gamble' | 'duel'>> & {
+export type StoredPointsConfig = Partial<Omit<PointsConfig, 'bonuses' | 'give' | 'timeoutPenalty' | 'gamble' | 'duel' | 'raffle'>> & {
   bonuses?: Partial<PointsBonusesConfig>;
   give?: Partial<PointsGiveConfig>;
   timeoutPenalty?: Partial<PointsTimeoutPenaltyConfig>;
   gamble?: Partial<PointsGambleConfig>;
   duel?: Partial<PointsDuelConfig>;
+  raffle?: Partial<PointsRaffleConfig>;
   /** Staging only, set by editing the file: treat the channel as live. Never exposed by the API. */
   debugForceLive?: boolean;
 };

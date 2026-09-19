@@ -133,7 +133,39 @@ CREATE INDEX duels_opponent ON duels(opponent_id, status);
 CREATE UNIQUE INDEX duels_one_outgoing ON duels(challenger_id) WHERE status = 'pending';
 `;
 
-const SCHEMA_VERSION = 2;
+/**
+ * v3: raffles. A raffle outlives the message that opened it and must survive a
+ * restart mid-draw, so the open raffle and its entries live here rather than in
+ * memory. The partial unique index allows one open raffle per channel at a time.
+ * Entries are keyed by raffle and user, which makes a second join a no-op rather
+ * than a second ticket.
+ */
+const SCHEMA_V3 = `
+CREATE TABLE raffles (
+  id TEXT PRIMARY KEY,
+  prize INTEGER NOT NULL CHECK (prize > 0),
+  winners INTEGER NOT NULL CHECK (winners > 0),
+  stream_key TEXT NOT NULL,
+  opened_by TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  closes_at INTEGER NOT NULL,
+  status TEXT NOT NULL,
+  resolved_at INTEGER
+);
+CREATE INDEX raffles_open ON raffles(status, closes_at);
+CREATE INDEX raffles_stream ON raffles(stream_key);
+CREATE UNIQUE INDEX raffles_one_open ON raffles(status) WHERE status = 'open';
+
+CREATE TABLE raffle_entries (
+  raffle_id TEXT NOT NULL REFERENCES raffles(id),
+  user_id INTEGER NOT NULL REFERENCES users(user_id),
+  username TEXT NOT NULL,
+  joined_at INTEGER NOT NULL,
+  PRIMARY KEY (raffle_id, user_id)
+);
+`;
+
+const SCHEMA_VERSION = 3;
 
 export function migrate(db: PointsDb): void {
   if ((db.pragma('user_version', { simple: true }) as number) >= SCHEMA_VERSION) return;
@@ -144,6 +176,7 @@ export function migrate(db: PointsDb): void {
     const version = db.pragma('user_version', { simple: true }) as number;
     if (version < 1) db.exec(SCHEMA_V1);
     if (version < 2) db.exec(SCHEMA_V2);
+    if (version < 3) db.exec(SCHEMA_V3);
     if (version < SCHEMA_VERSION) db.pragma(`user_version = ${SCHEMA_VERSION}`);
   }).immediate();
 }

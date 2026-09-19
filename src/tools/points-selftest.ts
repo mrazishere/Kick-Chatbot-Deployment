@@ -19,6 +19,7 @@ import { PointsService } from '../points/service';
 import { normalizeChat, presenceVerdict } from '../points/presence-rules';
 import {
   acceptDuel, adjustPoints, backupPoints, createDuel, creditTx, debitTx, duelStats, gambleStats, getUser, grantTick, invariantViolations,
+  openRaffle, raffleEntries,
   outgoingDuel, refundDuel,
   pointsLeaderboard, pointsSummary, searchPointsUsers, getPointsUserDetail, transfer
 } from '../points/store';
@@ -161,7 +162,7 @@ async function main(): Promise<void> {
   // Store basics
   {
     const db = openPointsDb('basics', { create: true })!;
-    check('migrated to user_version 2', db.pragma('user_version', { simple: true }) === 2);
+    check('migrated to user_version 3', db.pragma('user_version', { simple: true }) === 3);
     runWrite(db, () => creditTx(db, { userId: 1, username: 'alice', amount: 100, reason: 'mod_add', now: 1 }));
     const over = runWrite(db, () => debitTx(db, { userId: 1, amount: 150, reason: 'mod_remove', now: 2 }));
     check('debit beyond balance refused', !over.ok && over.balance === 100);
@@ -790,18 +791,137 @@ async function main(): Promise<void> {
     check('summary carries duel stats', pointsSummary(ch).duel.allTime.duels === 2);
     check('invariant holds (duel)', invariantViolations(db).length === 0, invariantViolations(db));
 
-    // v1 → v2 migration on an existing database keeps its rows.
+    // v1 → latest migration on an existing database keeps its rows. Every table a
+    // later version adds is dropped, so this really starts from v1 rather than
+    // replaying a step whose tables are already there.
     const mch = 'migrate1ch';
     const mdb = openPointsDb(mch, { create: true })!;
     runWrite(mdb, () => creditTx(mdb, { userId: 1, username: 'old', amount: 77, reason: 'mod_add', now: 1 }));
-    mdb.exec('DROP TABLE duels');
+    mdb.exec('DROP TABLE duels; DROP TABLE raffle_entries; DROP TABLE raffles');
     mdb.pragma('user_version = 1');
     closePointsDb(mch);
     const reopened = openPointsDb(mch, { create: false })!;
-    check('v1 database migrates to v2 keeping balances',
-      reopened.pragma('user_version', { simple: true }) === 2 && balance(mch, 1) === 77 && !!reopened.prepare("SELECT 1 FROM sqlite_master WHERE name = 'duels'").get());
+    const hasTable = (n: string) => !!reopened.prepare('SELECT 1 FROM sqlite_master WHERE name = ?').get(n);
+    check('a v1 database migrates to the latest version keeping balances',
+      reopened.pragma('user_version', { simple: true }) === 3 && balance(mch, 1) === 77
+      && hasTable('duels') && hasTable('raffles') && hasTable('raffle_entries'));
+
+    // v2 → v3 specifically: a database that already has duels gains the raffle tables.
+    const m2 = 'migrate2ch';
+    const m2db = openPointsDb(m2, { create: true })!;
+    runWrite(m2db, () => creditTx(m2db, { userId: 1, username: 'old2', amount: 42, reason: 'mod_add', now: 1 }));
+    m2db.exec('DROP TABLE raffle_entries; DROP TABLE raffles');
+    m2db.pragma('user_version = 2');
+    closePointsDb(m2);
+    const re2 = openPointsDb(m2, { create: false })!;
+    check('a v2 database gains the raffle tables and keeps its balances',
+      re2.pragma('user_version', { simple: true }) === 3 && balance(m2, 1) === 42
+      && !!re2.prepare("SELECT 1 FROM sqlite_master WHERE name = 'raffles'").get());
     void svc;
     makeService(ch, { broadcaster: 999 });
+  }
+
+  // Raffles: moderator-only to open, free to enter, capped three ways
+  {
+    const ch = 'raffch';
+    const sent: string[] = [];
+    let live: LiveState | null = { isLive: true, startedAt: null };
+    let pick = 0;
+    const base = { enabled: true, pointsPerInterval: 5, currencyName: '$DON' };
+    const raffleOn = (extra: Record<string, unknown> = {}) =>
+      writeConfig(root, ch, { ...base, raffle: { enabled: true, maxPrize: 1000, maxPerStream: 2, maxDurationSeconds: 300, defaultDurationSeconds: 120, winners: 3, ...extra } });
+    writeConfig(root, ch, base);
+    const fresh = () => makeService(ch, { sent, random: () => pick, live: async () => live });
+    let svc = fresh();
+    const db = openPointsDb(ch, { create: true })!;
+    runWrite(db, () => {
+      for (const [id, name] of [[1, 'alice'], [2, 'bob'], [3, 'carol'], [4, 'dave']] as Array<[number, string]>) {
+        creditTx(db, { userId: id, username: name, amount: 100, reason: 'mod_add', now: 1 });
+      }
+    });
+    const config = { channelName: ch } as ChannelConfig;
+    const t = (username: string, id: number, mod = false, messageId?: string): KickTags => ({
+      username, 'display-name': username, badges: {}, isBroadcaster: false, isModUp: mod, isVIPUp: mod, rawBadges: [], senderId: id, messageId
+    });
+    const run = async (msg: string, tags: KickTags) => {
+      const out: string[] = [];
+      await pointsCommand({ say: async (_c, m) => { out.push(m); } }, msg, `#${ch}`, tags, config);
+      return out;
+    };
+    const bal = () => [1, 2, 3, 4].map(id => balance(ch, id)).join(',');
+
+    check('raffles off by default are silent', (await run('$don raffle 100', t('alice', 1, true))).length === 0);
+    raffleOn();
+    svc = fresh();
+    check('a viewer cannot open a raffle', (await run('$don raffle 100', t('alice', 1))).length === 0);
+    check('prize above the cap is refused', (await run('$don raffle 5000', t('alice', 1, true)))[0] === '@alice the biggest prize is 1000 $DON');
+    check('a run longer than the cap is refused', (await run('$don raffle 100 999', t('alice', 1, true)))[0] === '@alice a raffle can run for at most 300s');
+    check('a prize that is not a number is usage', (await run('$don raffle abc', t('alice', 1, true)))[0] === 'Usage: $don raffle prize [seconds]');
+
+    const opened = await run('$don raffle 100 60', t('alice', 1, true));
+    check('a moderator opens it and chat is told how to enter',
+      opened[0] === 'Raffle open — 100 $DON split 3 ways, type $don join within 1 min', opened);
+    check('a second raffle while one runs is refused',
+      (await run('$don raffle 50', t('alice', 1, true)))[0] === '@alice a raffle is already running, $don raffle cancel to stop it');
+
+    check('joining is silent and free', (await run('$don join', t('bob', 2))).length === 0 && bal() === '100,100,100,100');
+    await run('$don join', t('bob', 2));
+    await run('$don join', t('carol', 3));
+    check('a viewer gets one ticket however often they join', raffleEntries(db, openRaffle(db)!.id).length === 2);
+
+    // Two entrants, three winner slots: everyone wins and the odd point goes first.
+    const open1 = openRaffle(db)!;
+    db.prepare('UPDATE raffles SET closes_at = ? WHERE id = ?').run(Date.now() - 1, open1.id);
+    check('the sweep draws it and pays the whole prize',
+      svc.sweepRaffles() === 1 && balance(ch, 2) + balance(ch, 3) === 200 + 100, bal());
+    check('the draw is announced with the entry count', /^Raffle drawn from 2 entries/.test(sent[sent.length - 1]), sent[sent.length - 1]);
+    check('a drawn raffle is not drawn twice', svc.sweepRaffles() === 0);
+
+    // sraffle: one winner takes it all.
+    const before = bal();
+    await run('$don sraffle 60 60', t('alice', 1, true));
+    await run('$don join', t('bob', 2));
+    await run('$don join', t('carol', 3));
+    pick = 0; // first entrant
+    const open2 = openRaffle(db)!;
+    check('sraffle draws a single winner', open2.winners === 1);
+    db.prepare('UPDATE raffles SET closes_at = ? WHERE id = ?').run(Date.now() - 1, open2.id);
+    svc.sweepRaffles();
+    check('the single winner takes the whole prize', balance(ch, 2) === Number(before.split(',')[1]) + 60, { before, after: bal() });
+
+    check('the per-stream allowance is spent', (await run('$don raffle 10', t('alice', 1, true)))[0] === "@alice that's all 2 raffles for this stream");
+
+    // A cancelled raffle pays nobody and does not count against the allowance.
+    writeConfig(root, ch, { ...base, raffle: { enabled: true, maxPrize: 1000, maxPerStream: 5, maxDurationSeconds: 300, defaultDurationSeconds: 120, winners: 3 } });
+    svc = fresh();
+    await run('$don raffle 100 60', t('alice', 1, true));
+    await run('$don join', t('dave', 4));
+    const held = bal();
+    check('cancel closes it and pays nobody',
+      (await run('$don raffle cancel', t('alice', 1, true)))[0] === 'Raffle cancelled by alice, no $DON paid' && bal() === held);
+    check('cancelling with none open says so', (await run('$don raffle cancel', t('alice', 1, true)))[0] === '@alice no raffle is open');
+    check('join with no raffle open is silent', (await run('$don join', t('dave', 4))).length === 0);
+
+    // Offline, and a raffle that closed while the bot was down.
+    live = { isLive: false, startedAt: null };
+    svc = fresh();
+    check('opening while offline is silent', (await run('$don raffle 100', t('alice', 1, true))).length === 0);
+    live = { isLive: true, startedAt: null };
+    svc = fresh();
+    await run('$don raffle 40 60', t('alice', 1, true));
+    await run('$don join', t('dave', 4));
+    db.prepare("UPDATE raffles SET closes_at = ? WHERE status = 'open'").run(Date.now() - 1);
+    const daveBefore = balance(ch, 4);
+    svc = fresh(); // a restarted bot: the open raffle is only in the database
+    check('a raffle that closed while the bot was down is drawn on the next sweep',
+      svc.sweepRaffles() === 1 && balance(ch, 4) === daveBefore + 40);
+
+    // Nobody entered: the raffle still closes, and nothing is minted.
+    await run('$don raffle 70 60', t('alice', 1, true));
+    db.prepare("UPDATE raffles SET closes_at = ? WHERE status = 'open'").run(Date.now() - 1);
+    const beforeEmpty = bal();
+    check('an empty raffle closes without paying',
+      svc.sweepRaffles() === 1 && bal() === beforeEmpty && /nobody entered/.test(sent[sent.length - 1]), sent[sent.length - 1]);
   }
 
   // Dashboard API

@@ -20,7 +20,7 @@ import * as penalties from './penalties';
 import { LiveState, checkLive } from './live';
 import { PresenceTracker } from './presence';
 import { LastMessages, presenceVerdict } from './presence-rules';
-import { Exclusions, exclusionsFor, expiredDuels, findUserByName, getUser, isExcluded, pruneApplied, refundDuel, setMetaTx } from './store';
+import { Exclusions, drawRaffle, dueRaffles, exclusionsFor, expiredDuels, findUserByName, getMeta, getUser, isExcluded, pruneApplied, raffleEntries, RaffleRow, refundDuel, setMetaTx } from './store';
 
 const USERNAME_RE = /^[a-z0-9_]{2,25}$/;
 /** Idempotency keys are kept this long; Kick re-delivers within hours, not weeks. */
@@ -237,6 +237,80 @@ export class PointsService {
   }
 
   /**
+   * Which stream a raffle belongs to, for the per-stream allowance. Offline the
+   * day is used, so raffles opened with the stream down still share a bucket
+   * instead of every one counting as a fresh stream.
+   */
+  raffleStreamKey(): string {
+    const db = this.db();
+    const since = db ? Number(getMeta(db, 'live_since')) : NaN;
+    if (Number.isFinite(since) && since > 0) return `stream:${since}`;
+    return `day:${new Date(this.now()).toISOString().slice(0, 10)}`;
+  }
+
+  /**
+   * Draw `count` distinct entrants at random. Uses the same seedable source as the
+   * gamble roll so a test can fix the outcome. Fewer entrants than winners means
+   * everyone wins, which is the sensible reading of a small raffle.
+   */
+  pickWinners<T>(entries: T[], count: number): T[] {
+    const pool = entries.slice();
+    const out: T[] = [];
+    const want = Math.min(count, pool.length);
+    for (let i = 0; i < want; i++) {
+      const r = this.deps.random ? this.deps.random() : crypto.randomInt(0, 1_000_000) / 1_000_000;
+      const idx = Math.min(pool.length - 1, Math.floor(r * pool.length));
+      out.push(pool.splice(idx, 1)[0]);
+    }
+    return out;
+  }
+
+  /** Draw one raffle now and announce it. Returns the paid winners, or null when it was already resolved. */
+  drawRaffleNow(r: RaffleRow): Array<{ username: string; amount: number }> | null {
+    const db = this.db();
+    if (!db) return null;
+    const cur = this.config().currencyName;
+    const ex = this.exclusions();
+    const entries = raffleEntries(db, r.id).filter(e => !isExcluded(ex, e.user_id, e.username));
+    if (!entries.length) {
+      if (!drawRaffle(db, { id: r.id, winners: [], actor: 'raffle', now: this.now() })) return null;
+      console.log(`[POINTS] ${r.id} closed with no entries, ${r.prize} ${cur} not paid`);
+      this.deps.sendMessage(`Raffle closed with nobody entered, no ${cur} paid`).catch(() => {});
+      return [];
+    }
+    const winners = this.pickWinners(entries, r.winners).map(e => ({ userId: e.user_id, username: e.username }));
+    const res = drawRaffle(db, { id: r.id, winners, actor: 'raffle', now: this.now() });
+    if (!res) return null;
+    const names = res.paid.map(w => `${w.username} ${w.amount}`).join(' · ');
+    console.log(`[POINTS] ${r.id} drawn from ${entries.length} entries: ${names || 'nobody'} (${cur})`);
+    this.deps.sendMessage(
+      res.paid.length === 1
+        ? `Raffle won by ${res.paid[0].username}, ${res.paid[0].amount} ${cur} from ${entries.length} entries`
+        : `Raffle drawn from ${entries.length} entries — ${names} ${cur}`
+    ).catch(() => {});
+    return res.paid.map(w => ({ username: w.username, amount: w.amount }));
+  }
+
+  /**
+   * Draw every raffle whose time is up. Runs on a timer and before each raffle
+   * command, so a raffle still resolves if nobody types anything again, and one
+   * that closed while the bot was down is drawn on the next start. Never throws.
+   */
+  sweepRaffles(): number {
+    const db = this.db();
+    if (!db) return 0;
+    try {
+      let drawn = 0;
+      for (const r of dueRaffles(db, this.now())) if (this.drawRaffleNow(r) !== null) drawn++;
+      return drawn;
+    } catch (err) {
+      reportDbError(this.channel, err);
+      console.error(`[POINTS] Raffle sweep failed for ${this.channel}: ${err instanceof Error ? err.message : String(err)}`);
+      return 0;
+    }
+  }
+
+  /**
    * Refund every pending duel past its time to answer, and say so in chat. Runs on
    * a timer and before each duel command; after a restart the first run refunds
    * duels that expired while the bot was down. Returns how many. Never throws.
@@ -360,7 +434,7 @@ export class PointsService {
       }
       if (!this.duelTimer) {
         // Holds must come back even if nobody types a duel command again.
-        this.duelTimer = setInterval(() => { this.sweepDuels(); }, 15_000);
+        this.duelTimer = setInterval(() => { this.sweepDuels(); this.sweepRaffles(); }, 15_000);
         this.duelTimer.unref();
       }
       this.started = true;
