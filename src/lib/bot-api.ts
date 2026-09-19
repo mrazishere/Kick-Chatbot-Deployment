@@ -101,6 +101,71 @@ export interface PointsConfig {
   modMaxAdjust: number;
   publicLeaderboard: boolean;
   timeoutPenalty: PointsTimeoutPenalty;
+  /** Absent from a bot service older than the gamble game. */
+  gamble?: PointsGamble;
+  /** Absent from a bot service older than duels. */
+  duel?: PointsDuel;
+  /** Absent from a bot service older than raffles. */
+  raffle?: PointsRaffle;
+}
+
+/**
+ * `$<cmd> raffle <prize> [seconds]`: a moderator opens it, viewers enter free with
+ * `$<cmd> join`, and the prize is paid when it closes. The prize is minted, not taken
+ * from anyone, which is what the three caps are for.
+ */
+export interface PointsRaffle {
+  enabled: boolean;
+  minPrize: number;
+  /** 0 means no maximum. */
+  maxPrize: number;
+  /** 0 means no limit. */
+  maxPerStream: number;
+  defaultDurationSeconds: number;
+  maxDurationSeconds: number;
+  /** How many share a `raffle`; `sraffle` always draws one. */
+  winners: number;
+  onlyWhileLive: boolean;
+}
+
+/** `$<cmd> gamble <amount>`: even money at one win chance for the whole channel. */
+export interface PointsGamble {
+  enabled: boolean;
+  /** 0–100, the same for every viewer; each gamble is its own roll. */
+  winChancePercent: number;
+  minAmount: number;
+  /** 0 means no maximum. */
+  maxAmount: number;
+  cooldownSeconds: number;
+  onlyWhileLive: boolean;
+}
+
+/** Channel-wide gamble results from the ledger. `net` is what viewers gained (negative: lost) in total. */
+export interface PointsGambleStats {
+  gambles: number;
+  wins: number;
+  staked: number;
+  net: number;
+}
+
+/** `$<cmd> duel @user <amount>`: viewer against viewer, 50/50, winner takes both stakes. */
+export interface PointsDuel {
+  enabled: boolean;
+  minAmount: number;
+  /** 0 means no maximum. */
+  maxAmount: number;
+  /** Per challenger. */
+  cooldownSeconds: number;
+  /** Time the opponent has to answer before the stake is refunded. */
+  expirySeconds: number;
+  onlyWhileLive: boolean;
+}
+
+/** Duels played, what both sides put in, and how many are waiting for an answer. */
+export interface PointsDuelStats {
+  duels: number;
+  staked: number;
+  pending: number;
 }
 
 /** What a timeout costs the viewer who got it, scaled per second. */
@@ -115,10 +180,13 @@ export interface PointsTimeoutPenalty {
 }
 
 /** Omitted keys are left alone; nested blocks merge rather than replace. */
-export type PointsSettingsPatch = Partial<Omit<PointsConfig, "effectiveCommand" | "bonuses" | "give" | "timeoutPenalty">> & {
+export type PointsSettingsPatch = Partial<Omit<PointsConfig, "effectiveCommand" | "bonuses" | "give" | "timeoutPenalty" | "gamble" | "duel" | "raffle">> & {
   bonuses?: Partial<PointsBonuses>;
   give?: Partial<PointsGive>;
   timeoutPenalty?: Partial<PointsTimeoutPenalty>;
+  gamble?: Partial<PointsGamble>;
+  duel?: Partial<PointsDuel>;
+  raffle?: Partial<PointsRaffle>;
 };
 
 export interface PointsSubscriptionStatus {
@@ -138,6 +206,10 @@ export interface PointsSummary {
   lastTickUsers: number | null;
   /** Keyed by Kick event name; empty until the bot service has subscribed. */
   subscriptions: Record<string, PointsSubscriptionStatus>;
+  /** Absent from a bot service older than the gamble game. thisStream is null while offline. */
+  gamble?: { allTime: PointsGambleStats; thisStream: PointsGambleStats | null };
+  /** Absent from a bot service older than duels. thisStream is null while offline. */
+  duel?: { allTime: PointsDuelStats; thisStream: PointsDuelStats | null };
 }
 
 export interface PointsUserRow {

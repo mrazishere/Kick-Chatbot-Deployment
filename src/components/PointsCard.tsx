@@ -53,12 +53,100 @@ export interface PointsConfig {
   modMaxAdjust: number;
   publicLeaderboard: boolean;
   timeoutPenalty: PointsTimeoutPenalty;
+  /** Absent from a bot service older than the gamble game. */
+  gamble?: PointsGamble;
+  /** Absent from a bot service older than duels. */
+  duel?: PointsDuel;
+  /** Absent from a bot service older than raffles. */
+  raffle?: PointsRaffle;
 }
 
-type PointsSettingsPatch = Partial<Omit<PointsConfig, "effectiveCommand" | "bonuses" | "give" | "timeoutPenalty">> & {
+/** `$<cmd> duel @user <amount>`: viewer against viewer, 50/50, winner takes both stakes. */
+export interface PointsDuel {
+  enabled: boolean;
+  minAmount: number;
+  maxAmount: number;
+  cooldownSeconds: number;
+  expirySeconds: number;
+  onlyWhileLive: boolean;
+}
+
+/**
+ * `$<cmd> raffle <prize> [seconds]`: a moderator opens it, viewers enter free with
+ * `$<cmd> join`, and the prize is paid when it closes. The prize is minted rather than
+ * taken from anyone, which is what the caps are for.
+ */
+export interface PointsRaffle {
+  enabled: boolean;
+  minPrize: number;
+  maxPrize: number;
+  maxPerStream: number;
+  defaultDurationSeconds: number;
+  maxDurationSeconds: number;
+  winners: number;
+  onlyWhileLive: boolean;
+}
+
+/** The bot's defaults, for a bot service that doesn't report raffle settings yet. */
+const RAFFLE_DEFAULTS: PointsRaffle = {
+  enabled: false,
+  minPrize: 1,
+  maxPrize: 100000,
+  maxPerStream: 5,
+  defaultDurationSeconds: 120,
+  maxDurationSeconds: 600,
+  winners: 3,
+  onlyWhileLive: true,
+};
+
+/** The bot's defaults, for a bot service that doesn't report duel settings yet. */
+const DUEL_DEFAULTS: PointsDuel = {
+  enabled: false,
+  minAmount: 1,
+  maxAmount: 0,
+  cooldownSeconds: 60,
+  expirySeconds: 120,
+  onlyWhileLive: true,
+};
+
+interface PointsDuelStats {
+  duels: number;
+  staked: number;
+  pending: number;
+}
+
+/** `$<cmd> gamble <amount>`: even money at one win chance for the whole channel. */
+export interface PointsGamble {
+  enabled: boolean;
+  winChancePercent: number;
+  minAmount: number;
+  maxAmount: number;
+  cooldownSeconds: number;
+  onlyWhileLive: boolean;
+}
+
+/** The bot's defaults, for a bot service that doesn't report gamble settings yet. */
+const GAMBLE_DEFAULTS: PointsGamble = {
+  enabled: false,
+  winChancePercent: 50,
+  minAmount: 1,
+  maxAmount: 0,
+  cooldownSeconds: 60,
+  onlyWhileLive: true,
+};
+
+interface PointsGambleStats {
+  gambles: number;
+  wins: number;
+  staked: number;
+  net: number;
+}
+
+type PointsSettingsPatch = Partial<Omit<PointsConfig, "effectiveCommand" | "bonuses" | "give" | "timeoutPenalty" | "gamble">> & {
   bonuses?: Partial<PointsBonuses>;
   give?: Partial<PointsGive>;
   timeoutPenalty?: Partial<PointsTimeoutPenalty>;
+  gamble?: Partial<PointsGamble>;
 };
 
 interface PointsSummary {
@@ -71,6 +159,10 @@ interface PointsSummary {
   lastTickAt: string | null;
   lastTickUsers: number | null;
   subscriptions: Record<string, { ok: boolean; error?: string; at: string }>;
+  /** Absent from a bot service older than the gamble game. thisStream is null while offline. */
+  gamble?: { allTime: PointsGambleStats; thisStream: PointsGambleStats | null };
+  /** Absent from a bot service older than duels. thisStream is null while offline. */
+  duel?: { allTime: PointsDuelStats; thisStream: PointsDuelStats | null };
 }
 
 interface PointsUserRow {
@@ -131,6 +223,26 @@ interface SettingsForm {
   penaltyMax: string;
   penaltyPermanentBan: string;
   penaltyAnnounce: boolean;
+  gambleEnabled: boolean;
+  gambleChance: string;
+  gambleMin: string;
+  gambleMax: string;
+  gambleCooldown: string;
+  gambleLiveOnly: boolean;
+  duelEnabled: boolean;
+  duelMin: string;
+  duelMax: string;
+  duelCooldown: string;
+  duelExpiry: string;
+  duelLiveOnly: boolean;
+  raffleEnabled: boolean;
+  raffleMinPrize: string;
+  raffleMaxPrize: string;
+  rafflePerStream: string;
+  raffleDefaultSeconds: string;
+  raffleMaxSeconds: string;
+  raffleWinners: string;
+  raffleLiveOnly: boolean;
 }
 
 function formFromConfig(c: PointsConfig): SettingsForm {
@@ -162,6 +274,26 @@ function formFromConfig(c: PointsConfig): SettingsForm {
     penaltyMax: String(c.timeoutPenalty.maxDeduction),
     penaltyPermanentBan: String(c.timeoutPenalty.permanentBanCost),
     penaltyAnnounce: c.timeoutPenalty.announce,
+    gambleEnabled: (c.gamble ?? GAMBLE_DEFAULTS).enabled,
+    gambleChance: String((c.gamble ?? GAMBLE_DEFAULTS).winChancePercent),
+    gambleMin: String((c.gamble ?? GAMBLE_DEFAULTS).minAmount),
+    gambleMax: String((c.gamble ?? GAMBLE_DEFAULTS).maxAmount),
+    gambleCooldown: String((c.gamble ?? GAMBLE_DEFAULTS).cooldownSeconds),
+    gambleLiveOnly: (c.gamble ?? GAMBLE_DEFAULTS).onlyWhileLive,
+    duelEnabled: (c.duel ?? DUEL_DEFAULTS).enabled,
+    duelMin: String((c.duel ?? DUEL_DEFAULTS).minAmount),
+    duelMax: String((c.duel ?? DUEL_DEFAULTS).maxAmount),
+    duelCooldown: String((c.duel ?? DUEL_DEFAULTS).cooldownSeconds),
+    duelExpiry: String((c.duel ?? DUEL_DEFAULTS).expirySeconds),
+    duelLiveOnly: (c.duel ?? DUEL_DEFAULTS).onlyWhileLive,
+    raffleEnabled: (c.raffle ?? RAFFLE_DEFAULTS).enabled,
+    raffleMinPrize: String((c.raffle ?? RAFFLE_DEFAULTS).minPrize),
+    raffleMaxPrize: String((c.raffle ?? RAFFLE_DEFAULTS).maxPrize),
+    rafflePerStream: String((c.raffle ?? RAFFLE_DEFAULTS).maxPerStream),
+    raffleDefaultSeconds: String((c.raffle ?? RAFFLE_DEFAULTS).defaultDurationSeconds),
+    raffleMaxSeconds: String((c.raffle ?? RAFFLE_DEFAULTS).maxDurationSeconds),
+    raffleWinners: String((c.raffle ?? RAFFLE_DEFAULTS).winners),
+    raffleLiveOnly: (c.raffle ?? RAFFLE_DEFAULTS).onlyWhileLive,
   };
 }
 
@@ -258,9 +390,48 @@ function buildPatch(f: SettingsForm): { patch: PointsSettingsPatch } | { error: 
       permanentBanCost: whole(f.penaltyPermanentBan, "Permanent ban cost", 0, 1_000_000_000),
       announce: f.penaltyAnnounce,
     },
+    gamble: {
+      enabled: f.gambleEnabled,
+      winChancePercent: decimal(f.gambleChance, "Win chance", 0, 100),
+      minAmount: whole(f.gambleMin, "Minimum bet", 1, 1_000_000_000),
+      maxAmount: whole(f.gambleMax, "Maximum bet", 0, 1_000_000_000),
+      cooldownSeconds: whole(f.gambleCooldown, "Gamble cooldown", 0, 3600),
+      onlyWhileLive: f.gambleLiveOnly,
+    },
     modMaxAdjust: whole(f.modMaxAdjust, "Max per mod adjustment", 1, 1_000_000_000),
     publicLeaderboard: f.publicLeaderboard,
   };
+  const gamble = patch.gamble!;
+  if (gamble.maxAmount! > 0 && gamble.maxAmount! < gamble.minAmount!) {
+    errors.push("Maximum bet can't be below the minimum bet (0 means no maximum)");
+  }
+  patch.duel = {
+    enabled: f.duelEnabled,
+    minAmount: whole(f.duelMin, "Minimum duel", 1, 1_000_000_000),
+    maxAmount: whole(f.duelMax, "Maximum duel", 0, 1_000_000_000),
+    cooldownSeconds: whole(f.duelCooldown, "Duel cooldown", 0, 3600),
+    expirySeconds: whole(f.duelExpiry, "Time to answer", 30, 600),
+    onlyWhileLive: f.duelLiveOnly,
+  };
+  if (patch.duel.maxAmount! > 0 && patch.duel.maxAmount! < patch.duel.minAmount!) {
+    errors.push("Maximum duel can't be below the minimum duel (0 means no maximum)");
+  }
+  patch.raffle = {
+    enabled: f.raffleEnabled,
+    minPrize: whole(f.raffleMinPrize, "Minimum prize", 1, 1_000_000_000),
+    maxPrize: whole(f.raffleMaxPrize, "Maximum prize", 0, 1_000_000_000),
+    maxPerStream: whole(f.rafflePerStream, "Raffles per stream", 0, 100),
+    defaultDurationSeconds: whole(f.raffleDefaultSeconds, "Default length", 10, 3600),
+    maxDurationSeconds: whole(f.raffleMaxSeconds, "Longest raffle", 10, 3600),
+    winners: whole(f.raffleWinners, "Winners", 1, 50),
+    onlyWhileLive: f.raffleLiveOnly,
+  };
+  if (patch.raffle.maxPrize! > 0 && patch.raffle.maxPrize! < patch.raffle.minPrize!) {
+    errors.push("Maximum prize can't be below the minimum prize (0 means no maximum)");
+  }
+  if (patch.raffle.defaultDurationSeconds! > patch.raffle.maxDurationSeconds!) {
+    errors.push("Default raffle length can't be longer than the longest raffle");
+  }
 
   return errors.length > 0 ? { error: errors.join("; ") } : { patch };
 }
@@ -274,6 +445,47 @@ function costExample(perSecond: string, max: string, currency: string): string {
   const unit = currency.trim() || "points";
   const min5 = capped(Math.floor(rate * 300)).toLocaleString();
   return `1 min costs ${capped(Math.floor(rate * 60)).toLocaleString()}, 5 min costs ${min5} ${unit}.`;
+}
+
+/**
+ * What a win chance means, since "50%" reads like "50 wins per 100". It's one
+ * setting for the whole channel and every gamble is its own roll, so the channel's
+ * overall rate only settles near it: the ranges are the 95% band, p ± 2·√(p(1−p)/n).
+ */
+function gambleExplain(raw: string): string {
+  const t = raw.trim();
+  const p = Number(t);
+  if (t === "" || !Number.isFinite(p) || p < 0 || p > 100) return "Enter a chance from 0 to 100.";
+  const band = (n: number) => {
+    const spread = 200 * Math.sqrt(((p / 100) * (1 - p / 100)) / n);
+    return `${Math.max(0, Math.round(p - spread))}–${Math.min(100, Math.round(p + spread))}%`;
+  };
+  // Even money: each bet returns (2p − 1) of itself on average.
+  const edge = 2 * p - 100;
+  const round = (n: number) => Number(n.toFixed(1)).toString();
+  const economy =
+    Math.abs(edge) < 0.05
+      ? "breaks even on average"
+      : edge < 0
+        ? `removes about ${round(-edge)}% of each bet on average`
+        : `creates about ${round(edge)}% of each bet on average`;
+  return (
+    `Applies to everyone in the channel. Each gamble is its own roll, so the channel's overall win rate settles near this: ` +
+    `about ${band(100)} over 100 gambles, ${band(1000)} over 1,000. Gambling ${economy}.`
+  );
+}
+
+function gambleStatsText(s: PointsGambleStats, currency: string): string {
+  if (s.gambles === 0) return "no gambles yet";
+  const rate = ((s.wins / s.gambles) * 100).toFixed(1);
+  const net = `${s.net > 0 ? "+" : ""}${s.net.toLocaleString()}`;
+  return `${s.gambles.toLocaleString()} gambles, ${rate}% won, viewers net ${net} ${currency}`;
+}
+
+function duelStatsText(s: PointsDuelStats, currency: string): string {
+  const pending = s.pending > 0 ? `, ${s.pending.toLocaleString()} waiting for an answer` : "";
+  if (s.duels === 0) return `no duels played yet${pending}`;
+  return `${s.duels.toLocaleString()} duels, ${s.staked.toLocaleString()} ${currency} put in${pending}`;
 }
 
 function formatWatch(seconds: number): string {
@@ -306,6 +518,12 @@ const REASON_LABEL: Record<string, string> = {
   dash_remove: "Removed in dashboard",
   dash_set: "Set in dashboard",
   pusher_sub: "Sub",
+  "game:gamble": "Gamble bet",
+  "game:gamble_win": "Gamble win",
+  "game:duel_hold": "Duel challenge (held)",
+  "game:duel_stake": "Duel accepted (stake)",
+  "game:duel_win": "Duel win",
+  "game:duel_refund": "Duel refund",
 };
 
 async function callApi<T>(channel: string, path: string, init?: RequestInit): Promise<{ data?: T; error?: string }> {
@@ -666,6 +884,21 @@ export default function PointsCard({
                   ))}
                 </ul>
               )}
+              {summary.gamble && (saved.gamble?.enabled || summary.gamble.allTime.gambles > 0) ? (
+                <p className="mt-3 text-xs text-neutral-500">
+                  Gamble, whole channel: {gambleStatsText(summary.gamble.allTime, currency)} all time
+                  {summary.gamble.thisStream
+                    ? ` · ${gambleStatsText(summary.gamble.thisStream, currency)} this stream`
+                    : ""}
+                  {saved.gamble ? ` · set to ${saved.gamble.winChancePercent}% win chance` : ""}.
+                </p>
+              ) : null}
+              {summary.duel && (saved.duel?.enabled || summary.duel.allTime.duels > 0 || summary.duel.allTime.pending > 0) ? (
+                <p className="mt-1 text-xs text-neutral-500">
+                  Duels: {duelStatsText(summary.duel.allTime, currency)} all time
+                  {summary.duel.thisStream ? ` · ${duelStatsText(summary.duel.thisStream, currency)} this stream` : ""}.
+                </p>
+              ) : null}
             </>
           )}
         </div>
@@ -765,6 +998,99 @@ export default function PointsCard({
                   <Field label="Maximum (0 = none)">{text("giveMax", { inputMode: "numeric" })}</Field>
                   <Field label="Cooldown (s)">{text("giveCooldown", { inputMode: "numeric" })}</Field>
                 </div>
+              </div>
+
+              <div>
+                <h4 className={LABEL}>Gamble</h4>
+                <Checkbox
+                  label={`Let viewers gamble ${form.currencyName.trim() || "points"} with $${commandPreview || "…"} gamble`}
+                  checked={form.gambleEnabled}
+                  disabled={readOnly || !!busy}
+                  onChange={(v) => set("gambleEnabled", v)}
+                />
+                <div className="mt-3 grid gap-4 sm:grid-cols-4">
+                  <Field label="Win chance (%)">{text("gambleChance", { inputMode: "decimal" })}</Field>
+                  <Field label="Minimum bet">{text("gambleMin", { inputMode: "numeric" })}</Field>
+                  <Field label="Maximum bet (0 = none)">{text("gambleMax", { inputMode: "numeric" })}</Field>
+                  <Field label="Cooldown per viewer (s)">{text("gambleCooldown", { inputMode: "numeric" })}</Field>
+                </div>
+                <p className="mt-2 text-xs text-neutral-500">{gambleExplain(form.gambleChance)}</p>
+                <div className="mt-3 space-y-2">
+                  <Checkbox
+                    label="Only while the stream is live"
+                    checked={form.gambleLiveOnly}
+                    disabled={readOnly || !!busy}
+                    onChange={(v) => set("gambleLiveOnly", v)}
+                  />
+                </div>
+                <p className="mt-3 text-xs text-neutral-500">
+                  Even money: a win adds the bet, a loss takes it. Viewers can bet a number, 5k, 50% or all.
+                  The bot stays quiet when gambling is off, on cooldown or offline, and replies to wins, losses and mistakes.
+                </p>
+              </div>
+
+              <div>
+                <h4 className={LABEL}>Duels</h4>
+                <Checkbox
+                  label={`Let viewers duel each other for ${form.currencyName.trim() || "points"}`}
+                  checked={form.duelEnabled}
+                  disabled={readOnly || !!busy}
+                  onChange={(v) => set("duelEnabled", v)}
+                />
+                <div className="mt-3 grid gap-4 sm:grid-cols-4">
+                  <Field label="Minimum">{text("duelMin", { inputMode: "numeric" })}</Field>
+                  <Field label="Maximum (0 = none)">{text("duelMax", { inputMode: "numeric" })}</Field>
+                  <Field label="Cooldown per challenger (s)">{text("duelCooldown", { inputMode: "numeric" })}</Field>
+                  <Field label="Time to answer (s)" hint="30–600">{text("duelExpiry", { inputMode: "numeric" })}</Field>
+                </div>
+                <div className="mt-3 space-y-2">
+                  <Checkbox
+                    label="Only while the stream is live"
+                    checked={form.duelLiveOnly}
+                    disabled={readOnly || !!busy}
+                    onChange={(v) => set("duelLiveOnly", v)}
+                  />
+                </div>
+                <p className="mt-3 text-xs text-neutral-500">
+                  {`$${commandPreview || "…"} duel @viewer 100 challenges someone; they answer with $${commandPreview || "…"} accept or deny. `}
+                  Always 50/50 and the winner takes both stakes. The challenger&apos;s stake is held until then and refunded
+                  if the duel is declined, cancelled or not answered in time. Cooldown, offline and duels-off stay silent.
+                </p>
+              </div>
+
+              <div>
+                <h4 className={LABEL}>Raffles</h4>
+                <Checkbox
+                  label={`Let moderators raffle ${form.currencyName.trim() || "points"} to chat`}
+                  checked={form.raffleEnabled}
+                  disabled={readOnly || !!busy}
+                  onChange={(v) => set("raffleEnabled", v)}
+                />
+                <div className="mt-3 grid gap-4 sm:grid-cols-4">
+                  <Field label="Minimum prize">{text("raffleMinPrize", { inputMode: "numeric" })}</Field>
+                  <Field label="Maximum prize (0 = none)">{text("raffleMaxPrize", { inputMode: "numeric" })}</Field>
+                  <Field label="Raffles per stream (0 = no limit)">{text("rafflePerStream", { inputMode: "numeric" })}</Field>
+                  <Field label="Winners" hint="shared by $raffle">{text("raffleWinners", { inputMode: "numeric" })}</Field>
+                </div>
+                <div className="mt-3 grid gap-4 sm:grid-cols-4">
+                  <Field label="Default length (s)" hint="10–3600">{text("raffleDefaultSeconds", { inputMode: "numeric" })}</Field>
+                  <Field label="Longest raffle (s)" hint="10–3600">{text("raffleMaxSeconds", { inputMode: "numeric" })}</Field>
+                </div>
+                <div className="mt-3 space-y-2">
+                  <Checkbox
+                    label="Only while the stream is live"
+                    checked={form.raffleLiveOnly}
+                    disabled={readOnly || !!busy}
+                    onChange={(v) => set("raffleLiveOnly", v)}
+                  />
+                </div>
+                <p className="mt-3 text-xs text-neutral-500">
+                  {`$${commandPreview || "…"} raffle 5000 120 opens a raffle a moderator sets the size of; viewers enter free with $${commandPreview || "…"} join, one entry each. `}
+                  {`$${commandPreview || "…"} sraffle gives the whole prize to one winner instead of sharing it, and $${commandPreview || "…"} raffle cancel closes one without paying. `}
+                  The prize is created rather than taken from anyone, so only moderators and above can open one and the caps
+                  above bound what a single raffle, and one stream, can add. Entries are silent; the winners and the entry
+                  count are announced when it draws.
+                </p>
               </div>
 
               <div>
