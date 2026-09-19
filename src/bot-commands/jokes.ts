@@ -8,7 +8,7 @@
  * Permission required: all users
  *
  * Usage:   !jokes - Random jokes
- *          !jokes<SPACE>[SEARCH TERM] - Jokes with search term
+ *          !jokes<SPACE>[SEARCH TERM] - Jokes with search term (phrases work: !jokes stack overflow)
  *
  *
  *
@@ -107,11 +107,15 @@ async function searchJokes(searchTerm: string): Promise<JokeData> {
 
     clearTimeout(timeoutId);
 
+    // A search with no results answers 400, not 200, with an error body of its
+    // own. That is a normal "nothing found", so it is handed back to the caller
+    // instead of thrown, which would report the API as down.
+    const data = await response.json() as JokeData;
     if (!response.ok) {
+      if (data && data.error) return data;
       throw new Error(`API responded with status: ${response.status}`);
     }
 
-    const data = await response.json() as JokeData;
     return data;
 
   } catch (error) {
@@ -171,7 +175,7 @@ export const jokes: CommandFn = async function jokes(client, message, channel, t
 
     } else {
       // Search for jokes with term
-      const searchTerm = sanitizeSearchTerm(input[1]);
+      const searchTerm = sanitizeSearchTerm(input.slice(1).join(' '));
       if (!searchTerm) {
         client.say(channel, `@${tags.username}, invalid search term provided.`);
         return;
@@ -196,7 +200,7 @@ export const jokes: CommandFn = async function jokes(client, message, channel, t
       console.error(`[JOKES] Error for user ${tags.username}:`, {
         message: err.message,
         timestamp: new Date().toISOString(),
-        searchTerm: input[1] ? sanitizeSearchTerm(input[1]) : 'none'
+        searchTerm: input[1] ? sanitizeSearchTerm(input.slice(1).join(' ')) : 'none'
       });
     }
 
