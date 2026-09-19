@@ -229,6 +229,12 @@ export interface PointsLedgerEntry {
   reason: string;
   actor: string | null;
   note: string | null;
+  /**
+   * The other side of the event, where there is one: who a give went to or came
+   * from, who a duel was against. Null for a row that has no second party, and
+   * absent from a bot service older than this field.
+   */
+  counterparty?: string | null;
 }
 
 export interface PointsUserDetail {

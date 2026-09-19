@@ -189,6 +189,8 @@ interface PointsUserDetail {
     reason: string;
     actor: string | null;
     note: string | null;
+    /** The other side of a give or a duel. Absent from a bot service older than this field. */
+    counterparty?: string | null;
   }>;
 }
 
@@ -501,6 +503,20 @@ function formatDate(iso: string | null): string {
   if (Number.isNaN(d.getTime())) return "—";
   return d.toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" });
 }
+
+/**
+ * How the other side of an event reads on its row: a give has a direction, a duel
+ * has an opponent. Reasons that never have a second party aren't listed, so their
+ * rows stay as they were.
+ */
+const COUNTERPARTY_PREFIX: Record<string, string> = {
+  give_out: "to",
+  give_in: "from",
+  "game:duel_hold": "vs",
+  "game:duel_stake": "vs",
+  "game:duel_win": "beat",
+  "game:duel_refund": "vs",
+};
 
 const REASON_LABEL: Record<string, string> = {
   follow: "Follow bonus",
@@ -1303,6 +1319,12 @@ export default function PointsCard({
                             </span>
                             <span className="min-w-0 flex-1 text-neutral-300">
                               {REASON_LABEL[entry.reason] ?? entry.reason}
+                              {entry.counterparty && COUNTERPARTY_PREFIX[entry.reason] ? (
+                                <span className="text-neutral-400">
+                                  {` ${COUNTERPARTY_PREFIX[entry.reason]} `}
+                                  <span className="text-neutral-200">{entry.counterparty}</span>
+                                </span>
+                              ) : null}
                               {entry.note ? <span className="text-neutral-500"> — {entry.note}</span> : null}
                               {entry.actor ? <span className="block text-xs text-neutral-600">{entry.actor}</span> : null}
                             </span>
