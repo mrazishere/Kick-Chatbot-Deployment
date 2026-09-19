@@ -489,9 +489,11 @@ export const points: CommandFn = async function points(client, message, channel,
         const uid = self?.user_id ?? (Number.isInteger(senderId) && senderId > 0 ? senderId : null);
         if (uid === null) return ignore('no user id on the message');
         const res = joinRaffle(db, { userId: uid, username: me, now: Date.now() });
-        // Entries are silent by design: a busy raffle would otherwise flood chat
-        // with one line per viewer. The count is announced when it draws.
-        return ignore(res === 'joined' ? `entered ${open.id}` : res === 'already' ? 'already entered' : 'raffle closed');
+        // Entries are silent in chat by design: a busy raffle would otherwise post a
+        // line per viewer. The count is announced when it draws. A join that worked
+        // is still logged as one, not as an ignored command.
+        if (res === 'joined') return void console.log(`[POINTS] ${me} entered ${open.id}`);
+        return ignore(res === 'already' ? 'already entered' : 'raffle closed');
       }
 
       // Opening and cancelling are moderators and above.
@@ -535,6 +537,7 @@ export const points: CommandFn = async function points(client, message, channel,
           ? `@${me} a raffle is already running, $${cmd} raffle cancel to stop it`
           : `@${me} that's all ${res.opened} raffles for this stream`);
       }
+      svc.armRaffleTimer();
       console.log(`[POINTS] ${me} opened ${res.raffle.id}: ${prize} ${cur}, ${winners} winner(s), ${typedSeconds}s`);
       const share = winners === 1 ? `${prize} ${cur}` : `${prize} ${cur} split ${winners} ways`;
       return void say(`Raffle open — ${share}, type $${cmd} join within ${expiryText(typedSeconds)}`);

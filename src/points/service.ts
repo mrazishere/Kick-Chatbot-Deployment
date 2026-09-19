@@ -20,7 +20,7 @@ import * as penalties from './penalties';
 import { LiveState, checkLive } from './live';
 import { PresenceTracker } from './presence';
 import { LastMessages, presenceVerdict } from './presence-rules';
-import { Exclusions, drawRaffle, dueRaffles, exclusionsFor, expiredDuels, findUserByName, getMeta, getUser, isExcluded, pruneApplied, raffleEntries, RaffleRow, refundDuel, setMetaTx } from './store';
+import { Exclusions, drawRaffle, dueRaffles, exclusionsFor, expiredDuels, findUserByName, getMeta, getUser, isExcluded, openRaffle, pruneApplied, raffleEntries, RaffleRow, refundDuel, setMetaTx } from './store';
 
 const USERNAME_RE = /^[a-z0-9_]{2,25}$/;
 /** Idempotency keys are kept this long; Kick re-delivers within hours, not weeks. */
@@ -70,6 +70,7 @@ export class PointsService {
   private liveProbe: { at: number; value: boolean | null } | null = null;
   private liveProbeInFlight: Promise<boolean | null> | null = null;
   private duelTimer: NodeJS.Timeout | null = null;
+  private raffleTimer: NodeJS.Timeout | null = null;
   private pruneTimer: NodeJS.Timeout | null = null;
   private startRetry: NodeJS.Timeout | null = null;
   private exclusionCache: { source: LivePointsConfig; broadcasterUserId: number | null; value: Exclusions } | null = null;
@@ -292,6 +293,33 @@ export class PointsService {
   }
 
   /**
+   * Draw the open raffle the moment it closes. The 15s sweep would get there too,
+   * but up to 15s late, which chat notices on a one-minute raffle. This is the
+   * precise path; the sweep stays as the backstop that covers a restart.
+   */
+  armRaffleTimer(): void {
+    if (this.raffleTimer) {
+      clearTimeout(this.raffleTimer);
+      this.raffleTimer = null;
+    }
+    const db = this.db();
+    if (!db) return;
+    let open;
+    try {
+      open = openRaffle(db);
+    } catch {
+      return; // the sweep will cope
+    }
+    if (!open) return;
+    const wait = Math.max(0, open.closes_at - this.now()) + 250;
+    this.raffleTimer = setTimeout(() => {
+      this.raffleTimer = null;
+      this.sweepRaffles();
+    }, wait);
+    this.raffleTimer.unref();
+  }
+
+  /**
    * Draw every raffle whose time is up. Runs on a timer and before each raffle
    * command, so a raffle still resolves if nobody types anything again, and one
    * that closed while the bot was down is drawn on the next start. Never throws.
@@ -437,6 +465,8 @@ export class PointsService {
         this.duelTimer = setInterval(() => { this.sweepDuels(); this.sweepRaffles(); }, 15_000);
         this.duelTimer.unref();
       }
+      // A raffle still open from before a restart draws at its own time, not up to a sweep late.
+      this.armRaffleTimer();
       this.started = true;
     } catch (err) {
       console.error(`[POINTS] Could not start points for ${this.channel}, retrying in a minute: ${err instanceof Error ? err.message : String(err)}`);
@@ -459,6 +489,10 @@ export class PointsService {
     if (this.pruneTimer) {
       clearInterval(this.pruneTimer);
       this.pruneTimer = null;
+    }
+    if (this.raffleTimer) {
+      clearTimeout(this.raffleTimer);
+      this.raffleTimer = null;
     }
     if (this.duelTimer) {
       clearInterval(this.duelTimer);
