@@ -542,6 +542,11 @@ async function callClaudeAPI(messages: Array<{ role: string; content: string }>,
         body: JSON.stringify({
           model: "claude-sonnet-5",
           max_tokens: 300,
+          // Sonnet 5 thinks by default when `thinking` is omitted, out of the same
+          // max_tokens budget as the reply — 283 of 300 on one live question, which left
+          // four words of answer. Chat needs the whole budget for text, and the reasoning
+          // is never displayed, so it is off.
+          thinking: { type: 'disabled' },
           system: systemPromptText,
           messages: messages
         })
@@ -664,6 +669,11 @@ async function callClaudeAPIWithSearch(messages: Array<{ role: string; content: 
         body: JSON.stringify({
           model: "claude-sonnet-5",
           max_tokens: 300,
+          // Sonnet 5 thinks by default when `thinking` is omitted, out of the same
+          // max_tokens budget as the reply — 283 of 300 on one live question, which left
+          // four words of answer. Chat needs the whole budget for text, and the reasoning
+          // is never displayed, so it is off.
+          thinking: { type: 'disabled' },
           system: enhancedSystemPrompt,
           messages: messages
         })
@@ -871,6 +881,11 @@ async function callClaudeAPIWithVision(
         body: JSON.stringify({
           model: 'claude-sonnet-5',
           max_tokens: 400,
+          // Sonnet 5 thinks by default when `thinking` is omitted, out of the same
+          // max_tokens budget as the reply — 283 of 300 on one live question, which left
+          // four words of answer. Chat needs the whole budget for text, and the reasoning
+          // is never displayed, so it is off.
+          thinking: { type: 'disabled' },
           system: enhancedSystem,
           messages: enhanced
         })
