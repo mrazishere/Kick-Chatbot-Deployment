@@ -28,6 +28,10 @@ Each file exports a `CommandFn` registered in the channel config and dispatched 
 | [Dog facts](#dogfactsts--dog-facts) | `!dogfacts` | All users | All channels |
 | [Number facts](#numfactsts--number-facts) | `!numfacts [number]` | All users (4/30s) | All channels |
 | [Pokémon catch](#pokecatchts--pokémon-catch) | `!catch` | All users (3/30s) | All channels |
+| [Loyalty points](#pointsts--loyalty-points) | `$<currency> [subcommand]` | All users · broadcaster/owner to adjust | Channels with points enabled |
+| [Hall of Shame](#hallofshamets--ai-hall-of-shame) | `!hallofshame [sub]` · `!shame` | All users (Mods+ to reset) | All channels |
+| [Clip](#clipts--clip) | `!clip [title]` | All users (1/min) | All channels |
+| [Blerp](#blerpts--blerp-sound-suggestions) | `!blerp [11s] [title]` | Mods+ (1 per 5 min) | Channels with `blerpStreamerId` |
 
 ---
 
@@ -400,8 +404,14 @@ Fetches jokes from [JokeAPI](https://v2.jokeapi.dev/).
 ```
 !jokes                   → random joke
 !jokes programming       → programming joke
-!jokes dark              → dark humor joke
+!jokes stack overflow    → joke containing the phrase "stack overflow"
 ```
+
+Search terms may be several words; the whole phrase is passed to the API. Matching is
+a substring, so `!jokes cat` can return a joke containing "dupli**cat**e". `safe-mode`
+is always on. A search with no results says so rather than reporting the API as down.
+
+**Rate limit:** 5 requests per 30 seconds per user.
 
 ---
 
@@ -461,6 +471,142 @@ Catches a random Pokémon.
 ```
 
 **Rate limit:** 3 requests per 30 seconds per user.
+
+---
+
+## `points.ts` — Loyalty points
+
+A StreamElements-style loyalty currency, kept per channel in SQLite. Viewers earn while
+they chat during a live stream, then spend on giving, gambling and duels.
+
+The trigger is the currency itself: the command word is derived from `currencyName` in the
+channel config, so `$DON` answers to `$don` and `$AZ` to `$az`. It starts with `$` rather
+than `!` so the command reads like the money. Set `currencyCommand` to override.
+
+### Usage
+
+```
+$don                          → your balance and rank
+$don @user                    → someone else's balance and rank
+$don activetime [@user]       → active time and rank
+$don top [activetime]         → top 5 by balance, or by active time
+$don leaderboard              → link to the public web leaderboard
+$don give @user 100           → send points to someone
+$don gamble 100               → even money at the channel's win chance
+$don duel @user 100           → challenge a viewer; 50/50, winner takes both
+$don accept|deny [@user]      → answer a challenge
+$don cancel                   → withdraw your own challenge
+$don add|remove|set @user 500 → adjust a balance (broadcaster and bot owner only)
+```
+
+Amounts accept `100`, `5k`, `1.5m`, `50%` and `all`.
+
+### Permissions
+
+| Subcommand | Who |
+|---|---|
+| balance, `activetime`, `top`, `leaderboard` | All users |
+| `give`, `gamble`, `duel` / `accept` / `deny` / `cancel` | All users, when that feature is enabled |
+| `add`, `remove`, `set` | Broadcaster and bot owner only — **not** moderators |
+
+Moderators skip the read cooldowns but cannot change balances.
+
+### Earning
+
+Points accrue on a tick while the stream is live, to accounts that chatted inside the
+active window. Subscribers earn at `subscriberMultiplier`. Follows, subs, gifted subs and
+Kicks pay configurable one-off bonuses, each applied exactly once by idempotency key.
+Timeouts charge the viewer per second.
+
+**Active time** is time spent chatting while live, counted in 10-minute steps. Kick exposes
+no viewer list, so someone who watches in silence cannot be counted — which is why it is
+called active time and not watch time.
+
+### Notes
+
+- Gambling and duels stay **silent** when disabled, on cooldown, or the stream is offline.
+  The reason is logged rather than posted, to keep chat clean.
+- A duel holds the challenger's stake until it is accepted, denied, cancelled or expires.
+  Pending duels survive a restart and are refunded on sweep.
+- A subcommand word beats a username — write `@top` to look up a viewer called `top`.
+- A bare word that is not a known viewer gets no reply, because chat writes things like
+  "$DON to the moon" in ordinary sentences.
+- Per-user read cooldown 10s; channel-wide cooldown 30s on `top` and `leaderboard`.
+
+---
+
+## `hallofshame.ts` — AI Hall of Shame
+
+A joke leaderboard built from `!claude` usage: who the bot roasts hardest, and who asks the
+dumbest questions. The `!claude` handler captures the material and a lazy async LLM pass
+scores each exchange 0–10 for dumbness and savagery.
+
+### Usage
+
+```
+!hallofshame            → overview: most roasted, dumbest, most addicted
+!hallofshame trolled    → top 5 by average savagery, plus the hardest roast ever
+!hallofshame dumb       → top 5 by average dumbness, plus the dumbest question ever
+!hallofshame yap        → top 5 by sheer volume (Certified Yappers)
+!hallofshame me         → your own shame stats
+!hallofshame @user      → another viewer's stats
+!hallofshame reset      → wipe the board (Mods+)
+```
+
+**Alias:** `!shame`. The bot owner (`KICK_OWNER`) never lands on the board — `claude.ts`
+skips the capture entirely for them, so nothing is recorded in the first place.
+
+---
+
+## `clip.ts` — Clip
+
+Creates a real Kick clip of the last 30 seconds and posts the link.
+
+### Usage
+
+```
+!clip              → clip the last 30 seconds
+!clip <title>      → same, with your own title (50 chars max)
+```
+
+With no title the clip is named `<stream title> - clipped by <user>`, trimmed to fit.
+
+Kick publishes no clips API, so this drives the same internal calls the site makes when a
+viewer presses the clip button, authenticated as the bot account. Clips therefore show the
+**bot** as their creator. The session token is watched by a watchdog so an expired one is
+renewed before a viewer hits it.
+
+**Cooldowns:** 60s per user, 15s per channel.
+
+---
+
+## `blerp.ts` — Blerp sound suggestions
+
+Clips the stream like `!clip`, imports that clip into [Blerp](https://blerp.com) as a sound,
+and files it in the streamer's suggestion queue.
+
+### Usage
+
+```
+!blerp                 → suggest the last 30 seconds
+!blerp <title>         → same, with your own title
+!blerp 11s [title]     → the last 11 seconds instead (5–30s; Blerp caps at 30)
+```
+
+**Permission:** moderators and above.
+**Cooldowns:** 5 minutes per user, 60s per channel.
+
+Nothing here plays on stream by itself. A suggestion sits as `PENDING` until the streamer
+approves it in their own Blerp dashboard, so the worst a bad `!blerp` costs is one queue
+entry they can reject.
+
+Two things to know before changing it:
+
+- The target is `config.blerpStreamerId`, not a lookup by Kick username. Streamers can hold
+  several Blerp accounts and the one their Kick name is registered against may be dormant,
+  so resolving at runtime would file suggestions into an inbox nobody reads.
+- The clip is made first and stays made. If the Blerp half fails, the clip is still good, so
+  the reply hands over the clip link rather than pretending the whole thing failed.
 
 ---
 
