@@ -60,7 +60,7 @@ export interface PointsUserRow {
 
 export interface PointsUserDetail {
   user: PointsUserRow & { lifetimeEarned: number; isSub: boolean; followBonusAt: string | null; firstSeenAt: string };
-  ledger: Array<{ id: number; ts: string; delta: number; balanceAfter: number; reason: string; actor: string | null; note: string | null }>;
+  ledger: Array<{ id: number; ts: string; delta: number; balanceAfter: number; reason: string; actor: string | null; note: string | null; counterparty: string | null }>;
 }
 
 const iso = (ms: number | null | undefined): string | null => (typeof ms === 'number' && Number.isFinite(ms) ? new Date(ms).toISOString() : null);
@@ -615,9 +615,22 @@ export function topBy(db: PointsDb, column: RankColumn, limit: number, ex: Exclu
     .all(...clause.params, limit) as UserRecord[];
 }
 
-export function ledgerFor(db: PointsDb, userId: number, limit: number): Array<{ id: number; ts: number; delta: number; balance_after: number; reason: string; actor: string | null; note: string | null }> {
-  return db.prepare('SELECT id, ts, delta, balance_after, reason, actor, note FROM ledger WHERE user_id = ? ORDER BY ts DESC, id DESC LIMIT ?')
-    .all(userId, limit) as Array<{ id: number; ts: number; delta: number; balance_after: number; reason: string; actor: string | null; note: string | null }>;
+/**
+ * One viewer's ledger, newest first, with the other side of the event named where
+ * there is one. Rows belonging to a single event share a ref — a give writes
+ * give_out and give_in, a duel writes the hold, the stake and the payout — so the
+ * counterparty is the row with the same ref belonging to someone else. It stays
+ * null for a row with no ref (ticks, bonuses, mod adjustments), for a gamble
+ * (both rows are the viewer's own), and for a duel nobody has answered yet, which
+ * has no second side to name.
+ */
+export function ledgerFor(db: PointsDb, userId: number, limit: number): Array<{ id: number; ts: number; delta: number; balance_after: number; reason: string; actor: string | null; note: string | null; counterparty: string | null }> {
+  return db.prepare(
+    `SELECT l.id, l.ts, l.delta, l.balance_after, l.reason, l.actor, l.note,
+       (SELECT u.username FROM ledger o JOIN users u ON u.user_id = o.user_id
+          WHERE o.ref = l.ref AND o.user_id <> l.user_id LIMIT 1) AS counterparty
+     FROM ledger l WHERE l.user_id = ? ORDER BY l.ts DESC, l.id DESC LIMIT ?`)
+    .all(userId, limit) as Array<{ id: number; ts: number; delta: number; balance_after: number; reason: string; actor: string | null; note: string | null; counterparty: string | null }>;
 }
 
 /** Balances that don't equal their ledger deltas plus their watch points. Should always be empty. */
@@ -729,7 +742,8 @@ export function getPointsUserDetail(channel: string, cfg: PointsConfig, userId: 
         balanceAfter: l.balance_after,
         reason: l.reason,
         actor: l.actor,
-        note: l.note
+        note: l.note,
+        counterparty: l.counterparty
       }))
     };
   });

@@ -19,7 +19,7 @@ import { PointsService } from '../points/service';
 import { normalizeChat, presenceVerdict } from '../points/presence-rules';
 import {
   acceptDuel, adjustPoints, backupPoints, createDuel, creditTx, debitTx, duelStats, gambleStats, getUser, grantTick, invariantViolations,
-  openRaffle, raffleEntries,
+  openRaffle, raffleEntries, gamble,
   outgoingDuel, refundDuel,
   pointsLeaderboard, pointsSummary, searchPointsUsers, getPointsUserDetail, transfer
 } from '../points/store';
@@ -162,7 +162,7 @@ async function main(): Promise<void> {
   // Store basics
   {
     const db = openPointsDb('basics', { create: true })!;
-    check('migrated to user_version 3', db.pragma('user_version', { simple: true }) === 3);
+    check('migrated to user_version 4', db.pragma('user_version', { simple: true }) === 4);
     runWrite(db, () => creditTx(db, { userId: 1, username: 'alice', amount: 100, reason: 'mod_add', now: 1 }));
     const over = runWrite(db, () => debitTx(db, { userId: 1, amount: 150, reason: 'mod_remove', now: 2 }));
     check('debit beyond balance refused', !over.ok && over.balance === 100);
@@ -797,28 +797,67 @@ async function main(): Promise<void> {
     const mch = 'migrate1ch';
     const mdb = openPointsDb(mch, { create: true })!;
     runWrite(mdb, () => creditTx(mdb, { userId: 1, username: 'old', amount: 77, reason: 'mod_add', now: 1 }));
-    mdb.exec('DROP TABLE duels; DROP TABLE raffle_entries; DROP TABLE raffles');
+    mdb.exec('DROP TABLE duels; DROP TABLE raffle_entries; DROP TABLE raffles; DROP INDEX ledger_ref');
     mdb.pragma('user_version = 1');
     closePointsDb(mch);
     const reopened = openPointsDb(mch, { create: false })!;
     const hasTable = (n: string) => !!reopened.prepare('SELECT 1 FROM sqlite_master WHERE name = ?').get(n);
     check('a v1 database migrates to the latest version keeping balances',
-      reopened.pragma('user_version', { simple: true }) === 3 && balance(mch, 1) === 77
+      reopened.pragma('user_version', { simple: true }) === 4 && balance(mch, 1) === 77
       && hasTable('duels') && hasTable('raffles') && hasTable('raffle_entries'));
 
     // v2 → v3 specifically: a database that already has duels gains the raffle tables.
     const m2 = 'migrate2ch';
     const m2db = openPointsDb(m2, { create: true })!;
     runWrite(m2db, () => creditTx(m2db, { userId: 1, username: 'old2', amount: 42, reason: 'mod_add', now: 1 }));
-    m2db.exec('DROP TABLE raffle_entries; DROP TABLE raffles');
+    m2db.exec('DROP TABLE raffle_entries; DROP TABLE raffles; DROP INDEX ledger_ref');
     m2db.pragma('user_version = 2');
     closePointsDb(m2);
     const re2 = openPointsDb(m2, { create: false })!;
     check('a v2 database gains the raffle tables and keeps its balances',
-      re2.pragma('user_version', { simple: true }) === 3 && balance(m2, 1) === 42
+      re2.pragma('user_version', { simple: true }) === 4 && balance(m2, 1) === 42
       && !!re2.prepare("SELECT 1 FROM sqlite_master WHERE name = 'raffles'").get());
     void svc;
     makeService(ch, { broadcaster: 999 });
+  }
+
+  // Ledger counterparty: the log names the other side of a give or a duel
+  {
+    const ch = 'cpartych';
+    writeConfig(root, ch, { enabled: true, currencyName: '$DON', give: { enabled: true }, duel: { enabled: true } });
+    const cfg = effectivePointsConfig({ enabled: true, currencyName: '$DON' });
+    const db = openPointsDb(ch, { create: true })!;
+    runWrite(db, () => {
+      creditTx(db, { userId: 1, username: 'giver', amount: 500, reason: 'mod_add', now: 1 });
+      creditTx(db, { userId: 2, username: 'taker', amount: 500, reason: 'mod_add', now: 1 });
+      creditTx(db, { userId: 3, username: 'bystander', amount: 500, reason: 'mod_add', now: 1 });
+    });
+
+    transfer(db, { fromId: 1, toId: 2, toName: 'taker', amount: 40, actor: 'chat:giver', now: 100 });
+    const rowsOf = (id: number) => getPointsUserDetail(ch, cfg, id)!.ledger;
+    const give = rowsOf(1).find(r => r.reason === 'give_out')!;
+    const recv = rowsOf(2).find(r => r.reason === 'give_in')!;
+    check('a give names the recipient on the giver\'s row', give.counterparty === 'taker', give);
+    check('and names the giver on the recipient\'s row', recv.counterparty === 'giver', recv);
+
+    // A gamble is the viewer against the house: both rows are theirs, so nobody to name.
+    gamble(db, { userId: 3, amount: 10, win: true, actor: 'chat:bystander', now: 110 });
+    check('a gamble has no counterparty',
+      rowsOf(3).filter(r => r.reason.startsWith('game:gamble')).every(r => r.counterparty === null),
+      rowsOf(3).filter(r => r.reason.startsWith('game:gamble')));
+
+    // An unanswered duel has only the challenger's hold — no second side yet.
+    const pending = createDuel(db, { challengerId: 1, opponentId: 3, amount: 25, expiresAt: Date.now() + 60_000, actor: 'chat:giver', now: 120 });
+    check('an unanswered duel names nobody', rowsOf(1).find(r => r.reason === 'game:duel_hold')!.counterparty === null);
+
+    // Once accepted, both sides have a row under the same ref.
+    acceptDuel(db, { id: pending.ok ? pending.duel.id : '', challengerWins: true, actor: 'chat:bystander', now: 130 });
+    check('an accepted duel names the opponent',
+      rowsOf(1).find(r => r.reason === 'game:duel_win')!.counterparty === 'bystander'
+      && rowsOf(3).find(r => r.reason === 'game:duel_stake')!.counterparty === 'giver');
+
+    check('a row with no ref, like a mod adjustment, names nobody',
+      rowsOf(1).find(r => r.reason === 'mod_add')!.counterparty === null);
   }
 
   // Raffles: moderator-only to open, free to enter, capped three ways

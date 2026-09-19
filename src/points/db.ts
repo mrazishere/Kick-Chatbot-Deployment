@@ -165,7 +165,17 @@ CREATE TABLE raffle_entries (
 );
 `;
 
-const SCHEMA_VERSION = 3;
+/**
+ * v4: an index on the ledger's ref. Rows that belong to one event share a ref —
+ * both halves of a give, every row of a duel — so the log can name the other side
+ * of a transfer. Without this each lookup scans the ledger. Partial: most rows
+ * (ticks, bonuses, penalties) have no ref and don't belong in the index.
+ */
+const SCHEMA_V4 = `
+CREATE INDEX ledger_ref ON ledger(ref) WHERE ref IS NOT NULL;
+`;
+
+const SCHEMA_VERSION = 4;
 
 export function migrate(db: PointsDb): void {
   if ((db.pragma('user_version', { simple: true }) as number) >= SCHEMA_VERSION) return;
@@ -177,6 +187,7 @@ export function migrate(db: PointsDb): void {
     if (version < 1) db.exec(SCHEMA_V1);
     if (version < 2) db.exec(SCHEMA_V2);
     if (version < 3) db.exec(SCHEMA_V3);
+    if (version < 4) db.exec(SCHEMA_V4);
     if (version < SCHEMA_VERSION) db.pragma(`user_version = ${SCHEMA_VERSION}`);
   }).immediate();
 }
