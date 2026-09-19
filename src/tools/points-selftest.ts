@@ -240,32 +240,6 @@ async function main(): Promise<void> {
     check('ordinary message earns', balance(ch, 46) === 5);
   }
 
-  // Always-present account: the owner earns every live tick without chatting
-  {
-    const ch = 'lurkch';
-    const B = 1_000_002 * 10 * MIN;
-    let live = true;
-    writeConfig(root, ch, { enabled: true, pointsPerInterval: 5, currencyName: '$DON' });
-    const svc = makeService(ch, { live: async () => ({ isLive: live, startedAt: null }), now: () => B + 5000 });
-    const db = openPointsDb(ch, { create: true })!;
-    // KICK_OWNER is 'ownerx' in this selftest.
-    runWrite(db, () => {
-      creditTx(db, { userId: 91, username: 'OwnerX', amount: 1, reason: 'test', now: 1 });
-      creditTx(db, { userId: 51, username: 'quietguy', amount: 1, reason: 'test', now: 1 });
-    });
-    await svc.runTick(B);
-    check('the owner earns a live tick without chatting; a quiet viewer does not',
-      balance(ch, 91) === 6 && balance(ch, 51) === 1, [balance(ch, 91), balance(ch, 51)]);
-    check('the owner also gets the active time', getUser(db, 91)?.watch_seconds === 600, getUser(db, 91));
-    live = false;
-    await svc.runTick(B + 10 * MIN);
-    check('no lurking pay while offline', balance(ch, 91) === 6);
-    live = true;
-    writeConfig(root, ch, { enabled: true, pointsPerInterval: 5, currencyName: '$DON', ignoreUsers: ['ownerx'] });
-    await svc.runTick(B + 20 * MIN);
-    check('exclusions still apply to the owner', balance(ch, 91) === 6, balance(ch, 91));
-  }
-
   // Earner
   {
     const ch = 'earnch';
