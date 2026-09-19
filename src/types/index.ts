@@ -204,6 +204,14 @@ export interface PointsGambleConfig {
   cooldownSeconds: number;
   /** Ignore gambles while the stream is offline. */
   onlyWhileLive: boolean;
+  /**
+   * Appended to a winning gamble, e.g. a channel's hype emote. Emote names are
+   * sent as plain text: Kick renders its own, and a 7TV or BTTV one renders for
+   * viewers running the extension. Empty means nothing is added.
+   */
+  winEmote: string;
+  /** The same, for a losing gamble. Empty means nothing is added. */
+  loseEmote: string;
 }
 
 /**

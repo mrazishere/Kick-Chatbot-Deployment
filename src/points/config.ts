@@ -48,7 +48,9 @@ export function defaultPointsConfig(): PointsConfig {
       minAmount: 1,
       maxAmount: 0,
       cooldownSeconds: 60,
-      onlyWhileLive: true
+      onlyWhileLive: true,
+      winEmote: '',
+      loseEmote: ''
     },
     duel: {
       enabled: false,
@@ -166,7 +168,9 @@ export function internalPointsConfig(raw: unknown): InternalPointsConfig {
     minAmount: num(gm.minAmount, d.gamble.minAmount, 1, 1_000_000_000, true),
     maxAmount: num(gm.maxAmount, d.gamble.maxAmount, 0, 1_000_000_000, true),
     cooldownSeconds: num(gm.cooldownSeconds, d.gamble.cooldownSeconds, 0, 3600, true),
-    onlyWhileLive: bool(gm.onlyWhileLive, d.gamble.onlyWhileLive)
+    onlyWhileLive: bool(gm.onlyWhileLive, d.gamble.onlyWhileLive),
+    winEmote: emoteWord(gm.winEmote, d.gamble.winEmote),
+    loseEmote: emoteWord(gm.loseEmote, d.gamble.loseEmote)
   };
   const du = obj(r.duel);
   const duel: PointsDuelConfig = {
@@ -277,6 +281,19 @@ const RAFFLE_NUMBERS: Record<string, Rule> = {
   maxDurationSeconds: { min: 10, max: 3600, integer: true },
   winners: { min: 1, max: 50, integer: true }
 };
+/**
+ * An emote name as chat types it: letters, numbers and underscore, up to 40. Anything
+ * else is dropped rather than posted, so a stray space or bracket can't turn one
+ * reply into something Kick reads as markup.
+ */
+const EMOTE_RE = /^[A-Za-z0-9_]{1,40}$/;
+function emoteWord(raw: unknown, fallback: string): string {
+  if (typeof raw !== 'string') return fallback;
+  const t = raw.trim();
+  if (!t) return '';
+  return EMOTE_RE.test(t) ? t : fallback;
+}
+
 const GAMBLE_NUMBERS: Record<string, Rule> = {
   // Decimals allowed, e.g. 47.5; the roll has 0.01% steps.
   winChancePercent: { min: 0, max: 100, integer: false },
@@ -418,6 +435,13 @@ export function validatePointsPatch(current: unknown, patch: unknown): { next?: 
         if (gm[key] === undefined) continue;
         if (typeof gm[key] !== 'boolean') errors.push(`gamble.${key} must be true or false`);
         else next.gamble![key] = gm[key] as boolean;
+      }
+      for (const key of ['winEmote', 'loseEmote'] as const) {
+        if (gm[key] === undefined) continue;
+        const e = gm[key];
+        if (typeof e !== 'string' || (e.trim() && !EMOTE_RE.test(e.trim()))) {
+          errors.push(`gamble.${key} must be an emote name: letters, numbers or underscore, up to 40 characters`);
+        } else next.gamble![key] = e.trim();
       }
     }
   }

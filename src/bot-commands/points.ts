@@ -343,10 +343,14 @@ export const points: CommandFn = async function points(client, message, channel,
         if (!res.ok) return void say(`@${me} you only have ${res.balance} ${cur}`);
         keepCooldown = true;
         console.log(`[POINTS] ${me} gambled ${bet} ${cur}: ${roll.win ? 'won' : 'lost'} (roll ${roll.roll}/10000, wins below ${roll.threshold}), now ${res.balance} (${res.ref})`);
+        // A 7TV or BTTV emote is plain text on the wire: it renders for viewers running
+        // the extension and reads as the word for everyone else, so it is safe to append.
+        const emote = roll.win ? g.winEmote : g.loseEmote;
+        const hype = emote ? ` ${emote}` : '';
         if (bet === player.balance) {
-          return void say(roll.win ? `@${me} went all in and won, now has ${res.balance} ${cur}` : `@${me} went all in and lost ${bet} ${cur}`);
+          return void say(roll.win ? `@${me} went all in and won, now has ${res.balance} ${cur}${hype}` : `@${me} went all in and lost ${bet} ${cur}${hype}`);
         }
-        return void say(roll.win ? `@${me} won ${bet} ${cur} and now has ${res.balance}` : `@${me} lost ${bet} ${cur} and now has ${res.balance}`);
+        return void say(roll.win ? `@${me} won ${bet} ${cur} and now has ${res.balance}${hype}` : `@${me} lost ${bet} ${cur} and now has ${res.balance}${hype}`);
       } finally {
         if (!keepCooldown) cooldowns.delete(cdKey);
       }

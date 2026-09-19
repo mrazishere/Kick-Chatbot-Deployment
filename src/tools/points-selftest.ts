@@ -860,6 +860,49 @@ async function main(): Promise<void> {
       rowsOf(1).find(r => r.reason === 'mod_add')!.counterparty === null);
   }
 
+  // A channel's hype emote rides along on a gamble win, never on a loss
+  {
+    const ch = 'emotech';
+    const sent: string[] = [];
+    let roll = 0;
+    writeConfig(root, ch, { enabled: true, currencyName: '$DON', gamble: { enabled: true, winEmote: 'GAMBA', loseEmote: 'poor', onlyWhileLive: false, cooldownSeconds: 0 } });
+    const svc = makeService(ch, { sent, random: () => roll, live: async () => ({ isLive: true, startedAt: null }) });
+    const db = openPointsDb(ch, { create: true })!;
+    runWrite(db, () => creditTx(db, { userId: 1, username: 'alice', amount: 100, reason: 'mod_add', now: 1 }));
+    const config = { channelName: ch } as ChannelConfig;
+    const t = (username: string, id: number, messageId?: string): KickTags => ({
+      username, 'display-name': username, badges: {}, isBroadcaster: false, isModUp: false, isVIPUp: false, rawBadges: [], senderId: id, messageId
+    });
+    const run = async (msg: string, tags: KickTags) => {
+      const out: string[] = [];
+      await pointsCommand({ say: async (_c, m) => { out.push(m); } }, msg, `#${ch}`, tags, config);
+      return out;
+    };
+
+    roll = 0.1; // below the 50% threshold: a win
+    check('a win carries the emote', (await run('$don gamble 10', t('alice', 1)))[0] === '@alice won 10 $DON and now has 110 GAMBA');
+    roll = 0.9; // a loss
+    check('a loss carries its own', (await run('$don gamble 10', t('alice', 1, 'm2')))[0] === '@alice lost 10 $DON and now has 100 poor');
+    roll = 0.1;
+    check('an all-in win carries it too', (await run('$don gamble all', t('alice', 1, 'm3')))[0] === '@alice went all in and won, now has 200 $DON GAMBA');
+
+    // A channel that sets no emote reads exactly as before.
+    writeConfig(root, ch, { enabled: true, currencyName: '$DON', gamble: { enabled: true, onlyWhileLive: false, cooldownSeconds: 0 } });
+    makeService(ch, { sent, random: () => roll, live: async () => ({ isLive: true, startedAt: null }) });
+    check('no emote configured leaves the reply unchanged',
+      (await run('$don gamble 10', t('alice', 1, 'm4')))[0] === '@alice won 10 $DON and now has 210');
+    roll = 0.9;
+    check('and a loss is unchanged too',
+      (await run('$don gamble 10', t('alice', 1, 'm5')))[0] === '@alice lost 10 $DON and now has 200');
+    roll = 0.1;
+
+    // Junk never reaches chat.
+    check('a bad emote falls back rather than posting markup',
+      effectivePointsConfig({ gamble: { winEmote: 'GAM BA]' } }).gamble.winEmote === ''
+      && validatePointsPatch({}, { gamble: { winEmote: 'oops [x]' } }).errors.length === 1);
+    void svc;
+  }
+
   // Raffles: moderator-only to open, free to enter, capped three ways
   {
     const ch = 'raffch';
