@@ -7,6 +7,7 @@ import {
 } from "lucide-react";
 import SiteHeader from "./SiteHeader";
 import PointsCard, { type PointsConfig } from "./PointsCard";
+import ClipSessionCard from "./ClipSessionCard";
 import { Button, Card, Checkbox, Stat, Toggle } from "./ui";
 
 const BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
@@ -1934,6 +1935,11 @@ export default function BotManager({
               </>
             )}
           </Card>
+
+          {/* ------------------------------------------------- clip session */}
+          {/* The bot account's own credential, not the channel's, so it is the
+              owner's to manage and shows for nobody else. */}
+          {isAdmin ? <ClipSessionCard /> : null}
 
           {/* -------------------------------------------------- loyalty points */}
           <PointsCard

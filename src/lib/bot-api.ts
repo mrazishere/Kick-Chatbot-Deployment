@@ -677,3 +677,25 @@ export function removeBot(channel: string): Promise<{ ok: true; channel: string 
 export function getLogs(channel: string, lines = 100): Promise<{ lines: string[] }> {
   return request(`/internal/bot/${encodeURIComponent(channel)}/logs?lines=${lines}`);
 }
+
+/**
+ * The clip session's health. !clip drives Kick's internal API with a browser
+ * session token, which is a different credential from the OAuth token the
+ * dashboard logs in with and can't be derived from it — so it is pasted by hand.
+ * The token itself is never sent back to the browser.
+ */
+export interface ClipSessionStatus {
+  healthy: boolean;
+  hasToken: boolean;
+  lastVerifyAt: number | null;
+  lastReason: string | null;
+  tokenSavedAt: number | null;
+}
+
+export async function getClipSession(): Promise<ClipSessionStatus> {
+  return request<ClipSessionStatus>("/internal/clip-session");
+}
+
+export async function setClipToken(token: string): Promise<ClipSessionStatus & { ok: true }> {
+  return request<ClipSessionStatus & { ok: true }>("/internal/clip-session", { method: "POST", body: { token } });
+}
