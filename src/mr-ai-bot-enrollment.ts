@@ -1784,7 +1784,7 @@ app.post('/internal/clip-session', internalGuard(true), async (req, res) => {
   if (!result.ok) {
     return res.status(400).json({
       error: result.reason === 'malformed'
-        ? "That doesn't look like a session token — copy the cookie's value only, without quotes."
+        ? "That doesn't look like a session token. Paste the cookie value, or the whole session_token:\"…\" line — either works."
         : 'Kick rejected that token. Copy a fresh one and close the window without logging out.',
       reason: result.reason
     });

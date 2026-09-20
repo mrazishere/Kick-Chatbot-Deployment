@@ -96,6 +96,36 @@ export function clipSessionStatus(): ClipSessionStatus {
   };
 }
 
+/**
+ * The value out of whatever the browser put on the clipboard. Chrome's cookie
+ * table copies a row as `session_token:"abc"`, "copy value" gives the bare
+ * string, and a copied Cookie header arrives as `session_token=abc; other=…`.
+ * All of those carry the same token, so all of them are accepted rather than
+ * making somebody trim the paste by hand. Returns null when nothing usable is
+ * left, which is reported as a bad paste.
+ */
+export function normalizeToken(raw: string): string | null {
+  let t = (raw || '').trim();
+  if (!t) return null;
+
+  // A copied Cookie header carries the rest of the jar behind a semicolon.
+  const named = /(?:^|[;\s])session_token\s*[:=]\s*("[^"]*"|'[^']*'|[^;\s]+)/i.exec(t);
+  if (named) t = named[1];
+  else t = t.split(';')[0].trim();
+
+  // Quotes survive both the DevTools row copy and a hand-edited JSON value.
+  if ((t.startsWith('"') && t.endsWith('"')) || (t.startsWith("'") && t.endsWith("'"))) t = t.slice(1, -1);
+  t = t.trim();
+
+  // Cookies are stored percent-encoded. A stray % is not an encoding, so a
+  // failed decode keeps the original rather than throwing the request away.
+  try { t = decodeURIComponent(t); } catch { /* keep t as it is */ }
+
+  if (t.length < 20 || t.length > 500) return null;
+  // Whatever is left must still look like one opaque value.
+  return /[\s"';]/.test(t) ? null : t;
+}
+
 export type InstallTokenResult =
   | { ok: true; status: ClipSessionStatus }
   | { ok: false; reason: 'malformed' | 'rejected' };
@@ -107,10 +137,8 @@ export type InstallTokenResult =
  * pasting is the only way to renew, and this is what the dashboard calls.
  */
 export async function installClipToken(raw: string): Promise<InstallTokenResult> {
-  const token = decodeURIComponent((raw || '').trim());
-  // A Kick session token is an opaque string; anything with whitespace or quotes
-  // is a copy that picked up the surrounding JSON rather than the value.
-  if (token.length < 20 || token.length > 500 || /[\s"']/.test(token)) return { ok: false, reason: 'malformed' };
+  const token = normalizeToken(raw);
+  if (!token) return { ok: false, reason: 'malformed' };
   if (!(await tokenWorks(token))) return { ok: false, reason: 'rejected' };
 
   const wasUnhealthy = readState().healthy === false;
