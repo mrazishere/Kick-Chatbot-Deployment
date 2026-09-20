@@ -111,7 +111,7 @@ export default function ClipSessionCard() {
       <ol className="mb-4 space-y-1 text-xs text-neutral-400">
         <li>1. Open kick.com in a private window and sign in as the bot account</li>
         <li>2. F12 → Application → Cookies → kick.com → copy <code className="text-neutral-300">session_token</code></li>
-        <li>3. Paste it below and save</li>
+        <li>3. Paste it below and save — the whole <code className="text-neutral-300">session_token:&quot;…&quot;</code> line is fine, no need to trim it</li>
         <li>4. Close that window <strong className="text-neutral-300">without logging out</strong> — logging out kills the token you just copied</li>
       </ol>
 
@@ -124,7 +124,7 @@ export default function ClipSessionCard() {
             setSaved(false);
             setError(null);
           }}
-          placeholder="Paste session_token"
+          placeholder={'Paste session_token:"…" or just the value'}
           autoComplete="off"
           spellCheck={false}
           className="min-w-0 flex-1 rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 font-mono text-sm text-neutral-200 outline-none placeholder:text-neutral-600 focus:border-neutral-500"
