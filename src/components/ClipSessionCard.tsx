@@ -4,6 +4,10 @@ import { useCallback, useEffect, useState } from "react";
 import { Scissors } from "lucide-react";
 import { Button, Card } from "./ui";
 
+// The dashboard is served under a base path, and a client-side fetch does not
+// pick it up the way a <Link> does — a bare "/api/..." leaves the app entirely.
+const BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
+
 /**
  * !clip drives Kick's internal API with a browser session token for the bot
  * account. That is a different credential from the OAuth token this dashboard
@@ -40,7 +44,7 @@ export default function ClipSessionCard() {
 
   const load = useCallback(async () => {
     try {
-      const res = await fetch("/api/clip-session", { cache: "no-store" });
+      const res = await fetch(`${BASE_PATH}/api/clip-session`, { cache: "no-store" });
       if (res.ok) setStatus((await res.json()) as Status);
     } catch {
       /* the card simply shows nothing rather than breaking the page */
@@ -58,7 +62,7 @@ export default function ClipSessionCard() {
     setError(null);
     setSaved(false);
     try {
-      const res = await fetch("/api/clip-session", {
+      const res = await fetch(`${BASE_PATH}/api/clip-session`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ token: value }),
