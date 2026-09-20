@@ -11,6 +11,7 @@ import KickAuth = require('./auth');
 import KickSessionAuth = require('./kick-session-auth');
 import TelegramNotifier = require('./telegram-notifier');
 import { chatroomResolver } from './channels/chatroom-resolver';
+import { clipSessionStatus, installClipToken } from './channels/clip-session';
 import { resolveBotIdentity } from './bot-identity';
 import { SYSTEM_BOTS } from './system-bots';
 import { commandWordCollides, effectiveCommand, effectivePointsConfig, readSubscriptionStatus, validatePointsPatch } from './points/config';
@@ -1761,6 +1762,35 @@ app.get('/internal/bot/channels', internalGuard(false), async (_req, res) => {
     availableCommands: listAvailableCommands(),
     maxChannels: MAX_CHANNELS
   });
+});
+
+// ── Clip session ────────────────────────────────────────────────────────────
+// !clip drives Kick's internal API with a browser session token, which is not the
+// same credential as the OAuth token the dashboard logs in with and cannot be
+// derived from it. Kick rate-limits logins from this host, so the token is pasted
+// by hand; these routes let that happen in the dashboard instead of over SSH.
+// The token is write-only here: it is never read back to the browser.
+
+app.get('/internal/clip-session', internalGuard(false), (_req, res) => {
+  return res.json(clipSessionStatus());
+});
+
+app.post('/internal/clip-session', internalGuard(true), async (req, res) => {
+  const body = (req.body ?? {}) as { token?: unknown };
+  if (typeof body.token !== 'string' || !body.token.trim()) {
+    return res.status(400).json({ error: 'A session token is required' });
+  }
+  const result = await installClipToken(body.token);
+  if (!result.ok) {
+    return res.status(400).json({
+      error: result.reason === 'malformed'
+        ? "That doesn't look like a session token — copy the cookie's value only, without quotes."
+        : 'Kick rejected that token. Copy a fresh one and close the window without logging out.',
+      reason: result.reason
+    });
+  }
+  console.log('[CLIP] a new session token was installed from the dashboard');
+  return res.json({ ok: true, ...result.status });
 });
 
 // One channel's detail.

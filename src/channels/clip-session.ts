@@ -63,6 +63,65 @@ function saveToken(token: string): void {
   }
 }
 
+/** What the dashboard shows about the clip session. Never includes the token itself. */
+export interface ClipSessionStatus {
+  healthy: boolean;
+  hasToken: boolean;
+  lastVerifyAt: number | null;
+  lastReason: string | null;
+  /** When a token was last pasted or renewed, from the token file rather than the state. */
+  tokenSavedAt: number | null;
+}
+
+export function clipSessionStatus(): ClipSessionStatus {
+  const state = readState();
+  let tokenSavedAt: number | null = null;
+  let hasToken = false;
+  for (const file of [path.join(process.cwd(), '.session.json'), path.join(__dirname, '..', '.session.json')]) {
+    try {
+      const raw = JSON.parse(fs.readFileSync(file, 'utf8')) as { token?: unknown; savedAt?: unknown };
+      if (typeof raw.token === 'string' && raw.token.trim()) {
+        hasToken = true;
+        tokenSavedAt = typeof raw.savedAt === 'number' && raw.savedAt > 0 ? raw.savedAt : null;
+        break;
+      }
+    } catch { /* try the next location */ }
+  }
+  return {
+    healthy: state.healthy !== false,
+    hasToken,
+    lastVerifyAt: state.lastVerifyAt ?? null,
+    lastReason: state.lastReason ?? null,
+    tokenSavedAt
+  };
+}
+
+export type InstallTokenResult =
+  | { ok: true; status: ClipSessionStatus }
+  | { ok: false; reason: 'malformed' | 'rejected' };
+
+/**
+ * Take a session token pasted by hand and put it to work: it is checked against
+ * Kick before it is saved, so a bad paste is reported rather than quietly
+ * replacing a token that still works. Kick rate-limits logins from this host, so
+ * pasting is the only way to renew, and this is what the dashboard calls.
+ */
+export async function installClipToken(raw: string): Promise<InstallTokenResult> {
+  const token = decodeURIComponent((raw || '').trim());
+  // A Kick session token is an opaque string; anything with whitespace or quotes
+  // is a copy that picked up the surrounding JSON rather than the value.
+  if (token.length < 20 || token.length > 500 || /[\s"']/.test(token)) return { ok: false, reason: 'malformed' };
+  if (!(await tokenWorks(token))) return { ok: false, reason: 'rejected' };
+
+  const wasUnhealthy = readState().healthy === false;
+  saveToken(token);
+  writeState({ ...readState(), healthy: true, lastVerifyAt: Date.now(), lastReason: undefined });
+  if (wasUnhealthy) {
+    await new TelegramNotifier().notifyClipSessionRestored('a new token was pasted in the dashboard').catch(() => {});
+  }
+  return { ok: true, status: clipSessionStatus() };
+}
+
 /** Does this token still authenticate? Kick answers an empty object when it doesn't. */
 export async function tokenWorks(token: string): Promise<boolean> {
   try {
