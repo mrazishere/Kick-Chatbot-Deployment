@@ -533,6 +533,7 @@ const REASON_LABEL: Record<string, string> = {
   dash_add: "Added in dashboard",
   dash_remove: "Removed in dashboard",
   dash_set: "Set in dashboard",
+  dash_reset: "Channel reset",
   pusher_sub: "Sub",
   "game:gamble": "Gamble bet",
   "game:gamble_win": "Gamble win",
@@ -597,6 +598,8 @@ export default function PointsCard({
   const [users, setUsers] = useState<PointsUserRow[] | null>(null);
   const [usersError, setUsersError] = useState<string | null>(null);
   const searchSeq = useRef(0);
+  /** Bumped to run the current search again, e.g. after a reset changes every balance. */
+  const [usersRefresh, setUsersRefresh] = useState(0);
 
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [detail, setDetail] = useState<PointsUserDetail | null>(null);
@@ -610,6 +613,14 @@ export default function PointsCard({
   // One request id per attempted change. Retrying the same change reuses it, so a
   // save that landed but whose answer was lost is never applied a second time.
   const pendingAttempt = useRef<{ signature: string; requestId: string } | null>(null);
+
+  const [resetOpen, setResetOpen] = useState(false);
+  const [resetConfirm, setResetConfirm] = useState("");
+  const [resetReason, setResetReason] = useState("");
+  const [resetError, setResetError] = useState<string | null>(null);
+  const [resetNotice, setResetNotice] = useState<string | null>(null);
+  // Kept across a failed attempt, like pendingAttempt, so a retry can't reset twice.
+  const resetRequestId = useRef<string | null>(null);
 
   // A newer copy from the page (another card saved) replaces the form only when it
   // has no unsaved edits — otherwise those edits would silently disappear.
@@ -664,7 +675,7 @@ export default function PointsCard({
       }
     }, q ? 300 : 0);
     return () => clearTimeout(timer);
-  }, [channel, query, points]);
+  }, [channel, query, points, usersRefresh]);
 
   const loadDetail = useCallback(
     async (userId: number) => {
@@ -780,6 +791,53 @@ export default function PointsCard({
     void loadDetail(updated.userId);
     void loadSummary();
   }, [amount, channel, detail, loadDetail, loadSummary, mode, reason, saved]);
+
+  const submitReset = useCallback(async () => {
+    setResetError(null);
+    setResetNotice(null);
+    if (resetConfirm.trim().toLowerCase() !== channel) {
+      setResetError(`Type ${channel} to confirm`);
+      return;
+    }
+    const why = resetReason.trim();
+    if (why.length < 3 || why.length > 200) {
+      setResetError("A reason of 3–200 characters is required");
+      return;
+    }
+    resetRequestId.current ??= crypto.randomUUID();
+
+    setBusy("reset");
+    const r = await callApi<{ applied: boolean; users: number; total: number; duelsCancelled: number; backup: string }>(
+      channel,
+      "/points/reset",
+      {
+        method: "POST",
+        body: JSON.stringify({ confirm: resetConfirm.trim(), reason: why, requestId: resetRequestId.current }),
+      },
+    );
+    setBusy(null);
+    if (!r.data) {
+      setResetError(r.error ?? "Could not reset the balances");
+      return;
+    }
+
+    resetRequestId.current = null;
+    const currency = saved?.currencyName ?? "points";
+    const duels = r.data.duelsCancelled ? `, ${r.data.duelsCancelled} pending duel(s) cancelled` : "";
+    setResetNotice(
+      r.data.applied
+        ? `Reset ${r.data.total.toLocaleString()} ${currency} across ${r.data.users.toLocaleString()} viewers${duels}. ` +
+            `Backup saved as ${r.data.backup}.`
+        : "That reset was already applied.",
+    );
+    setResetOpen(false);
+    setResetConfirm("");
+    setResetReason("");
+    setSelectedId(null);
+    setDetail(null);
+    setUsersRefresh((n) => n + 1);
+    void loadSummary();
+  }, [channel, loadSummary, resetConfirm, resetReason, saved]);
 
   if (!saved || !form) {
     return (
@@ -1341,6 +1399,79 @@ export default function PointsCard({
             </div>
           ) : null}
         </div>
+
+        {canAdminister ? (
+          <div className="border-t border-neutral-800 pt-6">
+            <h3 className={SECTION}>Danger zone</h3>
+            {resetNotice ? <p className="mb-3 text-sm text-[#53FC18]">{resetNotice}</p> : null}
+            {!resetOpen ? (
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <p className="text-sm text-neutral-500">
+                  Set every viewer&apos;s {currency} to 0. Active time and history are kept.
+                </p>
+                <Button
+                  variant="danger"
+                  onClick={() => {
+                    setResetOpen(true);
+                    setResetError(null);
+                    setResetNotice(null);
+                  }}
+                  disabled={!!busy}
+                >
+                  Reset all balances…
+                </Button>
+              </div>
+            ) : (
+              <div className="space-y-3 rounded-lg border border-red-900 bg-red-950/20 p-4">
+                <p className="text-sm text-neutral-300">
+                  This sets all{summary ? ` ${summary.totalPoints.toLocaleString()}` : ""} {currency}
+                  {summary ? ` held by ${summary.users.toLocaleString()} viewers` : ""} to 0 and cancels pending duels
+                  without refunds. The bot saves a backup of the database first, so it can be undone by restoring it.
+                </p>
+                <Field label={`Type ${channel} to confirm`}>
+                  <input
+                    value={resetConfirm}
+                    onChange={(e) => setResetConfirm(e.target.value)}
+                    placeholder={channel}
+                    autoComplete="off"
+                    disabled={!!busy}
+                    className={INPUT}
+                  />
+                </Field>
+                <Field label="Reason">
+                  <input
+                    value={resetReason}
+                    onChange={(e) => setResetReason(e.target.value)}
+                    maxLength={200}
+                    placeholder="Required, shown in every viewer's history"
+                    disabled={!!busy}
+                    className={INPUT}
+                  />
+                </Field>
+                {resetError ? <p className="text-sm text-red-400">{resetError}</p> : null}
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    variant="danger"
+                    onClick={() => void submitReset()}
+                    busy={busy === "reset"}
+                    disabled={!!busy || resetConfirm.trim().toLowerCase() !== channel}
+                  >
+                    Reset all balances to 0
+                  </Button>
+                  <Button
+                    onClick={() => {
+                      setResetOpen(false);
+                      setResetError(null);
+                    }}
+                    disabled={!!busy}
+                  >
+                    Cancel
+                  </Button>
+                </div>
+              </div>
+            )}
+          </div>
+        ) : null}
       </div>
     </Card>
   );

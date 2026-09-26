@@ -597,6 +597,28 @@ export function adjustPoints(
   });
 }
 
+export interface PointsResetResult {
+  ok: true;
+  /** false when this requestId was already applied and nothing changed. */
+  applied: boolean;
+  users: number;
+  total: number;
+  duelsCancelled: number;
+  /** File name of the backup taken just before the reset. */
+  backup: string;
+}
+
+/** Zero every balance in the channel. The bot backs the database up first. */
+export function resetPoints(
+  channel: string,
+  input: { reason: string; actor: { username: string; role: string }; requestId: string },
+): Promise<PointsResetResult> {
+  return request(`/internal/bot/${encodeURIComponent(channel)}/points/reset`, {
+    method: "POST",
+    body: input,
+  });
+}
+
 /**
  * The public top lists. No secret needed, and a short timeout: this backs a page
  * anyone can open, which should say "unavailable" quickly rather than hang.
