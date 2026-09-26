@@ -1246,7 +1246,7 @@ export default function PointsCard({
               <div>
                 <h4 className={LABEL}>Chat games</h4>
                 <Checkbox
-                  label={`Play !fish, !slots and !cookie for ${form.currencyName.trim() || "points"}`}
+                  label={`Play fishing, slots and the daily cookie for ${form.currencyName.trim() || "points"}`}
                   checked={form.gamesEnabled}
                   disabled={readOnly || !!busy}
                   onChange={(v) => set("gamesEnabled", v)}
@@ -1271,10 +1271,12 @@ export default function PointsCard({
                   />
                 </div>
                 <p className="mt-3 text-xs text-neutral-500">
+                  {`Played as $${commandPreview || "…"} fish, $${commandPreview || "…"} slots 100 and $${commandPreview || "…"} cookie, like every command that uses ${form.currencyName.trim() || "points"}; `}
+                  {`!fish, !slots and !cookie then just point viewers to those. `}
                   A fish cast costs the amount above and pays back about 92% on average, scaled to the cost. Slots pay 1.5x for
-                  two alike, 8x for three, 25x for three diamonds, about 93% back; plain !slots spins for fun. !cookie is one
-                  fortune a day with a bonus in the range above, paid online or off. With this off, or offline, the games still
-                  play for fun. To remove a game entirely, switch its command off under Commands.
+                  two alike, 8x for three, 25x for three diamonds, about 93% back. The cookie is one fortune a day with a bonus
+                  in the range above, paid online or off. With this off, the games are !fish, !slots and !cookie and play for
+                  fun; offline, bets play for fun too. To remove a game entirely, switch its command off under Commands.
                 </p>
               </div>
 
