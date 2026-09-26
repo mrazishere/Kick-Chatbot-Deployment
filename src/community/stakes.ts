@@ -2,9 +2,10 @@
  * Playing a game for the channel's loyalty points.
  *
  * fish, slots and cookie run on every channel. Where points and the points
- * `games` settings are on they pay in the channel currency; bets also need the
- * stream live when games.onlyWhileLive is set. Otherwise the game still plays,
- * for nothing.
+ * `games` settings are on they pay in the channel currency and, like everything
+ * else that touches it, are played as `$<cmd> fish`; bets also need the stream
+ * live when games.onlyWhileLive is set. Elsewhere they are `!fish` and play for
+ * nothing.
  *
  * A round is one write transaction (stake off, winnings on) keyed on the Kick
  * message id, so a message the webhook queue replays after a restart can't play
@@ -13,6 +14,7 @@
 
 import * as crypto from 'crypto';
 import { KickTags } from '../types';
+import { effectiveCommand } from '../points/config';
 import { SYSTEM_BOTS } from '../system-bots';
 import { isBotSender } from '../bot-identity';
 import { runWrite } from '../points/db';
@@ -20,6 +22,32 @@ import { getPointsService } from '../points/service';
 import { applyOnce, creditTx, debitTx, findUserByName, getUser, isApplied, isExcluded, UserRecord } from '../points/store';
 import type { PointsDb } from '../points/db';
 import type { PointsConfig } from '../types';
+
+/**
+ * How a message invokes `game`, or null when it doesn't.
+ *
+ * - 'currency': `$<cmd> fish` where the channel plays its games for points.
+ * - 'bang': `!fish` where it doesn't, so the game is just for fun.
+ * - 'redirect': `!fish` where the `$` form is the one to use; answer with a pointer.
+ *
+ * `args` are the words after the game's name; `usage` is how to call it here.
+ */
+export function gameInvocation(
+  message: string, channel: string, game: string
+): { form: 'currency' | 'bang' | 'redirect'; args: string[]; usage: string } | null {
+  const words = message.trim().split(/\s+/);
+  const first = (words[0] ?? '').toLowerCase();
+  const svc = getPointsService(channel.replace(/^#/, '').toLowerCase());
+  const cfg = svc?.config();
+  const cmd = cfg && cfg.enabled && cfg.games.enabled ? effectiveCommand(cfg) : null;
+  if (cmd && first === `$${cmd}` && (words[1] ?? '').toLowerCase() === game) {
+    return { form: 'currency', args: words.slice(2), usage: `$${cmd} ${game}` };
+  }
+  if (first !== `!${game}`) return null;
+  return cmd
+    ? { form: 'redirect', args: words.slice(1), usage: `$${cmd} ${game}` }
+    : { form: 'bang', args: words.slice(1), usage: `!${game}` };
+}
 
 export interface Table {
   db: PointsDb;

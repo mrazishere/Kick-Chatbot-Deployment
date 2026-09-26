@@ -8,14 +8,15 @@
  *
  * Permission required: all users (once a day each)
  *
- * Usage:   !cookie
+ * Usage:   $don cookie   - where the channel plays games for points
+ *          !cookie       - elsewhere; where points apply it points to the $ form
  */
 
 import * as crypto from 'crypto';
 import { CommandFn } from '../types';
 import { claimCookie, openCommunityDb, unclaimCookie } from '../community/store';
 import { isoDay, makeCooldown } from '../community/format';
-import { grant, openTable } from '../community/stakes';
+import { gameInvocation, grant, openTable } from '../community/stakes';
 
 const FORTUNES = [
   'A pleasant surprise is waiting for you.',
@@ -51,12 +52,15 @@ const FORTUNES = [
 ];
 
 const cooldown = makeCooldown(5000);
+const pointer = makeCooldown(60_000);
 
 export const cookie: CommandFn = async function cookie(client, message, channel, tags, _config) {
-  if (message.trim().split(/\s+/)[0].toLowerCase() !== '!cookie') return;
+  const call = gameInvocation(message, channel, 'cookie');
+  if (!call) return;
   const me = tags.username;
   const meLc = me.toLowerCase();
   const say = (text: string) => client.say(channel, text);
+  if (call.form === 'redirect') return void (pointer(meLc) || say(`@${me} it's ${call.usage} here`));
   if (cooldown(meLc)) return;
 
   const db = openCommunityDb(channel);

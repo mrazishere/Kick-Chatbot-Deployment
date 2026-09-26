@@ -9,11 +9,13 @@
  *
  * Permission required: all users (1 cast per 30s each, or games.fishCooldownSeconds)
  *
- * Usage:   !fish
+ * Usage:   $don fish   - where the channel plays games for points ($<currency command> fish)
+ *          !fish       - elsewhere, for fun; where points apply it points to the $ form
  */
 
 import { CommandFn } from '../types';
-import { openTable, playRound, weighted } from '../community/stakes';
+import { makeCooldown } from '../community/format';
+import { gameInvocation, openTable, playRound, weighted } from '../community/stakes';
 
 // Values are for a cast costing 10 and scale with the channel's cost.
 // Weights out of 1000. Expected payout per 10 staked: 9.22.
@@ -31,12 +33,15 @@ const POND = [
 
 const FREE_COOLDOWN_MS = 30_000;
 const lastCast = new Map<string, number>();
+const pointer = makeCooldown(60_000);
 
 export const fish: CommandFn = async function fish(client, message, channel, tags, _config) {
-  if (message.trim().split(/\s+/)[0].toLowerCase() !== '!fish') return;
+  const call = gameInvocation(message, channel, 'fish');
+  if (!call) return;
   const me = tags.username;
   const say = (text: string) => client.say(channel, text);
   const meLc = me.toLowerCase();
+  if (call.form === 'redirect') return void (pointer(meLc) || say(`@${me} it's ${call.usage} here`));
 
   const hit = weighted(POND);
   const table = await openTable(channel, tags, { bet: true });

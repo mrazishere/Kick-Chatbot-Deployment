@@ -37,9 +37,9 @@ Each file exports a `CommandFn` registered in the channel config and dispatched 
 | Followage | `!followage [@user]` · `!fa` · `!subage` · `!accountage` | All users (1/5s) | All channels |
 | Chat summary | `!chatsummary` · `!csum` · `!catchup` | All users (1/min per channel) | All channels |
 | Mini games | `!8ball` · `!roll [20\|5-10\|2d6]` · `!coinflip` · `!pick a b c` · `!percent` | All users (1/5s) | All channels |
-| Fishing | `!fish` | All users (1/30s) | All channels; costs points where chat games are on (Points settings) |
-| Slots | `!slots [amount]` | All users | All channels; bets where chat games are on (Points settings) |
-| Fortune cookie | `!cookie` | All users (1/day) | All channels; bonus where chat games are on |
+| Fishing | `$<currency> fish` · `!fish` | All users (1/30s) | `$don fish` where chat games use points (Points settings); `!fish` for fun elsewhere |
+| Slots | `$<currency> slots amount` · `!slots` | All users | `$don slots 100` where chat games use points; `!slots` spins for fun elsewhere |
+| Fortune cookie | `$<currency> cookie` · `!cookie` | All users (1/day) | `$don cookie` with a bonus where chat games use points; `!cookie` elsewhere |
 
 ---
 
@@ -507,6 +507,9 @@ $don cancel                   → withdraw your own challenge
 $don raffle 5000 120          → open a raffle: 5000 split between winners, 120s (Mods+)
 $don sraffle 5000 120         → same, but one winner takes it all (Mods+)
 $don join                     → enter the open raffle, free, one entry each
+$don fish                     → a cast for points (chat games on; see Games)
+$don slots 100                → bet on the slots (chat games on)
+$don cookie                   → today's fortune cookie and bonus (chat games on)
 $don raffle cancel            → close it without drawing (Mods+)
 $don add|remove|set @user 500 → adjust a balance (broadcaster and bot owner only)
 ```
@@ -691,10 +694,12 @@ Stored per channel in `data/community/<channel>.sqlite` (see `src/community/stor
 
 `src/community/stakes.ts` decides whether a round is played for points: the channel has points on and `points.games.enabled` set, and for bets the stream is live when `games.onlyWhileLive` is set. Otherwise the game plays for nothing. A round is one transaction keyed on the Kick message id, so a replayed message plays once and stays silent. Ledger reasons: `game:fish`/`game:fish_win`, `game:slots`/`game:slots_win`, `cookie`.
 
+**Format rule:** anything that uses the loyalty points is a currency subcommand, `$<currency> <subcommand>`. So where chat games use points they are `$don fish`, `$don slots 100` and `$don cookie`; there `!fish`, `!slots` and `!cookie` only point to the `$` form (once a minute per viewer). On channels without points, or with chat games off, the `!` forms play for fun and the `$` forms don't exist. `$don slots` needs an amount; `!slots` is always a free spin.
+
 Settings live in the channel config's `points.games` block and on the dashboard's Points card (Chat games). Switching a game off entirely is its command toggle.
 
 | Game | Stake | Pays | Return | Settings |
 |---|---|---|---|---|
-| `!fish` | `fishCost` (10) | 0–40x the cost / 10 by catch | ~92% | `fishCost`, `fishCooldownSeconds` (30) |
-| `!slots N` | N | 1.5x two alike, 8x three alike, 25x three 💎 | ~92.6% | `slotsMinBet` (1), `slotsMaxBet` (0 = none), `slotsCooldownSeconds` (30) |
-| `!cookie` | — | `cookieMin`–`cookieMax` (5–25) once a day | minted | both 0 turns the bonus off |
+| `$don fish` | `fishCost` (10) | 0–40x the cost / 10 by catch | ~92% | `fishCost`, `fishCooldownSeconds` (30) |
+| `$don slots N` | N | 1.5x two alike, 8x three alike, 25x three 💎 | ~92.6% | `slotsMinBet` (1), `slotsMaxBet` (0 = none), `slotsCooldownSeconds` (30) |
+| `$don cookie` | — | `cookieMin`–`cookieMax` (5–25) once a day | minted | both 0 turns the bonus off |

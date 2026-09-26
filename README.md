@@ -10,7 +10,7 @@ It does AI chat with Claude (with a live look at the stream), a StreamElements-s
 - **Loyalty points:** a per-channel currency earned by chatting while live and from follows, subs, gifted subs and Kicks. Viewers can give, gamble, duel and join raffles; moderators can adjust. Timeouts cost points. Public leaderboard.
 - **Channel-point rewards:** redemptions mapped to moderation actions (timeout, roulette, pardon, shield).
 - **Community:** `!remind`, `!lastseen`/`!firstseen`, `!followage`/`!subage`/`!accountage`, and `!chatsummary` ("what did I miss?").
-- **Chat games:** `!fish`, `!slots`, `!cookie`, which can be played for points, plus `!8ball`, `!roll`, `!coinflip`, `!pick` and `!percent`.
+- **Chat games:** fishing, slots and a daily fortune cookie, played for points as `$don fish`, `$don slots 100` and `$don cookie` (or as `!fish`/`!slots`/`!cookie` for fun on channels without points), plus `!8ball`, `!roll`, `!coinflip`, `!pick` and `!percent`.
 - **Stream tools:** `!clip`, `!blerp` sound suggestions, countdown overlay (`!countd`), KPP and earnings estimates, top chatters, Hall of Shame.
 - **Utilities:** translation (on demand and automatic), weather, currency conversion, dictionary, jokes and facts, custom text commands.
 - **Operations:** self-service enrollment, per-channel command toggles, token refresh with a cross-process lock, reconnect and self-healing, Telegram alerts.
@@ -22,9 +22,9 @@ The full command reference, with permissions, cooldowns and examples, is in **[s
 | Area | Commands |
 |---|---|
 | AI | `!claude`, `@<bot>`, `!research`, `!claudesystem`, `!claudereset`, `!claudeclear`, `!chatsummary` |
-| Points | `$<currency>` (e.g. `$don`) with `give`, `gamble`, `duel`, `accept`, `deny`, `raffle`, `join`, `top`, `activetime`, `leaderboard`, `add`/`remove`/`set` |
+| Points | `$<currency>` (e.g. `$don`) with `give`, `gamble`, `duel`, `accept`, `deny`, `raffle`, `join`, `fish`, `slots`, `cookie`, `top`, `activetime`, `leaderboard`, `add`/`remove`/`set` |
 | Community | `!remind`, `!unremind`, `!lastseen`, `!seen`, `!firstseen`, `!followage`, `!fa`, `!subage`, `!accountage` |
-| Games | `!fish`, `!slots`, `!cookie`, `!8ball`, `!roll`, `!coinflip`, `!pick`, `!percent`, `!catch` |
+| Games | `$<currency> fish`/`slots`/`cookie` (`!fish`/`!slots`/`!cookie` without points), `!8ball`, `!roll`, `!coinflip`, `!pick`, `!percent`, `!catch` |
 | Stream | `!clip`, `!blerp`, `!countd`, `!kpp`, `!earnings`, `!topc`, `!hallofshame` |
 | Utility | `!<lang>` translate, `!weather`, `!fx`, `!define`, `!ping` |
 | Fun | `!dad`, `!jokes`, `!catfacts`, `!dogfacts`, `!numfacts` |
@@ -84,6 +84,7 @@ A change to the chat loop goes into `template-kick-bot.ts` **and** each live cha
 Everything is per channel and can be edited from the dashboard or in `data/channel-configs/<channel>.json`:
 
 - **Commands:** `excludedCommands` switches modules off. In chat, the broadcaster can run `!config exclude add fish`.
+- **Command format:** anything that spends or pays loyalty points is `$<currency> <subcommand>` (`$don gamble 100`, `$don fish`). `!` commands never touch points.
 - **Points:** `points` holds the currency name and command, earn rate, bonuses, give, gamble, duel, raffle, timeout penalty, and `games`, which covers whether `!fish`/`!slots`/`!cookie` use points, the fish cost, slots limits and the cookie bonus range.
 - **Claude:** the system prompt, and vision on the live stream.
 - **Auto-translate:** on or off, with an optional list of source languages.

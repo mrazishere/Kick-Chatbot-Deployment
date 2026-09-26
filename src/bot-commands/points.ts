@@ -22,6 +22,7 @@
  *          $don accept|deny [@user]   - answer a challenge
  *          $don cancel                - withdraw your challenge
  *          $don add|remove|set @user 500
+ *          $don fish|slots|cookie     - chat games, answered by fish.ts, slots.ts and cookie.ts
  *
  * Gambling and duels stay silent when off, on cooldown, or the stream is offline
  * (the user's choice, to keep chat clean); the log says why each was ignored. A
@@ -48,7 +49,9 @@ import {
   cancelRaffle, createRaffle, incomingDuels, isApplied, isExcluded, joinRaffle, openRaffle, outgoingDuel, rankBy, refundDuel, setTx, topBy, transfer
 } from '../points/store';
 
-const SUBCOMMANDS = new Set(['activetime', 'top', 'leaderboard', 'give', 'gamble', 'duel', 'accept', 'deny', 'cancel', 'raffle', 'sraffle', 'join', 'add', 'remove', 'set']);
+const SUBCOMMANDS = new Set(['activetime', 'top', 'leaderboard', 'give', 'gamble', 'duel', 'accept', 'deny', 'cancel', 'raffle', 'sraffle', 'join', 'add', 'remove', 'set', 'fish', 'slots', 'cookie']);
+/** Played through the currency command but answered by their own modules (see community/stakes.ts). */
+const GAME_SUBCOMMANDS = new Set(['fish', 'slots', 'cookie']);
 const AMOUNT_RE = /^\d{1,9}$/;
 const NAME_RE = /^@?[A-Za-z0-9_]{2,25}$/;
 
@@ -140,6 +143,7 @@ export const points: CommandFn = async function points(client, message, channel,
   // Moderators skip the read cooldowns. Changing balances is only for the broadcaster
   // and the bot owner (user, 2026-09-12): a mod could otherwise mint up to modMaxAdjust at will.
   const isModUp = tags.isModUp || isOwner;
+  if (sub !== null && GAME_SUBCOMMANDS.has(sub)) return;
   const canWrite = tags.isBroadcaster || isOwner;
 
   try {

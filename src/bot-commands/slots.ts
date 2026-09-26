@@ -9,20 +9,22 @@
  *
  * Permission required: all users (1 free spin per 10s each; bets per games.slotsCooldownSeconds)
  *
- * Usage:   !slots              - spin for fun
- *          !slots 100|5k|50%|all
+ * Usage:   $don slots 100|5k|50%|all  - where the channel plays games for points
+ *          !slots                     - elsewhere, a spin for fun; where points apply
+ *                                       it points to the $ form
  */
 
 import * as crypto from 'crypto';
 import { CommandFn } from '../types';
 import { makeCooldown } from '../community/format';
-import { openTable, playRound } from '../community/stakes';
+import { gameInvocation, openTable, playRound } from '../community/stakes';
 import { parseBet } from './points';
 
 const REELS = ['🍒', '🍋', '🍇', '🔔', '⭐', '💎'];
 
 const spinCooldown = makeCooldown(10_000);
 const lastBet = new Map<string, number>();
+const pointer = makeCooldown(60_000);
 
 function spin(): { reels: string[]; multiplier: number } {
   const reels = [0, 1, 2].map(() => REELS[crypto.randomInt(0, REELS.length)]);
@@ -33,18 +35,21 @@ function spin(): { reels: string[]; multiplier: number } {
 }
 
 export const slots: CommandFn = async function slots(client, message, channel, tags, _config) {
-  const words = message.trim().split(/\s+/);
-  if (words[0].toLowerCase() !== '!slots') return;
+  const call = gameInvocation(message, channel, 'slots');
+  if (!call) return;
   const me = tags.username;
   const meLc = me.toLowerCase();
   const say = (text: string) => client.say(channel, text);
-  const raw = words[1];
+  if (call.form === 'redirect') return void (pointer(meLc) || say(`@${me} it's ${call.usage} amount here`));
+  const raw = call.args[0];
 
-  if (raw === undefined) {
+  // !slots is always a free spin: it only exists where games don't use points.
+  if (call.form === 'bang') {
     if (spinCooldown(meLc)) return;
     const s = spin();
     return void say(`@${me} ${s.reels.join(' ')} ${s.multiplier >= 8 ? 'JACKPOT' : s.multiplier > 0 ? 'so close' : 'nothing'}`);
   }
+  if (raw === undefined) return void say(`@${me} usage: ${call.usage} amount`);
 
   const table = await openTable(channel, tags, { bet: true });
   if (table === 'replay') return;
@@ -58,7 +63,7 @@ export const slots: CommandFn = async function slots(client, message, channel, t
   const have = table.player?.balance ?? 0;
   if (have <= 0) return void say(`@${me} you have no ${table.cur} to bet`);
   const bet = parseBet(raw, have);
-  if (bet === null) return void say(`@${me} usage: !slots amount`);
+  if (bet === null) return void say(`@${me} usage: ${call.usage} amount`);
   if (bet < g.slotsMinBet) return void say(`@${me} the minimum is ${g.slotsMinBet}`);
   if (g.slotsMaxBet > 0 && bet > g.slotsMaxBet) return void say(`@${me} the maximum is ${g.slotsMaxBet}`);
   if (bet > have) return void say(`@${me} you only have ${have} ${table.cur}`);
