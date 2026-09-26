@@ -1,221 +1,118 @@
-# Kick Chatbot (Official API)
+# Kick Chatbot
 
-A Node.js chatbot for Kick.com using the official Kick Developer API with OAuth 2.1 authentication.
+A multi-channel chatbot for [Kick.com](https://kick.com), written in TypeScript on the official Kick Developer API (OAuth 2.1). One bot account serves many channels: each channel runs as its own PM2 process with its own settings, and streamers enroll themselves through a web flow.
+
+It does AI chat with Claude (with a live look at the stream), a StreamElements-style loyalty points currency, channel-point rewards that time people out, clips, reminders, chat games and a set of utility and fun commands. A companion web dashboard (a separate project) edits each channel's settings through the bot's internal API.
 
 ## Features
 
-- Official Kick Developer API integration
-- OAuth 2.1 authentication
-- Real-time chat message listening via WebSocket
-- Send messages to chat (two-way communication)
-- Command system with customizable prefix
-- Event tracking (subscriptions, gifted subs)
-- Automatic token refresh
-- Reconnection handling
-- Easy to extend with custom commands
+- **Claude AI:** `!claude` and `@mentions`, with per-channel memory, chat "lore", web search (`!research`) and optional vision on the live stream.
+- **Loyalty points:** a per-channel currency earned by chatting while live and from follows, subs, gifted subs and Kicks. Viewers can give, gamble, duel and join raffles; moderators can adjust. Timeouts cost points. Public leaderboard.
+- **Channel-point rewards:** redemptions mapped to moderation actions (timeout, roulette, pardon, shield).
+- **Community:** `!remind`, `!lastseen`/`!firstseen`, `!followage`/`!subage`/`!accountage`, and `!chatsummary` ("what did I miss?").
+- **Chat games:** `!fish`, `!slots`, `!cookie`, which can be played for points, plus `!8ball`, `!roll`, `!coinflip`, `!pick` and `!percent`.
+- **Stream tools:** `!clip`, `!blerp` sound suggestions, countdown overlay (`!countd`), KPP and earnings estimates, top chatters, Hall of Shame.
+- **Utilities:** translation (on demand and automatic), weather, currency conversion, dictionary, jokes and facts, custom text commands.
+- **Operations:** self-service enrollment, per-channel command toggles, token refresh with a cross-process lock, reconnect and self-healing, Telegram alerts.
 
-## Prerequisites
+The full command reference, with permissions, cooldowns and examples, is in **[src/bot-commands/README.md](src/bot-commands/README.md)**.
 
-- Node.js (v16 or higher)
-- A Kick.com account
-- A Kick Developer App (instructions below)
+## Commands at a glance
 
-## Setup Instructions
+| Area | Commands |
+|---|---|
+| AI | `!claude`, `@<bot>`, `!research`, `!claudesystem`, `!claudereset`, `!claudeclear`, `!chatsummary` |
+| Points | `$<currency>` (e.g. `$don`) with `give`, `gamble`, `duel`, `accept`, `deny`, `raffle`, `join`, `top`, `activetime`, `leaderboard`, `add`/`remove`/`set` |
+| Community | `!remind`, `!unremind`, `!lastseen`, `!seen`, `!firstseen`, `!followage`, `!fa`, `!subage`, `!accountage` |
+| Games | `!fish`, `!slots`, `!cookie`, `!8ball`, `!roll`, `!coinflip`, `!pick`, `!percent`, `!catch` |
+| Stream | `!clip`, `!blerp`, `!countd`, `!kpp`, `!earnings`, `!topc`, `!hallofshame` |
+| Utility | `!<lang>` translate, `!weather`, `!fx`, `!define`, `!ping` |
+| Fun | `!dad`, `!jokes`, `!catfacts`, `!dogfacts`, `!numfacts` |
+| Channel admin | `!acomm`/`!ecomm`/`!dcomm`/`!lcomm` custom commands, `!config exclude add/remove/list`, `!location` |
 
-### Step 1: Create a Kick Developer App
+## How it works
 
-1. Go to https://dev.kick.com/
-2. Log in with your Kick account
-3. Navigate to your account settings
-4. Click on the "Developer" tab
-5. Click "Create App"
-6. Fill in the app details:
-   - **App Name**: Your bot name
-   - **Redirect URI**: `http://localhost:3000/callback`
-   - **Scopes**: Select `chat:read` and `chat:write`
-7. Save the app and copy your **Client ID** and **Client Secret**
+```
+                    ┌────────────────────────────┐
+ streamer ── OAuth ─▶ enrollment service         │  dist/mr-ai-bot-enrollment.js
+                    │  • /kick-bot-enroll flow   │  • writes data/channel-configs/<ch>.json
+ dashboard ─ HTTP ──▶  • internal settings API   │  • clones the channel template
+                    └──────────────┬─────────────┘  • starts it under PM2
+                                   │
+          ┌────────────────────────┼────────────────────────┐
+          ▼                        ▼                        ▼
+   kick-<channel A>         kick-<channel B>          kick-<channel C>     one PM2 process each
+   Pusher chat socket  ─▶  command dispatch  ─▶  src/bot-commands/*   (every module sees every message)
+   Kick webhooks       ─▶  points, rewards, KPP / earnings trackers
+```
 
-### Step 2: Configure the Bot
+- **Channel processes.** `src/channels/template-kick-bot.ts` is the bot loop: the chat socket, reconnects, token handling and command dispatch. Each enrolled channel is a clone of it (`src/channels/<channel>.ts`, git-ignored) started from `channels/ecosystem.config.js`. PM2 watches `data/channel-configs/<channel>.reload`, so touching it restarts that channel.
+- **Commands** are modules in `src/bot-commands/`. Every module is loaded at start and handed every chat message; each one decides whether the message is for it. A channel turns a module off by listing it in `excludedCommands` (with `!config exclude` in chat, or from the dashboard).
+- **Channel settings** live in `data/channel-configs/<channel>.json`: OAuth tokens, excluded commands, auto-translate, Claude, points and games, rewards, location. The points service re-reads its block within 15 seconds; most other settings apply on restart.
+- **Storage** is per channel, under `data/`:
+  - `data/points/<channel>/points.sqlite`: balances, ledger, duels, raffles, with daily backups
+  - `data/community/<channel>.sqlite`: last seen, reminders, daily cookies
+  - JSON files for custom commands, KPP and earnings sessions, and lore
+- **Auth.** The bot account's token is shared by every process in `dist/.tokens.json`, refreshed under a cross-process lock. Channels enrolled through the web flow also carry the streamer's own token, used for moderation and rewards.
 
-1. Install dependencies:
+## Setup
+
+**Requirements:** Node.js 20+, PM2, and a Kick developer app from [dev.kick.com](https://dev.kick.com). Chromium is optional; it's only used by the browser-driven helpers.
+
 ```bash
 npm install
+cp .env.example .env      # fill in at least CLIENT_ID, CLIENT_SECRET, KICK_USERNAME, KICK_OWNER
+npm run build             # compiles src/ to dist/
+node authenticate.js      # one-time OAuth login for the bot account
+pm2 start ecosystem.config.js   # the enrollment service
 ```
 
-2. Edit the `.env` file and add your credentials:
-```env
-CLIENT_ID=your_client_id_here
-CLIENT_SECRET=your_client_secret_here
-REDIRECT_URI=http://localhost:3000/callback
-KICK_CHANNEL=your_channel_name
-BOT_PREFIX=!
-```
+Streamers then enroll at `/kick-bot-enroll` on the enrollment service. That authorises the bot for their channel, writes the channel config, and starts `kick-<channel>` under PM2. Every key in `.env.example` is documented there; optional keys left blank just switch their command off (for example, no `ANTHROPIC_API_KEY` means no `!claude` and no `!chatsummary`).
 
-Replace:
-- `your_client_id_here` - Your app's Client ID from dev.kick.com
-- `your_client_secret_here` - Your app's Client Secret from dev.kick.com
-- `your_channel_name` - The Kick channel to monitor
-
-### Step 3: First Run (Authentication)
-
-The first time you run the bot, it will need to authenticate:
+### Deploying a change
 
 ```bash
-npm start
+npm run typecheck
+npm run build
+pm2 restart kick-<channel>        # or every kick-* process, plus Kick-Bot-Enrollment for API changes
 ```
 
-You'll see output like:
-```
-[AUTH] Not authenticated. Starting OAuth flow...
-[AUTH] Please authenticate your bot:
-[AUTH] Open this URL in your browser:
+A change to the chat loop goes into `template-kick-bot.ts` **and** each live channel clone, because the clones aren't tracked.
 
-    https://kick.com/oauth2/authorize?client_id=...
+## Configuring a channel
 
-[AUTH] Waiting for callback on http://localhost:3000/callback...
-```
+Everything is per channel and can be edited from the dashboard or in `data/channel-configs/<channel>.json`:
 
-1. Open the URL in your browser
-2. Log in to Kick if needed
-3. Authorize the app
-4. You'll be redirected to a success page
-5. Return to the terminal - the bot will be connected!
+- **Commands:** `excludedCommands` switches modules off. In chat, the broadcaster can run `!config exclude add fish`.
+- **Points:** `points` holds the currency name and command, earn rate, bonuses, give, gamble, duel, raffle, timeout penalty, and `games`, which covers whether `!fish`/`!slots`/`!cookie` use points, the fish cost, slots limits and the cookie bonus range.
+- **Claude:** the system prompt, and vision on the live stream.
+- **Auto-translate:** on or off, with an optional list of source languages.
+- **Rewards:** `rewardActions` maps channel-point rewards to timeouts and similar actions.
 
-The bot saves authentication tokens to `.tokens.json` and will automatically refresh them, so you only need to do this once.
+## Development
 
-## Usage
-
-Start the bot:
 ```bash
-npm start
+npm run typecheck
+npx tsx src/tools/points-selftest.ts     # points system selftest (scratch data dir, no Kick calls)
+npx tsx src/tools/rewards-selftest.ts
 ```
 
-For development with auto-restart:
-```bash
-npm run dev
-```
+Code notes:
+- Modules must never crash a channel. Recoverable failures log, recover, and answer in chat where it helps.
+- Kick limits a message to 500 characters, and to 10 ASCII symbols when it's sent with the bot's own token (not a streamer's). Keep replies short and plain.
+- Chat text sent to Claude is always passed as quoted, untrusted data, never as instructions.
 
-## Built-in Commands
+## Security
 
-The bot comes with several example commands:
+- `.env`, token files, `data/` (OAuth tokens and databases), logs and channel clones are git-ignored. Never commit them.
+- `WEBHOOK_VERIFY=false` disables Kick's webhook signature check. Use it for local testing only.
+- The internal settings API requires `INTERNAL_API_SECRET`, shared with the dashboard.
 
-- `!hello` - Bot greets the user
-- `!help` - Shows available commands
-- `!uptime` - Displays bot uptime
-- `!ping` - Simple responsiveness check
+## Kick documentation
 
-All commands will send responses to the chat using the official API.
-
-## Adding Custom Commands
-
-Edit `bot.js` and add new commands in the `setupCommands()` method:
-
-```javascript
-this.commands.set('yourcommand', {
-  description: 'What your command does',
-  execute: async (username, args) => {
-    // Your command logic here
-    await this.sendMessage(`Hello ${username}!`);
-  }
-});
-```
-
-The `sendMessage()` method automatically handles authentication and sends messages through the official API.
-
-## How It Works
-
-### Architecture
-
-1. **OAuth 2.1 Authentication** (`auth.js`)
-   - Handles the OAuth flow
-   - Stores and refreshes access tokens
-   - Manages token expiration
-
-2. **WebSocket Connection** (bot.js)
-   - Connects to Kick's Pusher WebSocket for real-time chat
-   - Listens for chat messages and events
-   - Automatic reconnection on disconnect
-
-3. **API Communication** (bot.js)
-   - Uses official Kick API endpoints for sending messages
-   - Bearer token authentication
-   - Proper error handling
-
-### API Endpoints Used
-
-- `GET /api/v2/channels/{channel}` - Get channel and chatroom info
-- `POST /api/v2/channels/{channel}/messages` - Send chat messages
-- OAuth endpoints for authentication
-
-### WebSocket Events Captured
-
-- `App\Events\ChatMessageEvent` - Regular chat messages
-- `App\Events\SubscriptionEvent` - New subscriptions
-- `App\Events\GiftedSubscriptionsEvent` - Gifted subscriptions
-
-## Project Structure
-
-```
-.
-├── bot.js          # Main bot logic
-├── auth.js         # OAuth 2.1 authentication handler
-├── package.json    # Dependencies and scripts
-├── .env           # Configuration (not committed)
-├── .tokens.json   # OAuth tokens (auto-generated, not committed)
-└── README.md      # This file
-```
-
-## Security Notes
-
-- Never commit `.env` or `.tokens.json` to version control
-- Keep your Client Secret secure
-- The `.tokens.json` file contains access tokens - treat it like a password
-- Tokens are automatically refreshed before expiration
-
-## Troubleshooting
-
-**OAuth flow fails:**
-- Verify your Client ID and Client Secret are correct
-- Ensure the Redirect URI matches exactly: `http://localhost:3000/callback`
-- Check that you have the correct scopes enabled (`chat:read`, `chat:write`)
-
-**Bot won't connect:**
-- Verify the channel name is correct
-- Check if the channel exists and is public
-- Ensure you completed the OAuth flow
-
-**Messages not sending:**
-- Check that your access token is valid (bot will try to refresh automatically)
-- Verify you have the `chat:write` scope enabled
-- Check for rate limiting in the console output
-
-**Token expired errors:**
-- Delete `.tokens.json` and restart the bot to re-authenticate
-- Check your system clock is accurate (affects token expiration)
-
-## Rate Limiting
-
-Kick's API has rate limits. Best practices:
-- Don't spam messages
-- Add cooldowns to frequently-used commands
-- Handle rate limit errors gracefully
-
-## Official Documentation
-
-- Kick Developer Portal: https://dev.kick.com/
-- API Documentation: https://docs.kick.com/
-- GitHub Docs: https://github.com/KickEngineering/KickDevDocs
-- Discord Community: https://discord.gg/SvyWXP5aWb
-
-## Contributing
-
-Ideas for extending this bot:
-- Add command cooldowns
-- Implement user permission levels
-- Add database integration for persistent data
-- Create custom moderation commands
-- Add more chat events and reactions
-- Implement message filtering/auto-moderation
+- Developer portal: https://dev.kick.com/
+- API docs: https://docs.kick.com/
+- Docs repository: https://github.com/KickEngineering/KickDevDocs
 
 ## License
 
