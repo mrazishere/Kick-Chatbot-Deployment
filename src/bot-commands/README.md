@@ -30,7 +30,7 @@ Each file exports a `CommandFn` registered in the channel config and dispatched 
 | [Pokémon catch](#pokecatchts--pokémon-catch) | `!catch` | All users (3/30s) | All channels |
 | [Loyalty points](#pointsts--loyalty-points) | `$<currency> [subcommand]` | All users · broadcaster/owner to adjust | Channels with points enabled |
 | [Hall of Shame](#hallofshamets--ai-hall-of-shame) | `!hallofshame [sub]` · `!shame` | All users (Mods+ to reset) | All channels |
-| [Clip](#clipts--clip) | `!clip [title]` | All users (1/min) | All channels |
+| [Clip](#clipts--clip) | `!clip [45s] [title]` | All users (1/min) | All channels |
 | [Blerp](#blerpts--blerp-sound-suggestions) | `!blerp [11s] [title]` | Mods+ (1 per 5 min) | Channels with `blerpStreamerId` |
 | Remind | `!remind @user [in 2h] msg` · `!remind me in 30m msg` · `!remind list` · `!unremind id` | All users (5 pending each) | All channels |
 | Last seen | `!lastseen @user` · `!seen` · `!firstseen @user` | All users (1/5s) | All channels, this channel's chat only |
@@ -605,6 +605,7 @@ Creates a real Kick clip of the last 30 seconds and posts the link.
 ```
 !clip              → clip the last 30 seconds
 !clip <title>      → same, with your own title (50 chars max)
+!clip 45s [title]  → the last 45 seconds instead (5–90s; Kick keeps a 90-second buffer)
 ```
 
 With no title the clip is named `<stream title> - clipped by <user>`, trimmed to fit.
