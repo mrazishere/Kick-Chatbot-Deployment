@@ -19,6 +19,17 @@ const TICK_DELAY_MS = 5_000;
 /** On start, a boundary this recent with no tick yet is granted immediately. */
 const CATCH_UP_MS = 3 * 60_000;
 
+/**
+ * The bot owner (KICK_OWNER) is paid every live tick as if they had just chatted:
+ * same rate, same active time, only while live, exclusions still apply. They watch
+ * without typing (user, 2026-09-17), and asked for it in code, not in settings.
+ * Only counts in a channel where the account already has a row.
+ */
+function ownerUsername(): string | null {
+  const owner = (process.env.KICK_OWNER || '').trim().replace(/^@+/, '').toLowerCase();
+  return owner || null;
+}
+
 export interface EarnerContext {
   channel: string;
   config(): LivePointsConfig;
@@ -149,7 +160,11 @@ export class Earner {
       if (streamStart !== null) windowStart = Math.max(windowStart, streamStart - intervalMs);
 
       const ex = this.ctx.exclusions();
-      const candidates = db.prepare('SELECT user_id, username_lc, is_sub FROM users WHERE last_chat_at > ?').all(windowStart) as Array<{ user_id: number; username_lc: string; is_sub: number }>;
+      const owner = ownerUsername();
+      const candidates = (owner
+        ? db.prepare('SELECT user_id, username_lc, is_sub FROM users WHERE last_chat_at > ? OR username_lc = ?').all(windowStart, owner)
+        : db.prepare('SELECT user_id, username_lc, is_sub FROM users WHERE last_chat_at > ?').all(windowStart)
+      ) as Array<{ user_id: number; username_lc: string; is_sub: number }>;
       const rows = candidates
         .filter(c => !isExcluded(ex, c.user_id, c.username_lc))
         .map(c => ({
