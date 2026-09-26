@@ -39,7 +39,7 @@ export const COMMAND_META: Record<string, CommandMeta> = {
     description:
       "Clips the last 30 seconds of the stream and posts the link. Open to everyone; the stream must be live.",
   },
-  cookie: { label: "Fortune Cookie", trigger: "$<currency> cookie, or !cookie without points", description: "One fortune a day per viewer, with a points bonus when chat games are on (Points settings)." },
+  cookie: { label: "Fortune Cookie", trigger: "$<currency> cookie", description: "One fortune a day per viewer, with a points bonus. Needs points and Chat games on (Points settings)." },
   countd: { label: "Countdown", trigger: "!countd", description: "Countdown timer overlay." },
   customC: {
     label: "Custom Commands",
@@ -54,7 +54,7 @@ export const COMMAND_META: Record<string, CommandMeta> = {
     trigger: "!earnings",
     description: "Estimated stream earnings. Restricted to supported channels.",
   },
-  fish: { label: "Fishing", trigger: "$<currency> fish, or !fish without points", description: "Fishing mini-game. Costs points per cast when chat games are on (Points settings), otherwise for fun." },
+  fish: { label: "Fishing", trigger: "$<currency> fish", description: "Fishing for points. Needs points and Chat games on (Points settings)." },
   followage: { label: "Followage", trigger: "!followage / !subage / !accountage", description: "How long someone has followed or subscribed here, and how old their Kick account is." },
   fx: { label: "Currency", trigger: "!fx", description: "Live currency conversion." },
   hallofshame: {
@@ -75,7 +75,7 @@ export const COMMAND_META: Record<string, CommandMeta> = {
   points: { label: "Loyalty Points", trigger: "$<currency> (e.g. $don)", description: "Balance, active time, top 5, giving, and adjustments by the broadcaster." },
   pokecatch: { label: "Pokécatch", trigger: "!catch", description: "Pokémon catching mini-game." },
   remind: { label: "Remind", trigger: "!remind / !unremind", description: "Leave someone a message for when they next chat, or set a timed reminder." },
-  slots: { label: "Slots", trigger: "$<currency> slots 100, or !slots without points", description: "Slot machine. Bets use points when chat games are on (Points settings); without points !slots spins for fun." },
+  slots: { label: "Slots", trigger: "$<currency> slots 100", description: "Slot machine for points. Needs points and Chat games on (Points settings)." },
   topc: { label: "Top Chatters", trigger: "!topc", description: "Most active chatters." },
   translate: { label: "Translate", trigger: "!translate", description: "On-demand translation." },
   weather: { label: "Weather", trigger: "!weather", description: "Current weather for a location." },
