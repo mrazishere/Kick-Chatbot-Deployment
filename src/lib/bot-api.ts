@@ -113,27 +113,28 @@ export interface PointsConfig {
   duel?: PointsDuel;
   /** Absent from a bot service older than raffles. */
   raffle?: PointsRaffle;
-  /** Absent from a bot service older than the chat games. */
+  /** Absent from a bot service older than fishing. */
   games?: PointsGames;
 }
 
 /**
- * !fish, !slots and !cookie played for points. Off, or offline with onlyWhileLive,
- * the games still run for fun; switching a game off entirely is its command toggle.
+ * `$<cmd> fish`: supibot's fishing game played for the channel currency. Bait is
+ * bought and selling the catch pays out in it. Defaults are supibot's numbers.
  */
 export interface PointsGames {
   enabled: boolean;
-  /** Only take bets while live. The daily cookie bonus ignores this. */
+  /** Casting and laying traps only while live; selling and stats work any time. */
   onlyWhileLive: boolean;
-  fishCost: number;
-  fishCooldownSeconds: number;
-  slotsMinBet: number;
-  /** 0 means no maximum. */
-  slotsMaxBet: number;
-  slotsCooldownSeconds: number;
-  /** Both 0 turns the cookie bonus off. */
-  cookieMin: number;
-  cookieMax: number;
+  /** 1 in this many unbaited casts lands a fish. */
+  catchOdds: number;
+  catchCooldownMinutes: number;
+  trapMinutes: number;
+  /** Sell prices as a percentage of supibot's (fish 50, junk 1–20). */
+  sellPricePercent: number;
+  /** Bait prices as a percentage of supibot's (worm 2, fly 5, cricket 8). */
+  baitPricePercent: number;
+  /** A short AI story on 1 in 3 catches. */
+  stories: boolean;
 }
 
 /**

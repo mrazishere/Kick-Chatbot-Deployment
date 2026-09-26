@@ -59,40 +59,40 @@ export interface PointsConfig {
   duel?: PointsDuel;
   /** Absent from a bot service older than raffles. */
   raffle?: PointsRaffle;
-  /** Absent from a bot service older than the chat games. */
+  /** Absent from a bot service older than fishing. */
   games?: PointsGames;
 }
 
 /**
- * !fish, !slots and !cookie played for points. Off, or offline with onlyWhileLive,
- * the games still run for fun; switching a game off entirely is its command toggle.
+ * `$<cmd> fish`: supibot's fishing game played for the channel currency. Bait is
+ * bought and selling the catch pays out in it. Defaults are supibot's numbers.
  */
 export interface PointsGames {
   enabled: boolean;
-  /** Only take bets while live. The daily cookie bonus ignores this. */
+  /** Casting and laying traps only while live; selling and stats work any time. */
   onlyWhileLive: boolean;
-  fishCost: number;
-  fishCooldownSeconds: number;
-  slotsMinBet: number;
-  /** 0 means no maximum. */
-  slotsMaxBet: number;
-  slotsCooldownSeconds: number;
-  /** Both 0 turns the cookie bonus off. */
-  cookieMin: number;
-  cookieMax: number;
+  /** 1 in this many unbaited casts lands a fish. */
+  catchOdds: number;
+  catchCooldownMinutes: number;
+  trapMinutes: number;
+  /** Sell prices as a percentage of supibot's (fish 50, junk 1–20). */
+  sellPricePercent: number;
+  /** Bait prices as a percentage of supibot's (worm 2, fly 5, cricket 8). */
+  baitPricePercent: number;
+  /** A short AI story on 1 in 3 catches. */
+  stories: boolean;
 }
 
 /** The bot's defaults, for a bot service that doesn't report game settings yet. */
 const GAMES_DEFAULTS: PointsGames = {
   enabled: false,
   onlyWhileLive: true,
-  fishCost: 10,
-  fishCooldownSeconds: 30,
-  slotsMinBet: 1,
-  slotsMaxBet: 0,
-  slotsCooldownSeconds: 30,
-  cookieMin: 5,
-  cookieMax: 25,
+  catchOdds: 20,
+  catchCooldownMinutes: 30,
+  trapMinutes: 60,
+  sellPricePercent: 100,
+  baitPricePercent: 100,
+  stories: true,
 };
 
 /** `$<cmd> duel @user <amount>`: viewer against viewer, 50/50, winner takes both stakes. */
@@ -282,13 +282,12 @@ interface SettingsForm {
   raffleLiveOnly: boolean;
   gamesEnabled: boolean;
   gamesLiveOnly: boolean;
-  fishCost: string;
-  fishCooldown: string;
-  slotsMin: string;
-  slotsMax: string;
-  slotsCooldown: string;
-  cookieMin: string;
-  cookieMax: string;
+  fishOdds: string;
+  fishCatchCooldown: string;
+  fishTrapMinutes: string;
+  fishSellPct: string;
+  fishBaitPct: string;
+  fishStories: boolean;
 }
 
 function formFromConfig(c: PointsConfig): SettingsForm {
@@ -342,13 +341,12 @@ function formFromConfig(c: PointsConfig): SettingsForm {
     raffleLiveOnly: (c.raffle ?? RAFFLE_DEFAULTS).onlyWhileLive,
     gamesEnabled: (c.games ?? GAMES_DEFAULTS).enabled,
     gamesLiveOnly: (c.games ?? GAMES_DEFAULTS).onlyWhileLive,
-    fishCost: String((c.games ?? GAMES_DEFAULTS).fishCost),
-    fishCooldown: String((c.games ?? GAMES_DEFAULTS).fishCooldownSeconds),
-    slotsMin: String((c.games ?? GAMES_DEFAULTS).slotsMinBet),
-    slotsMax: String((c.games ?? GAMES_DEFAULTS).slotsMaxBet),
-    slotsCooldown: String((c.games ?? GAMES_DEFAULTS).slotsCooldownSeconds),
-    cookieMin: String((c.games ?? GAMES_DEFAULTS).cookieMin),
-    cookieMax: String((c.games ?? GAMES_DEFAULTS).cookieMax),
+    fishOdds: String((c.games ?? GAMES_DEFAULTS).catchOdds),
+    fishCatchCooldown: String((c.games ?? GAMES_DEFAULTS).catchCooldownMinutes),
+    fishTrapMinutes: String((c.games ?? GAMES_DEFAULTS).trapMinutes),
+    fishSellPct: String((c.games ?? GAMES_DEFAULTS).sellPricePercent),
+    fishBaitPct: String((c.games ?? GAMES_DEFAULTS).baitPricePercent),
+    fishStories: (c.games ?? GAMES_DEFAULTS).stories,
   };
 }
 
@@ -490,20 +488,13 @@ function buildPatch(f: SettingsForm): { patch: PointsSettingsPatch } | { error: 
   patch.games = {
     enabled: f.gamesEnabled,
     onlyWhileLive: f.gamesLiveOnly,
-    fishCost: whole(f.fishCost, "Fish cast cost", 1, 1_000_000),
-    fishCooldownSeconds: whole(f.fishCooldown, "Fish cooldown", 0, 3600),
-    slotsMinBet: whole(f.slotsMin, "Minimum slots bet", 1, 1_000_000_000),
-    slotsMaxBet: whole(f.slotsMax, "Maximum slots bet", 0, 1_000_000_000),
-    slotsCooldownSeconds: whole(f.slotsCooldown, "Slots cooldown", 0, 3600),
-    cookieMin: whole(f.cookieMin, "Cookie bonus minimum", 0, 1_000_000),
-    cookieMax: whole(f.cookieMax, "Cookie bonus maximum", 0, 1_000_000),
+    catchOdds: whole(f.fishOdds, "Catch odds", 1, 1000),
+    catchCooldownMinutes: whole(f.fishCatchCooldown, "Cooldown after a catch", 1, 1440),
+    trapMinutes: whole(f.fishTrapMinutes, "Trap time", 31, 1440),
+    sellPricePercent: whole(f.fishSellPct, "Sell prices", 0, 1000),
+    baitPricePercent: whole(f.fishBaitPct, "Bait prices", 0, 1000),
+    stories: f.fishStories,
   };
-  if (patch.games.slotsMaxBet! > 0 && patch.games.slotsMaxBet! < patch.games.slotsMinBet!) {
-    errors.push("Maximum slots bet can't be below the minimum (0 means no maximum)");
-  }
-  if (patch.games.cookieMax! < patch.games.cookieMin!) {
-    errors.push("Cookie bonus maximum can't be below the minimum");
-  }
 
   return errors.length > 0 ? { error: errors.join("; ") } : { patch };
 }
@@ -614,6 +605,8 @@ const REASON_LABEL: Record<string, string> = {
   "game:raffle_win": "Raffle win",
   "game:fish": "Fishing cast",
   "game:fish_win": "Fishing catch",
+  "game:fish_bait": "Fishing bait",
+  "game:fish_sell": "Sold fish",
   "game:slots": "Slots bet",
   "game:slots_win": "Slots win",
   cookie: "Daily cookie",
@@ -1244,39 +1237,41 @@ export default function PointsCard({
               </div>
 
               <div>
-                <h4 className={LABEL}>Chat games</h4>
+                <h4 className={LABEL}>Fishing</h4>
                 <Checkbox
-                  label={`Turn on fishing, slots and the daily cookie for ${form.currencyName.trim() || "points"}`}
+                  label={`Turn on fishing for ${form.currencyName.trim() || "points"}`}
                   checked={form.gamesEnabled}
                   disabled={readOnly || !!busy}
                   onChange={(v) => set("gamesEnabled", v)}
                 />
                 <div className="mt-3 grid gap-4 sm:grid-cols-4">
-                  <Field label="Fish cast cost">{text("fishCost", { inputMode: "numeric" })}</Field>
-                  <Field label="Fish cooldown (s)">{text("fishCooldown", { inputMode: "numeric" })}</Field>
-                  <Field label="Cookie bonus min">{text("cookieMin", { inputMode: "numeric" })}</Field>
-                  <Field label="Cookie bonus max" hint="0 and 0 = no bonus">{text("cookieMax", { inputMode: "numeric" })}</Field>
+                  <Field label="Catch odds (1 in …)" hint="supibot: 20">{text("fishOdds", { inputMode: "numeric" })}</Field>
+                  <Field label="Cooldown after a catch (min)" hint="supibot: 30">{text("fishCatchCooldown", { inputMode: "numeric" })}</Field>
+                  <Field label="Trap time (min)" hint="31–1440, supibot: 60">{text("fishTrapMinutes", { inputMode: "numeric" })}</Field>
                 </div>
                 <div className="mt-3 grid gap-4 sm:grid-cols-4">
-                  <Field label="Slots minimum bet">{text("slotsMin", { inputMode: "numeric" })}</Field>
-                  <Field label="Slots maximum (0 = none)">{text("slotsMax", { inputMode: "numeric" })}</Field>
-                  <Field label="Slots cooldown (s)">{text("slotsCooldown", { inputMode: "numeric" })}</Field>
+                  <Field label="Sell prices (%)" hint="100 = fish 50, junk 1–20">{text("fishSellPct", { inputMode: "numeric" })}</Field>
+                  <Field label="Bait prices (%)" hint="100 = worm 2, fly 5, cricket 8">{text("fishBaitPct", { inputMode: "numeric" })}</Field>
                 </div>
                 <div className="mt-3 space-y-2">
                   <Checkbox
-                    label="Only take bets while the stream is live"
+                    label="Only fish and lay traps while the stream is live"
                     checked={form.gamesLiveOnly}
                     disabled={readOnly || !!busy}
                     onChange={(v) => set("gamesLiveOnly", v)}
                   />
+                  <Checkbox
+                    label="AI story on 1 in 3 catches"
+                    checked={form.fishStories}
+                    disabled={readOnly || !!busy}
+                    onChange={(v) => set("fishStories", v)}
+                  />
                 </div>
                 <p className="mt-3 text-xs text-neutral-500">
-                  {`Played as $${commandPreview || "…"} fish, $${commandPreview || "…"} slots 100 and $${commandPreview || "…"} cookie, like every command that uses ${form.currencyName.trim() || "points"}; `}
-                  {`!fish, !slots and !cookie just point viewers to those. `}
-                  A fish cast costs the amount above and pays back about 92% on average, scaled to the cost. Slots pay 1.5x for
-                  two alike, 8x for three, 25x for three diamonds, about 93% back. The cookie is one fortune a day with a bonus
-                  in the range above, paid online or off. With this off the games aren&apos;t available; offline, bets stay silent
-                  like gamble. To remove just one game, switch its command off under Commands.
+                  {`supibot's fishing game, played as $${commandPreview || "…"} fish like every command that uses ${form.currencyName.trim() || "points"}: cast (with worm, fly or cricket bait), then sell, show, stats, top and trap. `}
+                  Catches are kept until sold; selling pays {form.currencyName.trim() || "points"}, bait costs it. A miss waits 30–90 seconds and
+                  snags junk 1 time in 4. With this off fishing isn&apos;t available. !cookie and !slots don&apos;t use points and are
+                  switched on under Commands.
                 </p>
               </div>
 

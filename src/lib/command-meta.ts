@@ -39,7 +39,7 @@ export const COMMAND_META: Record<string, CommandMeta> = {
     description:
       "Clips the last 30 seconds of the stream and posts the link. Open to everyone; the stream must be live.",
   },
-  cookie: { label: "Fortune Cookie", trigger: "$<currency> cookie", description: "One fortune a day per viewer, with a points bonus. Needs points and Chat games on (Points settings)." },
+  cookie: { label: "Fortune Cookie", trigger: "!cookie", description: "supibot's cookie: one fortune a day (a golden second one for subscribers), gift it with !cookie donate, !cookie stats and top." },
   countd: { label: "Countdown", trigger: "!countd", description: "Countdown timer overlay." },
   customC: {
     label: "Custom Commands",
@@ -54,7 +54,7 @@ export const COMMAND_META: Record<string, CommandMeta> = {
     trigger: "!earnings",
     description: "Estimated stream earnings. Restricted to supported channels.",
   },
-  fish: { label: "Fishing", trigger: "$<currency> fish", description: "Fishing for points. Needs points and Chat games on (Points settings)." },
+  fish: { label: "Fishing", trigger: "$<currency> fish", description: "supibot's fishing game for points: cast, sell, show, stats, top, trap. Needs points and Fishing on (Points settings)." },
   followage: { label: "Followage", trigger: "!followage / !subage / !accountage", description: "How long someone has followed or subscribed here, and how old their Kick account is." },
   fx: { label: "Currency", trigger: "!fx", description: "Live currency conversion." },
   hallofshame: {
@@ -75,7 +75,7 @@ export const COMMAND_META: Record<string, CommandMeta> = {
   points: { label: "Loyalty Points", trigger: "$<currency> (e.g. $don)", description: "Balance, active time, top 5, giving, and adjustments by the broadcaster." },
   pokecatch: { label: "Pokécatch", trigger: "!catch", description: "Pokémon catching mini-game." },
   remind: { label: "Remind", trigger: "!remind / !unremind", description: "Leave someone a message for when they next chat, or set a timed reminder." },
-  slots: { label: "Slots", trigger: "$<currency> slots 100", description: "Slot machine for points. Needs points and Chat games on (Points settings)." },
+  slots: { label: "Slots", trigger: "!slots", description: "supibot's slots: roll your words or the channel's emotes (pattern:7tv, pattern:kick) for a flush. No stakes." },
   topc: { label: "Top Chatters", trigger: "!topc", description: "Most active chatters." },
   translate: { label: "Translate", trigger: "!translate", description: "On-demand translation." },
   weather: { label: "Weather", trigger: "!weather", description: "Current weather for a location." },
