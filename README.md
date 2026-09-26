@@ -28,7 +28,7 @@ The full command reference, with permissions, cooldowns and examples, is in **[s
 | Stream | `!clip`, `!blerp`, `!countd`, `!kpp`, `!earnings`, `!topc`, `!hallofshame` |
 | Utility | `!<lang>` translate, `!weather`, `!fx`, `!define`, `!ping` |
 | Fun | `!dad`, `!jokes`, `!catfacts`, `!dogfacts`, `!numfacts` |
-| Channel admin | `!acomm`/`!ecomm`/`!dcomm`/`!lcomm` custom commands, `!config exclude add/remove/list`, `!location` |
+| Channel admin | `!acomm`/`!ecomm`/`!dcomm`/`!lcomm` custom commands (`!counter <name>` shows a count without adding to it), `!config exclude add/remove/list`, `!location` |
 
 ## How it works
 

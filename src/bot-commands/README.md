@@ -19,7 +19,7 @@ Each file exports a `CommandFn` registered in the channel config and dispatched 
 | [KPP score](#kppts--kpp-score) | `!kpp` | All users | sukasblood only |
 | [Top chatters](#topcts--top-chatters) | `!topc` | All users | sukasblood only |
 | [Countdown](#countdts--countdown-timers) | `!countd <subcommand>` | VIPs+ | All channels |
-| [Custom commands](#customcts--custom-commands) | `!acomm` · `!ecomm` · `!dcomm` · `!lcomm` · `!<name>` | Mods+ (mgmt) | All channels |
+| [Custom commands](#customcts--custom-commands) | `!acomm` · `!ecomm` · `!dcomm` · `!lcomm` · `!counter <name>` · `!<name>` | Mods+ (mgmt); `!counter` all users | All channels |
 | [Dictionary](#dictionaryts--dictionary) | `!define <word>` | All users | All channels |
 | [Ping / uptime](#pingts--ping) | `!ping` | All users | All channels |
 | [Dad jokes](#dadts--dad-jokes) | `!dad [term]` | All users (5/30s) | All channels |

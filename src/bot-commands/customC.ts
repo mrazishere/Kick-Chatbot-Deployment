@@ -15,6 +15,7 @@
  *          !ecomm modOnly(n/y/v) commandName commandResponse - Edit existing custom command
  *          !dcomm commandName - Delete existing custom command
  *          !lcomm - List all custom commands
+ *          !counter commandName - Show a command's $counter without adding to it (everyone)
  *          !<commandName> - Execute custom command
  *
  * Variables:   $counter - Number of times the command has been used
@@ -179,7 +180,7 @@ export const customC: CommandFn = async function customC(client, message, channe
     const input = message.trim().split(" ").filter(part => part.trim().length > 0);
 
     // Check if this is a custom command-related message FIRST
-    const isManagementCommand = ['!acomm', '!ecomm', '!dcomm', '!countcomm', '!lcomm'].includes(input[0]);
+    const isManagementCommand = ['!acomm', '!ecomm', '!dcomm', '!countcomm', '!lcomm', '!counter'].includes(input[0]);
     const isCustomCommand = input[0].startsWith('!') && input[0].length > 1;
 
     // Early exit if not a command at all
@@ -243,6 +244,10 @@ export const customC: CommandFn = async function customC(client, message, channe
 
         if (!sanitizedName || sanitizedName.length < 3) {
             return `@${tags.username}, Invalid command name! Must be 3-25 alphanumeric characters.`;
+        }
+        // Handled here before custom commands, so one by this name could never run.
+        if (sanitizedName === 'counter') {
+            return `@${tags.username}, !counter is a built-in command, pick another name`;
         }
 
         if (!sanitizedResponse || sanitizedResponse.length < 1) {
@@ -495,6 +500,22 @@ export const customC: CommandFn = async function customC(client, message, channe
             return;
         }
     }
+    // Read a command's counter without counting a use: !counter crime
+    if (input[0] === '!counter') {
+        const name = sanitizeCommandName((input[1] ?? '').replace(/^!/, ''));
+        if (!name) {
+            client.say(channel, `@${tags.username}, usage: !counter commandName`);
+            return;
+        }
+        if (!commandExists(name)) {
+            client.say(channel, `@${tags.username}, there's no !${name} command`);
+            return;
+        }
+        const count = Number.isFinite(customCommands[name][2]) ? customCommands[name][2] : 0;
+        client.say(channel, `@${tags.username}, !${name} has been used ${count} time${count === 1 ? '' : 's'}`);
+        return;
+    }
+
     // Check if the user is trying to call a custom command
     if (commandExists(input[0].substring(1)) && input[0].startsWith('!')) {
         const commandName = input[0].substring(1);
