@@ -273,6 +273,8 @@ export interface PointsUserDetail {
     followBonusAt: string | null;
     firstSeenAt: string;
   };
+  /** Gamble results, all time. Absent from a bot service older than this field. */
+  gamble?: { gambles: number; wins: number; staked: number; net: number };
   /** Newest first, at most 50. */
   ledger: PointsLedgerEntry[];
 }

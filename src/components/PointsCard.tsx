@@ -216,6 +216,8 @@ interface PointsUserDetail {
     followBonusAt: string | null;
     firstSeenAt: string;
   };
+  /** Gamble results, all time. Absent from a bot service older than this field. */
+  gamble?: { gambles: number; wins: number; staked: number; net: number };
   ledger: Array<{
     id: number;
     ts: string;
@@ -1415,6 +1417,14 @@ export default function PointsCard({
                     <Stat label="Lifetime earned" value={detail.user.lifetimeEarned.toLocaleString()} />
                     <Stat label="Last seen" value={formatDate(detail.user.lastSeenAt)} />
                   </dl>
+                  {detail.gamble && detail.gamble.gambles > 0 ? (
+                    <dl className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+                      <Stat label="Gambles" value={detail.gamble.gambles.toLocaleString()} />
+                      <Stat label="Win rate" value={`${((detail.gamble.wins / detail.gamble.gambles) * 100).toFixed(1)}% · ${detail.gamble.wins.toLocaleString()} won`} />
+                      <Stat label="Staked" value={detail.gamble.staked.toLocaleString()} />
+                      <Stat label="Gamble net" value={`${detail.gamble.net > 0 ? "+" : ""}${detail.gamble.net.toLocaleString()}`} />
+                    </dl>
+                  ) : null}
 
                   <div className="space-y-3 border-t border-neutral-800 pt-4">
                     <h4 className={LABEL}>Adjust balance</h4>
