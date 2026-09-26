@@ -113,16 +113,17 @@ export const remind: CommandFn = async function remind(client, message, channel,
 
   if (cmd === '!unremind') {
     const id = Number((words[1] ?? '').replace(/^#/, ''));
-    if (!Number.isInteger(id) || id <= 0) return void say(`@${me} usage: !unremind id (see !remind list)`);
-    return void say(cancelReminder(db, id, meLc, now) ? `@${me} cancelled reminder ${id}` : `@${me} you have no pending reminder ${id}`);
+    if (!Number.isInteger(id) || id <= 0) return void say(`@${me} usage: !unremind id, e.g. !unremind 2 (see !remind list)`);
+    return void say(cancelReminder(db, id, meLc, now) ? `@${me} cancelled reminder #${id}` : `@${me} you have no pending reminder #${id}`);
   }
 
   const args = words.slice(1);
   if ((args[0] ?? '').toLowerCase() === 'list') {
     const mine = pendingFrom(db, meLc);
     if (!mine.length) return void say(`@${me} you have no pending reminders`);
-    const parts = mine.map(r => `${r.id} for ${r.to_lc === meLc ? 'you' : r.to_user} ${r.due_at === null ? 'when they chat' : `in ${span(r.due_at - now)}`}`);
-    return void say(`@${me} pending: ${parts.join(' · ')}`);
+    // "#id" so the id isn't read as a count ("pending: 2 for you" looked like two reminders).
+    const parts = mine.map(r => `#${r.id} for ${r.to_lc === meLc ? 'you' : r.to_user} ${r.due_at === null ? 'when they chat' : `in ${span(r.due_at - now)}`}`);
+    return void say(`@${me} ${mine.length} pending: ${parts.join(' · ')}`);
   }
 
   const usage = `@${me} usage: !remind @user message · !remind @user in 2h message · !remind me in 30m message`;
@@ -168,6 +169,6 @@ export const remind: CommandFn = async function remind(client, message, channel,
   console.log(`[REMIND] ${me} set reminder #${id} for ${to}${dueAt === null ? ' on next chat' : ` due ${new Date(dueAt).toISOString()}`}`);
   const who = toLc === meLc ? 'you' : to;
   return void say(dueAt === null
-    ? `@${me} I'll remind ${who} when they next chat (id ${id})`
-    : `@${me} I'll remind ${who} in ${span(dueAt - now)} (id ${id})`);
+    ? `@${me} I'll remind ${who} when they next chat (reminder #${id})`
+    : `@${me} I'll remind ${who} in ${span(dueAt - now)} (reminder #${id})`);
 };
