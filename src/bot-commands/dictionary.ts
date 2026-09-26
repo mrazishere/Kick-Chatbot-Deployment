@@ -1,9 +1,11 @@
 /**
  * Dictionary command
  *
- * Description: Get word definitions on twitch chat
+ * Description: Get word definitions in chat
  *
- * Credits: https://dictionaryapi.dev/
+ * Credits: Wiktionary (en.wiktionary.org REST API), with https://dictionaryapi.dev/
+ *          as a fallback. dictionaryapi.dev went unresponsive on 2026-09-26 (it
+ *          accepts connections but never answers), so Wiktionary leads now.
  *
  * Permission required: all users
  *
@@ -21,9 +23,6 @@ const rateLimitMap = new Map<string, number[]>();
 const RATE_LIMIT_WINDOW = 30000; // 30 seconds
 const MAX_REQUESTS = 5; // Max 5 requests per 30 seconds
 
-function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
 
 // Rate limiting check
 function checkRateLimit(username: string): boolean {
@@ -46,96 +45,80 @@ function checkRateLimit(username: string): boolean {
 function sanitizeWord(word: string | undefined): string {
   if (!word || typeof word !== 'string') return '';
   // Only allow letters and basic punctuation for dictionary words
-  return word.replace(/[^a-zA-Z'-]/g, '').toLowerCase().trim().substring(0, 30);
-}
-
-type DefinitionResult = { notFound: true } | { data: unknown[] };
-
-// Fetch word definition
-async function getDefinition(word: string): Promise<DefinitionResult> {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 8000); // 8 second timeout
-
-  try {
-    const response = await fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(word)}`, {
-      method: 'GET',
-      headers: {
-        'accept': 'application/json',
-        'content-type': 'application/json',
-        'User-Agent': 'Twitch Bot Dictionary Lookup'
-      },
-      signal: controller.signal
-    });
-
-    clearTimeout(timeoutId);
-
-    if (!response.ok) {
-      if (response.status === 404) {
-        return { notFound: true };
-      }
-      throw new Error(`API responded with status: ${response.status}`);
-    }
-
-    const data = await response.json() as unknown[];
-    return { data };
-
-  } catch (error) {
-    clearTimeout(timeoutId);
-    throw error;
-  }
+  return word.replace(/[^a-zA-Z'-]/g, '').trim().substring(0, 30);
 }
 
 interface ExtractedDefinition {
   word: string;
   partOfSpeech: string;
   definition: string;
-  example: string | null;
 }
 
-// Extract definition from API response with safe array access
-function extractDefinition(data: unknown): ExtractedDefinition | null {
+const UA = 'KickChatbot/1.0 (https://github.com/mrazishere/Kick-Chatbot-Deployment)';
+
+async function getJson(url: string, timeoutMs: number): Promise<{ status: number; body: unknown }> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    if (!Array.isArray(data) || data.length === 0) {
-      return null;
+    const response = await fetch(url, { headers: { accept: 'application/json', 'User-Agent': UA }, signal: controller.signal });
+    const body = response.ok ? await response.json() as unknown : null;
+    return { status: response.status, body };
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+/** Wiktionary's definitions come as HTML fragments. */
+function stripHtml(html: string): string {
+  return html.replace(/<[^>]+>/g, '').replace(/&nbsp;/g, ' ').replace(/&amp;/g, '&').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * The first English definition on Wiktionary. Titles are case-sensitive there
+ * ("Austrian" exists, "austrian" doesn't), so the spelling typed, lowercase and
+ * capitalised are tried in turn. null when none has an English entry.
+ */
+async function fromWiktionary(word: string): Promise<ExtractedDefinition | null> {
+  const lower = word.toLowerCase();
+  const variants = [...new Set([word, lower, lower.charAt(0).toUpperCase() + lower.slice(1)])];
+  for (const v of variants) {
+    const { status, body } = await getJson(`https://en.wiktionary.org/api/rest_v1/page/definition/${encodeURIComponent(v)}`, 6000);
+    if (status === 404) continue;
+    if (status !== 200) throw new Error(`Wiktionary responded with status: ${status}`);
+    const entries = (body as { en?: Array<{ partOfSpeech?: string; definitions?: Array<{ definition?: string }> }> })?.en ?? [];
+    for (const e of entries) {
+      const def = (e.definitions ?? []).map(d => stripHtml(d.definition ?? '')).find(d => d.length > 0);
+      if (def) return { word: v, partOfSpeech: e.partOfSpeech ? `(${e.partOfSpeech.toLowerCase()}) ` : '', definition: def };
     }
+  }
+  return null;
+}
 
-    const entry = data[0] as {
-      word?: string;
-      meanings?: Array<{
-        partOfSpeech?: string;
-        definitions?: Array<{ definition?: string; example?: string }>;
-      }>;
-    };
+/** dictionaryapi.dev, kept as a fallback with a short timeout since it can hang. */
+async function fromDictionaryApi(word: string): Promise<ExtractedDefinition | null> {
+  const { status, body } = await getJson(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(word.toLowerCase())}`, 4000);
+  if (status === 404) return null;
+  if (status !== 200) throw new Error(`dictionaryapi.dev responded with status: ${status}`);
+  const entry = (body as Array<{ word?: string; meanings?: Array<{ partOfSpeech?: string; definitions?: Array<{ definition?: string }> }> }>)?.[0];
+  const meaning = entry?.meanings?.[0];
+  const def = meaning?.definitions?.[0]?.definition?.trim();
+  if (!def) return null;
+  return { word: entry?.word || word, partOfSpeech: meaning?.partOfSpeech ? `(${meaning.partOfSpeech}) ` : '', definition: def };
+}
 
-    if (!entry.meanings || !Array.isArray(entry.meanings) || entry.meanings.length === 0) {
-      return null;
-    }
-
-    const meaning = entry.meanings[0];
-    if (!meaning.definitions || !Array.isArray(meaning.definitions) || meaning.definitions.length === 0) {
-      return null;
-    }
-
-    // Get the first definition (most common)
-    const definition = meaning.definitions[0];
-    if (!definition.definition) {
-      return null;
-    }
-
-    // Include part of speech if available
-    const partOfSpeech = meaning.partOfSpeech ? `(${meaning.partOfSpeech}) ` : '';
-
-    return {
-      word: entry.word || '',
-      partOfSpeech: partOfSpeech,
-      definition: definition.definition.trim(),
-      example: definition.example ? definition.example.trim() : null
-    };
-
+/** A definition, null when the word isn't in either dictionary, or throws when neither answers. */
+async function getDefinition(word: string): Promise<ExtractedDefinition | null> {
+  try {
+    const found = await fromWiktionary(word);
+    if (found) return found;
   } catch (err) {
-    if (err instanceof Error) {
-      console.error('[DICTIONARY] Error extracting definition:', err.message);
-    }
+    console.error('[DICTIONARY] Wiktionary failed, trying dictionaryapi.dev:', err instanceof Error ? err.message : String(err));
+    return await fromDictionaryApi(word);
+  }
+  // Wiktionary answered but had nothing; the other dictionary may still know it.
+  try {
+    return await fromDictionaryApi(word);
+  } catch {
     return null;
   }
 }
@@ -172,24 +155,16 @@ export const dictionary: CommandFn = async function dictionary(client, message, 
   }
 
   try {
-    const result = await getDefinition(word);
-    await sleep(1000);
-
-    if ('notFound' in result) {
-      client.say(channel, `@${tags.username}, sorry, no definition found for: ${word}`);
-      return;
-    }
-
-    const definition = extractDefinition(result.data);
+    const definition = await getDefinition(word);
     if (!definition) {
-      client.say(channel, `@${tags.username}, sorry, unable to parse definition for: ${word}`);
+      client.say(channel, `@${tags.username}, sorry, no definition found for: ${word}`);
       return;
     }
 
     // Format response (keep it concise for Twitch chat)
     let response = `@${tags.username}, ${definition.word}: ${definition.partOfSpeech}${definition.definition}`;
 
-    // Truncate if too long for Twitch (max 500 chars)
+    // Keep it well inside Kick's 500-character limit
     if (response.length > 400) {
       response = response.substring(0, 397) + '...';
     }
