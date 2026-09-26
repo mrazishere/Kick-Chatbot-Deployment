@@ -2757,6 +2757,33 @@ app.post('/internal/bot/:channel/settings', internalGuard(true), async (req, res
       if (enabled !== undefined) next['enabled'] = enabled;
       const logOnly = asBool(src['logOnly'], 'autoTranslate.logOnly');
       if (logOnly !== undefined) next['logOnly'] = logOnly;
+      // Source-language allowlist. An empty array is meaningful: it clears the
+      // restriction back to "every language but English". Codes are stored
+      // normalised so the bot can compare them to Google's verdict directly.
+      if (src['languages'] !== undefined) {
+        const langs = src['languages'];
+        if (langs === null) {
+          next['languages'] = [];
+        } else if (!Array.isArray(langs)) {
+          errors.push('autoTranslate.languages must be an array of language codes');
+        } else if (langs.length > 20) {
+          errors.push('autoTranslate.languages must list 20 codes or fewer');
+        } else {
+          const cleaned: string[] = [];
+          let bad = false;
+          for (const raw of langs) {
+            if (typeof raw !== 'string') { bad = true; break; }
+            const code = raw.trim().toLowerCase().split('-')[0] ?? '';
+            if (!/^[a-z]{2,3}$/.test(code)) { bad = true; break; }
+            if (!cleaned.includes(code)) cleaned.push(code);
+          }
+          if (bad) {
+            errors.push('autoTranslate.languages must contain 2- or 3-letter language codes, e.g. ["de"]');
+          } else {
+            next['languages'] = cleaned;
+          }
+        }
+      }
       const minConfidence = asNum(src['minConfidence'], 'autoTranslate.minConfidence', 0, 1);
       if (minConfidence !== undefined && minConfidence !== null) next['minConfidence'] = minConfidence;
       const minLength = asNum(src['minLength'], 'autoTranslate.minLength', 0, 500);

@@ -69,6 +69,10 @@ export interface AutoTranslateConfig {
   enabled: boolean;
   minConfidence?: number;
   minLength?: number;
+  // Allowlist of source languages to translate, as ISO-639 codes (e.g. ["de"]).
+  // Empty or absent means every language but English. A non-empty list also
+  // admits plain-ASCII text — see the header of bot-commands/autotranslate.ts.
+  languages?: string[];
   // Optional per-channel cap; if absent or 0, no internal rate limit is applied
   // (Google's own scraper-level throttling becomes the only ceiling).
   rateLimitPerMinute?: number;

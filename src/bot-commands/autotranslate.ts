@@ -10,20 +10,36 @@
  *   - opt-in via config.autoTranslate.enabled
  *   - not a command (`!`-prefixed)
  *   - not from the bot itself (identity check + echo store)
- *   - contains at least one non-ASCII character
  *   - NOT mixed script (no ASCII-Latin letters AND non-Latin script chars
  *     in the same message — e.g. "茶餐厅 of course lah" → silent)
+ *   - contains at least one non-ASCII character, UNLESS a language allowlist
+ *     is set (see below) — that exception is what catches plain "Wie geht es
+ *     dir?", typed without an umlaut
  *   - length threshold: ≥8 chars for Latin-script (Spanish/French/etc.),
- *     ≥2 chars for pure non-Latin scripts (allows short CJK greetings)
+ *     ≥2 chars for pure non-Latin scripts (allows short CJK greetings),
+ *     ≥12 chars and ≥3 words for plain-ASCII text
  *   - Google's translation succeeds
  *   - Google's detected source is NOT English
+ *   - the detected source is on config.autoTranslate.languages, when that
+ *     list is non-empty
  *   - normalized translation differs from normalized input
  *
  * That single gate replaces ~80 lines of previously-stacked heuristic patches
  * (English chat-token allowlist, suspicious-language blacklist, CJK fraction
- * math, confidence gates, dominance checks). It's strict — it WILL miss some
- * legit translations (e.g. Spanish typed without accents, very short CJK,
- * pinyin/romaji). That's the trade-off you signed up for.
+ * math, confidence gates, dominance checks). It's strict — with no allowlist
+ * it WILL miss legit translations (e.g. German or Spanish typed without
+ * umlauts/accents, very short CJK, pinyin/romaji). Naming the languages you
+ * want recovers the undiacriticized ones; the rest is the trade-off you
+ * signed up for.
+ *
+ * config.autoTranslate.languages is an allowlist of ISO-639 source codes, e.g.
+ * ["de"]. Empty or absent means "every language but English", the original
+ * behaviour. Setting it does two things at once: it silences the languages not
+ * on it, and it lets plain-ASCII text past the pre-filter. The second is only
+ * safe because of the first — Google's verdict then has to name a language the
+ * channel actually asked for, which is what keeps English and Singlish out.
+ * Measured on 80 real ASCII-only messages from a Singlish-heavy channel, 0 were
+ * detected as German (spread: en 75, ms/mi/kha/da/id 1 each).
  */
 
 import gtrans from 'googletrans';
@@ -34,6 +50,12 @@ import { sendToBroadcaster } from '../cross-channel-send';
 
 const KICK_MESSAGE_LIMIT = 500;
 const TRANSLATE_TIMEOUT_MS = 8000;
+
+// Floors for plain-ASCII Latin text, which carries no script evidence at all and
+// is admitted only when an allowlist is set. Detection on three words of chat
+// slang is a coin flip, so short ASCII messages stay out either way.
+const ASCII_MIN_LEN = 12;
+const ASCII_MIN_WORDS = 3;
 
 // Optional per-channel rate limit. Disabled unless autoTranslate.rateLimitPerMinute > 0.
 const channelRateLimit = new Map<string, number[]>();
@@ -74,12 +96,31 @@ function scriptCodeFallback(text: string): string {
     return '';
 }
 
-function passesStrictGate(text: string): boolean {
-    if (!NON_ASCII.test(text)) return false;
+/**
+ * The channel's source-language allowlist, normalised to base ISO codes.
+ * Empty means no restriction — every language but English, as before.
+ */
+function allowedLanguages(settings: AutoTranslateConfig): string[] {
+    if (!Array.isArray(settings.languages)) return [];
+    return settings.languages
+        .map(l => String(l).trim().toLowerCase().split('-')[0])
+        .filter(l => l.length > 0);
+}
+
+function passesStrictGate(text: string, allowAsciiOnly: boolean): boolean {
     const hasAsciiLatin = ASCII_LATIN_LETTER.test(text);
     const hasNonLatin = NON_LATIN_SCRIPT.test(text);
     // Mixed script — silence
     if (hasAsciiLatin && hasNonLatin) return false;
+    if (!NON_ASCII.test(text)) {
+        // No umlaut, no accent, no non-Latin script: nothing in the text itself
+        // says this isn't English. Only an allowlist makes it safe to ask Google,
+        // because the answer then has to name a language the channel asked for.
+        if (!allowAsciiOnly) return false;
+        if (text.length < ASCII_MIN_LEN) return false;
+        if (text.split(/\s+/).filter(Boolean).length < ASCII_MIN_WORDS) return false;
+        return true;
+    }
     // Length floor — looser for pure non-Latin (CJK greetings)
     const minLen = hasAsciiLatin ? 8 : 2;
     if (text.length < minLen) return false;
@@ -145,8 +186,10 @@ export const autotranslate: CommandFn = async function autotranslate(client, mes
     if (isBotSender(tags.username, tags.senderId)) return;
     if (wasRecentBotOutput(channel, text)) return;
 
+    const allowed = allowedLanguages(settings);
+
     if (isLowSignal(text)) return;
-    if (!passesStrictGate(text)) return;
+    if (!passesStrictGate(text, allowed.length > 0)) return;
 
     const maxPerWindow = settings.rateLimitPerMinute ?? 0;
     if (!channelRateLimitOk(channel, maxPerWindow)) {
@@ -176,6 +219,11 @@ export const autotranslate: CommandFn = async function autotranslate(client, mes
         } else {
             return;
         }
+
+        // A language the channel didn't ask for. Checked on the resolved label so
+        // the script fallback is filtered too: with ["de"] set, Chinese stays silent
+        // even when Google mislabels it English and the Han fallback names it zh.
+        if (allowed.length > 0 && !allowed.includes(sourceLabel)) return;
 
         // Nothing actually changed once normalized — Google didn't translate.
         if (normalizeForCompare(translated) === normalizeForCompare(text)) return;
