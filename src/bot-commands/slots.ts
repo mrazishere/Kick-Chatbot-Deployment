@@ -2,16 +2,14 @@
  * Slots
  *
  * Description: Three reels of six symbols. Two alike pays 1.5x the bet, three
- *              alike 8x, three diamonds 25x: about 93% returned over time. Bets
- *              follow the points `games` settings (see community/stakes.ts);
- *              without a bet, or where betting isn't possible, the reels spin
- *              for fun.
+ *              alike 8x, three diamonds 25x: about 93% returned over time. A
+ *              points game following the points `games` settings (see
+ *              community/stakes.ts).
  *
- * Permission required: all users (1 free spin per 10s each; bets per games.slotsCooldownSeconds)
+ * Permission required: all users (1 bet per games.slotsCooldownSeconds each)
  *
- * Usage:   $don slots 100|5k|50%|all  - where the channel plays games for points
- *          !slots                     - elsewhere, a spin for fun; where points apply
- *                                       it points to the $ form
+ * Usage:   $don slots 100|5k|50%|all  - where points games are on
+ *          !slots                     - there, only points to the $ form
  */
 
 import * as crypto from 'crypto';
@@ -22,7 +20,6 @@ import { parseBet } from './points';
 
 const REELS = ['🍒', '🍋', '🍇', '🔔', '⭐', '💎'];
 
-const spinCooldown = makeCooldown(10_000);
 const lastBet = new Map<string, number>();
 const pointer = makeCooldown(60_000);
 
@@ -42,22 +39,10 @@ export const slots: CommandFn = async function slots(client, message, channel, t
   const say = (text: string) => client.say(channel, text);
   if (call.form === 'redirect') return void (pointer(meLc) || say(`@${me} it's ${call.usage} amount here`));
   const raw = call.args[0];
-
-  // !slots is always a free spin: it only exists where games don't use points.
-  if (call.form === 'bang') {
-    if (spinCooldown(meLc)) return;
-    const s = spin();
-    return void say(`@${me} ${s.reels.join(' ')} ${s.multiplier >= 8 ? 'JACKPOT' : s.multiplier > 0 ? 'so close' : 'nothing'}`);
-  }
   if (raw === undefined) return void say(`@${me} usage: ${call.usage} amount`);
 
   const table = await openTable(channel, tags, { bet: true });
-  if (table === 'replay') return;
-  if (!table) {
-    if (spinCooldown(meLc)) return;
-    const s = spin();
-    return void say(`@${me} ${s.reels.join(' ')} (just for fun, no bets right now)`);
-  }
+  if (table === 'replay' || !table) return;
 
   const g = table.cfg.games;
   const have = table.player?.balance ?? 0;

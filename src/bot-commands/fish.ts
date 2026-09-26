@@ -1,16 +1,15 @@
 /**
  * Fishing
  *
- * Description: Cast a line and see what bites. Where the channel plays games for
- *              points (see community/stakes.ts), a cast costs games.fishCost and
- *              a catch pays its value times the cost over 10; the table returns
- *              about 92% of what is staked, so the pond wins slowly. Elsewhere
- *              it's just for fun.
+ * Description: Cast a line and see what bites. A points game (see
+ *              community/stakes.ts): a cast costs games.fishCost and a catch pays
+ *              its value times the cost over 10; the table returns about 92% of
+ *              what is staked, so the pond wins slowly.
  *
  * Permission required: all users (1 cast per 30s each, or games.fishCooldownSeconds)
  *
- * Usage:   $don fish   - where the channel plays games for points ($<currency command> fish)
- *          !fish       - elsewhere, for fun; where points apply it points to the $ form
+ * Usage:   $don fish   - ($<currency command> fish) where points games are on
+ *          !fish       - there, only points to the $ form
  */
 
 import { CommandFn } from '../types';
@@ -31,7 +30,6 @@ const POND = [
   { weight: 3, catch: '🐋 A WHALE', value: 400 }
 ] as const;
 
-const FREE_COOLDOWN_MS = 30_000;
 const lastCast = new Map<string, number>();
 const pointer = makeCooldown(60_000);
 
@@ -46,14 +44,11 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
   const hit = weighted(POND);
   const table = await openTable(channel, tags, { bet: true });
   if (table === 'replay') return;
-  // The cooldown is the channel's when casts cost points, a fixed one otherwise.
-  const cooldownMs = table ? table.cfg.games.fishCooldownSeconds * 1000 : FREE_COOLDOWN_MS;
+  if (!table) return;
   const now = Date.now();
-  if (now - (lastCast.get(meLc) ?? 0) < cooldownMs) return;
+  if (now - (lastCast.get(meLc) ?? 0) < table.cfg.games.fishCooldownSeconds * 1000) return;
   lastCast.set(meLc, now);
   if (lastCast.size > 5000) for (const [k, v] of lastCast) if (now - v > 3_600_000) lastCast.delete(k);
-
-  if (!table) return void say(`@${me} cast a line and caught ${hit.catch}`);
 
   const cost = table.cfg.games.fishCost;
   const value = Math.floor(hit.value * cost / 10);

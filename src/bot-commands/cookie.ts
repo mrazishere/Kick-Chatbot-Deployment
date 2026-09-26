@@ -2,14 +2,14 @@
  * Fortune cookie
  *
  * Description: One fortune cookie per viewer per day (the day turns at midnight
- *              UTC). Where the channel plays games for points, each cookie also
- *              holds a bonus between games.cookieMin and games.cookieMax. It
- *              isn't a bet, so it pays online or off.
+ *              UTC), with a bonus between games.cookieMin and games.cookieMax (both
+ *              0: a fortune only). A points game (see community/stakes.ts); it
+ *              isn't a bet, so it works online or off.
  *
  * Permission required: all users (once a day each)
  *
- * Usage:   $don cookie   - where the channel plays games for points
- *          !cookie       - elsewhere; where points apply it points to the $ form
+ * Usage:   $don cookie   - where points games are on
+ *          !cookie       - there, only points to the $ form
  */
 
 import * as crypto from 'crypto';
@@ -63,15 +63,15 @@ export const cookie: CommandFn = async function cookie(client, message, channel,
   if (call.form === 'redirect') return void (pointer(meLc) || say(`@${me} it's ${call.usage} here`));
   if (cooldown(meLc)) return;
 
+  const table = await openTable(channel, tags, { bet: false });
+  if (table === 'replay' || !table) return;
   const db = openCommunityDb(channel);
   if (!db) return;
   if (!claimCookie(db, meLc, isoDay(Date.now()))) return void say(`@${me} you've had today's cookie, come back after midnight UTC`);
 
   const fortune = FORTUNES[crypto.randomInt(0, FORTUNES.length)];
   try {
-    const table = await openTable(channel, tags, { bet: false });
-    if (table === 'replay') return;
-    if (!table || table.cfg.games.cookieMax <= 0) return void say(`@${me} 🥠 ${fortune}`);
+    if (table.cfg.games.cookieMax <= 0) return void say(`@${me} 🥠 ${fortune}`);
     const { cookieMin, cookieMax } = table.cfg.games;
     const bonus = crypto.randomInt(cookieMin, cookieMax + 1);
     if (bonus <= 0) return void say(`@${me} 🥠 ${fortune}`);

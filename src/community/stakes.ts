@@ -1,11 +1,11 @@
 /**
  * Playing a game for the channel's loyalty points.
  *
- * fish, slots and cookie run on every channel. Where points and the points
- * `games` settings are on they pay in the channel currency and, like everything
- * else that touches it, are played as `$<cmd> fish`; bets also need the stream
- * live when games.onlyWhileLive is set. Elsewhere they are `!fish` and play for
- * nothing.
+ * fish, slots and cookie are points games: they exist only where the channel
+ * has points on and points.games.enabled set, and like everything else that
+ * touches the currency they are played as `$<cmd> fish`. Bets also need the
+ * stream live when games.onlyWhileLive is set; offline they stay silent, as
+ * $<cmd> gamble does. Anywhere else the games aren't available at all.
  *
  * A round is one write transaction (stake off, winnings on) keyed on the Kick
  * message id, so a message the webhook queue replays after a restart can't play
@@ -26,27 +26,25 @@ import type { PointsConfig } from '../types';
 /**
  * How a message invokes `game`, or null when it doesn't.
  *
- * - 'currency': `$<cmd> fish` where the channel plays its games for points.
- * - 'bang': `!fish` where it doesn't, so the game is just for fun.
- * - 'redirect': `!fish` where the `$` form is the one to use; answer with a pointer.
+ * - 'currency': `$<cmd> fish` where the channel has its points games on.
+ * - 'redirect': `!fish` there; answer with a pointer to the `$` form.
  *
- * `args` are the words after the game's name; `usage` is how to call it here.
+ * Where the games are off there is no form at all. `args` are the words after
+ * the game's name; `usage` is how to call it.
  */
 export function gameInvocation(
   message: string, channel: string, game: string
-): { form: 'currency' | 'bang' | 'redirect'; args: string[]; usage: string } | null {
+): { form: 'currency' | 'redirect'; args: string[]; usage: string } | null {
   const words = message.trim().split(/\s+/);
   const first = (words[0] ?? '').toLowerCase();
   const svc = getPointsService(channel.replace(/^#/, '').toLowerCase());
   const cfg = svc?.config();
   const cmd = cfg && cfg.enabled && cfg.games.enabled ? effectiveCommand(cfg) : null;
-  if (cmd && first === `$${cmd}` && (words[1] ?? '').toLowerCase() === game) {
+  if (!cmd) return null;
+  if (first === `$${cmd}` && (words[1] ?? '').toLowerCase() === game) {
     return { form: 'currency', args: words.slice(2), usage: `$${cmd} ${game}` };
   }
-  if (first !== `!${game}`) return null;
-  return cmd
-    ? { form: 'redirect', args: words.slice(1), usage: `$${cmd} ${game}` }
-    : { form: 'bang', args: words.slice(1), usage: `!${game}` };
+  return first === `!${game}` ? { form: 'redirect', args: words.slice(1), usage: `$${cmd} ${game}` } : null;
 }
 
 export interface Table {
@@ -58,14 +56,14 @@ export interface Table {
 }
 
 /**
- * The points table this viewer can play at, null to play for nothing, or
- * 'replay' when this message already played and the game should stay silent.
- * The reason is logged so a game that paid nothing can be explained.
+ * The points table this viewer can play at, or null when they can't play now
+ * (offline, excluded, database down), or 'replay' when this message already
+ * played. Either way the game stays silent; the reason is logged.
  */
 export async function openTable(channel: string, tags: KickTags, opts: { bet: boolean }): Promise<Table | null | 'replay'> {
   const name = channel.replace(/^#/, '').toLowerCase();
   const me = tags.username;
-  const why = (reason: string) => { console.log(`[GAMES] ${me} plays for nothing in ${name}: ${reason}`); return null; };
+  const why = (reason: string) => { console.log(`[GAMES] ${me} can't play in ${name}: ${reason}`); return null; };
 
   const svc = getPointsService(name);
   if (!svc) return null;

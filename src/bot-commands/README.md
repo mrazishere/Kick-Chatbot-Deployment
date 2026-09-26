@@ -37,9 +37,9 @@ Each file exports a `CommandFn` registered in the channel config and dispatched 
 | Followage | `!followage [@user]` · `!fa` · `!subage` · `!accountage` | All users (1/5s) | All channels |
 | Chat summary | `!chatsummary` · `!csum` · `!catchup` | All users (1/min per channel) | All channels |
 | Mini games | `!8ball` · `!roll [20\|5-10\|2d6]` · `!coinflip` · `!pick a b c` · `!percent` | All users (1/5s) | All channels |
-| Fishing | `$<currency> fish` · `!fish` | All users (1/30s) | `$don fish` where chat games use points (Points settings); `!fish` for fun elsewhere |
-| Slots | `$<currency> slots amount` · `!slots` | All users | `$don slots 100` where chat games use points; `!slots` spins for fun elsewhere |
-| Fortune cookie | `$<currency> cookie` · `!cookie` | All users (1/day) | `$don cookie` with a bonus where chat games use points; `!cookie` elsewhere |
+| Fishing | `$<currency> fish` | All users (1/30s) | Channels with points and Chat games on (Points settings) |
+| Slots | `$<currency> slots amount` | All users | Channels with points and Chat games on |
+| Fortune cookie | `$<currency> cookie` | All users (1/day) | Channels with points and Chat games on |
 
 ---
 
@@ -507,9 +507,9 @@ $don cancel                   → withdraw your own challenge
 $don raffle 5000 120          → open a raffle: 5000 split between winners, 120s (Mods+)
 $don sraffle 5000 120         → same, but one winner takes it all (Mods+)
 $don join                     → enter the open raffle, free, one entry each
-$don fish                     → a cast for points (chat games on; see Games)
-$don slots 100                → bet on the slots (chat games on)
-$don cookie                   → today's fortune cookie and bonus (chat games on)
+$don fish                     → a cast (Chat games on; see Games)
+$don slots 100                → bet on the slots (Chat games on)
+$don cookie                   → today's fortune cookie and bonus (Chat games on)
 $don raffle cancel            → close it without drawing (Mods+)
 $don add|remove|set @user 500 → adjust a balance (broadcaster and bot owner only)
 ```
@@ -692,9 +692,9 @@ Stored per channel in `data/community/<channel>.sqlite` (see `src/community/stor
 
 ## Games — `minigames.ts`, `fish.ts`, `slots.ts`, `cookie.ts`
 
-`src/community/stakes.ts` decides whether a round is played for points: the channel has points on and `points.games.enabled` set, and for bets the stream is live when `games.onlyWhileLive` is set. Otherwise the game plays for nothing. A round is one transaction keyed on the Kick message id, so a replayed message plays once and stays silent. Ledger reasons: `game:fish`/`game:fish_win`, `game:slots`/`game:slots_win`, `cookie`.
+Fish, slots and cookie are points games. They exist only where the channel has points on **and** `points.games.enabled` set (Chat games on the dashboard's Points card); anywhere else they aren't available. `src/community/stakes.ts` checks this, and for bets also that the stream is live when `games.onlyWhileLive` is set: offline, bets stay silent like `$don gamble`, while the cookie (not a bet) still works. A round is one transaction keyed on the Kick message id, so a replayed message plays once and stays silent. Ledger reasons: `game:fish`/`game:fish_win`, `game:slots`/`game:slots_win`, `cookie`.
 
-**Format rule:** anything that uses the loyalty points is a currency subcommand, `$<currency> <subcommand>`. So where chat games use points they are `$don fish`, `$don slots 100` and `$don cookie`; there `!fish`, `!slots` and `!cookie` only point to the `$` form (once a minute per viewer). On channels without points, or with chat games off, the `!` forms play for fun and the `$` forms don't exist. `$don slots` needs an amount; `!slots` is always a free spin.
+**Format rule:** anything that uses the loyalty points is a currency subcommand, `$<currency> <subcommand>`: `$don fish`, `$don slots 100`, `$don cookie`. Where the games are on, `!fish`, `!slots` and `!cookie` only point to the `$` form (once a minute per viewer); elsewhere they do nothing. `!8ball`, `!roll`, `!coinflip`, `!pick` and `!percent` don't touch points and work on every channel.
 
 Settings live in the channel config's `points.games` block and on the dashboard's Points card (Chat games). Switching a game off entirely is its command toggle.
 
