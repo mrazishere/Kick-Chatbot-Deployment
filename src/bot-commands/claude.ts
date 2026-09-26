@@ -19,6 +19,7 @@
  *          !claudeclear - Clear channel conversation history (mods only)
  */
 
+import { isBotOwner } from '../bot-identity';
 import fetch from 'node-fetch';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -1330,7 +1331,7 @@ async function handleSpecialTrigger(client: { say(channel: string, msg: string):
   // Set up permission flags for broadcaster and owner
   const badges = tags.badges || {};
   const isBroadcaster = badges.broadcaster;
-  const isBroadcasterOrOwner = isBroadcaster || tags.username === process.env.KICK_OWNER;
+  const isBroadcasterOrOwner = isBroadcaster || isBotOwner(tags.username);
 
   // Log special trigger
   console.log({
@@ -1481,9 +1482,9 @@ export const claude: CommandFn = async function claude(client, message, channel,
     const badges = tags.badges || {};
     const isBroadcaster = badges.broadcaster;
     const isMod = badges.moderator;
-    const isModUp = isBroadcaster || isMod || tags.username === process.env.KICK_OWNER;
+    const isModUp = isBroadcaster || isMod || isBotOwner(tags.username);
     // This flag identifies if user is broadcaster or owner (for cooldown bypass)
-    const isBroadcasterOrOwner = isBroadcaster || tags.username === process.env.KICK_OWNER;
+    const isBroadcasterOrOwner = isBroadcaster || isBotOwner(tags.username);
 
     // Only process specific commands
     if (!command.startsWith('!claude') && command !== '!claudesystem' && command !== '!claudereset' && command !== '!claudeclear' && command !== '!research') {
@@ -1603,7 +1604,7 @@ export const claude: CommandFn = async function claude(client, message, channel,
       }
 
       let formattedPrompt: string;
-      if (tags.username === process.env.KICK_OWNER) {
+      if (isBotOwner(tags.username)) {
         formattedPrompt = `[BOT_OWNER] Please search for current information about: ${userPrompt}`;
       } else {
         formattedPrompt = `${tags.username} wants current information about: ${userPrompt}. Please search the web for the latest information.`;
@@ -1689,7 +1690,7 @@ export const claude: CommandFn = async function claude(client, message, channel,
             client.say(channel, outMessage);
 
             // Record for the AI Hall of Shame leaderboard (skip the bot owner).
-            if (tags.username !== process.env.KICK_OWNER && userPrompt) {
+            if (!isBotOwner(tags.username) && userPrompt) {
               recordLeaderboardEvent(channel, tags.username, userPrompt, responseText);
             }
 
@@ -1807,7 +1808,7 @@ export const claude: CommandFn = async function claude(client, message, channel,
       }
 
       let formattedPrompt: string;
-      if (tags.username === process.env.KICK_OWNER) {
+      if (isBotOwner(tags.username)) {
         // This message is from the bot owner - add the special tag
         formattedPrompt = `[BOT_OWNER] ${userPrompt}`;
       } else {
@@ -1827,7 +1828,7 @@ export const claude: CommandFn = async function claude(client, message, channel,
       // real answers.
       const asksForCode = /\b(write|generate|create|make|give|build|code|program|script|debug|fix)\b/i.test(userPrompt) &&
         /\b(code|script|program|function|snippet|python|javascript|typescript|java|c\+\+|c#|golang|rust|ruby|php|html|css|sql|regex|bash|shell|algorithm|leetcode)\b/i.test(userPrompt);
-      if (tags.username !== process.env.KICK_OWNER && asksForCode) {
+      if (!isBotOwner(tags.username) && asksForCode) {
         const codeRoasts = [
           "I'm a roast bot not your CS tutor. Go bother Stack Overflow.",
           "Write your own code lazybones. This is a stream not a free bootcamp.",
@@ -2000,7 +2001,7 @@ export const claude: CommandFn = async function claude(client, message, channel,
 
           // Record for the AI Hall of Shame leaderboard (skip the bot owner).
           // Best-effort; the store swallows its own errors.
-          if (tags.username !== process.env.KICK_OWNER) {
+          if (!isBotOwner(tags.username)) {
             recordLeaderboardEvent(channel, tags.username, userPrompt, responseText);
           }
 

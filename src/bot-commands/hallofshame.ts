@@ -21,6 +21,7 @@
  * Aliases: !shame
  */
 
+import { isBotOwner } from '../bot-identity';
 import { CommandFn } from '../types';
 import {
   readState,
@@ -184,7 +185,7 @@ export const hallofshame: CommandFn = async function hallofshame(client, message
 
   const rawSub = input[1] || '';
   const sub = rawSub.toLowerCase();
-  const isModUp = tags.isModUp || tags.isBroadcaster || tags.username === process.env.KICK_OWNER;
+  const isModUp = tags.isModUp || tags.isBroadcaster || isBotOwner(tags.username);
 
   // Reset (mods only)
   if (sub === 'reset') {

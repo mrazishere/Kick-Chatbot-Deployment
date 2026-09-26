@@ -66,3 +66,13 @@ export function isBotSender(username: string | undefined, senderId?: number | st
   if (senderId !== undefined && String(senderId) === String(cached.userId)) return true;
   return false;
 }
+
+/**
+ * Whether `username` is the bot owner (KICK_OWNER). Case-insensitive: Kick sends
+ * the display spelling ("MrAZisHere") while the setting is usually lowercase, and
+ * an exact match silently treated the owner as a regular viewer.
+ */
+export function isBotOwner(username: string | undefined): boolean {
+  const owner = (process.env.KICK_OWNER || '').trim().replace(/^@+/, '').toLowerCase();
+  return !!owner && !!username && username.replace(/^@+/, '').toLowerCase() === owner;
+}

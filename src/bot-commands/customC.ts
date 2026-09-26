@@ -32,6 +32,7 @@
  *
  */
 
+import { isBotOwner } from '../bot-identity';
 import * as fs from 'fs';
 import * as path from 'path';
 import { promisify } from 'util';
@@ -191,7 +192,7 @@ export const customC: CommandFn = async function customC(client, message, channe
     const isBroadcaster = badges.broadcaster || tags.rawBadges?.some(b => b.type === 'broadcaster' || b.type === 'owner');
     const isMod = badges.moderator || tags.rawBadges?.some(b => b.type === 'moderator');
     const isVIP = badges.vip || tags.rawBadges?.some(b => b.type === 'vip');
-    const isModUp = isBroadcaster || isMod || tags.username === process.env.KICK_OWNER;
+    const isModUp = isBroadcaster || isMod || isBotOwner(tags.username);
     const isVIPUp = isVIP || isModUp;
     const channelName = channel.startsWith('#') ? channel.substring(1) : channel;
 
