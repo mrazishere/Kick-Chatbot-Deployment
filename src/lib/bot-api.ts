@@ -113,6 +113,27 @@ export interface PointsConfig {
   duel?: PointsDuel;
   /** Absent from a bot service older than raffles. */
   raffle?: PointsRaffle;
+  /** Absent from a bot service older than the chat games. */
+  games?: PointsGames;
+}
+
+/**
+ * !fish, !slots and !cookie played for points. Off, or offline with onlyWhileLive,
+ * the games still run for fun; switching a game off entirely is its command toggle.
+ */
+export interface PointsGames {
+  enabled: boolean;
+  /** Only take bets while live. The daily cookie bonus ignores this. */
+  onlyWhileLive: boolean;
+  fishCost: number;
+  fishCooldownSeconds: number;
+  slotsMinBet: number;
+  /** 0 means no maximum. */
+  slotsMaxBet: number;
+  slotsCooldownSeconds: number;
+  /** Both 0 turns the cookie bonus off. */
+  cookieMin: number;
+  cookieMax: number;
 }
 
 /**
@@ -186,13 +207,14 @@ export interface PointsTimeoutPenalty {
 }
 
 /** Omitted keys are left alone; nested blocks merge rather than replace. */
-export type PointsSettingsPatch = Partial<Omit<PointsConfig, "effectiveCommand" | "bonuses" | "give" | "timeoutPenalty" | "gamble" | "duel" | "raffle">> & {
+export type PointsSettingsPatch = Partial<Omit<PointsConfig, "effectiveCommand" | "bonuses" | "give" | "timeoutPenalty" | "gamble" | "duel" | "raffle" | "games">> & {
   bonuses?: Partial<PointsBonuses>;
   give?: Partial<PointsGive>;
   timeoutPenalty?: Partial<PointsTimeoutPenalty>;
   gamble?: Partial<PointsGamble>;
   duel?: Partial<PointsDuel>;
   raffle?: Partial<PointsRaffle>;
+  games?: Partial<PointsGames>;
 };
 
 export interface PointsSubscriptionStatus {

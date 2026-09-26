@@ -59,7 +59,41 @@ export interface PointsConfig {
   duel?: PointsDuel;
   /** Absent from a bot service older than raffles. */
   raffle?: PointsRaffle;
+  /** Absent from a bot service older than the chat games. */
+  games?: PointsGames;
 }
+
+/**
+ * !fish, !slots and !cookie played for points. Off, or offline with onlyWhileLive,
+ * the games still run for fun; switching a game off entirely is its command toggle.
+ */
+export interface PointsGames {
+  enabled: boolean;
+  /** Only take bets while live. The daily cookie bonus ignores this. */
+  onlyWhileLive: boolean;
+  fishCost: number;
+  fishCooldownSeconds: number;
+  slotsMinBet: number;
+  /** 0 means no maximum. */
+  slotsMaxBet: number;
+  slotsCooldownSeconds: number;
+  /** Both 0 turns the cookie bonus off. */
+  cookieMin: number;
+  cookieMax: number;
+}
+
+/** The bot's defaults, for a bot service that doesn't report game settings yet. */
+const GAMES_DEFAULTS: PointsGames = {
+  enabled: false,
+  onlyWhileLive: true,
+  fishCost: 10,
+  fishCooldownSeconds: 30,
+  slotsMinBet: 1,
+  slotsMaxBet: 0,
+  slotsCooldownSeconds: 30,
+  cookieMin: 5,
+  cookieMax: 25,
+};
 
 /** `$<cmd> duel @user <amount>`: viewer against viewer, 50/50, winner takes both stakes. */
 export interface PointsDuel {
@@ -142,11 +176,12 @@ interface PointsGambleStats {
   net: number;
 }
 
-type PointsSettingsPatch = Partial<Omit<PointsConfig, "effectiveCommand" | "bonuses" | "give" | "timeoutPenalty" | "gamble">> & {
+type PointsSettingsPatch = Partial<Omit<PointsConfig, "effectiveCommand" | "bonuses" | "give" | "timeoutPenalty" | "gamble" | "games">> & {
   bonuses?: Partial<PointsBonuses>;
   give?: Partial<PointsGive>;
   timeoutPenalty?: Partial<PointsTimeoutPenalty>;
   gamble?: Partial<PointsGamble>;
+  games?: Partial<PointsGames>;
 };
 
 interface PointsSummary {
@@ -245,6 +280,15 @@ interface SettingsForm {
   raffleMaxSeconds: string;
   raffleWinners: string;
   raffleLiveOnly: boolean;
+  gamesEnabled: boolean;
+  gamesLiveOnly: boolean;
+  fishCost: string;
+  fishCooldown: string;
+  slotsMin: string;
+  slotsMax: string;
+  slotsCooldown: string;
+  cookieMin: string;
+  cookieMax: string;
 }
 
 function formFromConfig(c: PointsConfig): SettingsForm {
@@ -296,6 +340,15 @@ function formFromConfig(c: PointsConfig): SettingsForm {
     raffleMaxSeconds: String((c.raffle ?? RAFFLE_DEFAULTS).maxDurationSeconds),
     raffleWinners: String((c.raffle ?? RAFFLE_DEFAULTS).winners),
     raffleLiveOnly: (c.raffle ?? RAFFLE_DEFAULTS).onlyWhileLive,
+    gamesEnabled: (c.games ?? GAMES_DEFAULTS).enabled,
+    gamesLiveOnly: (c.games ?? GAMES_DEFAULTS).onlyWhileLive,
+    fishCost: String((c.games ?? GAMES_DEFAULTS).fishCost),
+    fishCooldown: String((c.games ?? GAMES_DEFAULTS).fishCooldownSeconds),
+    slotsMin: String((c.games ?? GAMES_DEFAULTS).slotsMinBet),
+    slotsMax: String((c.games ?? GAMES_DEFAULTS).slotsMaxBet),
+    slotsCooldown: String((c.games ?? GAMES_DEFAULTS).slotsCooldownSeconds),
+    cookieMin: String((c.games ?? GAMES_DEFAULTS).cookieMin),
+    cookieMax: String((c.games ?? GAMES_DEFAULTS).cookieMax),
   };
 }
 
@@ -434,6 +487,23 @@ function buildPatch(f: SettingsForm): { patch: PointsSettingsPatch } | { error: 
   if (patch.raffle.defaultDurationSeconds! > patch.raffle.maxDurationSeconds!) {
     errors.push("Default raffle length can't be longer than the longest raffle");
   }
+  patch.games = {
+    enabled: f.gamesEnabled,
+    onlyWhileLive: f.gamesLiveOnly,
+    fishCost: whole(f.fishCost, "Fish cast cost", 1, 1_000_000),
+    fishCooldownSeconds: whole(f.fishCooldown, "Fish cooldown", 0, 3600),
+    slotsMinBet: whole(f.slotsMin, "Minimum slots bet", 1, 1_000_000_000),
+    slotsMaxBet: whole(f.slotsMax, "Maximum slots bet", 0, 1_000_000_000),
+    slotsCooldownSeconds: whole(f.slotsCooldown, "Slots cooldown", 0, 3600),
+    cookieMin: whole(f.cookieMin, "Cookie bonus minimum", 0, 1_000_000),
+    cookieMax: whole(f.cookieMax, "Cookie bonus maximum", 0, 1_000_000),
+  };
+  if (patch.games.slotsMaxBet! > 0 && patch.games.slotsMaxBet! < patch.games.slotsMinBet!) {
+    errors.push("Maximum slots bet can't be below the minimum (0 means no maximum)");
+  }
+  if (patch.games.cookieMax! < patch.games.cookieMin!) {
+    errors.push("Cookie bonus maximum can't be below the minimum");
+  }
 
   return errors.length > 0 ? { error: errors.join("; ") } : { patch };
 }
@@ -541,6 +611,12 @@ const REASON_LABEL: Record<string, string> = {
   "game:duel_stake": "Duel accepted (stake)",
   "game:duel_win": "Duel win",
   "game:duel_refund": "Duel refund",
+  "game:raffle_win": "Raffle win",
+  "game:fish": "Fishing cast",
+  "game:fish_win": "Fishing catch",
+  "game:slots": "Slots bet",
+  "game:slots_win": "Slots win",
+  cookie: "Daily cookie",
 };
 
 async function callApi<T>(channel: string, path: string, init?: RequestInit): Promise<{ data?: T; error?: string }> {
@@ -1164,6 +1240,41 @@ export default function PointsCard({
                   The prize is created rather than taken from anyone, so only moderators and above can open one and the caps
                   above bound what a single raffle, and one stream, can add. Entries are silent; the winners and the entry
                   count are announced when it draws.
+                </p>
+              </div>
+
+              <div>
+                <h4 className={LABEL}>Chat games</h4>
+                <Checkbox
+                  label={`Play !fish, !slots and !cookie for ${form.currencyName.trim() || "points"}`}
+                  checked={form.gamesEnabled}
+                  disabled={readOnly || !!busy}
+                  onChange={(v) => set("gamesEnabled", v)}
+                />
+                <div className="mt-3 grid gap-4 sm:grid-cols-4">
+                  <Field label="Fish cast cost">{text("fishCost", { inputMode: "numeric" })}</Field>
+                  <Field label="Fish cooldown (s)">{text("fishCooldown", { inputMode: "numeric" })}</Field>
+                  <Field label="Cookie bonus min">{text("cookieMin", { inputMode: "numeric" })}</Field>
+                  <Field label="Cookie bonus max" hint="0 and 0 = no bonus">{text("cookieMax", { inputMode: "numeric" })}</Field>
+                </div>
+                <div className="mt-3 grid gap-4 sm:grid-cols-4">
+                  <Field label="Slots minimum bet">{text("slotsMin", { inputMode: "numeric" })}</Field>
+                  <Field label="Slots maximum (0 = none)">{text("slotsMax", { inputMode: "numeric" })}</Field>
+                  <Field label="Slots cooldown (s)">{text("slotsCooldown", { inputMode: "numeric" })}</Field>
+                </div>
+                <div className="mt-3 space-y-2">
+                  <Checkbox
+                    label="Only take bets while the stream is live"
+                    checked={form.gamesLiveOnly}
+                    disabled={readOnly || !!busy}
+                    onChange={(v) => set("gamesLiveOnly", v)}
+                  />
+                </div>
+                <p className="mt-3 text-xs text-neutral-500">
+                  A fish cast costs the amount above and pays back about 92% on average, scaled to the cost. Slots pay 1.5x for
+                  two alike, 8x for three, 25x for three diamonds, about 93% back; plain !slots spins for fun. !cookie is one
+                  fortune a day with a bonus in the range above, paid online or off. With this off, or offline, the games still
+                  play for fun. To remove a game entirely, switch its command off under Commands.
                 </p>
               </div>
 
