@@ -529,6 +529,26 @@ function removeFromEcosystem(username: string): boolean {
   }
 }
 
+/**
+ * The shell command that (re)launches a channel bot from ecosystem.config.js.
+ *
+ * Never `pm2 start <script> --name <name>`: that starts the bot with none of
+ * the entry's options, the `.reload` file-watch included. A bot started that
+ * way runs forever on the config it read at boot — every later settings save
+ * touches a sentinel nothing is watching, so the dashboard reports a change
+ * the bot never picks up (kick-mrazishere and kick-wolfsbanee were both in
+ * that state until 2026-09-22).
+ *
+ * `pm2 delete` first because `pm2 start` on an already-running name keeps the
+ * options that name was started with, so an entry that is missing the watch
+ * would never gain it. The delete is allowed to fail — on a first deploy
+ * there is nothing to remove, hence `;` and not `&&`.
+ */
+function startFromEcosystem(pm2Name: string): string {
+  const ecosystemPath = path.join(KICK_BASE_PATH, 'channels', 'ecosystem.config.js');
+  return `pm2 delete "${pm2Name}" ; pm2 start "${ecosystemPath}" --only "${pm2Name}"`;
+}
+
 // Generate PKCE
 function generatePKCE(): { codeVerifier: string; codeChallenge: string } {
   const codeVerifier = crypto.randomBytes(32).toString('base64url');
@@ -1289,10 +1309,10 @@ app.get('/kick-bot-enroll/complete', async (req: express.Request, res: express.R
       lastUpdated: new Date().toISOString()
     }
   );
-  // Bump the sentinel so PM2 file-watch (if active for this entry) restarts
-  // the bot to pick up the new tokens. The explicit `pm2 restart` below also
-  // covers this; the sentinel is here for symmetry with the chat-command path
-  // and so admins editing the JSON manually can trigger restart via touch.
+  // Bump the sentinel so PM2 file-watch restarts the bot to pick up the new
+  // tokens. The relaunch below also covers this; the sentinel is here for
+  // symmetry with the chat-command path and so admins editing the JSON
+  // manually can trigger a restart with a touch.
   fs.writeFileSync(path.join(configDir, `${username}.reload`), '');
 
   // Deploy the bot automatically
@@ -1324,29 +1344,20 @@ app.get('/kick-bot-enroll/complete', async (req: express.Request, res: express.R
     }
 
     await new Promise<void>((resolve) => {
-      exec(`pm2 restart "${pm2Name}"`, (restartErr) => {
-        if (!restartErr) {
-          console.log(`[DEPLOY] Restarted bot for ${username}`);
-          // No pm2 save needed — restart of an existing entry doesn't change
-          // the process list, so dump.pm2 is already correct.
+      exec(startFromEcosystem(pm2Name), (err) => {
+        if (err) {
+          console.error(`[DEPLOY ERROR] Failed to start bot: ${err.message}`);
+          deployStatus = 'warning';
+          deployMessage = 'Config saved but bot failed to start. Contact admin.';
           resolve();
           return;
         }
-
-        exec(`pm2 start "${botPath}" --name "${pm2Name}" --time`, (err) => {
-          if (err) {
-            console.error(`[DEPLOY ERROR] Failed to start bot: ${err.message}`);
-            deployStatus = 'warning';
-            deployMessage = 'Config saved but bot failed to start. Contact admin.';
-            resolve();
-            return;
-          }
-          console.log(`[DEPLOY] Started bot for ${username}`);
-          // Persist new entry so it survives reboots.
-          exec('pm2 save', (saveErr) => {
-            if (saveErr) console.error(`[DEPLOY] pm2 save failed: ${saveErr.message}`);
-            resolve();
-          });
+        console.log(`[DEPLOY] Started bot for ${username} from ecosystem.config.js`);
+        // The delete/start pair rewrites the process list, so dump.pm2 has to be
+        // refreshed — otherwise a reboot resurrects the entry as it was before.
+        exec('pm2 save', (saveErr) => {
+          if (saveErr) console.error(`[DEPLOY] pm2 save failed: ${saveErr.message}`);
+          resolve();
         });
       });
     });
@@ -3552,10 +3563,10 @@ async function deployAddChannel(requester: string, args: string[], badges: Array
       // Add to ecosystem
       addToEcosystem(sanitized);
 
-      // Start with PM2, then save the process list so the bot auto-resurrects
-      // on server reboot. Without `pm2 save`, the dump.pm2 stays stale and
-      // newly-deployed channels are lost on reboot.
-      exec(`pm2 start "${botPath}" --name "${pm2Name}" --time`, async (startError) => {
+      // Start from ecosystem.config.js, then save the process list so the bot
+      // auto-resurrects on server reboot. Without `pm2 save`, the dump.pm2 stays
+      // stale and newly-deployed channels are lost on reboot.
+      exec(startFromEcosystem(pm2Name), async (startError) => {
         if (startError) {
           await sendDeploymentMessage(`@${requester}, failed to start bot for ${sanitized}.`, sourceChatroomId);
           return;
