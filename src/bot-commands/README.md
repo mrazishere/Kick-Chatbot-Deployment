@@ -497,10 +497,11 @@ than `!` so the command reads like the money. Set `currencyCommand` to override.
 $don                          → your balance and rank
 $don @user                    → someone else's balance and rank
 $don activetime [@user]       → active time and rank
-$don top [activetime]         → top 5 by balance, or by active time
+$don top [activetime|gamble] → top 5 by balance, active time, or net gamble winnings (10+ gambles)
 $don leaderboard              → link to the public web leaderboard
 $don give @user 100           → send points to someone
 $don gamble 100               → even money at the channel's win chance
+$don gamble stats [@user]     → gambles, wins, win rate and net, all time
 $don duel @user 100           → challenge a viewer; 50/50, winner takes both
 $don accept|deny [@user]      → answer a challenge
 $don cancel                   → withdraw your own challenge

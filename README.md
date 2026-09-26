@@ -22,7 +22,7 @@ The full command reference, with permissions, cooldowns and examples, is in **[s
 | Area | Commands |
 |---|---|
 | AI | `!claude`, `@<bot>`, `!research`, `!claudesystem`, `!claudereset`, `!claudeclear`, `!chatsummary` |
-| Points | `$<currency>` (e.g. `$don`) with `give`, `gamble`, `duel`, `accept`, `deny`, `raffle`, `join`, `fish`, `top`, `activetime`, `leaderboard`, `add`/`remove`/`set` |
+| Points | `$<currency>` (e.g. `$don`) with `give`, `gamble` (and `gamble stats`), `duel`, `accept`, `deny`, `raffle`, `join`, `fish`, `top`, `activetime`, `leaderboard`, `add`/`remove`/`set` |
 | Community | `!remind`, `!unremind`, `!lastseen`, `!seen`, `!firstseen`, `!followage`, `!fa`, `!subage`, `!accountage` |
 | Games | `$<currency> fish` (points channels), `!slots`, `!cookie`, `!8ball`, `!roll`, `!coinflip`, `!pick`, `!percent`, `!catch` |
 | Stream | `!clip`, `!blerp`, `!countd`, `!kpp`, `!earnings`, `!topc`, `!hallofshame` |

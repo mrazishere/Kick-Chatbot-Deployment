@@ -14,10 +14,11 @@
  *
  * Usage:   $don [@user]               - balance and rank
  *          $don activetime [@user]    - active time and rank
- *          $don top [activetime]      - top 5
+ *          $don top [activetime|gamble] - top 5 (gamble: by net winnings, 10+ gambles)
  *          $don leaderboard           - link to the public leaderboard
  *          $don give @user 100|5k|50%|all - send points to someone
  *          $don gamble 100|5k|50%|all - even money at the channel's win chance
+ *          $don gamble stats [@user]  - gambles, wins, win rate and net, all time
  *          $don duel @user 100        - challenge a viewer; 50/50, winner takes both
  *          $don accept|deny [@user]   - answer a challenge
  *          $don cancel                - withdraw your challenge
@@ -45,7 +46,7 @@ import { effectiveCommand } from '../points/config';
 import { reportDbError, runWrite } from '../points/db';
 import { getPointsService } from '../points/service';
 import {
-  acceptDuel, applyOnce, countRanked, createDuel, creditTx, debitTx, ensureUserTx, findUserByName, gamble, getUser,
+  acceptDuel, applyOnce, countRanked, createDuel, creditTx, debitTx, ensureUserTx, findUserByName, gamble, gambleStatsFor, gambleTop, getUser,
   cancelRaffle, createRaffle, incomingDuels, isApplied, isExcluded, joinRaffle, openRaffle, outgoingDuel, rankBy, refundDuel, setTx, topBy, transfer
 } from '../points/store';
 
@@ -89,6 +90,8 @@ function expiryText(seconds: number): string {
 }
 
 const USER_COOLDOWN_MS = 10_000;
+/** A gambler needs this many gambles to rank on $<cmd> top gamble, so one lucky bet can't top it. */
+const GAMBLE_TOP_MIN = 10;
 const CHANNEL_COOLDOWN_MS = 30_000;
 const TOTAL_CACHE_MS = 60_000;
 
@@ -227,6 +230,20 @@ export const points: CommandFn = async function points(client, message, channel,
     // ── top ──
     if (sub === 'top') {
       if (!isModUp && cooldownLeft(`${channelName}:top`, CHANNEL_COOLDOWN_MS, true)) return;
+      if (/^gambl/i.test(args[1] ?? '')) {
+        const best = gambleTop(db, GAMBLE_TOP_MIN, 5, ex);
+        if (!best.length) return void say(`Nobody has ${GAMBLE_TOP_MIN} gambles yet`);
+        let text = 'Top gamblers by net';
+        let used = asciiSymbols(text);
+        for (const [i, r] of best.entries()) {
+          const entry = ` · ${i + 1} ${r.username} ${r.net} won ${Math.round(r.wins / r.gambles * 100)}%`;
+          const cost = asciiSymbols(entry);
+          if (i > 0 && used + cost > MAX_SYMBOLS) break;
+          text += entry;
+          used += cost;
+        }
+        return void say(text);
+      }
       const byWatch = /^active/i.test(args[1] ?? '');
       const rows = topBy(db, byWatch ? 'watch_seconds' : 'balance', 5, ex);
       if (!rows.length) return void say(byWatch ? 'No active time recorded yet' : `No ${cur} earned yet`);
@@ -306,6 +323,24 @@ export const points: CommandFn = async function points(client, message, channel,
     }
 
     // ── gamble ──
+    if (sub === 'gamble' && (args[1] ?? '').toLowerCase() === 'stats') {
+      if (cooldownLeft(`${channelName}:${meLc}:gamblestats`, USER_COOLDOWN_MS, true)) return;
+      const named = args[2];
+      let u = self;
+      let label = `@${me}`;
+      let mine = true;
+      if (named && NAME_RE.test(named) && named.replace(/^@+/, '').toLowerCase() !== meLc) {
+        const who = await svc.resolveUser(named, false);
+        u = who ? getUser(db, who.userId) : undefined;
+        label = u?.username ?? named.replace(/^@+/, '');
+        mine = false;
+      }
+      const s = u ? gambleStatsFor(db, u.user_id) : null;
+      if (!s || s.gambles === 0) return void say(mine ? `@${me} you haven't gambled yet` : `${label} hasn't gambled yet`);
+      const rate = (s.wins / s.gambles * 100).toFixed(1);
+      return void say(`${label} ${s.gambles} gambles ${s.wins} won ${rate}% net ${s.net} ${cur}`);
+    }
+
     if (sub === 'gamble') {
       const g = cfg.gamble;
       // Silent by choice (user, 2026-09-15); the log keeps it debuggable.

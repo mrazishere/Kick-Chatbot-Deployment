@@ -60,6 +60,8 @@ export interface PointsUserRow {
 
 export interface PointsUserDetail {
   user: PointsUserRow & { lifetimeEarned: number; isSub: boolean; followBonusAt: string | null; firstSeenAt: string };
+  /** This viewer's gamble results, all time. */
+  gamble: GambleStats;
   ledger: Array<{ id: number; ts: string; delta: number; balanceAfter: number; reason: string; actor: string | null; note: string | null; counterparty: string | null }>;
 }
 
@@ -285,6 +287,32 @@ export interface GambleStats {
   wins: number;
   staked: number;
   net: number;
+}
+
+/** One viewer's gamble results, all time. */
+export function gambleStatsFor(db: PointsDb, userId: number): GambleStats {
+  return db.prepare(
+    `SELECT COALESCE(SUM(reason = ?), 0) AS gambles, COALESCE(SUM(reason = ?), 0) AS wins,
+       COALESCE(SUM(CASE WHEN reason = ? THEN -delta ELSE 0 END), 0) AS staked, COALESCE(SUM(delta), 0) AS net
+     FROM ledger WHERE user_id = ? AND reason IN (?, ?)`
+  ).get(GAMBLE_STAKE, GAMBLE_WIN, GAMBLE_STAKE, userId, GAMBLE_STAKE, GAMBLE_WIN) as GambleStats;
+}
+
+/**
+ * The biggest net gamble winners with at least `minGambles` gambles, so one lucky
+ * bet can't top the list. Excluded accounts are left out.
+ */
+export function gambleTop(db: PointsDb, minGambles: number, limit: number, ex: Exclusions): Array<GambleStats & { username: string }> {
+  const excl = exclusionClause(ex);
+  return db.prepare(
+    `SELECT u.username, g.gambles, g.wins, g.staked, g.net FROM (
+       SELECT user_id, SUM(reason = ?) AS gambles, SUM(reason = ?) AS wins,
+         SUM(CASE WHEN reason = ? THEN -delta ELSE 0 END) AS staked, SUM(delta) AS net
+       FROM ledger WHERE reason IN (?, ?) GROUP BY user_id
+     ) g JOIN users u ON u.user_id = g.user_id
+     WHERE g.gambles >= ? AND ${excl.sql.replace(/\b(username_lc|user_id) NOT IN/g, 'u.$1 NOT IN')}
+     ORDER BY g.net DESC LIMIT ?`
+  ).all(GAMBLE_STAKE, GAMBLE_WIN, GAMBLE_STAKE, GAMBLE_STAKE, GAMBLE_WIN, minGambles, ...excl.params, limit) as Array<GambleStats & { username: string }>;
 }
 
 export function gambleStats(db: PointsDb, sinceMs = 0): GambleStats {
@@ -735,6 +763,7 @@ export function getPointsUserDetail(channel: string, cfg: PointsConfig, userId: 
         followBonusAt: iso(u.follow_bonus_at),
         firstSeenAt: iso(u.first_seen_at) ?? new Date(0).toISOString()
       },
+      gamble: gambleStatsFor(db, userId),
       ledger: ledgerFor(db, userId, 50).map(l => ({
         id: l.id,
         ts: iso(l.ts)!,
