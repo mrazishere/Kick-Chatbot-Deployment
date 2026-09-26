@@ -1,7 +1,13 @@
 /**
  * HlsResolver — resolves Kick channels' master HLS playlist URLs.
  *
- * Mechanism (as of 2026-05-17):
+ * Fast path (as of 2026-09-23):
+ *   kick.com/api/v2/channels/<slug> answers plain HTTP again and carries
+ *   `playback_url` (plus `livestream`, null when offline — the URL is present
+ *   either way). That takes well under a second, against 5–40s for the browser.
+ *   The browser below stays as the fallback for when Cloudflare blocks it again.
+ *
+ * Browser path (as of 2026-05-17):
  *   Kick's website and v2 API are Cloudflare-blocked from this server (HTTP 403).
  *   Stealth-plugin-style headless Chromium also fails the current Cloudflare
  *   challenge ("Just a moment..." interstitial). `puppeteer-real-browser` plus
@@ -62,6 +68,7 @@ if (!process.env.CHROME_PATH) {
 }
 
 const { connect } = require('puppeteer-real-browser');
+import axios from 'axios';
 import TelegramNotifier = require('../telegram-notifier');
 const telegram = new TelegramNotifier();
 
@@ -84,6 +91,9 @@ const CLOSE_TIMEOUT_MS = 10_000;
 // title (5s), plus slack. It sits above the sum so it can't cut in ahead of the
 // more specific errors those steps report.
 const RESOLVE_CEILING_MS = 150_000;
+// The channel API answers in well under a second when it isn't blocked.
+const API_TIMEOUT_MS = 5_000;
+const API_USER_AGENT = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Safari/537.36';
 
 const failureStreak = new Map<string, number>();
 const lastAlertAt = new Map<string, number>();
@@ -93,6 +103,11 @@ interface CachedHls {
   url: string;
   exp: number; // unix seconds
   resolvedAt: number; // ms
+}
+
+interface ChannelApiResponse {
+  playback_url?: string | null;
+  livestream?: unknown;
 }
 
 interface PlaybackResponse {
@@ -118,6 +133,12 @@ function decodeJwtExp(jwt: string): number {
   } catch {
     return 0;
   }
+}
+
+/** Expiry (unix seconds) of the JWT in a playback URL's `token` param; an hour out if it has none. */
+function tokenExp(url: string): number {
+  const tokenMatch = url.match(/[?&]token=([^&]+)/);
+  return tokenMatch ? decodeJwtExp(decodeURIComponent(tokenMatch[1])) : Math.floor(Date.now() / 1000) + 3600;
 }
 
 /** Rejects with "<label> timed out after Ns" if `promise` hasn't settled in time. */
@@ -290,6 +311,8 @@ export class HlsResolver {
   }
 
   private async doResolve(channel: string): Promise<string> {
+    const fast = await this.resolveViaApi(channel);
+    if (fast) return fast;
     const release = await acquireBrowserSlot();
     const session: BrowserSession = {};
     const run = this.runResolve(channel, session);
@@ -314,6 +337,42 @@ export class HlsResolver {
       await shutDown(channel, session);
       release();
     }
+  }
+
+  /**
+   * The playback URL straight from the channel API. Throws the usual offline
+   * error when Kick says the channel isn't live, and returns null when the API
+   * itself fails, so the caller falls back to the browser.
+   */
+  private async resolveViaApi(channel: string): Promise<string | null> {
+    const t0 = Date.now();
+    let data: ChannelApiResponse;
+    try {
+      const res = await axios.get<ChannelApiResponse>(`https://kick.com/api/v2/channels/${encodeURIComponent(channel)}`, {
+        headers: { 'User-Agent': API_USER_AGENT, Accept: 'application/json' },
+        timeout: API_TIMEOUT_MS
+      });
+      data = res.data;
+    } catch (err) {
+      const status = axios.isAxiosError(err) ? err.response?.status : undefined;
+      console.warn(`[HLS] ${channel}: channel API failed (${status ?? (err instanceof Error ? err.message : String(err))}) — falling back to the browser`);
+      return null;
+    }
+    if (!data || typeof data !== 'object') {
+      console.warn(`[HLS] ${channel}: channel API gave no JSON — falling back to the browser`);
+      return null;
+    }
+    if (!data.livestream) {
+      throw new Error(`No playback URL extracted for ${channel}: channel API says it isn't live — channel may be offline`);
+    }
+    const url = data.playback_url;
+    if (typeof url !== 'string' || !url.includes('playback.live-video.net')) {
+      console.warn(`[HLS] ${channel}: channel API is live but has no playback URL — falling back to the browser`);
+      return null;
+    }
+    this.cache.set(channel, { url, exp: tokenExp(url), resolvedAt: Date.now() });
+    console.log(`[HLS] Resolved ${channel} via channel API in ${Date.now() - t0}ms (token exp in ${Math.floor((tokenExp(url) - Date.now() / 1000) / 60)}m)`);
+    return url;
   }
 
   private async runResolve(channel: string, session: BrowserSession): Promise<string> {
@@ -384,8 +443,7 @@ export class HlsResolver {
     }
 
     const url: string = liveUrl;
-    const tokenMatch = url.match(/[?&]token=([^&]+)/);
-    const exp = tokenMatch ? decodeJwtExp(decodeURIComponent(tokenMatch[1])) : Math.floor(Date.now() / 1000) + 3600;
+    const exp = tokenExp(url);
 
     this.cache.set(channel, { url, exp, resolvedAt: Date.now() });
     console.log(`[HLS] Resolved ${channel} in ${Date.now() - t0}ms (token exp in ${Math.floor((exp - Date.now() / 1000) / 60)}m)`);
