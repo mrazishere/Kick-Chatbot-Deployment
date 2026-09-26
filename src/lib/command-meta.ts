@@ -43,8 +43,8 @@ export const COMMAND_META: Record<string, CommandMeta> = {
   countd: { label: "Countdown", trigger: "!countd", description: "Countdown timer overlay." },
   customC: {
     label: "Custom Commands",
-    trigger: "!acomm / !dcomm",
-    description: "Lets the channel define its own text commands.",
+    trigger: "!acomm / !dcomm / !counter",
+    description: "Lets the channel define its own text commands. !counter name shows a command's count without adding to it.",
   },
   dad: { label: "Dad Jokes", trigger: "!dad", description: "Random dad joke." },
   dictionary: { label: "Dictionary", trigger: "!define", description: "Word definitions." },

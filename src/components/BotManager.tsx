@@ -252,7 +252,7 @@ const COMMAND_META: Record<string, CommandMeta> = {
   clip: { label: "Clip", trigger: "!clip [45s]", description: "Clips the last 30 seconds of the stream, or 5–90 with e.g. !clip 45s, and posts the link." },
   cookie: { label: "Fortune Cookie", trigger: "!cookie", description: "supibot's cookie: one fortune a day (a golden second one for subscribers), gift it with !cookie donate, !cookie stats and top." },
   countd: { label: "Countdown", trigger: "!countd", description: "Countdown timer overlay." },
-  customC: { label: "Custom Commands", trigger: "!acomm / !dcomm", description: "Channel-defined text commands." },
+  customC: { label: "Custom Commands", trigger: "!acomm / !dcomm / !counter", description: "Channel-defined text commands. !counter name shows a command's count without adding to it." },
   dad: { label: "Dad Jokes", trigger: "!dad", description: "Random dad joke." },
   dictionary: { label: "Dictionary", trigger: "!define", description: "Word definitions." },
   dogfacts: { label: "Dog Facts", trigger: "!dogfacts", description: "Random dog fact." },
