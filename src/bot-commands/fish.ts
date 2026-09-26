@@ -52,6 +52,8 @@ const SUBCOMMANDS: Record<string, 'buy' | 'sell' | 'show' | 'stats' | 'top' | 't
 };
 
 const STORY_MODEL = 'claude-haiku-4-5-20251001';
+/** supibot asks for 150 characters; allow some overrun before trimming. */
+const STORY_MAX = 220;
 const groupDigits = (n: number): string => Math.round(n).toLocaleString('en-US');
 
 // ─── Leaderboards ───────────────────────────────────────────────────────────
@@ -100,7 +102,7 @@ function rankOf(db: PointsDb, board: Board, value: number): number {
 
 // ─── Story ──────────────────────────────────────────────────────────────────
 
-async function story(user: string, fishType: string, sizeString: string): Promise<string | null> {
+export async function story(user: string, fishType: string, sizeString: string): Promise<string | null> {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) return null;
   const prompt = `Write a short, ${pick(STORY_STYLES)} fishing story about a user named "${user}" who catches a ${fishType} in the water and keeps it! ${sizeString} Make it very concise - a maximum of 150 characters.`;
@@ -110,7 +112,8 @@ async function story(user: string, fishType: string, sizeString: string): Promis
     body: JSON.stringify({
       model: STORY_MODEL,
       max_tokens: 120,
-      system: 'Reply with the story only: plain text, one short paragraph, no title, no quotes, no markdown, no @ signs.',
+      system: 'Reply with the story only: plain text, at most 150 characters (one or two short sentences), no title, no quotes, no markdown, no @ signs. ' +
+        'Refer to the user by their name or as "they"; never assume their gender.',
       messages: [{ role: 'user', content: prompt }]
     }),
     timeout: 15_000
@@ -119,7 +122,11 @@ async function story(user: string, fishType: string, sizeString: string): Promis
   const data = await resp.json() as { content?: Array<{ type: string; text?: string }> };
   const text = (data.content ?? []).filter(b => b.type === 'text').map(b => b.text ?? '').join(' ').replace(/@/g, '').replace(/\s+/g, ' ').trim();
   if (!text) return null;
-  return text.length > 220 ? `${text.slice(0, 219)}…` : text;
+  if (text.length <= STORY_MAX) return text;
+  // Over-long: end at the last full sentence that fits rather than mid-word.
+  const cut = text.slice(0, STORY_MAX);
+  const end = Math.max(cut.lastIndexOf('. '), cut.lastIndexOf('! '), cut.lastIndexOf('? '), /[.!?]$/.test(cut) ? cut.length - 1 : -1);
+  return end >= 60 ? cut.slice(0, end + 1) : `${cut.slice(0, cut.lastIndexOf(' '))}…`;
 }
 
 // ─── Command ────────────────────────────────────────────────────────────────
