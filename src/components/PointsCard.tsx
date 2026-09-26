@@ -1271,7 +1271,7 @@ export default function PointsCard({
                 </div>
                 <p className="mt-3 text-xs text-neutral-500">
                   {`supibot's fishing game, played as $${commandPreview || "…"} fish like every command that uses ${form.currencyName.trim() || "points"}: cast (with worm, fly or cricket bait), then sell, show, stats, top and trap. `}
-                  Catches are kept until sold; selling pays {form.currencyName.trim() || "points"}, bait costs it. A miss waits 30–90 seconds and
+                  Catches are kept until sold; selling pays {form.currencyName.trim() || "points"}, bait costs it. A fish's price scales with its length (half at 1 cm, double at 100 cm), plus 50% for beating a record. A miss waits 30–90 seconds and
                   snags junk 1 time in 4. With this off fishing isn&apos;t available. !cookie and !slots don&apos;t use points and are
                   switched on under Commands.
                 </p>
