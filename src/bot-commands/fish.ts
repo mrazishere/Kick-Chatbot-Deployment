@@ -38,7 +38,7 @@ import { bestEmote, broadcasterIdFor } from '../community/emotes';
 import {
   addItem, baitPrice, baitRoll, CatchItem, CatchType, FAILURE_EMOTES, FishData, findBait, hasFishedBefore, initialData,
   ITEMS, JUNK_MESSAGES, loadFish, MISS_DELAY_MS, pick, randomInt, rollCatch, saveFish, sellPrice, STORY_STYLES, SUCCESS_EMOTES,
-  TYPE_DESCRIPTIONS, weightedCatch
+  takeItems, TYPE_DESCRIPTIONS, weightedCatch
 } from '../community/fishing';
 
 const cooldown = makeCooldown(5000);
@@ -251,11 +251,17 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       if (item.size) {
         const size = randomInt(1, 100);
         sizeString = `It is ${size} cm in length.`;
+        // A first catch always sets a record; only beating an earlier one earns the bonus.
+        const beatRecord = d.lifetime.maxFishSize > 0 && size > d.lifetime.maxFishSize;
         if (size > d.lifetime.maxFishSize) {
           sizeString += ' This is a new record!';
           d.lifetime.maxFishSize = size;
           d.lifetime.maxFishType = item.name;
         }
+        const held = { cm: size, record: beatRecord };
+        d.catch.sizes ??= {};
+        (d.catch.sizes[item.name] ??= []).push(held);
+        sizeString += ` Worth ${sellPrice(item, g, held)} ${cur}.`;
       }
       saveFish(db!, uid, d, now);
       return { kind: 'catch', item, sizeString, appendix };
@@ -375,11 +381,8 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
           if (have <= threshold) continue;
           const n = have - threshold;
           sold += n;
-          gained += n * sellPrice(item, g);
-          d.catch.types[item.name] = threshold;
-          d.catch[type] -= n;
-          if (type === 'fish') d.lifetime.sold += n;
-          else d.lifetime.scrapped += n;
+          // "duplicate" keeps the biggest of each, the one worth showing off.
+          gained += takeItems(d, item, n, g, specifier === 'duplicate');
         }
         const prefix = specifier === 'duplicate' ? 'duplicate ' : '';
         if (sold === 0) return `You have no ${prefix}${TYPE_DESCRIPTIONS[type]} to sell!`;
@@ -399,11 +402,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
         return 'You provided an invalid amount of items to sell! You need to use a positive integer (a whole number).';
       }
       const n = Math.min(have, requested);
-      d.catch.types[item.name] = have - n;
-      d.catch[item.type] -= n;
-      if (item.type === 'fish') d.lifetime.sold += n;
-      else d.lifetime.scrapped += n;
-      const gained = n * sellPrice(item, g);
+      const gained = takeItems(d, item, n, g);
       d.lifetime.coins += gained;
       const balance = pay(gained);
       saveFish(db!, uid, d, now);

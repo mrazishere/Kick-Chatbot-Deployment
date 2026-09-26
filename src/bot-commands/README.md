@@ -712,6 +712,7 @@ $don fish buy                 → nothing yet, as in supibot
 ```
 
 - A miss waits 30–90 seconds, a catch `catchCooldownMinutes` (30). Fish have a size (1–100 cm) and your record is kept. On 1 catch in 3, Claude Haiku writes a short story (`stories`).
+- **Our addition to supibot:** a fish's price scales with its length (0.5× at 1 cm, 1× at 50 cm, 2× at 100 cm) and a fish that beat an earlier record is worth 50% more; each held fish's size is kept for this. Junk, trap fish and fish caught before sizes were kept sell at the base price. The catch message shows what the fish is worth.
 - Catches are kept until sold. The purse is the points balance: bait is a `game:fish_bait` debit, selling a `game:fish_sell` credit. Each viewer's catch lives in the channel's points database (`fish` table, schema v5), so a sale and its payout are one transaction, keyed on the Kick message id so a replayed message acts once.
 - Traps roll once a minute at 75–90% efficiency. A fish costs the rest of a catch cooldown, so a one-hour trap lands at most one fish, plus junk.
 - Casting and laying traps follow `onlyWhileLive` and stay silent offline, like `$don gamble`. Selling, show, stats and top work any time.
