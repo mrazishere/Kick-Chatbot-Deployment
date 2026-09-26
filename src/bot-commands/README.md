@@ -32,6 +32,14 @@ Each file exports a `CommandFn` registered in the channel config and dispatched 
 | [Hall of Shame](#hallofshamets--ai-hall-of-shame) | `!hallofshame [sub]` · `!shame` | All users (Mods+ to reset) | All channels |
 | [Clip](#clipts--clip) | `!clip [title]` | All users (1/min) | All channels |
 | [Blerp](#blerpts--blerp-sound-suggestions) | `!blerp [11s] [title]` | Mods+ (1 per 5 min) | Channels with `blerpStreamerId` |
+| Remind | `!remind @user [in 2h] msg` · `!remind me in 30m msg` · `!remind list` · `!unremind id` | All users (5 pending each) | All channels |
+| Last seen | `!lastseen @user` · `!seen` · `!firstseen @user` | All users (1/5s) | All channels, this channel's chat only |
+| Followage | `!followage [@user]` · `!fa` · `!subage` · `!accountage` | All users (1/5s) | All channels |
+| Chat summary | `!chatsummary` · `!csum` · `!catchup` | All users (1/min per channel) | All channels |
+| Mini games | `!8ball` · `!roll [20\|5-10\|2d6]` · `!coinflip` · `!pick a b c` · `!percent` | All users (1/5s) | All channels |
+| Fishing | `!fish` | All users (1/30s) | All channels; costs points where chat games are on (Points settings) |
+| Slots | `!slots [amount]` | All users | All channels; bets where chat games are on (Points settings) |
+| Fortune cookie | `!cookie` | All users (1/day) | All channels; bonus where chat games are on |
 
 ---
 
@@ -667,3 +675,26 @@ The `excludedCommands` array is also editable directly in the channel's config J
 1. Create `src/bot-commands/<name>.ts` exporting a `CommandFn` (see `src/types/index.ts`).
 2. Register it in `src/channels/template-kick-bot.ts` under `commands`.
 3. Propagate to all live channel clones — fixes go to the template first, then every active clone.
+
+---
+
+## Community commands — `remind.ts`, `lastseen.ts`, `followage.ts`, `chatsummary.ts`
+
+Stored per channel in `data/community/<channel>.sqlite` (see `src/community/store.ts`).
+
+- **Remind:** without a time, the reminder is delivered the next time the target chats here (two per message at most). With `in <time>` (`2h`, `1h30m`, `90 minutes`, 1 minute to 365 days) it is posted at that time; the timer starts with the first chat message after a restart, and a reminder that fell due while the bot was down is posted marked late.
+- **Last seen:** every chat message updates the table. On the first run the table is filled from the channel's PM2 log, so first-seen dates reach back as far as the log does. It only knows this channel.
+- **Followage:** Kick's internal `kick.com/api/v2/channels/<channel>/users/<user>` (no auth) returns `following_since`, `subscribed_for` and `created_at`. Undocumented; a failure answers in chat. Cached 60s.
+- **Chat summary:** the last 30 minutes of chat from the log (commands left out) go to Claude Haiku as quoted, untrusted text; the reply has its @ signs removed so nobody is pinged.
+
+## Games — `minigames.ts`, `fish.ts`, `slots.ts`, `cookie.ts`
+
+`src/community/stakes.ts` decides whether a round is played for points: the channel has points on and `points.games.enabled` set, and for bets the stream is live when `games.onlyWhileLive` is set. Otherwise the game plays for nothing. A round is one transaction keyed on the Kick message id, so a replayed message plays once and stays silent. Ledger reasons: `game:fish`/`game:fish_win`, `game:slots`/`game:slots_win`, `cookie`.
+
+Settings live in the channel config's `points.games` block and on the dashboard's Points card (Chat games). Switching a game off entirely is its command toggle.
+
+| Game | Stake | Pays | Return | Settings |
+|---|---|---|---|---|
+| `!fish` | `fishCost` (10) | 0–40x the cost / 10 by catch | ~92% | `fishCost`, `fishCooldownSeconds` (30) |
+| `!slots N` | N | 1.5x two alike, 8x three alike, 25x three 💎 | ~92.6% | `slotsMinBet` (1), `slotsMaxBet` (0 = none), `slotsCooldownSeconds` (30) |
+| `!cookie` | — | `cookieMin`–`cookieMax` (5–25) once a day | minted | both 0 turns the bonus off |

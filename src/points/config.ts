@@ -9,7 +9,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { PointsBonusesConfig, PointsConfig, PointsDuelConfig, PointsGambleConfig, PointsGiveConfig, PointsRaffleConfig, StoredPointsConfig, PointsTimeoutPenaltyConfig } from '../types';
+import { PointsBonusesConfig, PointsConfig, PointsDuelConfig, PointsGambleConfig, PointsGamesConfig, PointsGiveConfig, PointsRaffleConfig, StoredPointsConfig, PointsTimeoutPenaltyConfig } from '../types';
 
 export function defaultPointsConfig(): PointsConfig {
   return {
@@ -69,6 +69,17 @@ export function defaultPointsConfig(): PointsConfig {
       maxDurationSeconds: 600,
       winners: 3,
       onlyWhileLive: true
+    },
+    games: {
+      enabled: false,
+      onlyWhileLive: true,
+      fishCost: 10,
+      fishCooldownSeconds: 30,
+      slotsMinBet: 1,
+      slotsMaxBet: 0,
+      slotsCooldownSeconds: 30,
+      cookieMin: 5,
+      cookieMax: 25
     }
   };
 }
@@ -194,6 +205,21 @@ export function internalPointsConfig(raw: unknown): InternalPointsConfig {
     onlyWhileLive: bool(ra.onlyWhileLive, d.raffle.onlyWhileLive)
   };
 
+  const ga = obj(r.games);
+  const games: PointsGamesConfig = {
+    enabled: bool(ga.enabled, d.games.enabled),
+    onlyWhileLive: bool(ga.onlyWhileLive, d.games.onlyWhileLive),
+    fishCost: num(ga.fishCost, d.games.fishCost, 1, 1_000_000, true),
+    fishCooldownSeconds: num(ga.fishCooldownSeconds, d.games.fishCooldownSeconds, 0, 3600, true),
+    slotsMinBet: num(ga.slotsMinBet, d.games.slotsMinBet, 1, 1_000_000_000, true),
+    slotsMaxBet: num(ga.slotsMaxBet, d.games.slotsMaxBet, 0, 1_000_000_000, true),
+    slotsCooldownSeconds: num(ga.slotsCooldownSeconds, d.games.slotsCooldownSeconds, 0, 3600, true),
+    cookieMin: num(ga.cookieMin, d.games.cookieMin, 0, 1_000_000, true),
+    cookieMax: num(ga.cookieMax, d.games.cookieMax, 0, 1_000_000, true)
+  };
+  // A range typed backwards pays the smaller end rather than nothing.
+  if (games.cookieMax < games.cookieMin) games.cookieMax = games.cookieMin;
+
   return {
     enabled: bool(r.enabled, d.enabled),
     currencyName: name,
@@ -210,6 +236,7 @@ export function internalPointsConfig(raw: unknown): InternalPointsConfig {
     gamble,
     duel,
     raffle,
+    games,
     modMaxAdjust: num(r.modMaxAdjust, d.modMaxAdjust, 1, 1_000_000_000, true),
     publicLeaderboard: bool(r.publicLeaderboard, d.publicLeaderboard),
     debugForceLive: r.debugForceLive === true
@@ -294,6 +321,15 @@ function emoteWord(raw: unknown, fallback: string): string {
   return EMOTE_RE.test(t) ? t : fallback;
 }
 
+const GAMES_NUMBERS: Record<string, Rule> = {
+  fishCost: { min: 1, max: 1_000_000, integer: true },
+  fishCooldownSeconds: { min: 0, max: 3600, integer: true },
+  slotsMinBet: { min: 1, max: 1_000_000_000, integer: true },
+  slotsMaxBet: { min: 0, max: 1_000_000_000, integer: true },
+  slotsCooldownSeconds: { min: 0, max: 3600, integer: true },
+  cookieMin: { min: 0, max: 1_000_000, integer: true },
+  cookieMax: { min: 0, max: 1_000_000, integer: true }
+};
 const GAMBLE_NUMBERS: Record<string, Rule> = {
   // Decimals allowed, e.g. 47.5; the roll has 0.01% steps.
   winChancePercent: { min: 0, max: 100, integer: false },
@@ -334,7 +370,8 @@ export function validatePointsPatch(current: unknown, patch: unknown): { next?: 
     timeoutPenalty: { ...(cur.timeoutPenalty ?? {}) },
     gamble: { ...(cur.gamble ?? {}) },
     duel: { ...(cur.duel ?? {}) },
-    raffle: { ...(cur.raffle ?? {}) }
+    raffle: { ...(cur.raffle ?? {}) },
+    games: { ...(cur.games ?? {}) }
   };
 
   for (const key of ['enabled', 'excludeBroadcaster', 'publicLeaderboard'] as const) {
@@ -480,6 +517,23 @@ export function validatePointsPatch(current: unknown, patch: unknown): { next?: 
     }
   }
 
+  if (p.games !== undefined) {
+    if (!p.games || typeof p.games !== 'object' || Array.isArray(p.games)) errors.push('games must be an object');
+    else {
+      const ga = p.games as Record<string, unknown>;
+      for (const [key, rule] of Object.entries(GAMES_NUMBERS)) {
+        if (ga[key] === undefined) continue;
+        const v = checkNumber(`games.${key}`, ga[key], rule, errors);
+        if (v !== undefined) (next.games as Record<string, unknown>)[key] = v;
+      }
+      for (const key of ['enabled', 'onlyWhileLive'] as const) {
+        if (ga[key] === undefined) continue;
+        if (typeof ga[key] !== 'boolean') errors.push(`games.${key} must be true or false`);
+        else next.games![key] = ga[key] as boolean;
+      }
+    }
+  }
+
   // Rules that span fields are checked against the settings as they'd end up. The
   // window is read before clamping: effective values would quietly stretch it to
   // the interval and hide the mistake.
@@ -509,6 +563,13 @@ export function validatePointsPatch(current: unknown, patch: unknown): { next?: 
     errors.push(`raffle.defaultDurationSeconds (${eff.raffle.defaultDurationSeconds}) can't be above raffle.maxDurationSeconds (${eff.raffle.maxDurationSeconds})`);
   }
   if (!Object.keys(next.raffle ?? {}).length) delete next.raffle;
+  if (eff.games.slotsMaxBet > 0 && eff.games.slotsMaxBet < eff.games.slotsMinBet) {
+    errors.push(`games.slotsMaxBet (${eff.games.slotsMaxBet}) can't be below games.slotsMinBet (${eff.games.slotsMinBet})`);
+  }
+  const cookieMin = typeof next.games?.cookieMin === 'number' ? next.games.cookieMin : eff.games.cookieMin;
+  const cookieMax = typeof next.games?.cookieMax === 'number' ? next.games.cookieMax : POINTS_DEFAULTS.games.cookieMax;
+  if (cookieMax < cookieMin) errors.push(`games.cookieMax (${cookieMax}) can't be below games.cookieMin (${cookieMin})`);
+  if (!Object.keys(next.games ?? {}).length) delete next.games;
   return errors.length ? { errors } : { next, errors };
 }
 

@@ -260,6 +260,29 @@ export interface PointsRaffleConfig {
   onlyWhileLive: boolean;
 }
 
+/**
+ * !fish, !slots and !cookie played for points. With this off, or off air when
+ * onlyWhileLive is set, the games still run for fun. Turning a game off entirely
+ * is the command toggle (excludedCommands), not this.
+ */
+export interface PointsGamesConfig {
+  enabled: boolean;
+  /** Only stake points while live. !cookie's bonus isn't a bet and ignores this. */
+  onlyWhileLive: boolean;
+  /** What one !fish cast costs. Catches pay back about 92% of it on average. */
+  fishCost: number;
+  /** Per viewer, between casts. */
+  fishCooldownSeconds: number;
+  slotsMinBet: number;
+  /** 0 means no maximum. */
+  slotsMaxBet: number;
+  /** Per viewer, between bets. */
+  slotsCooldownSeconds: number;
+  /** The daily !cookie bonus is a random amount in this range. Both 0 turns it off. */
+  cookieMin: number;
+  cookieMax: number;
+}
+
 export interface PointsConfig {
   enabled: boolean;
   currencyName: string;
@@ -282,16 +305,18 @@ export interface PointsConfig {
   gamble: PointsGambleConfig;
   duel: PointsDuelConfig;
   raffle: PointsRaffleConfig;
+  games: PointsGamesConfig;
 }
 
 /** The `points` block as stored in a channel config: any subset of the fields. */
-export type StoredPointsConfig = Partial<Omit<PointsConfig, 'bonuses' | 'give' | 'timeoutPenalty' | 'gamble' | 'duel' | 'raffle'>> & {
+export type StoredPointsConfig = Partial<Omit<PointsConfig, 'bonuses' | 'give' | 'timeoutPenalty' | 'gamble' | 'duel' | 'raffle' | 'games'>> & {
   bonuses?: Partial<PointsBonusesConfig>;
   give?: Partial<PointsGiveConfig>;
   timeoutPenalty?: Partial<PointsTimeoutPenaltyConfig>;
   gamble?: Partial<PointsGambleConfig>;
   duel?: Partial<PointsDuelConfig>;
   raffle?: Partial<PointsRaffleConfig>;
+  games?: Partial<PointsGamesConfig>;
   /** Staging only, set by editing the file: treat the channel as live. Never exposed by the API. */
   debugForceLive?: boolean;
 };
