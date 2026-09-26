@@ -32,6 +32,7 @@ interface AutoTranslateSettings {
   minLength?: number;
   rateLimitPerMinute?: number;
   logOnly?: boolean;
+  languages?: string[];
 }
 
 interface KppSettings {
@@ -267,6 +268,32 @@ const COMMAND_META: Record<string, CommandMeta> = {
   weather: { label: "Weather", trigger: "!weather", description: "Current weather for a location." },
 };
 
+// Offered under the auto-translate toggle. Codes are what Google reports as the
+// detected source, so they have to be plain ISO-639 — the bot compares them
+// literally. Kept to the languages this bot's channels actually see.
+const LANGUAGE_CHOICES: Array<{ code: string; label: string }> = [
+  { code: "de", label: "German" },
+  { code: "es", label: "Spanish" },
+  { code: "fr", label: "French" },
+  { code: "it", label: "Italian" },
+  { code: "nl", label: "Dutch" },
+  { code: "pt", label: "Portuguese" },
+  { code: "tr", label: "Turkish" },
+  { code: "ru", label: "Russian" },
+  { code: "ar", label: "Arabic" },
+  { code: "zh", label: "Chinese" },
+  { code: "ja", label: "Japanese" },
+  { code: "ko", label: "Korean" },
+  { code: "th", label: "Thai" },
+  { code: "vi", label: "Vietnamese" },
+  { code: "ms", label: "Malay" },
+  { code: "id", label: "Indonesian" },
+];
+
+function languageLabel(code: string): string {
+  return LANGUAGE_CHOICES.find((l) => l.code === code)?.label ?? code.toUpperCase();
+}
+
 function meta(name: string): CommandMeta {
   return COMMAND_META[name] ?? { label: name, trigger: `!${name.toLowerCase()}`, description: "No description available." };
 }
@@ -373,6 +400,9 @@ export default function BotManager({
   // Command toggles are staged locally so a channel can flip several at once
   // and apply them in one restart, rather than bouncing the bot per toggle.
   const [excluded, setExcluded] = useState<Set<string>>(new Set(initialBot?.excludedCommands ?? []));
+  // Auto-translate's language list is edited as a draft: picking three languages
+  // should cost one save, and one bot restart, not three.
+  const [langDraft, setLangDraft] = useState<string[]>(initialBot?.autoTranslate?.languages ?? []);
   // Location is a form rather than a toggle, so it stages locally until saved.
   const [location, setLocation] = useState<ChannelLocation>(
     initialBot?.location ?? { home: {}, current: {} },
@@ -419,6 +449,20 @@ export default function BotManager({
   const listedCommands = useMemo(
     () => availableCommands.filter((c) => !SETTINGS_MANAGED.has(c) || (bot?.excludedCommands ?? []).includes(c)),
     [availableCommands, SETTINGS_MANAGED, bot],
+  );
+
+  const savedLangKey = useMemo(
+    () => (bot?.autoTranslate?.languages ?? []).map((l) => l.toLowerCase()).sort().join(","),
+    [bot],
+  );
+  // Adopt the server's list when it actually changes — a save, or a switch to
+  // another channel. The status poll re-renders with an equal list, which no-ops.
+  useEffect(() => {
+    setLangDraft(savedLangKey ? savedLangKey.split(",") : []);
+  }, [savedLangKey]);
+  const langDirty = useMemo(
+    () => [...langDraft].sort().join(",") !== savedLangKey,
+    [langDraft, savedLangKey],
   );
 
   const commandsDirty = useMemo(() => {
@@ -891,6 +935,17 @@ export default function BotManager({
       `Auto-translate ${next ? "enabled" : "disabled"}.`,
     );
   }, [bot, saveSettings]);
+
+  const saveLanguages = useCallback(() => {
+    const next = [...langDraft].sort();
+    void saveSettings(
+      "autoTranslate",
+      { autoTranslate: { languages: next } },
+      next.length === 0
+        ? "Auto-translate set to any language."
+        : `Auto-translate limited to ${next.map(languageLabel).join(", ")}.`,
+    );
+  }, [langDraft, saveSettings]);
 
   const saveManagers = useCallback(
     async (next: string[], message: string) => {
@@ -1996,6 +2051,75 @@ export default function BotManager({
                 <p className="text-xs text-amber-500">
                   Dry-run mode is on in the config — translations are logged, not posted to chat.
                 </p>
+              ) : null}
+              {bot.autoTranslate?.enabled ? (
+                <div className="rounded-lg border border-neutral-800 bg-neutral-950/60 p-3">
+                  <div className="flex items-start justify-between gap-4">
+                    <div>
+                      <div className="text-sm font-medium text-neutral-200">Languages</div>
+                      <p className="mt-1 text-xs leading-relaxed text-neutral-500">
+                        {langDraft.length === 0
+                          ? "Any language but English. Only messages carrying an accent, an umlaut or a non-Latin script get picked up — plain-ASCII German or Spanish can't be told apart from English, so it stays silent."
+                          : `Only ${[...langDraft].sort().map(languageLabel).join(", ")} ${langDraft.length === 1 ? "is" : "are"} translated. Naming a language also catches it typed without accents (“Wie geht es dir?”), from 12 characters and 3 words up.`}
+                      </p>
+                    </div>
+                    {langDirty ? (
+                      <div className="flex shrink-0 gap-2">
+                        <Button
+                          onClick={() => setLangDraft(savedLangKey ? savedLangKey.split(",") : [])}
+                          disabled={!!busy}
+                        >
+                          Cancel
+                        </Button>
+                        <Button
+                          variant="primary"
+                          onClick={saveLanguages}
+                          busy={busy === "autoTranslate"}
+                          disabled={!!busy}
+                        >
+                          Save
+                        </Button>
+                      </div>
+                    ) : null}
+                  </div>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setLangDraft([])}
+                      className={`rounded-full border px-2.5 py-1 text-xs transition ${
+                        langDraft.length === 0
+                          ? "border-[#53FC18] bg-[#53FC18]/10 text-[#53FC18]"
+                          : "border-neutral-700 bg-neutral-900 text-neutral-400 hover:border-neutral-600"
+                      }`}
+                    >
+                      Any language
+                    </button>
+                    {LANGUAGE_CHOICES.map(({ code, label }) => {
+                      const on = langDraft.includes(code);
+                      return (
+                        <button
+                          key={code}
+                          type="button"
+                          onClick={() =>
+                            setLangDraft((prev) =>
+                              prev.includes(code) ? prev.filter((c) => c !== code) : [...prev, code],
+                            )
+                          }
+                          className={`rounded-full border px-2.5 py-1 text-xs transition ${
+                            on
+                              ? "border-[#53FC18] bg-[#53FC18]/10 text-[#53FC18]"
+                              : "border-neutral-700 bg-neutral-900 text-neutral-400 hover:border-neutral-600"
+                          }`}
+                        >
+                          {label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <p className="mt-2.5 text-xs text-neutral-600">
+                    Saving restarts the bot to apply — a couple of seconds off chat.
+                  </p>
+                </div>
               ) : null}
             </div>
           </Card>

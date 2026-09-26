@@ -39,6 +39,12 @@ export interface AutoTranslateSettings {
   minLength?: number;
   rateLimitPerMinute?: number;
   logOnly?: boolean;
+  /**
+   * Source languages to translate, as ISO-639 codes. Empty or absent means every
+   * language but English. A non-empty list also lets the bot pick up plain-ASCII
+   * text (German without umlauts), which it otherwise cannot tell from English.
+   */
+  languages?: string[];
 }
 
 export interface KppSettings {
