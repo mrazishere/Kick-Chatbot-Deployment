@@ -15,7 +15,7 @@ import { clipSessionStatus, installClipToken } from './channels/clip-session';
 import { resolveBotIdentity } from './bot-identity';
 import { SYSTEM_BOTS } from './system-bots';
 import { commandWordCollides, effectiveCommand, effectivePointsConfig, readSubscriptionStatus, validatePointsPatch } from './points/config';
-import { adjustPoints, backupPoints, getPointsUserDetail, pointsLeaderboard, pointsSummary, searchPointsUsers } from './points/store';
+import { adjustPoints, backupPoints, getPointsUserDetail, pointsLeaderboard, pointsSummary, resetAllPoints, searchPointsUsers } from './points/store';
 
 /* eslint-disable @typescript-eslint/no-var-requires, @typescript-eslint/no-explicit-any */
 const puppeteer = require('puppeteer-extra');
@@ -2647,6 +2647,59 @@ app.post('/internal/bot/:channel/points/adjust', internalGuard(true), (req, res)
       `by ${actorName} (${role})${result.applied ? '' : ' — repeat of an applied request, nothing changed'}`
     );
     return res.json({ ok: true, applied: result.applied, user: result.user });
+  } catch (e) {
+    return pointsUnavailable(res, channel, e);
+  }
+});
+
+/**
+ * Zero every balance in the channel from the dashboard. Backs the database up to
+ * backups/points-before-reset-<time>.sqlite first and refuses to reset if that fails,
+ * so a reset can always be undone by restoring the file.
+ *
+ * Body: { reason (3–200), actor: {username, role}, requestId (uuid) }
+ * `requestId` makes a double-submit apply once (`applied: false` on repeats).
+ */
+app.post('/internal/bot/:channel/points/reset', internalGuard(true), async (req, res) => {
+  const channelRaw = req.params['channel'];
+  const channel = (typeof channelRaw === 'string' ? channelRaw : '').toLowerCase();
+  if (!validateChannelName(channel)) return res.status(400).json({ error: 'Invalid channel name' });
+  const config = readChannelConfig(channel);
+  if (!config) return res.status(404).json({ error: 'Not enrolled' });
+
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const actor = body['actor'] as { username?: unknown; role?: unknown } | undefined;
+  const actorName = typeof actor?.username === 'string' ? actor.username.trim() : '';
+  const role = actor?.role;
+  if (!/^[A-Za-z0-9_]{1,25}$/.test(actorName) || (role !== 'owner' && role !== 'admin')) {
+    return res.status(400).json({ error: 'actor must be { username, role: owner or admin }' });
+  }
+  const requestId = body['requestId'];
+  if (typeof requestId !== 'string' || !POINTS_REQUEST_ID_RE.test(requestId)) {
+    return res.status(400).json({ error: 'requestId must be a UUID' });
+  }
+  const reason = typeof body['reason'] === 'string' ? body['reason'].trim() : '';
+  if (reason.length < 3 || reason.length > 200) return res.status(400).json({ error: 'reason must be 3–200 characters' });
+
+  let backup: string | null;
+  try {
+    const stamp = new Date().toISOString().replace(/[-:]/g, '').replace('T', '-').slice(0, 15);
+    backup = await backupPoints(channel, `points-before-reset-${stamp}`);
+  } catch (e) {
+    console.error(`[INTERNAL] ${channel} points reset refused, backup failed:`, e instanceof Error ? e.message : String(e));
+    return res.status(503).json({ error: 'Could not back up the points database, so nothing was reset' });
+  }
+  if (!backup) return res.status(404).json({ error: 'This channel has no points yet' });
+
+  try {
+    const result = resetAllPoints(channel, { reason, actor: `dashboard:${actorName.toLowerCase()}:${role}`, requestId });
+    if ('error' in result) return res.status(result.status).json({ error: result.error });
+    console.log(
+      `[INTERNAL] ${channel} points RESET by ${actorName} (${role}): ${result.total} from ${result.users} viewers, ` +
+      `${result.duelsCancelled} pending duels cancelled, backup ${path.relative(KICK_BASE_PATH, backup)}` +
+      `${result.applied ? '' : ' — repeat of an applied request, nothing changed'} — ${reason}`
+    );
+    return res.json({ ok: true, ...result, backup: path.basename(backup) });
   } catch (e) {
     return pointsUnavailable(res, channel, e);
   }

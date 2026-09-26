@@ -20,7 +20,7 @@ import { normalizeChat, presenceVerdict } from '../points/presence-rules';
 import {
   acceptDuel, adjustPoints, backupPoints, createDuel, creditTx, debitTx, duelStats, gambleStats, getUser, grantTick, invariantViolations,
   openRaffle, raffleEntries, gamble,
-  outgoingDuel, refundDuel,
+  ensureUserTx, outgoingDuel, refundDuel, resetAllPoints,
   pointsLeaderboard, pointsSummary, searchPointsUsers, getPointsUserDetail, transfer
 } from '../points/store';
 import { WebhookPoller } from '../channels/webhook-poller';
@@ -1056,6 +1056,32 @@ async function main(): Promise<void> {
     check('backup written', !!bk && fs.existsSync(bk));
     check('summary for a channel without a database', pointsSummary('nodb').users === 0 && !fs.existsSync(path.join(root, 'points', 'nodb')));
     check('invariant holds (dashboard)', invariantViolations(openPointsDb(ch, { create: true })!).length === 0);
+  }
+
+  // Dashboard reset
+  {
+    const ch = 'resetch';
+    const db = openPointsDb(ch, { create: true })!;
+    runWrite(db, () => {
+      creditTx(db, { userId: 1, username: 'alice', amount: 100, reason: 'mod_add', now: 1 });
+      creditTx(db, { userId: 2, username: 'bob', amount: 40, reason: 'mod_add', now: 1 });
+      ensureUserTx(db, 3, 'carol', 1);
+    });
+    const duel = createDuel(db, { challengerId: 1, opponentId: 2, amount: 30, expiresAt: Date.now() + MIN, actor: 'alice', now: 2 });
+    const r1 = resetAllPoints(ch, { reason: 'new season', actor: 'dashboard:owner:owner', requestId: 'reset-1' });
+    const r2 = resetAllPoints(ch, { reason: 'new season', actor: 'dashboard:owner:owner', requestId: 'reset-1' });
+    check('reset zeroes every balance', 'applied' in r1 && r1.applied && r1.users === 2 && r1.total === 110
+      && balance(ch, 1) === 0 && balance(ch, 2) === 0, r1);
+    check('reset applies once per requestId', 'applied' in r2 && !r2.applied, r2);
+    check('reset cancels pending duels without refund', duel.ok && 'duelsCancelled' in r1 && r1.duelsCancelled === 1
+      && !outgoingDuel(db, 1) && refundDuel(db, { id: duel.ok ? duel.duel.id : '', status: 'expired', actor: 'sweep', now: 3 }) === null
+      && balance(ch, 1) === 0);
+    check('reset keeps watch time and lifetime earned', getUser(db, 1)!.lifetime_earned === 100);
+    check('reset short reason is 400', (resetAllPoints(ch, { reason: 'x', actor: 'd', requestId: 'reset-2' }) as { status: number }).status === 400);
+    check('reset without a database is 404', (resetAllPoints('nodb', { reason: 'abc', actor: 'd', requestId: 'reset-3' }) as { status: number }).status === 404);
+    const named = await backupPoints(ch, 'points-before-reset-test');
+    check('named backup written', !!named && path.basename(named) === 'points-before-reset-test.sqlite' && fs.existsSync(named));
+    check('invariant holds (reset)', invariantViolations(db).length === 0);
   }
 
   // Review fixes

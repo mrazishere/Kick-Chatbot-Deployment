@@ -803,6 +803,45 @@ export function adjustPoints(
   }
 }
 
+/**
+ * Zero every balance in the channel from the dashboard: one ledger row per viewer
+ * who had anything, so each history shows where their points went. Pending duels
+ * are cancelled without a refund — their held stakes belong to the old balances,
+ * and refunding them later would hand points back after the reset. Watch time,
+ * lifetime earned and game history are kept. The caller backs up the database first.
+ */
+export function resetAllPoints(
+  channel: string,
+  req: { reason: string; actor: string; requestId: string }
+): { applied: boolean; users: number; total: number; duelsCancelled: number } | { error: string; status: 400 | 404 } {
+  const reason = String(req.reason ?? '').trim();
+  if (reason.length < 3 || reason.length > 200) return { error: 'reason must be 3–200 characters', status: 400 };
+  const { requestId } = req;
+  if (typeof requestId !== 'string' || !requestId.trim() || requestId.length > 100) return { error: 'requestId is required', status: 400 };
+
+  const db = openPointsDb(channel, { create: false });
+  if (!db) return { error: 'This channel has no points yet', status: 404 };
+  try {
+    const now = Date.now();
+    const key = `dash-reset:${requestId.trim()}`;
+    const res = applyOnce(db, key, now, () => {
+      const duels = db.prepare("UPDATE duels SET status = 'cancelled', resolved_at = ? WHERE status = 'pending'").run(now);
+      const holders = db.prepare('SELECT user_id, balance FROM users WHERE balance > 0').all() as Array<{ user_id: number; balance: number }>;
+      let total = 0;
+      for (const h of holders) {
+        // No ref: a ref shared by every row would make the log name a "counterparty" on each.
+        setTx(db, { userId: h.user_id, value: 0, reason: 'dash_reset', actor: req.actor, note: reason, now });
+        total += h.balance;
+      }
+      return { users: holders.length, total, duelsCancelled: duels.changes };
+    });
+    return { applied: res.applied, ...(res.result ?? { users: 0, total: 0, duelsCancelled: 0 }) };
+  } catch (err) {
+    reportDbError(channel, err);
+    throw err;
+  }
+}
+
 /** Public-safe leaderboards: usernames and values only, excluded accounts left out. */
 export function pointsLeaderboard(
   channel: string,
@@ -828,13 +867,14 @@ const BACKUPS_KEPT = 7;
  * backup, which is safe while the bot writes. Returns the file, or null when
  * the channel has no database.
  */
-export async function backupPoints(channel: string): Promise<string | null> {
+export async function backupPoints(channel: string, name?: string): Promise<string | null> {
   const db = openPointsDb(channel, { create: false });
   if (!db) return null;
   const dir = path.join(pointsDir(channel), 'backups');
   fs.mkdirSync(dir, { recursive: true });
   const day = new Date().toISOString().slice(0, 10).replace(/-/g, '');
-  const file = path.join(dir, `points-${day}.sqlite`);
+  // A named backup (the one taken before a reset) sits beside the dailies and is never pruned.
+  const file = path.join(dir, name ? `${name}.sqlite` : `points-${day}.sqlite`);
   const tmp = `${file}.${process.pid}.tmp`;
   try {
     await db.backup(tmp);
