@@ -261,26 +261,27 @@ export interface PointsRaffleConfig {
 }
 
 /**
- * !fish, !slots and !cookie played for points. With this off, or off air when
- * onlyWhileLive is set, the games still run for fun. Turning a game off entirely
- * is the command toggle (excludedCommands), not this.
+ * `$<cmd> fish`: supibot's fishing game played for the channel currency. Bait is
+ * bought and selling the catch pays out in it. Defaults are supibot's numbers.
+ * Switching the game off entirely is the command toggle (excludedCommands).
  */
 export interface PointsGamesConfig {
+  /** Fishing exists in this channel at all. */
   enabled: boolean;
-  /** Only stake points while live. !cookie's bonus isn't a bet and ignores this. */
+  /** Casting and laying traps only while live. Selling, show, stats and top work any time. */
   onlyWhileLive: boolean;
-  /** What one !fish cast costs. Catches pay back about 92% of it on average. */
-  fishCost: number;
-  /** Per viewer, between casts. */
-  fishCooldownSeconds: number;
-  slotsMinBet: number;
-  /** 0 means no maximum. */
-  slotsMaxBet: number;
-  /** Per viewer, between bets. */
-  slotsCooldownSeconds: number;
-  /** The daily !cookie bonus is a random amount in this range. Both 0 turns it off. */
-  cookieMin: number;
-  cookieMax: number;
+  /** 1 in this many casts without bait lands a fish (supibot: 20). Bait lowers it. */
+  catchOdds: number;
+  /** The wait after a catch (supibot: 30). A miss waits 30–90 seconds. */
+  catchCooldownMinutes: number;
+  /** How long traps take to fill (supibot: 60). */
+  trapMinutes: number;
+  /** Sell prices as a percentage of supibot's (fish 50, junk 1–20). */
+  sellPricePercent: number;
+  /** Bait prices as a percentage of supibot's (worm 2, fly 5, cricket 8). */
+  baitPricePercent: number;
+  /** A short AI story on 1 in 3 catches. */
+  stories: boolean;
 }
 
 export interface PointsConfig {

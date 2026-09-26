@@ -175,7 +175,20 @@ const SCHEMA_V4 = `
 CREATE INDEX ledger_ref ON ledger(ref) WHERE ref IS NOT NULL;
 `;
 
-const SCHEMA_VERSION = 4;
+/**
+ * Fishing ($<cmd> fish): each viewer's catch, trap, cooldown and lifetime stats as
+ * one JSON document, shaped like supibot's fishData. It lives here, not in the
+ * community database, so selling a catch and paying for it are one transaction.
+ */
+const SCHEMA_V5 = `
+CREATE TABLE fish (
+  user_id INTEGER PRIMARY KEY REFERENCES users(user_id),
+  data TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+`;
+
+const SCHEMA_VERSION = 5;
 
 export function migrate(db: PointsDb): void {
   if ((db.pragma('user_version', { simple: true }) as number) >= SCHEMA_VERSION) return;
@@ -188,6 +201,7 @@ export function migrate(db: PointsDb): void {
     if (version < 2) db.exec(SCHEMA_V2);
     if (version < 3) db.exec(SCHEMA_V3);
     if (version < 4) db.exec(SCHEMA_V4);
+    if (version < 5) db.exec(SCHEMA_V5);
     if (version < SCHEMA_VERSION) db.pragma(`user_version = ${SCHEMA_VERSION}`);
   }).immediate();
 }

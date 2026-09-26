@@ -37,9 +37,9 @@ Each file exports a `CommandFn` registered in the channel config and dispatched 
 | Followage | `!followage [@user]` · `!fa` · `!subage` · `!accountage` | All users (1/5s) | All channels |
 | Chat summary | `!chatsummary` · `!csum` · `!catchup` | All users (1/min per channel) | All channels |
 | Mini games | `!8ball` · `!roll [20\|5-10\|2d6]` · `!coinflip` · `!pick a b c` · `!percent` | All users (1/5s) | All channels |
-| Fishing | `$<currency> fish` | All users (1/30s) | Channels with points and Chat games on (Points settings) |
-| Slots | `$<currency> slots amount` | All users | Channels with points and Chat games on |
-| Fortune cookie | `$<currency> cookie` | All users (1/day) | Channels with points and Chat games on |
+| Fishing | `$<currency> fish` · `sell` · `show` · `stats` · `top` · `trap` | All users | Channels with points and Fishing on (Points settings) |
+| Slots | `!slots words…` · `!slots pattern:7tv` · `!slots winners` | All users (1/5s) | All channels |
+| Fortune cookie | `!cookie` · `donate @user` · `stats` · `top` | All users (1/10s) | All channels |
 
 ---
 
@@ -507,9 +507,7 @@ $don cancel                   → withdraw your own challenge
 $don raffle 5000 120          → open a raffle: 5000 split between winners, 120s (Mods+)
 $don sraffle 5000 120         → same, but one winner takes it all (Mods+)
 $don join                     → enter the open raffle, free, one entry each
-$don fish                     → a cast (Chat games on; see Games)
-$don slots 100                → bet on the slots (Chat games on)
-$don cookie                   → today's fortune cookie and bonus (Chat games on)
+$don fish [bait]              → go fishing; also sell, show, stats, top, trap (Fishing on; see Games)
 $don raffle cancel            → close it without drawing (Mods+)
 $don add|remove|set @user 500 → adjust a balance (broadcaster and bot owner only)
 ```
@@ -692,14 +690,48 @@ Stored per channel in `data/community/<channel>.sqlite` (see `src/community/stor
 
 ## Games — `minigames.ts`, `fish.ts`, `slots.ts`, `cookie.ts`
 
-Fish, slots and cookie are points games. They exist only where the channel has points on **and** `points.games.enabled` set (Chat games on the dashboard's Points card); anywhere else they aren't available. `src/community/stakes.ts` checks this, and for bets also that the stream is live when `games.onlyWhileLive` is set: offline, bets stay silent like `$don gamble`, while the cookie (not a bet) still works. A round is one transaction keyed on the Kick message id, so a replayed message plays once and stays silent. Ledger reasons: `game:fish`/`game:fish_win`, `game:slots`/`game:slots_win`, `cookie`.
+Fishing, slots and the cookie are ports of [supibot](https://github.com/supinic/supibot)'s `$fish`, `$slots` and `$cookie`: the same rules, numbers and messages, in our own code (supibot is AGPL-3.0, so its code and its fortune list aren't copied). Supibot's web leaderboards are chat replies here, and its whisper and Discord options have no Kick equivalent.
 
-**Format rule:** anything that uses the loyalty points is a currency subcommand, `$<currency> <subcommand>`: `$don fish`, `$don slots 100`, `$don cookie`. Where the games are on, `!fish`, `!slots` and `!cookie` only point to the `$` form (once a minute per viewer); elsewhere they do nothing. `!8ball`, `!roll`, `!coinflip`, `!pick` and `!percent` don't touch points and work on every channel.
+**Format rule:** anything that uses the loyalty points is a currency subcommand, `$<currency> <subcommand>`. Fishing pays in the currency, so it's `$don fish` and exists only where the channel has points on **and** `points.games.enabled` (Fishing on the dashboard's Points card); there `!fish` only points to the `$` form. The cookie and slots don't touch points, so they're `!cookie` and `!slots` on every channel.
 
-Settings live in the channel config's `points.games` block and on the dashboard's Points card (Chat games). Switching a game off entirely is its command toggle.
+### `$don fish` — fishing (`fish.ts`, `community/fishing.ts`)
 
-| Game | Stake | Pays | Return | Settings |
-|---|---|---|---|---|
-| `$don fish` | `fishCost` (10) | 0–40x the cost / 10 by catch | ~92% | `fishCost`, `fishCooldownSeconds` (30) |
-| `$don slots N` | N | 1.5x two alike, 8x three alike, 25x three 💎 | ~92.6% | `slotsMinBet` (1), `slotsMaxBet` (0 = none), `slotsCooldownSeconds` (30) |
-| `$don cookie` | — | `cookieMin`–`cookieMax` (5–25) once a day | minted | both 0 turns the bonus off |
+```
+$don fish                     → cast: 1 in 20 lands a fish, else 1 in 4 snags junk
+$don fish worm|fly|cricket    → buy bait and use it on the spot: 1/16, 1/14, 1/12 (2, 5, 8 $DON)
+$don fish skipStory:true      → no AI story if you catch something
+$don fish sell 🐠 [n]         → sell a catch (fish 50, junk 1–20)
+$don fish sell all fish|junk  → sell a whole type; "duplicate" keeps one of each
+$don fish show [user] [fish|junk|emoji]  → the collection and purse (also count, display, collection)
+$don fish stats [user|global] → attempts, catches, traps, bait, sales, streaks
+$don fish top [type]          → top 10: fish, coins, junk, lucky, unlucky, traps, attempts, total-…, or an emoji
+$don fish trap [cancel|reset] → lay traps for an hour (also net, trawl); no casting meanwhile
+$don fish buy                 → nothing yet, as in supibot
+```
+
+- A miss waits 30–90 seconds, a catch `catchCooldownMinutes` (30). Fish have a size (1–100 cm) and your record is kept. On 1 catch in 3, Claude Haiku writes a short story (`stories`).
+- Catches are kept until sold. The purse is the points balance: bait is a `game:fish_bait` debit, selling a `game:fish_sell` credit. Each viewer's catch lives in the channel's points database (`fish` table, schema v5), so a sale and its payout are one transaction, keyed on the Kick message id so a replayed message acts once.
+- Traps roll once a minute at 75–90% efficiency. A fish costs the rest of a catch cooldown, so a one-hour trap lands at most one fish, plus junk.
+- Casting and laying traps follow `onlyWhileLive` and stay silent offline, like `$don gamble`. Selling, show, stats and top work any time.
+- Settings (`points.games`): `enabled`, `onlyWhileLive`, `catchOdds` (20; bait odds scale with it), `catchCooldownMinutes` (30), `trapMinutes` (60, at least 31), `sellPricePercent` and `baitPricePercent` (100), `stories` (on).
+
+### `!cookie` — fortune cookie (`cookie.ts`)
+
+```
+!cookie                → today's fortune (also !cookie eat); resets at midnight UTC
+!cookie donate @user   → give your daily cookie away (also gift, give)
+!cookie stats [@user]  → eaten, received, gifted, and a karma verdict from scrooge to saint
+!cookie top            → the channel's biggest cookie eaters
+```
+
+A channel subscriber gets a second, golden cookie a day, which can't be gifted. You can only gift to someone who has eaten their own cookie and has no gift waiting, and a gift must be eaten the same UTC day. Stored in `data/community/<channel>.sqlite`; the subscriber flag for a gift's receiver comes from the last-seen table.
+
+### `!slots` (`slots.ts`)
+
+```
+!slots a b c ...             → roll three from your words or emotes
+!slots pattern:7tv           → the channel's 7TV emotes (also kick = its own Kick emotes, gachi, numbers N)
+!slots winners               → the flushes that beat the longest odds (also leader, leaders, leaderboard)
+```
+
+All three alike is a flush, reported with the odds beaten, `(1/n)²`, and logged for the winners board. No stakes. Emotes come from Kick's channel emote endpoint and 7TV, cached for an hour (`community/emotes.ts`).

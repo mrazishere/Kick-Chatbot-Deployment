@@ -73,13 +73,12 @@ export function defaultPointsConfig(): PointsConfig {
     games: {
       enabled: false,
       onlyWhileLive: true,
-      fishCost: 10,
-      fishCooldownSeconds: 30,
-      slotsMinBet: 1,
-      slotsMaxBet: 0,
-      slotsCooldownSeconds: 30,
-      cookieMin: 5,
-      cookieMax: 25
+      catchOdds: 20,
+      catchCooldownMinutes: 30,
+      trapMinutes: 60,
+      sellPricePercent: 100,
+      baitPricePercent: 100,
+      stories: true
     }
   };
 }
@@ -209,16 +208,13 @@ export function internalPointsConfig(raw: unknown): InternalPointsConfig {
   const games: PointsGamesConfig = {
     enabled: bool(ga.enabled, d.games.enabled),
     onlyWhileLive: bool(ga.onlyWhileLive, d.games.onlyWhileLive),
-    fishCost: num(ga.fishCost, d.games.fishCost, 1, 1_000_000, true),
-    fishCooldownSeconds: num(ga.fishCooldownSeconds, d.games.fishCooldownSeconds, 0, 3600, true),
-    slotsMinBet: num(ga.slotsMinBet, d.games.slotsMinBet, 1, 1_000_000_000, true),
-    slotsMaxBet: num(ga.slotsMaxBet, d.games.slotsMaxBet, 0, 1_000_000_000, true),
-    slotsCooldownSeconds: num(ga.slotsCooldownSeconds, d.games.slotsCooldownSeconds, 0, 3600, true),
-    cookieMin: num(ga.cookieMin, d.games.cookieMin, 0, 1_000_000, true),
-    cookieMax: num(ga.cookieMax, d.games.cookieMax, 0, 1_000_000, true)
+    catchOdds: num(ga.catchOdds, d.games.catchOdds, 1, 1000, true),
+    catchCooldownMinutes: num(ga.catchCooldownMinutes, d.games.catchCooldownMinutes, 1, 1440, true),
+    trapMinutes: num(ga.trapMinutes, d.games.trapMinutes, 31, 1440, true),
+    sellPricePercent: num(ga.sellPricePercent, d.games.sellPricePercent, 0, 1000, true),
+    baitPricePercent: num(ga.baitPricePercent, d.games.baitPricePercent, 0, 1000, true),
+    stories: bool(ga.stories, d.games.stories)
   };
-  // A range typed backwards pays the smaller end rather than nothing.
-  if (games.cookieMax < games.cookieMin) games.cookieMax = games.cookieMin;
 
   return {
     enabled: bool(r.enabled, d.enabled),
@@ -322,13 +318,12 @@ function emoteWord(raw: unknown, fallback: string): string {
 }
 
 const GAMES_NUMBERS: Record<string, Rule> = {
-  fishCost: { min: 1, max: 1_000_000, integer: true },
-  fishCooldownSeconds: { min: 0, max: 3600, integer: true },
-  slotsMinBet: { min: 1, max: 1_000_000_000, integer: true },
-  slotsMaxBet: { min: 0, max: 1_000_000_000, integer: true },
-  slotsCooldownSeconds: { min: 0, max: 3600, integer: true },
-  cookieMin: { min: 0, max: 1_000_000, integer: true },
-  cookieMax: { min: 0, max: 1_000_000, integer: true }
+  catchOdds: { min: 1, max: 1000, integer: true },
+  catchCooldownMinutes: { min: 1, max: 1440, integer: true },
+  // Traps skip 30 rolls after each fish, so anything shorter could never catch one.
+  trapMinutes: { min: 31, max: 1440, integer: true },
+  sellPricePercent: { min: 0, max: 1000, integer: true },
+  baitPricePercent: { min: 0, max: 1000, integer: true }
 };
 const GAMBLE_NUMBERS: Record<string, Rule> = {
   // Decimals allowed, e.g. 47.5; the roll has 0.01% steps.
@@ -526,7 +521,7 @@ export function validatePointsPatch(current: unknown, patch: unknown): { next?: 
         const v = checkNumber(`games.${key}`, ga[key], rule, errors);
         if (v !== undefined) (next.games as Record<string, unknown>)[key] = v;
       }
-      for (const key of ['enabled', 'onlyWhileLive'] as const) {
+      for (const key of ['enabled', 'onlyWhileLive', 'stories'] as const) {
         if (ga[key] === undefined) continue;
         if (typeof ga[key] !== 'boolean') errors.push(`games.${key} must be true or false`);
         else next.games![key] = ga[key] as boolean;
@@ -563,12 +558,6 @@ export function validatePointsPatch(current: unknown, patch: unknown): { next?: 
     errors.push(`raffle.defaultDurationSeconds (${eff.raffle.defaultDurationSeconds}) can't be above raffle.maxDurationSeconds (${eff.raffle.maxDurationSeconds})`);
   }
   if (!Object.keys(next.raffle ?? {}).length) delete next.raffle;
-  if (eff.games.slotsMaxBet > 0 && eff.games.slotsMaxBet < eff.games.slotsMinBet) {
-    errors.push(`games.slotsMaxBet (${eff.games.slotsMaxBet}) can't be below games.slotsMinBet (${eff.games.slotsMinBet})`);
-  }
-  const cookieMin = typeof next.games?.cookieMin === 'number' ? next.games.cookieMin : eff.games.cookieMin;
-  const cookieMax = typeof next.games?.cookieMax === 'number' ? next.games.cookieMax : POINTS_DEFAULTS.games.cookieMax;
-  if (cookieMax < cookieMin) errors.push(`games.cookieMax (${cookieMax}) can't be below games.cookieMin (${cookieMin})`);
   if (!Object.keys(next.games ?? {}).length) delete next.games;
   return errors.length ? { errors } : { next, errors };
 }

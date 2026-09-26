@@ -1,7 +1,7 @@
 /**
  * Community features' storage: one SQLite file per channel at
  * data/community/<channel>.sqlite, holding when each chatter was first and last
- * seen, pending !remind reminders, and who has opened today's !cookie.
+ * seen, pending !remind reminders, each viewer's !cookie data, and !slots flushes.
  *
  * Only the channel's own bot writes it. It is separate from the points database
  * because every channel has these features, points or not. better-sqlite3 is
@@ -46,9 +46,19 @@ CREATE TABLE IF NOT EXISTS reminders (
 CREATE INDEX IF NOT EXISTS reminders_on_chat ON reminders(to_lc) WHERE done_at IS NULL AND due_at IS NULL;
 CREATE INDEX IF NOT EXISTS reminders_due ON reminders(due_at) WHERE done_at IS NULL AND due_at IS NOT NULL;
 CREATE INDEX IF NOT EXISTS reminders_from ON reminders(from_lc) WHERE done_at IS NULL;
-CREATE TABLE IF NOT EXISTS cookies (
+DROP TABLE IF EXISTS cookies;
+CREATE TABLE IF NOT EXISTS cookie_data (
   username_lc TEXT PRIMARY KEY,
-  day TEXT NOT NULL
+  username TEXT NOT NULL,
+  data TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS slots_winners (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  username TEXT NOT NULL,
+  source TEXT NOT NULL,
+  result TEXT NOT NULL,
+  odds REAL NOT NULL,
+  at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS meta (
   key TEXT PRIMARY KEY,
@@ -75,6 +85,9 @@ export function openCommunityDb(channel: string): CommunityDb | null {
     db.pragma('synchronous = NORMAL');
     db.pragma('busy_timeout = 2000');
     db.exec(SCHEMA);
+    // Added after the table first shipped: whether the chatter showed a subscriber badge last time.
+    const seenCols = db.prepare('PRAGMA table_info(seen)').all() as Array<{ name: string }>;
+    if (!seenCols.some(c => c.name === 'is_sub')) db.exec('ALTER TABLE seen ADD COLUMN is_sub INTEGER NOT NULL DEFAULT 0');
     handles.set(ch, db);
     failedAt.delete(ch);
     startBackfill(ch, db);
@@ -93,18 +106,19 @@ export interface SeenRow {
   username: string;
   first_at: number;
   last_at: number;
+  is_sub: number;
 }
 
-export function noteSeen(db: CommunityDb, username: string, at: number): void {
+export function noteSeen(db: CommunityDb, username: string, at: number, isSub = false): void {
   db.prepare(
-    'INSERT INTO seen (username_lc, username, first_at, last_at) VALUES (?, ?, ?, ?) ' +
-    'ON CONFLICT(username_lc) DO UPDATE SET username = excluded.username, ' +
+    'INSERT INTO seen (username_lc, username, first_at, last_at, is_sub) VALUES (?, ?, ?, ?, ?) ' +
+    'ON CONFLICT(username_lc) DO UPDATE SET username = excluded.username, is_sub = excluded.is_sub, ' +
     'first_at = MIN(seen.first_at, excluded.first_at), last_at = MAX(seen.last_at, excluded.last_at)'
-  ).run(username.toLowerCase(), username, at, at);
+  ).run(username.toLowerCase(), username, at, at, isSub ? 1 : 0);
 }
 
 export function getSeen(db: CommunityDb, usernameLc: string): SeenRow | undefined {
-  return db.prepare('SELECT username, first_at, last_at FROM seen WHERE username_lc = ?').get(usernameLc) as SeenRow | undefined;
+  return db.prepare('SELECT username, first_at, last_at, is_sub FROM seen WHERE username_lc = ?').get(usernameLc) as SeenRow | undefined;
 }
 
 const backfilling = new Set<string>();
@@ -203,14 +217,30 @@ export function cancelReminder(db: CommunityDb, id: number, fromLc: string, now:
 
 // ─── Cookies ────────────────────────────────────────────────────────────────
 
-/** Claim today's cookie. False when this viewer already opened one on `day`. */
-export function claimCookie(db: CommunityDb, usernameLc: string, day: string): boolean {
-  return db.prepare(
-    'INSERT INTO cookies (username_lc, day) VALUES (?, ?) ON CONFLICT(username_lc) DO UPDATE SET day = excluded.day WHERE cookies.day <> excluded.day'
-  ).run(usernameLc, day).changes === 1;
+export function loadCookieData(db: CommunityDb, usernameLc: string): { username: string; data: string } | undefined {
+  return db.prepare('SELECT username, data FROM cookie_data WHERE username_lc = ?').get(usernameLc) as { username: string; data: string } | undefined;
 }
 
-/** Give back a claimed cookie when opening it failed, so the viewer can try again today. */
-export function unclaimCookie(db: CommunityDb, usernameLc: string): void {
-  db.prepare('DELETE FROM cookies WHERE username_lc = ?').run(usernameLc);
+export function saveCookieData(db: CommunityDb, username: string, data: string): void {
+  db.prepare('INSERT INTO cookie_data (username_lc, username, data) VALUES (?, ?, ?) ON CONFLICT(username_lc) DO UPDATE SET username = excluded.username, data = excluded.data')
+    .run(username.toLowerCase(), username, data);
+}
+
+/** Most cookies eaten, all time. */
+export function topCookieEaters(db: CommunityDb, limit: number): Array<{ username: string; eaten: number }> {
+  return db.prepare(
+    `SELECT username, CAST(json_extract(data, '$.total.eaten.daily') AS INTEGER) + CAST(json_extract(data, '$.total.eaten.received') AS INTEGER) AS eaten
+     FROM cookie_data ORDER BY eaten DESC LIMIT ?`
+  ).all(limit) as Array<{ username: string; eaten: number }>;
+}
+
+// ─── Slots ──────────────────────────────────────────────────────────────────
+
+export function logSlotsWin(db: CommunityDb, w: { username: string; source: string; result: string; odds: number; at: number }): void {
+  db.prepare('INSERT INTO slots_winners (username, source, result, odds, at) VALUES (?, ?, ?, ?, ?)').run(w.username, w.source, w.result, w.odds, w.at);
+}
+
+/** The flushes that beat the longest odds. */
+export function topSlotsWins(db: CommunityDb, limit: number): Array<{ username: string; result: string; odds: number }> {
+  return db.prepare('SELECT username, result, odds FROM slots_winners ORDER BY odds DESC, at ASC LIMIT ?').all(limit) as Array<{ username: string; result: string; odds: number }>;
 }

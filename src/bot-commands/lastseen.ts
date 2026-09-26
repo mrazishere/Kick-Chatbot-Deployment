@@ -36,7 +36,7 @@ export const lastseen: CommandFn = async function lastseen(client, message, chan
   const me = tags.username;
   if (!SYSTEM_BOTS.has(me.toLowerCase()) && !isBotSender(me, tags.senderId)) {
     try {
-      noteSeen(db, me, now);
+      noteSeen(db, me, now, !!tags.badges.subscriber);
     } catch (err) {
       console.error(`[LASTSEEN] Could not record ${me}: ${err instanceof Error ? err.message : String(err)}`);
     }
