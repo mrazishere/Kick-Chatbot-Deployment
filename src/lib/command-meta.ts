@@ -35,9 +35,9 @@ export const COMMAND_META: Record<string, CommandMeta> = {
   },
   clip: {
     label: "Clip",
-    trigger: "!clip",
+    trigger: "!clip [45s] [title]",
     description:
-      "Clips the last 30 seconds of the stream and posts the link. Open to everyone; the stream must be live.",
+      "Clips the last 30 seconds of the stream (or 5–90 with e.g. !clip 45s) and posts the link. Open to everyone; the stream must be live.",
   },
   cookie: { label: "Fortune Cookie", trigger: "!cookie", description: "supibot's cookie: one fortune a day (a golden second one for subscribers), gift it with !cookie donate, !cookie stats and top." },
   countd: { label: "Countdown", trigger: "!countd", description: "Countdown timer overlay." },

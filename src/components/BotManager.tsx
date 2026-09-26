@@ -249,7 +249,7 @@ const COMMAND_META: Record<string, CommandMeta> = {
   catfacts: { label: "Cat Facts", trigger: "!catfacts", description: "Random cat fact." },
   chatsummary: { label: "Chat Summary", trigger: "!chatsummary / !catchup", description: "Summarises the last 30 minutes of chat with AI for people who just arrived. Once a minute per channel." },
   claude: { label: "Claude AI", trigger: "!claude", description: "Ask the AI. Uses chat history and channel lore." },
-  clip: { label: "Clip", trigger: "!clip", description: "Clips the last 30 seconds of the stream and posts the link." },
+  clip: { label: "Clip", trigger: "!clip [45s]", description: "Clips the last 30 seconds of the stream, or 5–90 with e.g. !clip 45s, and posts the link." },
   cookie: { label: "Fortune Cookie", trigger: "!cookie", description: "supibot's cookie: one fortune a day (a golden second one for subscribers), gift it with !cookie donate, !cookie stats and top." },
   countd: { label: "Countdown", trigger: "!countd", description: "Countdown timer overlay." },
   customC: { label: "Custom Commands", trigger: "!acomm / !dcomm", description: "Channel-defined text commands." },
