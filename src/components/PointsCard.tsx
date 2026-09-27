@@ -81,6 +81,19 @@ export interface PointsGames {
   baitPricePercent: number;
   /** A short AI story on 1 in 3 catches. */
   stories: boolean;
+  /** Every fish and junk item's odds and price. Absent from a bot service older than per-item settings. */
+  catches?: FishCatch[];
+}
+
+export interface FishCatch {
+  name: string;
+  type: "fish" | "junk";
+  /** Chance weight within its type; 0 is never caught. */
+  weight: number;
+  /** Sell price; a sized fish's length and a record still scale it. */
+  price: number;
+  defaultWeight: number;
+  defaultPrice: number;
 }
 
 /** The bot's defaults, for a bot service that doesn't report game settings yet. */
@@ -181,7 +194,7 @@ type PointsSettingsPatch = Partial<Omit<PointsConfig, "effectiveCommand" | "bonu
   give?: Partial<PointsGive>;
   timeoutPenalty?: Partial<PointsTimeoutPenalty>;
   gamble?: Partial<PointsGamble>;
-  games?: Partial<PointsGames>;
+  games?: Partial<Omit<PointsGames, "catches">> & { catches?: Record<string, { weight: number; price: number }> };
 };
 
 interface PointsSummary {
@@ -290,6 +303,7 @@ interface SettingsForm {
   fishSellPct: string;
   fishBaitPct: string;
   fishStories: boolean;
+  fishCatches: { name: string; type: "fish" | "junk"; weight: string; price: string; defaultWeight: number; defaultPrice: number }[];
 }
 
 function formFromConfig(c: PointsConfig): SettingsForm {
@@ -349,6 +363,7 @@ function formFromConfig(c: PointsConfig): SettingsForm {
     fishSellPct: String((c.games ?? GAMES_DEFAULTS).sellPricePercent),
     fishBaitPct: String((c.games ?? GAMES_DEFAULTS).baitPricePercent),
     fishStories: (c.games ?? GAMES_DEFAULTS).stories,
+    fishCatches: (c.games?.catches ?? []).map((x) => ({ ...x, weight: String(x.weight), price: String(x.price) })),
   };
 }
 
@@ -497,6 +512,21 @@ function buildPatch(f: SettingsForm): { patch: PointsSettingsPatch } | { error: 
     baitPricePercent: whole(f.fishBaitPct, "Bait prices", 0, 1000),
     stories: f.fishStories,
   };
+  if (f.fishCatches.length > 0) {
+    // Only items that differ from their default are sent; the rest keep following it.
+    const catches: Record<string, { weight: number; price: number }> = {};
+    for (const c of f.fishCatches) {
+      const weight = whole(c.weight, `${c.name} odds`, 0, 1_000_000);
+      const price = whole(c.price, `${c.name} price`, 0, 1_000_000_000);
+      if (weight !== c.defaultWeight || price !== c.defaultPrice) catches[c.name] = { weight, price };
+    }
+    for (const type of ["fish", "junk"] as const) {
+      if (f.fishCatches.filter((c) => c.type === type).every((c) => Number(c.weight) === 0)) {
+        errors.push(`At least one ${type === "fish" ? "fish" : "junk item"} needs odds above 0`);
+      }
+    }
+    patch.games.catches = catches;
+  }
 
   return errors.length > 0 ? { error: errors.join("; ") } : { patch };
 }
@@ -641,6 +671,105 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
       {children}
       {hint ? <span className="mt-1 block text-xs text-neutral-500">{hint}</span> : null}
     </label>
+  );
+}
+
+const CELL_INPUT =
+  "w-full rounded-md border border-neutral-700 bg-neutral-900 px-2 py-1 text-right text-sm tabular-nums text-neutral-200 outline-none transition focus:border-neutral-500 disabled:opacity-40";
+
+type CatchRow = SettingsForm["fishCatches"][number];
+
+/**
+ * Per-item odds and sell prices, folded away by default so the Fishing section
+ * stays as short as it was for anyone who doesn't need it.
+ */
+function CatchTable({ rows, currency, disabled, onChange }: {
+  rows: CatchRow[];
+  currency: string;
+  disabled: boolean;
+  onChange: (rows: CatchRow[]) => void;
+}) {
+  const changed = rows.filter((r) => Number(r.weight) !== r.defaultWeight || Number(r.price) !== r.defaultPrice).length;
+  const edit = (name: string, key: "weight" | "price", value: string) =>
+    onChange(rows.map((r) => (r.name === name ? { ...r, [key]: value } : r)));
+  const reset = () =>
+    onChange(rows.map((r) => ({ ...r, weight: String(r.defaultWeight), price: String(r.defaultPrice) })));
+
+  const table = (type: "fish" | "junk") => {
+    const ofType = rows.filter((r) => r.type === type);
+    const total = ofType.reduce((sum, r) => sum + (Number(r.weight) > 0 ? Number(r.weight) : 0), 0);
+    return (
+      <table className="w-full text-sm">
+        <thead>
+          <tr className="text-xs text-neutral-500">
+            <th className="pb-1 text-left font-normal">{type === "fish" ? "Fish" : "Junk"}</th>
+            <th className="w-20 pb-1 text-right font-normal">Odds</th>
+            <th className="w-16 pb-1 text-right font-normal">Chance</th>
+            <th className="w-28 pb-1 text-right font-normal">Sells for</th>
+          </tr>
+        </thead>
+        <tbody>
+          {ofType.map((r) => {
+            const w = Number(r.weight);
+            const chance = !(w > 0) || total === 0 ? "never" : `${((w / total) * 100).toFixed(w / total < 0.1 ? 1 : 0)}%`;
+            return (
+              <tr key={r.name}>
+                <td className="py-0.5 text-lg leading-none">{r.name}</td>
+                <td className="py-0.5 pl-2">
+                  <input
+                    aria-label={`${r.name} odds`}
+                    inputMode="numeric"
+                    value={r.weight}
+                    disabled={disabled}
+                    onChange={(e) => edit(r.name, "weight", e.target.value)}
+                    className={CELL_INPUT}
+                  />
+                </td>
+                <td className="py-0.5 text-right text-xs tabular-nums text-neutral-500">{chance}</td>
+                <td className="py-0.5 pl-2">
+                  <input
+                    aria-label={`${r.name} sell price`}
+                    inputMode="numeric"
+                    value={r.price}
+                    disabled={disabled}
+                    onChange={(e) => edit(r.name, "price", e.target.value)}
+                    className={CELL_INPUT}
+                  />
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    );
+  };
+
+  return (
+    <details className="mt-3 rounded-lg border border-neutral-800">
+      <summary className="cursor-pointer select-none px-3 py-2 text-sm text-neutral-300">
+        Odds and prices per catch
+        <span className="ml-2 text-xs text-neutral-500">{changed > 0 ? `${changed} changed` : "defaults"}</span>
+      </summary>
+      <div className="border-t border-neutral-800 p-3">
+        <div className="grid items-start gap-6 lg:grid-cols-2">
+          {table("fish")}
+          {table("junk")}
+        </div>
+        <div className="mt-3 flex flex-wrap items-start justify-between gap-3">
+          <p className="max-w-xl text-xs text-neutral-500">
+            {`Odds are relative within fish or within junk: 2 is twice as likely as 1, and 0 is never caught. Chance is the share of fish (or junk) catches that item gets; how often a cast catches anything is the catch odds above. Prices are in ${currency}; a fish's length and a record still scale its price.`}
+          </p>
+          <button
+            type="button"
+            onClick={reset}
+            disabled={disabled || changed === 0}
+            className="rounded-lg border border-neutral-700 px-3 py-1.5 text-xs text-neutral-400 transition hover:border-neutral-500 hover:text-neutral-200 disabled:opacity-40"
+          >
+            Reset to defaults
+          </button>
+        </div>
+      </div>
+    </details>
   );
 }
 
@@ -1252,9 +1381,19 @@ export default function PointsCard({
                   <Field label="Trap time (min)" hint="31–1440, supibot: 60">{text("fishTrapMinutes", { inputMode: "numeric" })}</Field>
                 </div>
                 <div className="mt-3 grid gap-4 sm:grid-cols-4">
-                  <Field label="Sell prices (%)" hint="100 = fish 50, junk 1–20">{text("fishSellPct", { inputMode: "numeric" })}</Field>
+                  {form.fishCatches.length === 0 ? (
+                    <Field label="Sell prices (%)" hint="100 = fish 50, junk 1–20">{text("fishSellPct", { inputMode: "numeric" })}</Field>
+                  ) : null}
                   <Field label="Bait prices (%)" hint="100 = worm 2, fly 5, cricket 8">{text("fishBaitPct", { inputMode: "numeric" })}</Field>
                 </div>
+                {form.fishCatches.length > 0 ? (
+                  <CatchTable
+                    rows={form.fishCatches}
+                    currency={form.currencyName.trim() || "points"}
+                    disabled={readOnly || !!busy}
+                    onChange={(rows) => set("fishCatches", rows)}
+                  />
+                ) : null}
                 <div className="mt-3 space-y-2">
                   <Checkbox
                     label="Only fish and lay traps while the stream is live"
