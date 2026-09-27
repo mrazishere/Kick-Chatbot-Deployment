@@ -83,6 +83,16 @@ export interface PointsGames {
   stories: boolean;
   /** Every fish and junk item's odds and price. Absent from a bot service older than per-item settings. */
   catches?: FishCatch[];
+  /** Reels in buying order. Absent from a bot service older than reels. */
+  reels?: FishReel[];
+}
+
+export interface FishReel {
+  name: string;
+  price: number;
+  oddsMultiplier: number;
+  rarityMultiplier: number;
+  valueMultiplier: number;
 }
 
 export interface FishCatch {
@@ -304,6 +314,8 @@ interface SettingsForm {
   fishBaitPct: string;
   fishStories: boolean;
   fishCatches: { name: string; type: "fish" | "junk"; weight: string; price: string; defaultWeight: number; defaultPrice: number }[];
+  /** null when the bot service doesn't report reels. */
+  fishReels: { name: string; price: string; odds: string; rarity: string; value: string }[] | null;
 }
 
 function formFromConfig(c: PointsConfig): SettingsForm {
@@ -364,6 +376,15 @@ function formFromConfig(c: PointsConfig): SettingsForm {
     fishBaitPct: String((c.games ?? GAMES_DEFAULTS).baitPricePercent),
     fishStories: (c.games ?? GAMES_DEFAULTS).stories,
     fishCatches: (c.games?.catches ?? []).map((x) => ({ ...x, weight: String(x.weight), price: String(x.price) })),
+    fishReels: c.games?.reels
+      ? c.games.reels.map((r) => ({
+          name: r.name,
+          price: String(r.price),
+          odds: String(r.oddsMultiplier),
+          rarity: String(r.rarityMultiplier),
+          value: String(r.valueMultiplier),
+        }))
+      : null,
   };
 }
 
@@ -527,6 +548,25 @@ function buildPatch(f: SettingsForm): { patch: PointsSettingsPatch } | { error: 
     }
     patch.games.catches = catches;
   }
+  if (f.fishReels) {
+    const names = new Set<string>();
+    patch.games.reels = f.fishReels.map((r, i) => {
+      const label = `Reel ${i + 1}`;
+      const name = r.name.trim();
+      if (!name || name.length > 24 || /[<>@]/.test(name)) errors.push(`${label} needs a name of 1 to 24 characters, without < > or @`);
+      else if (names.has(name.toLowerCase())) errors.push(`Two reels are called ${name}`);
+      names.add(name.toLowerCase());
+      const mult = (raw: string, what: string) => Math.round(decimal(raw, `${label} ${what}`, 0.1, 10) * 100) / 100;
+      return {
+        name,
+        price: whole(r.price, `${label} price`, 0, 1_000_000_000),
+        oddsMultiplier: mult(r.odds, "odds ×"),
+        rarityMultiplier: mult(r.rarity, "rarity ×"),
+        valueMultiplier: mult(r.value, "value ×"),
+      };
+    });
+    if (f.fishReels.length > 10) errors.push("There can be at most 10 reels");
+  }
 
   return errors.length > 0 ? { error: errors.join("; ") } : { patch };
 }
@@ -639,6 +679,7 @@ const REASON_LABEL: Record<string, string> = {
   "game:fish_win": "Fishing catch",
   "game:fish_bait": "Fishing bait",
   "game:fish_sell": "Sold fish",
+  "game:fish_reel": "Bought a reel",
   "game:slots": "Slots bet",
   "game:slots_win": "Slots win",
   cookie: "Daily cookie",
@@ -678,6 +719,98 @@ const CELL_INPUT =
   "w-full rounded-md border border-neutral-700 bg-neutral-900 px-2 py-1 text-right text-sm tabular-nums text-neutral-200 outline-none transition focus:border-neutral-500 disabled:opacity-40";
 
 type CatchRow = SettingsForm["fishCatches"][number];
+type ReelRow = NonNullable<SettingsForm["fishReels"]>[number];
+
+/**
+ * The reels viewers buy, in order, with what each one does. Folded away like the
+ * catch table; most channels will only ever touch the prices.
+ */
+function ReelTable({ rows, currency, command, disabled, onChange }: {
+  rows: ReelRow[];
+  currency: string;
+  command: string;
+  disabled: boolean;
+  onChange: (rows: ReelRow[]) => void;
+}) {
+  const edit = (i: number, key: keyof ReelRow, value: string) =>
+    onChange(rows.map((r, j) => (j === i ? { ...r, [key]: value } : r)));
+  const remove = (i: number) => onChange(rows.filter((_, j) => j !== i));
+  const add = () => onChange([...rows, { name: "", price: "0", odds: "1", rarity: "1", value: "1" }]);
+  const cell = (i: number, key: keyof ReelRow, label: string, mode: "numeric" | "decimal" | "text") => (
+    <input
+      aria-label={`Reel ${i + 1} ${label}`}
+      inputMode={mode === "text" ? undefined : mode}
+      value={rows[i][key]}
+      disabled={disabled}
+      onChange={(e) => edit(i, key, e.target.value)}
+      className={mode === "text" ? CELL_INPUT.replace("text-right ", "") : CELL_INPUT}
+    />
+  );
+
+  return (
+    <details className="mt-3 rounded-lg border border-neutral-800">
+      <summary className="cursor-pointer select-none px-3 py-2 text-sm text-neutral-300">
+        Reels
+        <span className="ml-2 text-xs text-neutral-500">{rows.length === 0 ? "none, the shop is empty" : `${rows.length} in the shop`}</span>
+      </summary>
+      <div className="border-t border-neutral-800 p-3">
+        {rows.length > 0 ? (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[34rem] text-sm">
+              <thead>
+                <tr className="text-xs text-neutral-500">
+                  <th className="w-6 pb-1 text-left font-normal">#</th>
+                  <th className="pb-1 text-left font-normal">Name</th>
+                  <th className="w-28 pb-1 text-right font-normal">Price</th>
+                  <th className="w-20 pb-1 text-right font-normal">Odds ×</th>
+                  <th className="w-20 pb-1 text-right font-normal">Rarity ×</th>
+                  <th className="w-20 pb-1 text-right font-normal">Value ×</th>
+                  <th className="w-8 pb-1" />
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((_, i) => (
+                  <tr key={i}>
+                    <td className="py-0.5 text-xs tabular-nums text-neutral-500">{i + 1}</td>
+                    <td className="py-0.5 pr-2">{cell(i, "name", "name", "text")}</td>
+                    <td className="py-0.5 pl-2">{cell(i, "price", "price", "numeric")}</td>
+                    <td className="py-0.5 pl-2">{cell(i, "odds", "odds multiplier", "decimal")}</td>
+                    <td className="py-0.5 pl-2">{cell(i, "rarity", "rarity multiplier", "decimal")}</td>
+                    <td className="py-0.5 pl-2">{cell(i, "value", "value multiplier", "decimal")}</td>
+                    <td className="py-0.5 pl-2 text-right">
+                      <button
+                        type="button"
+                        onClick={() => remove(i)}
+                        disabled={disabled}
+                        aria-label={`Remove reel ${i + 1}`}
+                        className="rounded px-1.5 text-neutral-500 transition hover:text-red-400 disabled:opacity-40"
+                      >
+                        ×
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : null}
+        <div className="mt-3 flex flex-wrap items-start justify-between gap-3">
+          <p className="max-w-xl text-xs text-neutral-500">
+            {`Viewers buy reels in this order with $${command} fish buy reel; $${command} fish buy shows the next one and its price first. Prices are in ${currency}. Odds × multiplies how often casts and traps land a fish, Rarity × multiplies every fish except the commonest, and Value × multiplies what fish sell for (junk is unaffected). 1 means no change. Removing a reel from the end takes it away from anyone who bought it.`}
+          </p>
+          <button
+            type="button"
+            onClick={add}
+            disabled={disabled || rows.length >= 10}
+            className="rounded-lg border border-neutral-700 px-3 py-1.5 text-xs text-neutral-400 transition hover:border-neutral-500 hover:text-neutral-200 disabled:opacity-40"
+          >
+            Add reel
+          </button>
+        </div>
+      </div>
+    </details>
+  );
+}
 
 /**
  * Per-item odds and sell prices, folded away by default so the Fishing section
@@ -1387,6 +1520,15 @@ export default function PointsCard({
                   ) : null}
                   <Field label="Bait prices (%)" hint="100 = worm 2, fly 5, cricket 8">{text("fishBaitPct", { inputMode: "numeric" })}</Field>
                 </div>
+                {form.fishReels ? (
+                  <ReelTable
+                    rows={form.fishReels}
+                    currency={form.currencyName.trim() || "points"}
+                    command={commandPreview || "…"}
+                    disabled={readOnly || !!busy}
+                    onChange={(rows) => set("fishReels", rows)}
+                  />
+                ) : null}
                 {form.fishCatches.length > 0 ? (
                   <CatchTable
                     rows={form.fishCatches}
