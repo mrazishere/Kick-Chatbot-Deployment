@@ -435,8 +435,11 @@ export interface RewardAction {
    *            named user, or on the redeemer when nobody is named. Moderators'
    *            own timeouts and bans are never touched.
    * shield   — other viewers' timeout and roulette rewards can't hit the redeemer.
+   * points   — give the redeemer `amount` of the channel's loyalty currency.
    */
-  action: 'timeout' | 'roulette' | 'pardon' | 'shield';
+  action: 'timeout' | 'roulette' | 'pardon' | 'shield' | 'points';
+  /** points only: how much of the channel currency the redeemer gets. */
+  amount?: number;
   /**
    * Seconds: the timeout length (timeout, roulette) or how long the shield lasts.
    * Unused by pardon. Kick's ban API only accepts whole minutes, so a timeout

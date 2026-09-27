@@ -6,7 +6,8 @@
  *
  * Actions: `timeout` the user named in the redemption, `roulette` (50/50 the
  * named user or the redeemer), `pardon` a timeout the bot gave out, and
- * `shield` the redeemer from other viewers' timeout rewards. The moderation
+ * `shield` the redeemer from other viewers' timeout rewards, and `points` to
+ * sell the channel's loyalty currency for channel points. The moderation
  * itself — who may be targeted, which token issues it, what's shielded — is
  * ChannelModerator's.
  *
@@ -86,6 +87,9 @@ export interface RewardHandlerDeps {
   /** Issues the timeouts. Shared with custom commands. */
   moderator: ChannelModerator;
   sendMessage: (message: string) => Promise<unknown>;
+  /** Pays the `points` action. Absent where the bot has no points service. */
+  creditPoints?: (a: { userId: number; username: string; amount: number; redemptionId: string; rewardTitle: string }) =>
+    { ok: true; balance: number | null; currency: string } | { ok: false; reason: string };
 }
 
 export class RewardRedemptionHandler {
@@ -254,7 +258,8 @@ export class RewardRedemptionHandler {
       return;
     }
     const scopes = await this.deps.moderator.grantedScopes(token);
-    if ((await this.deps.moderator.issuers()).length === 0) {
+    // Paying out currency needs no moderation rights; everything else is a timeout or lifts one.
+    if (action.action !== 'points' && (await this.deps.moderator.issuers()).length === 0) {
       console.error(
         `[REWARD] "${event.reward.title}" ignored — neither the bot nor ${this.deps.channelName}'s token carries moderation:ban ` +
         `(channel granted: ${scopes.join(' ') || 'none'}). Redemption left pending; channel must re-authorize.`
@@ -329,7 +334,7 @@ export class RewardRedemptionHandler {
     const { moderator } = this.deps;
     const reason = `${event.reward.title} redeemed by ${redeemer}`;
     const seconds = (isTest ? (action.testDurationSeconds ?? 5) : action.durationSeconds) ?? 0;
-    if (action.action !== 'pardon' && !(seconds > 0)) {
+    if (action.action !== 'pardon' && action.action !== 'points' && !(seconds > 0)) {
       console.error(`[REWARD] "${event.reward.title}" is a ${action.action} action with no durationSeconds — fix the channel config.`);
       return { ok: false, reason: 'this reward is not set up correctly' };
     }
@@ -438,6 +443,27 @@ export class RewardRedemptionHandler {
           announce: `you're shielded from timeout rewards for ${left}` +
             (shield.reflect ? ', and any aimed at you bounce back' : ''),
           log: `${redeemer} is shielded for ${left}${shield.reflect ? ' (reflect)' : ''}`
+        };
+      }
+
+      case 'points': {
+        const amount = action.amount ?? 0;
+        if (!Number.isInteger(amount) || amount < 1 || !this.deps.creditPoints) {
+          console.error(`[REWARD] "${event.reward.title}" is a points action with no amount — fix the channel config.`);
+          return { ok: false, reason: 'this reward is not set up correctly' };
+        }
+        const shown = amount.toLocaleString('en-US');
+        // A test run is refunded, so paying out too would make it free money.
+        if (isTest) return { ok: true, announce: `you would get ${shown}`, log: `${redeemer} would get ${shown} (test)` };
+        const paid = this.deps.creditPoints({
+          userId: event.redeemer.user_id, username: redeemer, amount, redemptionId: event.id, rewardTitle: event.reward.title
+        });
+        if (!paid.ok) return { ok: false, reason: paid.reason };
+        const now = paid.balance === null ? '' : `, you now have ${paid.balance.toLocaleString('en-US')} ${paid.currency}`;
+        return {
+          ok: true,
+          announce: `you got ${shown} ${paid.currency}${now}`,
+          log: `${redeemer} bought ${amount} ${paid.currency}${paid.balance === null ? ' (already paid)' : ''}`
         };
       }
 

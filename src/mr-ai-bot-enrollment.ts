@@ -2157,7 +2157,8 @@ app.delete('/internal/bot/:channel/custom-commands/:name', internalGuard(true), 
 // the next one without a restart.
 
 const KICK_API = 'https://api.kick.com/public/v1';
-const REWARD_ACTION_KINDS = ['timeout', 'roulette', 'pardon', 'shield'];
+const REWARD_ACTION_KINDS = ['timeout', 'roulette', 'pardon', 'shield', 'points'];
+const MAX_REWARD_POINTS = 1_000_000_000;
 const MAX_REWARD_ACTION_SECONDS = 7 * 24 * 60 * 60;
 
 interface KickReward {
@@ -2304,7 +2305,15 @@ function validateRewardAction(input: unknown, rewardId: string): { entry?: Rewar
     return { error: `action must be one of ${REWARD_ACTION_KINDS.join(', ')}` };
   }
   const entry: RewardActionEntry = { rewardId, action: kind };
-  if (kind !== 'pardon') {
+  if (kind === 'points') {
+    const amount = a['amount'];
+    if (typeof amount !== 'number' || !Number.isInteger(amount) || amount < 1 || amount > MAX_REWARD_POINTS) {
+      return { error: 'Amount must be a whole number, 1 or more' };
+    }
+    entry['amount'] = amount;
+    // Buying currency harms nobody while the stream is off, unlike a timeout.
+    entry['pauseWhenOffline'] = false;
+  } else if (kind !== 'pardon') {
     const d = a['durationSeconds'];
     if (typeof d !== 'number' || !Number.isInteger(d) || d < 1 || d > MAX_REWARD_ACTION_SECONDS) {
       return { error: 'Duration must be a whole number of seconds, up to 7 days' };

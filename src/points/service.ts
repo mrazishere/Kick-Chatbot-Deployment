@@ -20,7 +20,7 @@ import * as penalties from './penalties';
 import { LiveState, checkLive } from './live';
 import { PresenceTracker } from './presence';
 import { LastMessages, presenceVerdict } from './presence-rules';
-import { Exclusions, drawRaffle, dueRaffles, exclusionsFor, expiredDuels, findUserByName, getMeta, getUser, isExcluded, openRaffle, pruneApplied, raffleEntries, RaffleRow, refundDuel, setMetaTx } from './store';
+import { Exclusions, applyOnce, creditTx, drawRaffle, dueRaffles, exclusionsFor, expiredDuels, findUserByName, getMeta, getUser, isExcluded, openRaffle, pruneApplied, raffleEntries, RaffleRow, refundDuel, setMetaTx } from './store';
 
 const USERNAME_RE = /^[a-z0-9_]{2,25}$/;
 /** Idempotency keys are kept this long; Kick re-delivers within hours, not weeks. */
@@ -121,6 +121,26 @@ export class PointsService {
     const value = exclusionsFor(this.channel, live.cfg, live.broadcasterUserId);
     this.exclusionCache = { source: live, broadcasterUserId: live.broadcasterUserId, value };
     return value;
+  }
+
+  /**
+   * Pay a viewer for a channel-points reward that buys the currency. Keyed on the
+   * redemption, so a redelivered webhook or a restart mid-way never pays twice.
+   * Failures are short sentences for chat; the reward handler refunds them.
+   */
+  creditFromReward(a: { userId: number; username: string; amount: number; redemptionId: string; rewardTitle: string }):
+    { ok: true; balance: number | null; currency: string } | { ok: false; reason: string } {
+    const cfg = this.config();
+    if (!cfg.enabled) return { ok: false, reason: 'loyalty points are switched off here' };
+    const db = this.db();
+    if (!db) return { ok: false, reason: `${cfg.currencyName} is unavailable right now` };
+    if (isExcluded(this.exclusions(), a.userId, a.username)) return { ok: false, reason: `you don't collect ${cfg.currencyName} here` };
+    const run = applyOnce(db, `reward:${a.redemptionId}`, this.now(), () => creditTx(db, {
+      userId: a.userId, username: a.username, amount: a.amount, reason: 'channel_points',
+      actor: `reward:${a.username}`, note: a.rewardTitle, now: this.now()
+    }));
+    // Already paid: report success so Kick's copy is accepted rather than refunded.
+    return { ok: true, balance: run.applied ? (run.result ?? null) : null, currency: cfg.currencyName };
   }
 
   /** The database, or null while points are disabled or it can't be opened. */
