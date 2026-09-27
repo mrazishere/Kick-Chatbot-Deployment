@@ -2355,6 +2355,14 @@ function validateRewardAction(input: unknown, rewardId: string): { entry?: Rewar
   return { entry };
 }
 
+/** Whether the bot pauses and unpauses this reward with the stream. Mirrors availabilityOf in the bot. */
+function pausedByBot(a: RewardActionEntry): boolean {
+  const avail = a['availability'];
+  if (avail === 'live' || avail === 'offline') return true;
+  if (avail === 'always') return false;
+  return a['pauseWhenOffline'] !== false;
+}
+
 /** Kick's own reward fields from a request body. Creating requires a title and cost. */
 function kickRewardFields(input: unknown, creating: boolean): { fields?: Record<string, unknown>; error?: string } {
   const src = (input && typeof input === 'object' && !Array.isArray(input) ? input : {}) as Record<string, unknown>;
@@ -2523,6 +2531,11 @@ app.patch('/internal/bot/:channel/rewards/:rewardId', internalGuard(true), async
   if (Object.keys(fields).length === 0 && !changesAction) {
     return res.status(400).json({ error: 'Nothing to change' });
   }
+  // A reward open only while live or only while offline is paused and unpaused by
+  // the bot; a save must not undo that (on 2026-09-27 one unpaused an offline-only
+  // reward mid-stream and a viewer redeemed it).
+  const governing = changesAction ? entry : rewardActionsOf(readChannelConfig(channel) ?? {}).find(a => a.rewardId === rewardId) ?? null;
+  if (governing && pausedByBot(governing)) delete fields['is_paused'];
 
   try {
     if (Object.keys(fields).length > 0) {

@@ -175,6 +175,8 @@ const goingOffline = pauseDecisions({
   isLive: false
 });
 check('going offline resumes it and pauses the live-only one', goingOffline.toResume.join(',') === 'buy' && goingOffline.toPause.join(',') === 'timeout', goingOffline);
+const reopenedByHand = pauseDecisions({ targets: mixed, rewards: both, pausedByBot: ['buy'], isLive: true });
+check('an offline-only reward unpaused by a save while live is paused again', reopenedByHand.toPause.join(',') === 'buy', reopenedByHand);
 check('a reward the bot paused with no action left is resumed',
   pauseDecisions({ targets: [], rewards: rewardsFromApi({ data: [{ id: 'gone', is_enabled: true, is_paused: true }] }), pausedByBot: ['gone'], isLive: true }).toResume.join(',') === 'gone');
 

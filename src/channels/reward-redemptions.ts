@@ -81,7 +81,7 @@ const RESOLVE_RETRY_MS = [1_500, 3_000, 6_000];
 /** Pages of Kick's pending list the backstop reads per pass (25 per page). */
 const RECONCILE_MAX_PAGES = 10;
 /** Re-read Kick's reward list this often even when the live state hasn't changed, to catch drift. */
-const PAUSE_DRIFT_CYCLES = 10;
+const PAUSE_DRIFT_CYCLES = 1;
 
 /** What one redemption did, or why it didn't. A failure is refunded. */
 type Outcome =
@@ -316,12 +316,15 @@ export class RewardRedemptionHandler {
     // starts and paused again after it ends, so a redemption can still land in the
     // gap. Acting on it would time someone out for an empty channel.
     const availability = availabilityOf(action);
+    // Redeemable when it shouldn't be (a save unpaused it, or the stream just changed):
+    // refund it and close the reward on Kick now rather than at the next sync.
     if (this.isLive === false && availability === 'live') {
+      if (action.rewardId) void this.closeNow(action.rewardId, event.reward.title);
       await fail(`that reward is paused while ${this.deps.channelName} is offline`);
       return;
     }
-    // The mirror image: an offline-only reward is paused a moment after the stream starts.
     if (this.isLive === true && availability === 'offline') {
+      if (action.rewardId) void this.closeNow(action.rewardId, event.reward.title);
       await fail(`that reward is only available while ${this.deps.channelName} is offline`);
       return;
     }
@@ -732,7 +735,7 @@ export class RewardRedemptionHandler {
       let state = pausedByBot.slice();
       for (const id of toPause) {
         if (await this.setPaused(token, id, true)) {
-          state.push(id);
+          if (!state.includes(id)) state.push(id);
           console.log(`[REWARD] Paused "${titleOf(rewards, id)}" — ${this.deps.channelName} is ${this.isLive ? 'live' : 'offline'}.`);
         }
       }
@@ -746,6 +749,17 @@ export class RewardRedemptionHandler {
       this.lastSyncedLive = this.isLive;
     } finally {
       this.syncing = false;
+    }
+  }
+
+  /** Pause a reward that should be closed right now, and remember to reopen it later. */
+  private async closeNow(rewardId: string, title: string): Promise<void> {
+    const { token, isChannelToken } = await this.deps.getToken().catch(() => ({ token: '', isChannelToken: false }));
+    if (!isChannelToken || !token) return;
+    if (await this.setPaused(token, rewardId, true)) {
+      const paused = this.loadPausedByBot();
+      if (!paused.includes(rewardId)) this.savePausedByBot([...paused, rewardId]);
+      console.log(`[REWARD] Paused "${title}" — it was redeemable while it should be closed.`);
     }
   }
 
@@ -1122,7 +1136,9 @@ export function pauseDecisions(args: {
     const r = byId.get(id);
     if (!r) continue;
     if (!openNow(mode, args.isLive)) {
-      if (r.isEnabled && !r.isPaused && !args.pausedByBot.includes(id)) toPause.push(id);
+      // Open when it should be closed is re-paused, even if the bot paused it before
+      // and someone unpaused it since: the availability setting is the one control.
+      if (r.isEnabled && !r.isPaused) toPause.push(id);
     } else if (args.pausedByBot.includes(id) && r.isPaused) {
       toResume.push(id);
     }
