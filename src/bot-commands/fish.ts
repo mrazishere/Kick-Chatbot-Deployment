@@ -12,7 +12,8 @@
  * Usage:   $don fish [worm|fly|cricket] [skipStory:true]
  *              Cast. A miss waits 30–90s (1 in 4 misses snags junk); a catch waits
  *              games.catchCooldownMinutes (30). Bait is bought and used on the spot.
- *          $don fish sell <emoji> [n] · sell all fish|junk · sell duplicate fish|junk
+ *          $don fish sell <emoji> [n] [<emoji> [n] …] · sell all fish|junk · sell duplicate fish|junk
+ *              Several items at once: "sell 🐟 🦐 🦀", "sell 🐟🦐🦀" or "sell 🐟 3 🦐 2".
  *          $don fish show [user] [fish|junk|emoji]      (also count, display, collection)
  *          $don fish stats [user|global]
  *          $don fish top [fish|coins|junk|lucky|unlucky|traps|attempts|total-…|emoji]   (also leaderboard)
@@ -37,7 +38,7 @@ import { gameInvocation } from '../community/stakes';
 import { addReminder, cancelSelfRemindersStartingWith, openCommunityDb } from '../community/store';
 import { bestEmote, broadcasterIdFor } from '../community/emotes';
 import {
-  addItem, baitPrice, baitRoll, CatchItem, CatchType, FAILURE_EMOTES, FishData, findBait, hasFishedBefore, initialData,
+  addItem, baitPrice, baitRoll, parseSellList, CatchItem, CatchType, FAILURE_EMOTES, FishData, findBait, hasFishedBefore, initialData,
   ITEMS, JUNK_MESSAGES, loadFish, MISS_DELAY_MS, pick, randomInt, rollCatch, saveFish, sellPrice, STORY_STYLES, SUCCESS_EMOTES,
   takeItems, TYPE_DESCRIPTIONS, weightedCatch
 } from '../community/fishing';
@@ -424,21 +425,33 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
         return `You sold ${sold} ${prefix}${TYPE_DESCRIPTIONS[type]} for a grand total of ${gained} ${cur} - now you have ${balance} ${cur}`;
       }
 
-      const item = ITEMS.find(i => i.name === specifier);
-      if (!item) return `You provided an unknown item type! Use one of: ${ITEMS.map(i => i.name).join('')}`;
-      const have = d.catch.types[item.name] ?? 0;
-      if (have === 0) return `You have no ${item.name} to sell!`;
-      let requested = Number(modifier);
-      if (modifier === undefined || Number.isNaN(requested)) requested = 1;
-      else if (!Number.isInteger(requested) || requested < 1) {
-        return 'You provided an invalid amount of items to sell! You need to use a positive integer (a whole number).';
+      // One or more items, each with an optional count: "🐟 3 🦐" or "🐟🦐🦀".
+      const list = parseSellList(parts);
+      if ('error' in list) {
+        return list.error === 'unknown'
+          ? `You provided an unknown item type! Use one of: ${ITEMS.map(i => i.name).join('')}`
+          : 'You provided an invalid amount of items to sell! Put a whole number after a single emoji, like 🐟 3 🦐 2.';
       }
-      const n = Math.min(have, requested);
-      const gained = takeItems(d, item, n, g);
+      if (list.items.length === 0) return `Tell me what to sell, like ${cmd} fish sell 🐟 🦐 or ${cmd} fish sell all fish`;
+      let gained = 0;
+      const soldParts: string[] = [];
+      const missing: string[] = [];
+      for (const { item, n: requested } of list.items) {
+        const have = d.catch.types[item.name] ?? 0;
+        if (have === 0) {
+          missing.push(item.name);
+          continue;
+        }
+        const n = Math.min(have, requested);
+        gained += takeItems(d, item, n, g);
+        soldParts.push(`${item.name}${n > 1 ? ` x${n}` : ''}`);
+      }
+      if (soldParts.length === 0) return `You have no ${missing.join('')} to sell!`;
       d.lifetime.coins += gained;
       const balance = pay(gained);
       saveFish(db!, uid, d, now);
-      return `Sold your ${item.name}${n > 1 ? ` x${n}` : ''} for ${gained} ${cur} - now you have ${balance} ${cur}`;
+      const skipped = missing.length ? ` (you have no ${missing.join('')})` : '';
+      return `Sold your ${soldParts.join(', ')} for ${gained} ${cur} - now you have ${balance} ${cur}${skipped}`;
     });
     if (text) say(text);
   }

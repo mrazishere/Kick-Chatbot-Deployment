@@ -25,7 +25,7 @@ import {
 } from '../points/store';
 import { WebhookPoller } from '../channels/webhook-poller';
 import { points as pointsCommand } from '../bot-commands/points';
-import { ITEMS, sellPrice, weightedCatch } from '../community/fishing';
+import { addItem, initialData, ITEMS, parseSellList, saveFish, sellPrice, weightedCatch } from '../community/fishing';
 import { openCommunityDb } from '../community/store';
 import { fish as fishCommand } from '../bot-commands/fish';
 
@@ -543,10 +543,10 @@ async function main(): Promise<void> {
       const tags = (username: string, id: number): KickTags => ({
         username, 'display-name': username, badges: {}, isBroadcaster: false, isModUp: false, isVIPUp: false, rawBadges: [], senderId: id
       });
-      const run = async (msg: string, config: ChannelConfig) => {
+      const run = async (msg: string, config: ChannelConfig, who: [string, number] = ['angler', 11]) => {
         shift += 6_000;   // past the per-user cooldown
         const out: string[] = [];
-        await fishCommand({ say: async (_c, m) => { out.push(m); } }, msg, `#${ch}`, tags('angler', 11), config);
+        await fishCommand({ say: async (_c, m) => { out.push(m); } }, msg, `#${ch}`, tags(who[0], who[1]), config);
         return out;
       };
       const on = { channelName: ch } as ChannelConfig;
@@ -566,6 +566,28 @@ async function main(): Promise<void> {
       const off = { channelName: ch, excludedCommands: ['remind'] } as unknown as ChannelConfig;
       const quiet = await run('$don fish trap', off);
       check('no reminder where !remind is off', !quiet[0]?.includes("I'll ping") && pending().length === 0, { quiet, p: pending() });
+
+      // Selling several kinds in one message
+      const list = (words: string) => {
+        const r = parseSellList(words.split(' '));
+        return 'error' in r ? r.error : r.items.map(i => `${i.item.name}${i.n}`).join(',');
+      };
+      check('sell list: spaced, run together, counts, repeats', list('🐟 3 🦐') === '🐟3,🦐1' && list('🐟🦐🦀') === '🐟1,🦐1,🦀1'
+        && list('🐟 x2 🐟') === '🐟3' && list('🐟\uFE0F 2') === '🐟2', [list('🐟 3 🦐'), list('🐟🦐🦀'), list('🐟 x2 🐟'), list('🐟\uFE0F 2')]);
+      check('sell list: bad input', list('🐟🦐 3') === 'amount' && list('3') === 'amount' && list('🐟 0') === 'amount' && list('🍕') === 'unknown' && list('🐟 2 3') === 'amount');
+      const pdb = openPointsDb(ch, { create: false })!;
+      runWrite(pdb, () => {
+        ensureUserTx(pdb, 12, 'seller', 1);
+        const d = initialData();
+        for (const name of ['🐟', '🐟', '🐟', '🦐', '🦀', '🦀', '🥫']) addItem(d, ITEMS.find(i => i.name === name)!);
+        saveFish(pdb, 12, d, 1);
+      });
+      const sold = await run('$don fish sell 🐟 2 🦐🦀 🐙', on, ['seller', 12]);
+      check('selling several kinds at once', sold[0] === '@seller Sold your 🐟 x2, 🦐, 🦀 for 100 $DON - now you have 100 $DON (you have no 🐙)' && balance(ch, 12) === 100, sold);
+      const left = await run('$don fish sell 🐟 🦀 5', on, ['seller', 12]);
+      check('counts cap at what is held', left[0]?.startsWith('@seller Sold your 🐟, 🦀 for 50 $DON'), left);
+      const none = await run('$don fish sell 🐟 🦐', on, ['seller', 12]);
+      check('nothing held of any is refused', none[0] === '@seller You have no 🐟🦐 to sell!', none);
     } finally {
       Date.now = realNow;
     }

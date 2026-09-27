@@ -243,6 +243,44 @@ export function takeItems(d: FishData, item: CatchItem, n: number, g: PointsGame
   else d.lifetime.scrapped += taken;
   return total;
 }
+/**
+ * What `sell` was asked to sell: one or more item emojis, spaced or run together,
+ * each optionally followed by a count ("🐟 3 🦐" or "🐟🦐🦀"). The same item named
+ * twice adds up. Counts are checked here; whether the viewer has them is not.
+ */
+export function parseSellList(parts: string[]): { items: Array<{ item: CatchItem; n: number }> } | { error: 'unknown' | 'amount' } {
+  const order: CatchItem[] = [];
+  const counts = new Map<string, number>();
+  // Longest names first, so a two-codepoint emoji isn't read as a shorter one.
+  const names = [...ITEMS].sort((a, b) => b.name.length - a.name.length);
+  let last: CatchItem | null = null;
+  let lastCounted = true;
+  for (const raw of parts) {
+    // Emoji pickers add the variation selector; items are stored without it.
+    const word = raw.replace(/\uFE0F/g, '');
+    const count = /^x?(\d+)$/i.exec(word);
+    if (count) {
+      const n = Number(count[1]);
+      if (!last || lastCounted || !Number.isInteger(n) || n < 1) return { error: 'amount' };
+      counts.set(last.name, (counts.get(last.name) ?? 0) - 1 + n);
+      lastCounted = true;
+      continue;
+    }
+    let rest = word;
+    while (rest) {
+      const item = names.find(i => rest.startsWith(i.name));
+      if (!item) return { error: 'unknown' };
+      if (!counts.has(item.name)) order.push(item);
+      counts.set(item.name, (counts.get(item.name) ?? 0) + 1);
+      rest = rest.slice(item.name.length);
+      last = item;
+      // A count may follow only a lone emoji: "🐟🦐 3" would be ambiguous.
+      lastCounted = rest.length > 0 || word.length > item.name.length;
+    }
+  }
+  return { items: order.map(item => ({ item, n: counts.get(item.name)! })) };
+}
+
 export const baitPrice = (bait: Bait, g: PointsGamesConfig): number => Math.round(bait.price * g.baitPricePercent / 100);
 
 /** The bait supibot's odds scale from 20; a channel with other odds scales them alike. */
