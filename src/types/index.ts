@@ -441,6 +441,13 @@ export interface RewardAction {
   /** points only: how much of the channel currency the redeemer gets. */
   amount?: number;
   /**
+   * Most redemptions per stream (offline time counts as its own window per day).
+   * Kick has no limits of its own, so the bot pauses the reward on Kick once it's
+   * reached, refunds any that slip in first, and unpauses it when a new window
+   * starts. 0 or absent is no limit.
+   */
+  maxPerStream?: number;
+  /**
    * Seconds: the timeout length (timeout, roulette) or how long the shield lasts.
    * Unused by pardon. Kick's ban API only accepts whole minutes, so a timeout
    * that isn't a multiple of 60 is issued as the next whole minute and then

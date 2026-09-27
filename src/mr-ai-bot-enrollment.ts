@@ -2321,6 +2321,13 @@ function validateRewardAction(input: unknown, rewardId: string): { entry?: Rewar
     entry['durationSeconds'] = d;
   }
   if (kind === 'shield' && a['reflect'] === true) entry['reflect'] = true;
+  const max = a['maxPerStream'];
+  if (max !== undefined && max !== null && max !== 0) {
+    if (typeof max !== 'number' || !Number.isInteger(max) || max < 0 || max > 100_000) {
+      return { error: 'Max per stream must be a whole number, 0 for no limit' };
+    }
+    entry['maxPerStream'] = max;
+  }
   entry['announce'] = a['announce'] !== false;
   if (a['testMode'] === true) {
     entry['testMode'] = true;
@@ -3362,7 +3369,8 @@ async function removeChannelCompletely(channel: string): Promise<{ archivedTo: s
     path.join('moderation', `${channel}.json`),
     path.join('points', channel),
     path.join('reward-pause', `${channel}.json`),
-    path.join('reward-resolutions', `${channel}.json`)
+    path.join('reward-resolutions', `${channel}.json`),
+    path.join('reward-limits', `${channel}.json`)
   ];
   // This service reads points for the dashboard; let go of the file before moving it.
   closePointsDb(channel);

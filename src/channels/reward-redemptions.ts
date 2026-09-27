@@ -70,6 +70,9 @@ const PAUSE_STATE_DIR = 'reward-pause';
  * deciding again.
  */
 const RESOLUTION_DIR = 'reward-resolutions';
+/** Per channel: redemptions counted in the current stream window, and rewards paused for hitting maxPerStream. */
+const LIMIT_DIR = 'reward-limits';
+interface LimitState { key: string; counts: Record<string, number>; pausedForLimit: string[] }
 /** A decision Kick still hasn't taken after this long is dropped; the redemption is someone's to resolve by hand. */
 const RESOLUTION_KEEP_MS = 7 * 24 * 3_600_000;
 /** Space between accept/reject calls, and retries when Kick answers 429. */
@@ -106,6 +109,8 @@ export interface RewardHandlerDeps {
   sendMessage: (message: string) => Promise<unknown>;
   /** Whether a `points` redemption was already paid, so it is accepted rather than refunded. */
   alreadyPaid?: (redemptionId: string) => boolean;
+  /** Identifies the current stream ("stream:<start>"), or the day when offline. Absent: the UTC day. */
+  streamKey?: () => string;
   /** Pays the `points` action. Absent where the bot has no points service. */
   creditPoints?: (a: { userId: number; username: string; amount: number; redemptionId: string; rewardTitle: string }) =>
     { ok: true; balance: number | null; currency: string } | { ok: false; reason: string };
@@ -143,6 +148,8 @@ export class RewardRedemptionHandler {
           console.error(`[REWARD] Reconcile failed: ${err instanceof Error ? err.message : String(err)}`));
         this.syncPauseState().catch(err =>
           console.error(`[REWARD] Pause sync failed: ${err instanceof Error ? err.message : String(err)}`));
+        this.limitWindow().catch(err =>
+          console.error(`[REWARD] Limit window check failed: ${err instanceof Error ? err.message : String(err)}`));
       }, RECONCILE_MS);
       this.reconcileTimer.unref();
     }
@@ -329,9 +336,39 @@ export class RewardRedemptionHandler {
       return;
     }
 
+    // A points redemption paid before (a redelivery after a restart) is only accepted,
+    // and must not count against the limit a second time.
+    if (action.action === 'points' && this.deps.alreadyPaid?.(event.id)) {
+      if (canResolve) await this.settle(event.id, true);
+      return;
+    }
+
+    // Per-stream limit. Counted before acting, so a burst can't all squeeze in.
+    const limit = action.rewardId && (action.maxPerStream ?? 0) > 0 && !isTest ? action.maxPerStream! : 0;
+    if (limit > 0) {
+      await this.limitWindow();
+      // Re-read with no await before the save, so two redemptions at once can't both take the last slot.
+      const state = this.loadLimitState();
+      const used = state.counts[action.rewardId!] ?? 0;
+      if (used >= limit) {
+        void this.pauseForLimit(action.rewardId!, event.reward.title, false);
+        return fail(`"${event.reward.title}" has sold out for this stream (${limit} max)`);
+      }
+      state.counts[action.rewardId!] = used + 1;
+      this.saveLimitState(state);
+    }
+
     const outcome = await this.perform(action, event, redeemer, isTest);
     if (!outcome.ok) {
+      if (limit > 0) {
+        const state = this.loadLimitState();
+        state.counts[action.rewardId!] = Math.max(0, (state.counts[action.rewardId!] ?? 1) - 1);
+        this.saveLimitState(state);
+      }
       return fail(outcome.reason);
+    }
+    if (limit > 0 && (this.loadLimitState().counts[action.rewardId!] ?? 0) >= limit) {
+      void this.pauseForLimit(action.rewardId!, event.reward.title, action.announce !== false);
     }
 
     console.log(`[REWARD]${isTest ? ' [TEST]' : ''} ${outcome.log} via "${event.reward.title}"`);
@@ -751,6 +788,92 @@ export class RewardRedemptionHandler {
   }
 
   /** Accept (fulfil) or reject (refund) the queued redemption. Returns success. */
+  private limitPath(): string {
+    return path.join(process.cwd(), 'data', LIMIT_DIR, `${this.deps.channelName}.json`);
+  }
+
+  private currentWindowKey(): string {
+    try {
+      const key = this.deps.streamKey?.();
+      if (key) return key;
+    } catch {
+      // Fall back to the day below.
+    }
+    return `day:${new Date().toISOString().slice(0, 10)}`;
+  }
+
+  private loadLimitState(): LimitState {
+    try {
+      const raw = JSON.parse(fs.readFileSync(this.limitPath(), 'utf8')) as Partial<LimitState>;
+      return {
+        key: typeof raw.key === 'string' ? raw.key : '',
+        counts: raw.counts && typeof raw.counts === 'object' ? raw.counts : {},
+        pausedForLimit: Array.isArray(raw.pausedForLimit) ? raw.pausedForLimit.filter((x): x is string => typeof x === 'string') : []
+      };
+    } catch {
+      return { key: '', counts: {}, pausedForLimit: [] };
+    }
+  }
+
+  private saveLimitState(state: LimitState): void {
+    try {
+      const file = this.limitPath();
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      const tmp = `${file}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify(state));
+      fs.renameSync(tmp, file);
+    } catch (err) {
+      console.error(`[REWARD] Could not save redemption counts: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
+   * The counts for the current window. When a new stream (or offline day) has
+   * begun, they start from zero and rewards paused for their limit are unpaused.
+   */
+  private async limitWindow(): Promise<LimitState> {
+    const key = this.currentWindowKey();
+    const state = this.loadLimitState();
+    if (state.key === key) return state;
+    const reopen = state.pausedForLimit;
+    const fresh: LimitState = { key, counts: {}, pausedForLimit: [] };
+    this.saveLimitState(fresh);
+    if (reopen.length === 0) return fresh;
+    const { token, isChannelToken } = await this.deps.getToken().catch(() => ({ token: '', isChannelToken: false }));
+    if (!isChannelToken || !token) return fresh;
+    const actions = this.currentActions();
+    const handOver: string[] = [];
+    for (const id of reopen) {
+      // Offline, a reward that pauses while offline stays paused; the offline
+      // pausing takes it over and resumes it when the stream starts.
+      const a = actions.find(x => x.rewardId === id);
+      if (this.isLive === false && a && a.pauseWhenOffline !== false) {
+        handOver.push(id);
+        continue;
+      }
+      if (await this.setPaused(token, id, false)) console.log(`[REWARD] Reopened reward ${id} — a new stream window began (${key}).`);
+    }
+    if (handOver.length) {
+      const paused = this.loadPausedByBot();
+      this.savePausedByBot([...new Set([...paused, ...handOver])]);
+    }
+    return fresh;
+  }
+
+  /** Pause a reward on Kick because it reached its limit, remembering it so the next window reopens it. */
+  private async pauseForLimit(rewardId: string, title: string, announce: boolean): Promise<void> {
+    const state = this.loadLimitState();
+    if (state.pausedForLimit.includes(rewardId)) return;
+    state.pausedForLimit.push(rewardId);
+    this.saveLimitState(state);
+    const { token, isChannelToken } = await this.deps.getToken().catch(() => ({ token: '', isChannelToken: false }));
+    if (!isChannelToken || !token) return;
+    if (await this.setPaused(token, rewardId, true)) {
+      console.log(`[REWARD] Paused "${title}" — it reached its limit for this stream.`);
+      if (announce) await this.deps.sendMessage(`"${title}" has sold out for this stream.`).catch(() => {});
+    }
+  }
+
   private resolutionPath(): string {
     return path.join(process.cwd(), 'data', RESOLUTION_DIR, `${this.deps.channelName}.json`);
   }
