@@ -306,6 +306,23 @@ export interface PointsLeaderboard {
   updatedAt: string;
   points: PointsLeaderboardEntry[];
   watchtime: PointsLeaderboardEntry[];
+  /** The Fishing tab. Null or absent where fishing is off, or from an older bot service. */
+  fishing?: PublicFishing | null;
+}
+
+export interface PublicCatch {
+  emoji: string;
+  /** Share of fish (or junk) catches, in percent. */
+  chance: number;
+  rarity: "Common" | "Uncommon" | "Rare" | "Epic" | "Legendary" | "Never";
+  price: number;
+}
+
+export interface PublicFishing {
+  /** 1 in this many plain casts lands a fish. */
+  catchOdds: number;
+  fish: PublicCatch[];
+  junk: PublicCatch[];
 }
 
 export interface EarningsSettings {

@@ -4,6 +4,7 @@ import SiteHeader from "@/components/SiteHeader";
 import { validChannel } from "@/lib/bot-auth";
 import { getSession } from "@/lib/session";
 import { loadPublicLeaderboard } from "@/lib/public-leaderboard";
+import type { PublicCatch, PublicFishing } from "@/lib/bot-api";
 
 export const dynamic = "force-dynamic";
 
@@ -42,13 +43,75 @@ function formatUpdated(iso: string): string {
   return d.toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short", timeZone: process.env.TZ || "Asia/Singapore" });
 }
 
+type Tab = "points" | "watchtime" | "fishing";
+
+const RARITY_CLASS: Record<PublicCatch["rarity"], string> = {
+  Common: "border-neutral-700 text-neutral-400",
+  Uncommon: "border-emerald-900/70 bg-emerald-950/30 text-emerald-300",
+  Rare: "border-sky-900/70 bg-sky-950/30 text-sky-300",
+  Epic: "border-fuchsia-900/70 bg-fuchsia-950/30 text-fuchsia-300",
+  Legendary: "border-amber-800/70 bg-amber-950/30 text-amber-300",
+  Never: "border-neutral-800 text-neutral-600",
+};
+
+function formatChance(p: number): string {
+  if (p <= 0) return "never";
+  return `${p < 1 ? p.toFixed(2) : p < 10 ? p.toFixed(1) : Math.round(p)}%`;
+}
+
+function CatchTable({ title, rows, currency }: { title: string; rows: PublicCatch[]; currency: string }) {
+  return (
+    <section className="overflow-hidden rounded-xl border border-neutral-800 bg-neutral-950/60">
+      {/* Fixed columns, so the Fish and Junk tables line up with each other. */}
+      <table className="w-full table-fixed text-sm">
+        <thead>
+          <tr className="border-b border-neutral-800 text-xs text-neutral-500">
+            <th className="w-20 px-5 py-2 text-left font-normal sm:w-28">{title}</th>
+            <th className="w-28 px-3 py-2 text-left font-normal sm:w-36">Rarity</th>
+            <th className="w-20 px-3 py-2 text-right font-normal sm:w-28">Chance</th>
+            <th className="px-5 py-2 text-right font-normal">Sells for</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-neutral-800">
+          {rows.map((r) => (
+            <tr key={r.emoji}>
+              <td className="px-5 py-2.5 text-xl leading-none">{r.emoji}</td>
+              <td className="px-3 py-2.5">
+                <span className={`rounded-md border px-1.5 py-0.5 text-xs ${RARITY_CLASS[r.rarity]}`}>{r.rarity}</span>
+              </td>
+              <td className="px-3 py-2.5 text-right tabular-nums text-neutral-400">{formatChance(r.chance)}</td>
+              <td className="px-5 py-2.5 text-right tabular-nums text-neutral-200">
+                {r.price.toLocaleString("en-US")} {currency}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </section>
+  );
+}
+
+function FishingTab({ fishing, currency }: { fishing: PublicFishing; currency: string }) {
+  return (
+    <div className="space-y-4">
+      <p className="text-xs text-neutral-500">
+        {`A cast lands a fish 1 time in ${fishing.catchOdds}; bait and reels improve that. Chance is how often a catch is that fish. `}
+        {`Prices are for an average 50 cm fish: length scales it from half (1 cm) to double (100 cm), and beating your record adds 50%.`}
+      </p>
+      <CatchTable title="Fish" rows={fishing.fish} currency={currency} />
+      {fishing.junk.length ? <CatchTable title="Junk" rows={fishing.junk} currency={currency} /> : null}
+    </div>
+  );
+}
+
 export default async function LeaderboardPage({ params, searchParams }: Props) {
   const { channel } = await params;
   const slug = channel.toLowerCase();
   if (!validChannel(slug)) notFound();
 
   const { tab: rawTab } = await searchParams;
-  const tab = (Array.isArray(rawTab) ? rawTab[0] : rawTab) === "watchtime" ? "watchtime" : "points";
+  const wanted = Array.isArray(rawTab) ? rawTab[0] : rawTab;
+  const tab: Tab = wanted === "watchtime" ? "watchtime" : wanted === "fishing" ? "fishing" : "points";
 
   const result = await loadPublicLeaderboard(slug);
   if (result.kind === "not-found") notFound();
@@ -62,11 +125,11 @@ export default async function LeaderboardPage({ params, searchParams }: Props) {
   }
 
   const data = result.kind === "ok" ? result.data : null;
+  const fishing = data?.fishing ?? null;
   const currency = data?.currencyName ?? "Points";
   const rows = data ? (tab === "watchtime" ? data.watchtime : data.points) : [];
-  const tabLink = (t: "points" | "watchtime") =>
-    `${BASE_PATH}/${slug}/leaderboard${t === "watchtime" ? "?tab=watchtime" : ""}`;
-  const tabClass = (t: "points" | "watchtime") =>
+  const tabLink = (t: Tab) => `${BASE_PATH}/${slug}/leaderboard${t === "points" ? "" : `?tab=${t}`}`;
+  const tabClass = (t: Tab) =>
     `rounded-lg border px-3 py-1.5 text-sm transition ${
       tab === t
         ? "border-[#53FC18]/40 bg-[#53FC18]/10 text-[#53FC18]"
@@ -98,6 +161,11 @@ export default async function LeaderboardPage({ params, searchParams }: Props) {
               <a href={tabLink("watchtime")} className={tabClass("watchtime")}>
                 Active time
               </a>
+              {fishing ? (
+                <a href={tabLink("fishing")} className={tabClass("fishing")}>
+                  Fishing
+                </a>
+              ) : null}
               <span className="ml-auto text-xs text-neutral-600">
                 {result.kind === "ok" && result.stale ? "Showing an earlier copy · " : ""}
                 Updated {formatUpdated(data.updatedAt)}
@@ -110,6 +178,15 @@ export default async function LeaderboardPage({ params, searchParams }: Props) {
               </p>
             ) : null}
 
+            {tab === "fishing" ? (
+              fishing ? (
+                <FishingTab fishing={fishing} currency={currency} />
+              ) : (
+                <p className="rounded-xl border border-neutral-800 bg-neutral-950/60 px-5 py-8 text-center text-sm text-neutral-500">
+                  Fishing isn&apos;t on in this channel.
+                </p>
+              )
+            ) : (
             <section className="overflow-hidden rounded-xl border border-neutral-800 bg-neutral-950/60">
               {rows.length === 0 ? (
                 <p className="px-5 py-8 text-center text-sm text-neutral-500">
@@ -145,6 +222,7 @@ export default async function LeaderboardPage({ params, searchParams }: Props) {
                 </ol>
               )}
             </section>
+            )}
           </>
         )}
       </main>

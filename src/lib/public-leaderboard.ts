@@ -1,5 +1,5 @@
 import "server-only";
-import { BotApiError, getPointsLeaderboard, type PointsLeaderboard, type PointsLeaderboardEntry } from "./bot-api";
+import { BotApiError, getPointsLeaderboard, type PointsLeaderboard, type PointsLeaderboardEntry, type PublicCatch, type PublicFishing } from "./bot-api";
 
 /**
  * The public leaderboard page is the one page anyone can open signed out, so it
@@ -38,6 +38,26 @@ function publicEntries(rows: unknown): PointsLeaderboardEntry[] {
   });
 }
 
+const RARITIES = new Set(["Common", "Uncommon", "Rare", "Epic", "Legendary", "Never"]);
+
+/** The Fishing tab's catch table, keeping only well-formed rows. */
+function publicCatches(rows: unknown): PublicCatch[] {
+  if (!Array.isArray(rows)) return [];
+  return rows.slice(0, 50).flatMap((row) => {
+    const r = row as Partial<PublicCatch> | null;
+    if (!r || typeof r.emoji !== "string" || r.emoji.length > 8 || typeof r.chance !== "number" || typeof r.price !== "number") return [];
+    if (typeof r.rarity !== "string" || !RARITIES.has(r.rarity)) return [];
+    return [{ emoji: r.emoji, chance: r.chance, rarity: r.rarity, price: r.price }];
+  });
+}
+
+function publicFishing(raw: unknown): PublicFishing | null {
+  const f = raw as Partial<PublicFishing> | null | undefined;
+  if (!f || typeof f.catchOdds !== "number") return null;
+  const fish = publicCatches(f.fish);
+  return fish.length ? { catchOdds: f.catchOdds, fish, junk: publicCatches(f.junk) } : null;
+}
+
 function publicShape(raw: PointsLeaderboard, channel: string): PointsLeaderboard {
   return {
     channel,
@@ -45,6 +65,7 @@ function publicShape(raw: PointsLeaderboard, channel: string): PointsLeaderboard
     updatedAt: typeof raw.updatedAt === "string" ? raw.updatedAt : new Date().toISOString(),
     points: publicEntries(raw.points),
     watchtime: publicEntries(raw.watchtime),
+    fishing: publicFishing(raw.fishing),
   };
 }
 
