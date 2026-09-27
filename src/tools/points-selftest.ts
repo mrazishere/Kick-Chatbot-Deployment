@@ -662,6 +662,11 @@ async function main(): Promise<void> {
       check('no reels means an empty shop', shut[0] === "@valued There isn't anything you can buy at the fishing gear shop... yet.", shut);
       writeConfig(root, ch, { enabled: true, currencyName: '$DON', games: { enabled: true, onlyWhileLive: false, trapMinutes: 60 } });
 
+      const board = pointsLeaderboard(ch, effectivePointsConfig({ enabled: true, games: { enabled: true } }), 100);
+      const buyerRow = board.points.find(r => r.username === 'buyer');
+      const bulkRow = board.points.find(r => r.username === 'bulk');
+      check('leaderboard names the reel held', buyerRow?.reel === 'Bamboo' && bulkRow !== undefined && bulkRow.reel === undefined, { buyerRow, bulkRow });
+
       const emptied = await bulk('$don fish sell 🐟');
       check('both types emptied', emptied[0] === '@bulk You have no items to sell!', emptied);
     } finally {

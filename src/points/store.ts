@@ -877,15 +877,37 @@ export function pointsLeaderboard(
   cfg: PointsConfig,
   limit: number,
   broadcasterUserId?: number | null
-): { points: Array<{ rank: number; username: string; value: number }>; watchtime: Array<{ rank: number; username: string; value: number }> } {
+): { points: LeaderboardRow[]; watchtime: LeaderboardRow[] } {
   const n = Math.min(100, Math.max(1, Math.floor(limit) || 100));
   return withReadDb(channel, { points: [], watchtime: [] }, db => {
     const ex = exclusionsFor(channel, cfg, broadcasterUserId);
+    const reels = reelNames(db, cfg);
+    const row = (u: UserRecord, i: number, value: number): LeaderboardRow => {
+      const reel = reels.get(u.user_id);
+      return reel ? { rank: i + 1, username: u.username, value, reel } : { rank: i + 1, username: u.username, value };
+    };
     return {
-      points: topBy(db, 'balance', n, ex).map((u, i) => ({ rank: i + 1, username: u.username, value: u.balance })),
-      watchtime: topBy(db, 'watch_seconds', n, ex).map((u, i) => ({ rank: i + 1, username: u.username, value: u.watch_seconds }))
+      points: topBy(db, 'balance', n, ex).map((u, i) => row(u, i, u.balance)),
+      watchtime: topBy(db, 'watch_seconds', n, ex).map((u, i) => row(u, i, u.watch_seconds))
     };
   });
+}
+
+export interface LeaderboardRow { rank: number; username: string; value: number; /** Name of the fishing reel they hold. */ reel?: string }
+
+/** The reel each viewer fishes with, by user id: the last of the channel's reels they bought. */
+function reelNames(db: PointsDb, cfg: PointsConfig): Map<number, string> {
+  const out = new Map<number, string>();
+  const reels = cfg.games.reels;
+  if (!cfg.games.enabled || reels.length === 0) return out;
+  try {
+    const rows = db.prepare("SELECT user_id, CAST(json_extract(data, '$.reel') AS INTEGER) AS level FROM fish WHERE json_extract(data, '$.reel') > 0")
+      .all() as Array<{ user_id: number; level: number }>;
+    for (const r of rows) out.set(r.user_id, reels[Math.min(r.level, reels.length) - 1].name);
+  } catch {
+    // A database from before fishing has no fish table: nobody has a reel.
+  }
+  return out;
 }
 
 /** Keep this many daily backups per channel. */
