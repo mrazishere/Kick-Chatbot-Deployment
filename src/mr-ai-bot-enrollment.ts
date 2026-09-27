@@ -15,6 +15,7 @@ import { clipSessionStatus, installClipToken } from './channels/clip-session';
 import { resolveBotIdentity } from './bot-identity';
 import { SYSTEM_BOTS } from './system-bots';
 import { commandWordCollides, effectiveCommand, effectivePointsConfig, readSubscriptionStatus, validatePointsPatch } from './points/config';
+import { closePointsDb } from './points/db';
 import { adjustPoints, backupPoints, getPointsUserDetail, pointsLeaderboard, pointsSummary, resetAllPoints, searchPointsUsers } from './points/store';
 
 /* eslint-disable @typescript-eslint/no-var-requires, @typescript-eslint/no-explicit-any */
@@ -308,9 +309,56 @@ async function subscribeChannelToWebhook(broadcasterUserId: number, channelName?
   }
 }
 
+/**
+ * Drop Kick's webhook subscriptions for broadcasters matching `drop`. Kick keeps a
+ * subscription until it is deleted, so a removed channel's follows, subs and
+ * stream events kept arriving here. Returns how many were deleted.
+ */
+async function unsubscribeFromWebhook(drop: (broadcasterUserId: number) => boolean): Promise<number> {
+  const appToken = await getWebhookAppToken();
+  const headers = { 'Authorization': `Bearer ${appToken}` };
+  const res = await axios.get('https://api.kick.com/public/v1/events/subscriptions', { headers });
+  const subs = ((res.data as { data?: Array<{ id?: string; broadcaster_user_id?: number }> }).data ?? [])
+    .filter(s => s.id && typeof s.broadcaster_user_id === 'number' && drop(s.broadcaster_user_id));
+  if (subs.length === 0) return 0;
+  const query = new URLSearchParams();
+  for (const s of subs) query.append('id', s.id as string);
+  await axios.delete(`https://api.kick.com/public/v1/events/subscriptions?${query.toString()}`, { headers });
+  return subs.length;
+}
+
+/**
+ * Subscriptions whose broadcaster has no channel config, left by a removal whose
+ * unsubscribe failed, are cleared at startup rather than kept forever.
+ */
+async function unsubscribeRemovedChannels(): Promise<void> {
+  const configDir = path.join(KICK_BASE_PATH, 'data', 'channel-configs');
+  const enrolled = new Set<number>();
+  for (const file of fs.existsSync(configDir) ? fs.readdirSync(configDir).filter(f => f.endsWith('.json')) : []) {
+    try {
+      const id = (JSON.parse(fs.readFileSync(path.join(configDir, file), 'utf8')) as { broadcasterUserId?: number }).broadcasterUserId;
+      if (typeof id === 'number') enrolled.add(id);
+    } catch {
+      // A config that can't be read right now must not cost its channel the
+      // webhook, so skip the sweep this time.
+      return;
+    }
+  }
+  // No channels read at all looks the same as a missing data directory.
+  if (enrolled.size === 0) return;
+  const dropped = await unsubscribeFromWebhook(id => !enrolled.has(id));
+  if (dropped > 0) console.log(`[WEBHOOK] Removed ${dropped} subscription(s) left by removed channels`);
+}
+
 async function subscribeAllChannelsToWebhook(): Promise<void> {
   const configDir = path.join(KICK_BASE_PATH, 'data', 'channel-configs');
   if (!fs.existsSync(configDir)) return;
+
+  try {
+    await unsubscribeRemovedChannels();
+  } catch (e) {
+    console.error('[WEBHOOK] Could not clear subscriptions of removed channels:', e instanceof Error ? e.message : String(e));
+  }
 
   const files = fs.readdirSync(configDir).filter(f => f.endsWith('.json'));
   for (const file of files) {
@@ -3233,35 +3281,114 @@ app.post('/internal/bot/:channel/managers', internalGuard(true), async (req, res
   return res.json({ ok: true, ...summariseChannel(channel, procs) });
 });
 
-// Remove the bot from a channel entirely. Mirrors deployRemoveChannel.
-app.delete('/internal/bot/:channel', internalGuard(true), async (req, res) => {
-  const channelRaw = req.params['channel'];
-  const channel = (typeof channelRaw === 'string' ? channelRaw : '').toLowerCase();
-  if (!validateChannelName(channel)) return res.status(400).json({ error: 'Invalid channel name' });
-  if (!readChannelConfig(channel)) return res.status(404).json({ error: 'Not enrolled' });
+/** True when every file under `p` is empty or holds only [] or {}: a channel that never collected anything. */
+function holdsNothing(p: string): boolean {
+  const stat = fs.statSync(p);
+  if (stat.isDirectory()) return fs.readdirSync(p).every(f => holdsNothing(path.join(p, f)));
+  if (stat.size > 16) return false;
+  return ['', '[]', '{}'].includes(fs.readFileSync(p, 'utf8').trim());
+}
+
+/**
+ * Take a channel off the bot entirely: the process, its files, Kick's webhook
+ * subscriptions and every per-channel data file. Removal used to stop at the
+ * process and the config, which left Kick sending that channel's events here and
+ * folders behind in half of data/.
+ *
+ * Plumbing is deleted. Data a viewer or streamer built up (points, custom
+ * commands, earnings history…) is moved to data/removed-channels/ instead, so a
+ * slip on the dashboard can be undone by moving it back. Data that never held
+ * anything is deleted.
+ */
+async function removeChannelCompletely(channel: string): Promise<{ archivedTo: string | null }> {
+  const broadcasterUserId = readChannelConfig(channel)?.['broadcasterUserId'];
 
   const pm2Name = `kick-${channel}`;
   // Tolerate a missing process — the config may exist without a live bot.
   await execAsync(`pm2 stop "${pm2Name}"`);
   await execAsync(`pm2 delete "${pm2Name}"`);
 
-  for (const p of [
+  if (typeof broadcasterUserId === 'number') {
+    try {
+      const dropped = await unsubscribeFromWebhook(id => id === broadcasterUserId);
+      console.log(`[INTERNAL] Removed ${dropped} webhook subscription(s) for ${channel}`);
+    } catch (e) {
+      // Not fatal: the startup sweep clears subscriptions whose channel is gone.
+      const detail = axios.isAxiosError(e) ? (JSON.stringify(e.response?.data as unknown) || e.message) : (e instanceof Error ? e.message : String(e));
+      console.error(`[INTERNAL] Could not remove webhook subscriptions for ${channel}:`, detail);
+    }
+  }
+
+  const data = path.join(KICK_BASE_PATH, 'data');
+  const plumbing = [
     path.join(KICK_BASE_PATH, 'dist', 'channels', `${channel}.js`),
     path.join(KICK_BASE_PATH, 'dist', 'channels', `${channel}.js.map`),
     path.join(KICK_BASE_PATH, 'src', 'channels', `${channel}.ts`),
-    path.join(KICK_BASE_PATH, 'data', 'channel-configs', `${channel}.json`),
-    path.join(KICK_BASE_PATH, 'data', 'channel-configs', `${channel}.reload`)
-  ]) {
+    path.join(data, 'channel-configs', `${channel}.json`),
+    path.join(data, 'channel-configs', `${channel}.reload`),
+    path.join(data, 'webhook-subscriptions', `${channel}.json`),
+    path.join(data, 'webhook-events', `${channel}.jsonl`),
+    path.join(KICK_BASE_PATH, 'logs', `${pm2Name}-out.log`),
+    path.join(KICK_BASE_PATH, 'logs', `${pm2Name}-err.log`)
+  ];
+  for (const p of plumbing) {
     try {
-      if (fs.existsSync(p)) fs.unlinkSync(p);
+      fs.rmSync(p, { force: true });
     } catch (e) {
       console.error(`[INTERNAL] Failed to remove ${p}:`, e instanceof Error ? e.message : String(e));
     }
   }
 
+  // Relative to data/. Kept in step with every module that stores per-channel files.
+  const owned = [
+    path.join('channel-configs', `${channel}-lore.jsonl`),
+    path.join('channel-refs', channel),
+    path.join('community', `${channel}.sqlite`),
+    path.join('community', `${channel}.sqlite-wal`),
+    path.join('community', `${channel}.sqlite-shm`),
+    path.join('custom-commands', `${channel}.json`),
+    path.join('earnings', channel),
+    path.join('kpp', channel),
+    path.join('leaderboard', channel),
+    path.join('moderation', `${channel}.json`),
+    path.join('points', channel),
+    path.join('reward-pause', `${channel}.json`)
+  ];
+  // This service reads points for the dashboard; let go of the file before moving it.
+  closePointsDb(channel);
+  const archive = path.join(data, 'removed-channels', `${channel}-${new Date().toISOString().replace(/[:.]/g, '-')}`);
+  let archived = false;
+  for (const rel of owned) {
+    const from = path.join(data, rel);
+    try {
+      if (!fs.existsSync(from)) continue;
+      if (holdsNothing(from)) {
+        fs.rmSync(from, { recursive: true, force: true });
+        continue;
+      }
+      const to = path.join(archive, rel);
+      fs.mkdirSync(path.dirname(to), { recursive: true });
+      fs.renameSync(from, to);
+      archived = true;
+    } catch (e) {
+      console.error(`[INTERNAL] Failed to clear ${from}:`, e instanceof Error ? e.message : String(e));
+    }
+  }
+
   removeFromEcosystem(channel);
   await execAsync('pm2 save');
-  console.log(`[INTERNAL] Removed bot for ${channel}`);
+  console.log(`[INTERNAL] Removed bot for ${channel}${archived ? `; its data is in ${path.relative(KICK_BASE_PATH, archive)}` : ''}`);
+  return { archivedTo: archived ? archive : null };
+}
+
+// Remove the bot from a channel entirely.
+app.delete('/internal/bot/:channel', internalGuard(true), async (req, res) => {
+  const channelRaw = req.params['channel'];
+  const channel = (typeof channelRaw === 'string' ? channelRaw : '').toLowerCase();
+  if (!validateChannelName(channel)) return res.status(400).json({ error: 'Invalid channel name' });
+  if (!readChannelConfig(channel)) return res.status(404).json({ error: 'Not enrolled' });
+
+  await removeChannelCompletely(channel);
   return res.json({ ok: true, channel });
 });
 
@@ -3665,37 +3792,13 @@ async function deployRemoveChannel(requester: string, args: string[], badges: Ar
     return;
   }
 
-  const pm2Name = `kick-${sanitized}`;
+  if (!readChannelConfig(sanitized)) {
+    await sendDeploymentMessage(`@${requester}, bot for ${sanitized} not found.`, sourceChatroomId);
+    return;
+  }
 
-  exec(`pm2 stop "${pm2Name}" && pm2 delete "${pm2Name}"`, async (error) => {
-    if (error) {
-      await sendDeploymentMessage(`@${requester}, bot for ${sanitized} not found.`, sourceChatroomId);
-      return;
-    }
-
-    // A throw in this exec callback is uncaught and takes the whole enrollment
-    // service down, and a bot process can exist without either file.
-    for (const p of [
-      path.join(KICK_BASE_PATH, 'dist', 'channels', `${sanitized}.js`),
-      path.join(KICK_BASE_PATH, 'data', 'channel-configs', `${sanitized}.json`)
-    ]) {
-      try {
-        fs.unlinkSync(p);
-      } catch (e) {
-        if ((e as NodeJS.ErrnoException).code !== 'ENOENT') {
-          console.error(`[DEPLOY] Failed to remove ${p}:`, e instanceof Error ? e.message : String(e));
-        }
-      }
-    }
-    removeFromEcosystem(sanitized);
-
-    // Persist removal so the deleted entry doesn't resurrect on reboot.
-    exec('pm2 save', (saveErr) => {
-      if (saveErr) console.error(`[DEPLOY] pm2 save failed: ${saveErr.message}`);
-    });
-
-    await sendDeploymentMessage(`@${requester}, bot removed from ${sanitized}.`, sourceChatroomId);
-  });
+  await removeChannelCompletely(sanitized);
+  await sendDeploymentMessage(`@${requester}, bot removed from ${sanitized}.`, sourceChatroomId);
 }
 
 async function deployStatus(requester: string, badges: Array<{ type: string }>, sourceChatroomId: string): Promise<void> {
