@@ -588,6 +588,25 @@ async function main(): Promise<void> {
       check('counts cap at what is held', left[0]?.startsWith('@seller Sold your 🐟, 🦀 for 50 $DON'), left);
       const none = await run('$don fish sell 🐟 🦐', on, ['seller', 12]);
       check('nothing held of any is refused', none[0] === '@seller You have no 🐟🦐 to sell!', none);
+
+      // Fish and junk together
+      runWrite(pdb, () => {
+        ensureUserTx(pdb, 13, 'bulk', 1);
+        const d = initialData();
+        for (const name of ['🐟', '🐟', '🦐', '🥫', '🥫', '🧦']) addItem(d, ITEMS.find(i => i.name === name)!);
+        saveFish(pdb, 13, d, 1);
+      });
+      const bulk = (msg: string) => run(msg, on, ['bulk', 13]);
+      const mixed = await bulk('$don fish sell 🦐 🥫');
+      check('fish and junk emojis in one sale', mixed[0] === '@bulk Sold your 🦐, 🥫 for 33 $DON - now you have 33 $DON', mixed);
+      const noType = await bulk('$don fish sell all');
+      check('sell all still needs a type', noType[0]?.includes('you must provide a type') && noType[0].includes('fish junk') && balance(ch, 13) === 33, noType);
+      const dup = await bulk('$don fish sell duplicate fish junk');
+      check('duplicate across both types', dup[0] === '@bulk You sold 1 duplicate fish for a grand total of 25 $DON - now you have 58 $DON', dup);
+      const both = await bulk('$don fish sell all fish junk');
+      check('sell all fish junk sells both', both[0] === '@bulk You sold 1 fish and 2 pieces of junk for a grand total of 38 $DON - now you have 96 $DON', both);
+      const emptied = await bulk('$don fish sell 🐟');
+      check('both types emptied', emptied[0] === '@bulk You have no items to sell!', emptied);
     } finally {
       Date.now = realNow;
     }

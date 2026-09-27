@@ -12,7 +12,7 @@
  * Usage:   $don fish [worm|fly|cricket] [skipStory:true]
  *              Cast. A miss waits 30–90s (1 in 4 misses snags junk); a catch waits
  *              games.catchCooldownMinutes (30). Bait is bought and used on the spot.
- *          $don fish sell <emoji> [n] [<emoji> [n] …] · sell all fish|junk · sell duplicate fish|junk
+ *          $don fish sell <emoji> [n] [<emoji> [n] …] · sell all fish|junk|fish junk · sell duplicate (the same)
  *              Several items at once: "sell 🐟 🦐 🦀", "sell 🐟🦐🦀" or "sell 🐟 3 🦐 2".
  *          $don fish show [user] [fish|junk|emoji]      (also count, display, collection)
  *          $don fish stats [user|global]
@@ -392,7 +392,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
 
   // ── sell ──
   function sell(parts: string[], uid: number): void {
-    const [specifier, modifier] = parts;
+    const [specifier] = parts;
     const text = once(now => {
       const d = loadFish(db!, uid);
       if (!d || (d.catch.fish === 0 && d.catch.junk === 0)) return 'You have no items to sell!';
@@ -401,28 +401,34 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
         : getUser(db!, uid)?.balance ?? 0;
 
       if (specifier === 'all' || specifier === 'duplicate') {
-        const type = modifier === 'fish' || modifier === 'junk' ? modifier as CatchType : null;
-        if (!type) {
-          return "When selling all, you must provide a type! You don't wanna sell all of your stuff by accident, right? Use one of: fish, junk";
+        // Naming the type stays required, as in supibot, so nobody sells everything
+        // by accident; naming both ("all fish junk") sells both.
+        const types = [...new Set(parts.slice(1).map(w => w.toLowerCase()))];
+        if (types.length === 0 || !types.every(t => t === 'fish' || t === 'junk')) {
+          return "When selling all, you must provide a type! You don't wanna sell all of your stuff by accident, right? Use fish, junk, or both: fish junk";
         }
         const threshold = specifier === 'all' ? 0 : 1;
-        let gained = 0;
-        let sold = 0;
-        for (const item of ITEMS) {
-          if (item.type !== type) continue;
-          const have = d.catch.types[item.name] ?? 0;
-          if (have <= threshold) continue;
-          const n = have - threshold;
-          sold += n;
-          // "duplicate" keeps the biggest of each, the one worth showing off.
-          gained += takeItems(d, item, n, g, specifier === 'duplicate');
-        }
         const prefix = specifier === 'duplicate' ? 'duplicate ' : '';
-        if (sold === 0) return `You have no ${prefix}${TYPE_DESCRIPTIONS[type]} to sell!`;
+        let gained = 0;
+        const soldByType: string[] = [];
+        for (const type of types as CatchType[]) {
+          let sold = 0;
+          for (const item of ITEMS) {
+            if (item.type !== type) continue;
+            const have = d.catch.types[item.name] ?? 0;
+            if (have <= threshold) continue;
+            const n = have - threshold;
+            sold += n;
+            // "duplicate" keeps the biggest of each, the one worth showing off.
+            gained += takeItems(d, item, n, g, specifier === 'duplicate');
+          }
+          if (sold > 0) soldByType.push(`${sold} ${prefix}${TYPE_DESCRIPTIONS[type]}`);
+        }
+        if (soldByType.length === 0) return `You have no ${prefix}${types.map(t => TYPE_DESCRIPTIONS[t as CatchType]).join(' or ')} to sell!`;
         d.lifetime.coins += gained;
         const balance = pay(gained);
         saveFish(db!, uid, d, now);
-        return `You sold ${sold} ${prefix}${TYPE_DESCRIPTIONS[type]} for a grand total of ${gained} ${cur} - now you have ${balance} ${cur}`;
+        return `You sold ${soldByType.join(' and ')} for a grand total of ${gained} ${cur} - now you have ${balance} ${cur}`;
       }
 
       // One or more items, each with an optional count: "🐟 3 🦐" or "🐟🦐🦀".
