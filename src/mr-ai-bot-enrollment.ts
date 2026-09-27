@@ -2311,8 +2311,6 @@ function validateRewardAction(input: unknown, rewardId: string): { entry?: Rewar
       return { error: 'Amount must be a whole number, 1 or more' };
     }
     entry['amount'] = amount;
-    // Buying currency harms nobody while the stream is off, unlike a timeout.
-    entry['pauseWhenOffline'] = false;
   } else if (kind !== 'pardon') {
     const d = a['durationSeconds'];
     if (typeof d !== 'number' || !Number.isInteger(d) || d < 1 || d > MAX_REWARD_ACTION_SECONDS) {
@@ -2321,6 +2319,13 @@ function validateRewardAction(input: unknown, rewardId: string): { entry?: Rewar
     entry['durationSeconds'] = d;
   }
   if (kind === 'shield' && a['reflect'] === true) entry['reflect'] = true;
+  // When it can be redeemed. Buying currency harms nobody offline, so points default to always;
+  // everything else defaults to live only, as before.
+  const avail = a['availability'];
+  if (avail !== undefined && avail !== null && avail !== 'always' && avail !== 'live' && avail !== 'offline') {
+    return { error: 'availability must be always, live or offline' };
+  }
+  entry['availability'] = typeof avail === 'string' ? avail : kind === 'points' ? 'always' : 'live';
   const max = a['maxPerStream'];
   if (max !== undefined && max !== null && max !== 0) {
     if (typeof max !== 'number' || !Number.isInteger(max) || max < 0 || max > 100_000) {

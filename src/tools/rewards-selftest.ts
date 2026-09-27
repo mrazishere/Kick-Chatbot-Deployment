@@ -11,7 +11,7 @@
 
 import {
   pendingRedemptionsFromApi, pendingVerdict, parseTargetUsername,
-  rewardsFromApi, pauseTargetIds, pauseDecisions
+  rewardsFromApi, pauseTargetIds, pauseDecisions, availabilityTargets
 } from '../channels/reward-redemptions';
 import { RewardAction } from '../types';
 
@@ -157,6 +157,26 @@ check('a reward the bot paused that someone already resumed is dropped quietly',
     pausedByBot: ['roulette'],
     isLive: true
   }).toResume.length === 0);
+
+// Offline-only rewards: the mirror image
+const mixed = availabilityTargets([
+  { rewardId: 'buy', action: 'points', amount: 5, availability: 'offline' },
+  { rewardId: 'timeout', action: 'timeout', durationSeconds: 60 },
+  { rewardId: 'always', action: 'points', amount: 5, pauseWhenOffline: false }
+] as RewardAction[]);
+check('availability read from both settings', JSON.stringify(mixed) === JSON.stringify([{ id: 'buy', mode: 'offline' }, { id: 'timeout', mode: 'live' }]), mixed);
+const both = rewardsFromApi({ data: [{ id: 'buy', is_enabled: true, is_paused: false }, { id: 'timeout', is_enabled: true, is_paused: false }] });
+const goingLive = pauseDecisions({ targets: mixed, rewards: both, pausedByBot: [], isLive: true });
+check('going live pauses the offline-only reward only', goingLive.toPause.join(',') === 'buy' && goingLive.toResume.length === 0, goingLive);
+const goingOffline = pauseDecisions({
+  targets: mixed,
+  rewards: rewardsFromApi({ data: [{ id: 'buy', is_enabled: true, is_paused: true }, { id: 'timeout', is_enabled: true, is_paused: false }] }),
+  pausedByBot: ['buy'],
+  isLive: false
+});
+check('going offline resumes it and pauses the live-only one', goingOffline.toResume.join(',') === 'buy' && goingOffline.toPause.join(',') === 'timeout', goingOffline);
+check('a reward the bot paused with no action left is resumed',
+  pauseDecisions({ targets: [], rewards: rewardsFromApi({ data: [{ id: 'gone', is_enabled: true, is_paused: true }] }), pausedByBot: ['gone'], isLive: true }).toResume.join(',') === 'gone');
 
 console.log(`\n[rewards-selftest] ${passed} passed, ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);

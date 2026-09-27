@@ -315,8 +315,14 @@ export class RewardRedemptionHandler {
     // Paused-while-offline rewards are unpaused on Kick a moment after the stream
     // starts and paused again after it ends, so a redemption can still land in the
     // gap. Acting on it would time someone out for an empty channel.
-    if (this.isLive === false && action.pauseWhenOffline !== false) {
+    const availability = availabilityOf(action);
+    if (this.isLive === false && availability === 'live') {
       await fail(`that reward is paused while ${this.deps.channelName} is offline`);
+      return;
+    }
+    // The mirror image: an offline-only reward is paused a moment after the stream starts.
+    if (this.isLive === true && availability === 'offline') {
+      await fail(`that reward is only available while ${this.deps.channelName} is offline`);
       return;
     }
 
@@ -699,7 +705,7 @@ export class RewardRedemptionHandler {
    */
   private async syncPauseState(): Promise<void> {
     if (this.syncing || !this.started) return;
-    const targets = pauseTargetIds(this.currentActions());
+    const targets = availabilityTargets(this.currentActions());
     if (targets.length === 0) return;
     this.syncing = true;
     try {
@@ -727,13 +733,13 @@ export class RewardRedemptionHandler {
       for (const id of toPause) {
         if (await this.setPaused(token, id, true)) {
           state.push(id);
-          console.log(`[REWARD] Paused "${titleOf(rewards, id)}" — ${this.deps.channelName} is offline.`);
+          console.log(`[REWARD] Paused "${titleOf(rewards, id)}" — ${this.deps.channelName} is ${this.isLive ? 'live' : 'offline'}.`);
         }
       }
       for (const id of toResume) {
         if (await this.setPaused(token, id, false)) {
           state = state.filter(x => x !== id);
-          console.log(`[REWARD] Resumed "${titleOf(rewards, id)}" — ${this.deps.channelName} is live.`);
+          console.log(`[REWARD] Resumed "${titleOf(rewards, id)}" — ${this.deps.channelName} is ${this.isLive ? 'live' : 'offline'}.`);
         }
       }
       if (state.length !== pausedByBot.length || state.some((x, i) => x !== pausedByBot[i])) this.savePausedByBot(state);
@@ -847,7 +853,7 @@ export class RewardRedemptionHandler {
       // Offline, a reward that pauses while offline stays paused; the offline
       // pausing takes it over and resumes it when the stream starts.
       const a = actions.find(x => x.rewardId === id);
-      if (this.isLive === false && a && a.pauseWhenOffline !== false) {
+      if (a && this.isLive !== null && !openNow(availabilityOf(a), this.isLive)) {
         handOver.push(id);
         continue;
       }
@@ -1068,12 +1074,30 @@ function titleOf(rewards: RewardState[], id: string): string {
  * one is the streamer's problem, not a redemption that can be refunded.
  */
 export function pauseTargetIds(actions: RewardAction[]): string[] {
-  const ids: string[] = [];
+  return availabilityTargets(actions).filter(t => t.mode === 'live').map(t => t.id);
+}
+
+export type Availability = 'always' | 'live' | 'offline';
+
+/** When an action's reward may be redeemed, reading the older pauseWhenOffline flag too. */
+export function availabilityOf(a: RewardAction): Availability {
+  if (a.availability === 'always' || a.availability === 'live' || a.availability === 'offline') return a.availability;
+  return a.pauseWhenOffline === false ? 'always' : 'live';
+}
+
+function openNow(mode: Availability, isLive: boolean): boolean {
+  return mode === 'always' || (mode === 'live') === isLive;
+}
+
+/** Rewards the bot pauses and resumes with the stream, each with when it should be open. */
+export function availabilityTargets(actions: RewardAction[]): Array<{ id: string; mode: 'live' | 'offline' }> {
+  const out: Array<{ id: string; mode: 'live' | 'offline' }> = [];
   for (const a of actions) {
-    if (!a.rewardId || a.pauseWhenOffline === false) continue;
-    if (!ids.includes(a.rewardId)) ids.push(a.rewardId);
+    const mode = availabilityOf(a);
+    if (!a.rewardId || mode === 'always' || out.some(t => t.id === a.rewardId)) continue;
+    out.push({ id: a.rewardId, mode });
   }
-  return ids;
+  return out;
 }
 
 /**
@@ -1084,28 +1108,31 @@ export function pauseTargetIds(actions: RewardAction[]): string[] {
  * they disabled entirely is never touched.
  */
 export function pauseDecisions(args: {
-  targets: string[];
+  /** Plain ids are live-only rewards, as before offline-only ones existed. */
+  targets: Array<string | { id: string; mode: 'live' | 'offline' }>;
   rewards: RewardState[];
   pausedByBot: string[];
   isLive: boolean;
 }): { toPause: string[]; toResume: string[] } {
   const byId = new Map(args.rewards.map(r => [r.id, r]));
-  if (!args.isLive) {
-    return {
-      toPause: args.targets.filter(id => {
-        const r = byId.get(id);
-        return !!r && r.isEnabled && !r.isPaused && !args.pausedByBot.includes(id);
-      }),
-      toResume: []
-    };
+  const toPause: string[] = [];
+  const toResume: string[] = [];
+  for (const t of args.targets) {
+    const { id, mode } = typeof t === 'string' ? { id: t, mode: 'live' as const } : t;
+    const r = byId.get(id);
+    if (!r) continue;
+    if (!openNow(mode, args.isLive)) {
+      if (r.isEnabled && !r.isPaused && !args.pausedByBot.includes(id)) toPause.push(id);
+    } else if (args.pausedByBot.includes(id) && r.isPaused) {
+      toResume.push(id);
+    }
   }
-  return {
-    toPause: [],
-    toResume: args.pausedByBot.filter(id => {
-      const r = byId.get(id);
-      return !!r && r.isPaused;
-    })
-  };
+  // A reward the bot paused whose action has since gone: don't leave it paused for ever.
+  const managed = new Set(args.targets.map(t => (typeof t === 'string' ? t : t.id)));
+  for (const id of args.pausedByBot) {
+    if (!managed.has(id) && byId.get(id)?.isPaused && !toResume.includes(id)) toResume.push(id);
+  }
+  return { toPause, toResume };
 }
 
 function sameUser(a: string, b: string): boolean {

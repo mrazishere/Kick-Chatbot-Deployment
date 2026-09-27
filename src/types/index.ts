@@ -462,6 +462,12 @@ export interface RewardAction {
    * the stream, and only a pause this bot made is ever undone.
    */
   pauseWhenOffline?: boolean;
+  /**
+   * When the reward can be redeemed; the bot pauses it on Kick the rest of the
+   * time and refunds any redemption that lands then. Absent: 'live', or 'always'
+   * where pauseWhenOffline is false (the older setting).
+   */
+  availability?: 'always' | 'live' | 'offline';
   /** Post the outcome in chat. Defaults to true. */
   announce?: boolean;
 
