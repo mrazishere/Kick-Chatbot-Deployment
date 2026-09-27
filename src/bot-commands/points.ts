@@ -45,6 +45,7 @@ import { isBotSender } from '../bot-identity';
 import { effectiveCommand } from '../points/config';
 import { reportDbError, runWrite } from '../points/db';
 import { getPointsService } from '../points/service';
+import { currentReel, loadFish } from '../community/fishing';
 import {
   acceptDuel, applyOnce, countRanked, createDuel, creditTx, debitTx, ensureUserTx, findUserByName, gamble, gambleStatsFor, gambleTop, getUser,
   cancelRaffle, createRaffle, incomingDuels, isApplied, isExcluded, joinRaffle, openRaffle, outgoingDuel, rankBy, refundDuel, setTx, topBy, transfer
@@ -194,6 +195,17 @@ export const points: CommandFn = async function points(client, message, channel,
 
     // ── balance ──
     if (sub === null) {
+      /** ", 🎣 Bamboo reel" for a viewer who bought one, where fishing is on. */
+      const reelOf = (userId: number): string => {
+        const games = svc.config().games;
+        if (!games.enabled) return '';
+        try {
+          const reel = currentReel(loadFish(db, userId), games);
+          return reel ? `, 🎣 ${reel.name} reel` : '';
+        } catch {
+          return '';
+        }
+      };
       const named = args[0];
       if (cooldownLeft(`${channelName}:${meLc}:balance`, USER_COOLDOWN_MS, true)) return;
       if (named && NAME_RE.test(named) && named.replace(/^@+/, '').toLowerCase() !== meLc) {
@@ -203,12 +215,12 @@ export const points: CommandFn = async function points(client, message, channel,
         // Only an @name that isn't found gets a reply: "$DON to the moon" isn't a lookup of "to".
         if (!u) return named.startsWith('@') ? void say(`${named.replace(/^@+/, '')} has no ${cur} yet`) : undefined;
         const rank = rankBy(db, u.user_id, 'balance', ex);
-        return void say(rank === null ? `${u.username} has ${u.balance} ${cur}` : `${u.username} has ${u.balance} ${cur}, rank ${rank} of ${total()}`);
+        return void say(`${u.username} has ${u.balance} ${cur}${rank === null ? '' : `, rank ${rank} of ${total()}`}${reelOf(u.user_id)}`);
       }
       if (named && !NAME_RE.test(named)) return;
       if (!self) return void say(`@${me} has no ${cur} yet`);
       const rank = rankBy(db, self.user_id, 'balance', ex);
-      return void say(rank === null ? `@${me} has ${self.balance} ${cur}` : `@${me} has ${self.balance} ${cur}, rank ${rank} of ${total()}`);
+      return void say(`@${me} has ${self.balance} ${cur}${rank === null ? '' : `, rank ${rank} of ${total()}`}${reelOf(self.user_id)}`);
     }
 
     // ── activetime ──

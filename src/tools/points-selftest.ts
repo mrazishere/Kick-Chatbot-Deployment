@@ -667,6 +667,16 @@ async function main(): Promise<void> {
       const bulkRow = board.points.find(r => r.username === 'bulk');
       check('leaderboard names the reel held', buyerRow?.reel === 'Bamboo' && bulkRow !== undefined && bulkRow.reel === undefined, { buyerRow, bulkRow });
 
+      const balOut: string[] = [];
+      const cfgFish = { channelName: ch } as ChannelConfig;
+      await pointsCommand({ say: async (_c, m) => { balOut.push(m); } }, '$don', `#${ch}`, tags('buyer', 14), cfgFish);
+      shift += 6_000;
+      await pointsCommand({ say: async (_c, m) => { balOut.push(m); } }, '$don @buyer', `#${ch}`, tags('bulk', 13), cfgFish);
+      shift += 6_000;
+      await pointsCommand({ say: async (_c, m) => { balOut.push(m); } }, '$don @bulk', `#${ch}`, tags('buyer', 14), cfgFish);
+      check('$don names the reel held', balOut[0]?.startsWith('@buyer has 1000 $DON, rank') && balOut[0].endsWith(', 🎣 Bamboo reel')
+        && balOut[1]?.startsWith('buyer has 1000 $DON') && balOut[1].endsWith(', 🎣 Bamboo reel') && !balOut[2]?.includes('reel'), balOut);
+
       const emptied = await bulk('$don fish sell 🐟');
       check('both types emptied', emptied[0] === '@bulk You have no items to sell!', emptied);
     } finally {
