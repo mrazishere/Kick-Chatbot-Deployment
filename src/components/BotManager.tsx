@@ -133,6 +133,11 @@ function availabilityOf(a: RewardActionConfig | null): RewardAvailability {
   return a.pauseWhenOffline === false ? "always" : "live";
 }
 
+/** A live-only or offline-only reward with a bot action is paused and unpaused by the bot, not by hand. */
+function botControlsPause(d: { actionKind: RewardActionKind | ""; availability: RewardAvailability }): boolean {
+  return !!d.actionKind && d.availability !== "always";
+}
+
 const AVAILABILITY_LABEL: Record<RewardAvailability, string> = { always: "Always", live: "Live only", offline: "Offline only" };
 
 interface RewardActionConfig {
@@ -852,7 +857,8 @@ export default function BotManager({
           is_enabled: d.enabled,
           is_user_input_required: d.inputRequired,
           should_redemptions_skip_request_queue: d.skipQueue,
-          ...(d.id ? { is_paused: d.paused } : {}),
+          // The bot owns the pause for a live-only or offline-only reward; the service ignores it anyway.
+          ...(d.id && !botControlsPause(d) ? { is_paused: d.paused } : {}),
         }
       : undefined;
     const saved = d.id
@@ -1763,7 +1769,11 @@ export default function BotManager({
                         </label>
                         <div className="grid gap-x-6 gap-y-2 sm:grid-cols-2">
                           <Checkbox label="Enabled" checked={rewardDraft.enabled} disabled={!!busy} onChange={(v) => patchRewardDraft({ enabled: v })} />
-                          {rewardDraft.id ? (
+                          {rewardDraft.id && botControlsPause(rewardDraft) ? (
+                            <span className="text-sm text-neutral-500">
+                              Paused by the bot while the stream is {rewardDraft.availability === "live" ? "offline" : "live"}
+                            </span>
+                          ) : rewardDraft.id ? (
                             <Checkbox label="Paused (visible, can't be redeemed)" checked={rewardDraft.paused} disabled={!!busy} onChange={(v) => patchRewardDraft({ paused: v })} />
                           ) : null}
                           <Checkbox label="Viewer must type something" checked={rewardDraft.inputRequired} disabled={!!busy} onChange={(v) => patchRewardDraft({ inputRequired: v })} />
