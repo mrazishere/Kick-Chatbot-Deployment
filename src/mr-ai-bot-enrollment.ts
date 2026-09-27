@@ -3361,7 +3361,8 @@ async function removeChannelCompletely(channel: string): Promise<{ archivedTo: s
     path.join('leaderboard', channel),
     path.join('moderation', `${channel}.json`),
     path.join('points', channel),
-    path.join('reward-pause', `${channel}.json`)
+    path.join('reward-pause', `${channel}.json`),
+    path.join('reward-resolutions', `${channel}.json`)
   ];
   // This service reads points for the dashboard; let go of the file before moving it.
   closePointsDb(channel);

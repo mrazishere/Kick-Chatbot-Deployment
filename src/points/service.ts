@@ -20,7 +20,7 @@ import * as penalties from './penalties';
 import { LiveState, checkLive } from './live';
 import { PresenceTracker } from './presence';
 import { LastMessages, presenceVerdict } from './presence-rules';
-import { Exclusions, applyOnce, creditTx, drawRaffle, dueRaffles, exclusionsFor, expiredDuels, findUserByName, getMeta, getUser, isExcluded, openRaffle, pruneApplied, raffleEntries, RaffleRow, refundDuel, setMetaTx } from './store';
+import { Exclusions, applyOnce, creditTx, isApplied, drawRaffle, dueRaffles, exclusionsFor, expiredDuels, findUserByName, getMeta, getUser, isExcluded, openRaffle, pruneApplied, raffleEntries, RaffleRow, refundDuel, setMetaTx } from './store';
 
 const USERNAME_RE = /^[a-z0-9_]{2,25}$/;
 /** Idempotency keys are kept this long; Kick re-delivers within hours, not weeks. */
@@ -141,6 +141,12 @@ export class PointsService {
     }));
     // Already paid: report success so Kick's copy is accepted rather than refunded.
     return { ok: true, balance: run.applied ? (run.result ?? null) : null, currency: cfg.currencyName };
+  }
+
+  /** Whether a channel-points redemption was already paid by creditFromReward. */
+  rewardAlreadyPaid(redemptionId: string): boolean {
+    const db = this.db();
+    return !!db && isApplied(db, `reward:${redemptionId}`);
   }
 
   /** The database, or null while points are disabled or it can't be opened. */

@@ -60,6 +60,23 @@ const NAME_CACHE_LIMIT = 500;
  * stays paused.
  */
 const PAUSE_STATE_DIR = 'reward-pause';
+
+/**
+ * Decisions made but not yet confirmed on Kick, per channel. On 2026-09-27 a
+ * rush on "Buy 10,000 $DON" hit Kick's rate limit: 44 accepts failed, those paid
+ * redemptions stayed pending, and after a restart the backstop took them for
+ * undelivered ones and refunded 16 that had already been paid. A decision is now
+ * written here before Kick is told, and the backstop retries it instead of
+ * deciding again.
+ */
+const RESOLUTION_DIR = 'reward-resolutions';
+/** A decision Kick still hasn't taken after this long is dropped; the redemption is someone's to resolve by hand. */
+const RESOLUTION_KEEP_MS = 7 * 24 * 3_600_000;
+/** Space between accept/reject calls, and retries when Kick answers 429. */
+const RESOLVE_SPACING_MS = 400;
+const RESOLVE_RETRY_MS = [1_500, 3_000, 6_000];
+/** Pages of Kick's pending list the backstop reads per pass (25 per page). */
+const RECONCILE_MAX_PAGES = 10;
 /** Re-read Kick's reward list this often even when the live state hasn't changed, to catch drift. */
 const PAUSE_DRIFT_CYCLES = 10;
 
@@ -87,6 +104,8 @@ export interface RewardHandlerDeps {
   /** Issues the timeouts. Shared with custom commands. */
   moderator: ChannelModerator;
   sendMessage: (message: string) => Promise<unknown>;
+  /** Whether a `points` redemption was already paid, so it is accepted rather than refunded. */
+  alreadyPaid?: (redemptionId: string) => boolean;
   /** Pays the `points` action. Absent where the bot has no points service. */
   creditPoints?: (a: { userId: number; username: string; amount: number; redemptionId: string; rewardTitle: string }) =>
     { ok: true; balance: number | null; currency: string } | { ok: false; reason: string };
@@ -95,6 +114,8 @@ export interface RewardHandlerDeps {
 export class RewardRedemptionHandler {
   private deps: RewardHandlerDeps;
   private seen: string[] = [];
+  /** Serialises accept/reject calls so a burst doesn't trip Kick's rate limit. */
+  private resolveChain: Promise<unknown> = Promise.resolve();
   private started = false;
   private scopeGapNotified = false;
   private reconcileTimer: NodeJS.Timeout | null = null;
@@ -277,7 +298,7 @@ export class RewardRedemptionHandler {
     const fail = async (reason: string): Promise<void> => {
       console.log(`[REWARD] "${event.reward.title}" by ${redeemer} failed: ${reason}`);
       // Only promise a refund that actually went through.
-      const refunded = canResolve ? await this.resolve(event.id, false) : false;
+      const refunded = canResolve ? await this.settle(event.id, false) : false;
       if (action.announce !== false) {
         const suffix = refunded ? ' — your points have been refunded.' : '.';
         await this.deps.sendMessage(`@${redeemer} ${reason}${suffix}`).catch(() => {});
@@ -298,7 +319,7 @@ export class RewardRedemptionHandler {
     const testers = (action.testRedeemers ?? []).map(n => n.toLowerCase());
     if (isTest && testers.length > 0 && !testers.includes(redeemer.toLowerCase())) {
       console.log(`[REWARD] "${event.reward.title}" by ${redeemer} skipped — test mode limited to: ${testers.join(', ')}`);
-      const refunded = canResolve ? await this.resolve(event.id, false) : false;
+      const refunded = canResolve ? await this.settle(event.id, false) : false;
       if (action.announce !== false) {
         await this.deps.sendMessage(
           `@${redeemer} this reward is being tested right now, so nobody was timed out` +
@@ -316,7 +337,7 @@ export class RewardRedemptionHandler {
     console.log(`[REWARD]${isTest ? ' [TEST]' : ''} ${outcome.log} via "${event.reward.title}"`);
 
     // A test run rejects rather than accepts, which is what refunds the points.
-    const resolved = canResolve ? await this.resolve(event.id, !isTest) : false;
+    const resolved = canResolve ? await this.settle(event.id, !isTest) : false;
 
     // A test still speaks up even when quiet: its line carries the refund result,
     // which Kick's own notice says nothing about.
@@ -491,14 +512,21 @@ export class RewardRedemptionHandler {
       const { token, isChannelToken } = await this.deps.getToken().catch(() => ({ token: '', isChannelToken: false }));
       if (!isChannelToken || !token) return;
 
-      let pending: PendingRedemption[];
+      let pending: PendingRedemption[] = [];
       try {
-        const res = await axios.get(`${API}/channels/rewards/redemptions`, {
-          headers: { Authorization: `Bearer ${token}` },
-          params: { status: 'pending' },
-          timeout: 15_000
-        });
-        pending = pendingRedemptionsFromApi(res.data);
+        let cursor: string | null = null;
+        for (let page = 0; page < RECONCILE_MAX_PAGES; page++) {
+          const res: { data: unknown } = await axios.get(`${API}/channels/rewards/redemptions`, {
+            headers: { Authorization: `Bearer ${token}` },
+            params: cursor ? { status: 'pending', cursor } : { status: 'pending' },
+            timeout: 15_000
+          });
+          pending.push(...pendingRedemptionsFromApi(res.data));
+          // Kick pages 25 at a time; reading only the first left the rest for ever.
+          const next: string | null = (res.data as { pagination?: { next_cursor?: string } } | null)?.pagination?.next_cursor || null;
+          if (!next || next === cursor) break;
+          cursor = next;
+        }
         this.reconcileErrorNotified = false;
         if (this.reconcileFirstPass) {
           // Success is otherwise silent, so there is no way to tell a healthy
@@ -518,13 +546,31 @@ export class RewardRedemptionHandler {
         return;
       }
 
+      const decisions = this.loadResolutions();
       for (const row of pending) {
+        // Decided before but Kick never took it: tell Kick again, never decide twice.
+        const decided = decisions[row.id];
+        if (decided) {
+          const ok = await this.settle(row.id, decided.accept);
+          console.log(`[REWARD] Reconcile: "${row.rewardTitle}" was already ${decided.accept ? 'accepted' : 'refunded'} by the bot — ${ok ? 'Kick has it now' : 'Kick still refused, will retry'}.`);
+          continue;
+        }
         if (this.seen.includes(row.id)) continue;
         const action = this.matchAction({ id: row.rewardId, title: row.rewardTitle });
         if (!action) continue;
 
+        // Paid already (the accept was lost): accept it. Refunding would pay twice.
+        if (action.action === 'points' && this.deps.alreadyPaid?.(row.id)) {
+          this.seen.push(row.id);
+          if (this.seen.length > SEEN_LIMIT) this.seen.shift();
+          const ok = await this.settle(row.id, true);
+          console.log(`[REWARD] Reconcile: "${row.rewardTitle}" (${row.id}) was already paid — ${ok ? 'accepted' : 'accept failed, will retry'}.`);
+          continue;
+        }
+
         const username = await this.usernameFor(row.redeemerId, token);
-        if (pendingVerdict(row.redeemedAt, Date.now(), RECONCILE_ACT_MAX_MS) === 'act') {
+        // Paying out late is harmless, unlike a late timeout, so a points reward is never too old.
+        if (action.action === 'points' || pendingVerdict(row.redeemedAt, Date.now(), RECONCILE_ACT_MAX_MS) === 'act') {
           // Acting on "someone" would aim a shield or a roulette backfire at nobody;
           // leave it pending and try again on the next pass instead.
           if (!username) continue;
@@ -544,7 +590,7 @@ export class RewardRedemptionHandler {
 
         this.seen.push(row.id);
         if (this.seen.length > SEEN_LIMIT) this.seen.shift();
-        const refunded = await this.resolve(row.id, false);
+        const refunded = await this.settle(row.id, false);
         console.log(
           `[REWARD] Reconcile: "${row.rewardTitle}" by ${username ?? row.redeemerId} was never delivered and is too old to act on ` +
           `(redeemed ${row.redeemedAt ?? 'at an unknown time'}) — ${refunded ? 'points refunded' : 'REFUND FAILED, resolve it by hand'}.`
@@ -705,22 +751,83 @@ export class RewardRedemptionHandler {
   }
 
   /** Accept (fulfil) or reject (refund) the queued redemption. Returns success. */
-  private async resolve(redemptionId: string, accept: boolean): Promise<boolean> {
+  private resolutionPath(): string {
+    return path.join(process.cwd(), 'data', RESOLUTION_DIR, `${this.deps.channelName}.json`);
+  }
+
+  private loadResolutions(): Record<string, { accept: boolean; at: number }> {
     try {
-      const { token, isChannelToken } = await this.deps.getToken();
-      if (!isChannelToken || !token) return false;
-      await axios.post(
-        `${API}/channels/rewards/redemptions/${accept ? 'accept' : 'reject'}`,
-        { ids: [redemptionId] },
-        { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } }
-      );
-      return true;
+      const raw = JSON.parse(fs.readFileSync(this.resolutionPath(), 'utf8')) as Record<string, { accept?: unknown; at?: unknown }>;
+      const now = Date.now();
+      const out: Record<string, { accept: boolean; at: number }> = {};
+      for (const [id, v] of Object.entries(raw)) {
+        if (typeof v?.accept === 'boolean' && typeof v.at === 'number' && now - v.at < RESOLUTION_KEEP_MS) out[id] = { accept: v.accept, at: v.at };
+      }
+      return out;
+    } catch {
+      return {};
+    }
+  }
+
+  private saveResolutions(all: Record<string, { accept: boolean; at: number }>): void {
+    try {
+      const file = this.resolutionPath();
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      const tmp = `${file}.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify(all));
+      fs.renameSync(tmp, file);
     } catch (err) {
-      const detail = axios.isAxiosError(err)
-        ? JSON.stringify(err.response?.data ?? err.message)
-        : (err instanceof Error ? err.message : String(err));
-      console.error(`[REWARD] Failed to ${accept ? 'accept' : 'reject'} redemption ${redemptionId}: ${detail}`);
-      return false;
+      console.error(`[REWARD] Could not save pending decisions: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  /**
+   * Accept or refund a redemption on Kick, remembering the decision on disk until
+   * Kick has taken it, so a lost call is retried with the same answer.
+   */
+  private async settle(redemptionId: string, accept: boolean): Promise<boolean> {
+    const before = this.loadResolutions();
+    before[redemptionId] = { accept, at: before[redemptionId]?.at ?? Date.now() };
+    this.saveResolutions(before);
+    const ok = await this.resolve(redemptionId, accept);
+    if (ok) {
+      const after = this.loadResolutions();
+      delete after[redemptionId];
+      this.saveResolutions(after);
+    }
+    return ok;
+  }
+
+  /** One accept/reject call, queued behind the others and retried while Kick rate-limits. */
+  private resolve(redemptionId: string, accept: boolean): Promise<boolean> {
+    const run = this.resolveChain.then(() => this.resolveNow(redemptionId, accept));
+    this.resolveChain = run.then(() => new Promise(r => setTimeout(r, RESOLVE_SPACING_MS)));
+    return run;
+  }
+
+  private async resolveNow(redemptionId: string, accept: boolean): Promise<boolean> {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        const { token, isChannelToken } = await this.deps.getToken();
+        if (!isChannelToken || !token) return false;
+        await axios.post(
+          `${API}/channels/rewards/redemptions/${accept ? 'accept' : 'reject'}`,
+          { ids: [redemptionId] },
+          { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } }
+        );
+        return true;
+      } catch (err) {
+        const limited = axios.isAxiosError(err) && err.response?.status === 429;
+        if (limited && attempt < RESOLVE_RETRY_MS.length) {
+          await new Promise(r => setTimeout(r, RESOLVE_RETRY_MS[attempt]));
+          continue;
+        }
+        const detail = axios.isAxiosError(err)
+          ? JSON.stringify(err.response?.data ?? err.message)
+          : (err instanceof Error ? err.message : String(err));
+        console.error(`[REWARD] Failed to ${accept ? 'accept' : 'reject'} redemption ${redemptionId}: ${detail}`);
+        return false;
+      }
     }
   }
 }

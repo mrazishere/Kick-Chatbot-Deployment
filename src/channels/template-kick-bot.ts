@@ -131,7 +131,8 @@ class KickChatBot {
       getToken: () => this.getChannelAccessToken(),
       moderator: this.moderator,
       sendMessage: (msg) => this.sendMessage(msg),
-      creditPoints: (a) => this.points.creditFromReward(a)
+      creditPoints: (a) => this.points.creditFromReward(a),
+      alreadyPaid: (id) => this.points.rewardAlreadyPaid(id)
     });
 
     // Loyalty points. Inert until the channel config enables them.
