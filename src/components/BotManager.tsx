@@ -132,6 +132,8 @@ interface RewardActionConfig {
   durationSeconds?: number;
   /** points only. */
   amount?: number;
+  /** Most redemptions per stream; the bot pauses the reward on Kick when it's reached. */
+  maxPerStream?: number;
   reflect?: boolean;
   announce?: boolean;
   testMode?: boolean;
@@ -195,6 +197,7 @@ interface RewardDraft {
   duration: string;
   unit: DurationUnit;
   amount: string;
+  maxPerStream: string;
   reflect: boolean;
   announce: boolean;
   testMode: boolean;
@@ -212,10 +215,11 @@ function formatSeconds(s: number): string {
 function describeRewardAction(a: RewardActionConfig): string {
   const meta = REWARD_ACTION_META[a.action];
   if (!meta) return String(a.action);
-  if (a.action === "points") return `${meta.label} · ${(a.amount ?? 0).toLocaleString("en-US")}`;
+  const cap = a.maxPerStream ? ` · max ${a.maxPerStream}/stream` : "";
+  if (a.action === "points") return `${meta.label} · ${(a.amount ?? 0).toLocaleString("en-US")}${cap}`;
   const length = a.action !== "pardon" && a.durationSeconds ? ` · ${formatSeconds(a.durationSeconds)}` : "";
   const reflect = a.action === "shield" && a.reflect ? " · bounces back" : "";
-  return `${meta.label}${length}${reflect}`;
+  return `${meta.label}${length}${reflect}${cap}`;
 }
 
 function draftFromReward(r: ChannelRewardRow | null): RewardDraft {
@@ -237,6 +241,7 @@ function draftFromReward(r: ChannelRewardRow | null): RewardDraft {
     duration: secs ? String(secs / UNIT_SECONDS[unit]) : "",
     unit,
     amount: a?.amount ? String(a.amount) : "",
+    maxPerStream: a?.maxPerStream ? String(a.maxPerStream) : "",
     reflect: a?.reflect ?? false,
     announce: a ? a.announce !== false : true,
     testMode: a?.testMode ?? false,
@@ -774,6 +779,9 @@ export default function BotManager({
       if (!/^\d+$/.test(d.duration.trim()) || Number(d.duration) < 1) return "Set how long it lasts.";
       if (Number(d.duration) * UNIT_SECONDS[d.unit] > 604800) return "The longest Kick allows is 7 days.";
     }
+    if (d.actionKind && d.maxPerStream.trim() && (!/^\d+$/.test(d.maxPerStream.trim()) || Number(d.maxPerStream) > 100000)) {
+      return "Max per stream must be a whole number (leave it empty or 0 for no limit).";
+    }
     if (d.actionKind && d.testMode) {
       const t = d.testDuration.trim();
       if (t && (!/^\d+$/.test(t) || Number(t) < 1 || Number(t) > 3600)) return "Test length must be 1–3600 seconds.";
@@ -807,6 +815,7 @@ export default function BotManager({
           action: d.actionKind,
           ...(d.actionKind !== "pardon" && d.actionKind !== "points" ? { durationSeconds: Number(d.duration) * UNIT_SECONDS[d.unit] } : {}),
           ...(d.actionKind === "points" ? { amount: Number(d.amount) } : {}),
+          ...(Number(d.maxPerStream.trim() || 0) > 0 ? { maxPerStream: Number(d.maxPerStream) } : {}),
           ...(d.actionKind === "shield" && d.reflect ? { reflect: true } : {}),
           announce: d.announce,
           ...(d.testMode
@@ -1825,6 +1834,23 @@ export default function BotManager({
                               </div>
                             </label>
                           ) : null}
+                          <label className="block">
+                            <span className="mb-1 block text-xs uppercase tracking-wider text-neutral-500">Max redemptions per stream</span>
+                            <input
+                              type="text"
+                              inputMode="numeric"
+                              value={rewardDraft.maxPerStream}
+                              disabled={!!busy}
+                              onChange={(e) => patchRewardDraft({ maxPerStream: e.target.value })}
+                              placeholder="No limit"
+                              className="w-32 tabular-nums rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm text-neutral-200 outline-none transition placeholder:text-neutral-600 focus:border-neutral-500 disabled:opacity-40"
+                            />
+                            <span className="mt-1 block text-xs text-neutral-500">
+                              Kick has no limits of its own, so the bot pauses this reward once it&apos;s been redeemed this many
+                              times, refunds any that slip in first, and unpauses it when the next stream starts. Offline
+                              time counts as its own window each day.
+                            </span>
+                          </label>
                           <div className="grid gap-x-6 gap-y-2 sm:grid-cols-2">
                             <Checkbox label="Announce the result in chat" checked={rewardDraft.announce} disabled={!!busy} onChange={(v) => patchRewardDraft({ announce: v })} />
                             {rewardDraft.actionKind === "shield" ? (
