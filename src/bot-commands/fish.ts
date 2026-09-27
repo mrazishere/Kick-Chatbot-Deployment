@@ -34,6 +34,7 @@ import type { PointsDb } from '../points/db';
 import { applyOnce, creditTx, debitTx, ensureUserTx, findUserByName, getUser, isApplied, isExcluded } from '../points/store';
 import { makeCooldown, parseUsername, span } from '../community/format';
 import { gameInvocation } from '../community/stakes';
+import { addReminder, cancelSelfRemindersStartingWith, openCommunityDb } from '../community/store';
 import { bestEmote, broadcasterIdFor } from '../community/emotes';
 import {
   addItem, baitPrice, baitRoll, CatchItem, CatchType, FAILURE_EMOTES, FishData, findBait, hasFishedBefore, initialData,
@@ -289,6 +290,27 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     return void say(`You caught a ✨${out.item.name}✨${size} ${emote} Now, go do something productive! (${minutes} minute fishing cooldown after a successful catch)`);
   }
 
+  /**
+   * The reminder that pings a viewer when their traps are full, posted through
+   * !remind's timer so it survives a restart. It needs !remind on to be delivered.
+   * Collecting, cancelling or re-laying the traps first clears the old one.
+   */
+  const TRAP_REMINDER = 'your fishing traps are ready';
+  const remindsOn = !((config as ChannelConfig).excludedCommands as string[] | undefined ?? []).some(c => String(c).toLowerCase() === 'remind');
+  function syncTrapReminder(trapEnd: number | null): void {
+    const cdb = openCommunityDb(channel);
+    if (!cdb) return;
+    try {
+      const now = Date.now();
+      cancelSelfRemindersStartingWith(cdb, meLc, TRAP_REMINDER, now);
+      if (trapEnd !== null && remindsOn) {
+        addReminder(cdb, { from: me, to: me, text: `${TRAP_REMINDER} 🎣 collect them with ${cmd} fish trap`, now, dueAt: trapEnd });
+      }
+    } catch (err) {
+      console.error(`[FISH] Trap reminder for ${me} failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   // ── trap ──
   async function trap(operation: string, uid: number): Promise<void> {
     const before = loadFish(db!, uid) ?? initialData();
@@ -296,6 +318,8 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     const laysTraps = operation !== 'cancel' && (!before.trap.active || operation === 'reset');
     if (laysTraps && !(await liveOk())) return;
     const waitEmote = await emotesFor(['PauseChamp'], '⌛');
+    // What the traps are after this message: laid until a time, emptied, or untouched.
+    let after: { laidUntil: number | null } | null = null;
 
     const text = once(now => {
       ensureUserTx(db!, uid, me, now);
@@ -306,7 +330,9 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       const setUp = (): string => {
         const duration = g.trapMinutes * 60_000;
         d.trap = { active: true, start: now, end: now + duration, duration };
-        return `You have laid your fishing traps. Now we wait... ${waitEmote} You can check them in about ${span(duration)}.`;
+        after = { laidUntil: d.trap.end };
+        const ping = remindsOn ? " I'll ping you when they're ready." : '';
+        return `You have laid your fishing traps. Now we wait... ${waitEmote} You can check them in about ${span(duration)}.${ping}`;
       };
       const collect = (): string => {
         const rolls = Math.floor(d.trap.duration / 60_000 * randomInt(75, 90) / 100);
@@ -330,6 +356,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
         d.lifetime.trap.times++;
         d.lifetime.trap.timeSpent += d.trap.duration;
         d.trap = { active: false, start: 0, end: 0, duration: 0 };
+        after = { laidUntil: null };
         if (fishAmount > d.lifetime.trap.bestFishCatch) d.lifetime.trap.bestFishCatch = fishAmount;
         if (!results.length) return 'You drag the traps out of the water... and find that there is nothing at all...!';
         if (fishAmount === 0) return `You drag the traps out of the water... and find a bunch of junk. ${results.join('')}`;
@@ -340,6 +367,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       if (operation === 'cancel') {
         if (!d.trap.active) return "You cannot cancel your fishing traps as you don't have them set up!";
         d.trap = { active: false, start: 0, end: 0, duration: 0 };
+        after = { laidUntil: null };
         d.lifetime.trap.cancelled++;
         reply = "You have successfully retrieved your traps before they filled up. You don't get any junk or fish.";
       } else if (!d.trap.active) {
@@ -354,6 +382,10 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       saveFish(db!, uid, d, now);
       return reply;
     });
+    // After the transaction, so a replayed or refused message leaves reminders alone.
+    // "reset" collects then lays again, which leaves `after` holding the new traps.
+    const settled = after as { laidUntil: number | null } | null;
+    if (text && settled) syncTrapReminder(settled.laidUntil);
     if (text) say(text);
   }
 

@@ -215,6 +215,16 @@ export function cancelReminder(db: CommunityDb, id: number, fromLc: string, now:
   return db.prepare('UPDATE reminders SET done_at = ? WHERE id = ? AND from_lc = ? AND done_at IS NULL').run(now, id, fromLc).changes === 1;
 }
 
+/**
+ * Close a viewer's reminders to themselves whose text starts with `prefix`: the
+ * ones a game set for them, like a trap-ready reminder once the traps are gone.
+ */
+export function cancelSelfRemindersStartingWith(db: CommunityDb, userLc: string, prefix: string, now: number): number {
+  return db.prepare(
+    "UPDATE reminders SET done_at = ? WHERE from_lc = ? AND to_lc = ? AND substr(text, 1, length(?)) = ? AND done_at IS NULL"
+  ).run(now, userLc, userLc, prefix, prefix).changes;
+}
+
 // ─── Cookies ────────────────────────────────────────────────────────────────
 
 export function loadCookieData(db: CommunityDb, usernameLc: string): { username: string; data: string } | undefined {

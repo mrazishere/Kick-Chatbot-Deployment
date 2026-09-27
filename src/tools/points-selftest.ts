@@ -26,6 +26,8 @@ import {
 import { WebhookPoller } from '../channels/webhook-poller';
 import { points as pointsCommand } from '../bot-commands/points';
 import { ITEMS, sellPrice, weightedCatch } from '../community/fishing';
+import { openCommunityDb } from '../community/store';
+import { fish as fishCommand } from '../bot-commands/fish';
 
 const MIN = 60_000;
 
@@ -526,6 +528,47 @@ async function main(): Promise<void> {
     fs.writeFileSync(path.join(dir, `${ch}.jsonl.proc`), follow);
     poller.poll();
     check('replayed .proc batch pays the follow once', calls.follow === 3 && balance(ch, 50) === 50, { calls, bal: balance(ch, 50) });
+  }
+
+  // Fishing traps set a reminder for when they're full
+  {
+    const ch = 'fishch';
+    writeConfig(root, ch, { enabled: true, currencyName: '$DON', games: { enabled: true, onlyWhileLive: false, trapMinutes: 60 } });
+    makeService(ch, { broadcaster: 999 });
+    openPointsDb(ch, { create: true });
+    const realNow = Date.now;
+    let shift = 0;
+    Date.now = () => realNow() + shift;
+    try {
+      const tags = (username: string, id: number): KickTags => ({
+        username, 'display-name': username, badges: {}, isBroadcaster: false, isModUp: false, isVIPUp: false, rawBadges: [], senderId: id
+      });
+      const run = async (msg: string, config: ChannelConfig) => {
+        shift += 6_000;   // past the per-user cooldown
+        const out: string[] = [];
+        await fishCommand({ say: async (_c, m) => { out.push(m); } }, msg, `#${ch}`, tags('angler', 11), config);
+        return out;
+      };
+      const on = { channelName: ch } as ChannelConfig;
+      const cdb = openCommunityDb(`#${ch}`)!;
+      const pending = () => cdb.prepare("SELECT text, due_at FROM reminders WHERE to_lc = 'angler' AND done_at IS NULL").all() as Array<{ text: string; due_at: number }>;
+
+      const laid = await run('$don fish trap', on);
+      const p1 = pending();
+      check('laying traps sets a reminder for when they fill', laid[0]?.includes("I'll ping you") && p1.length === 1
+        && p1[0].text.startsWith('your fishing traps are ready') && Math.abs(p1[0].due_at - (Date.now() + 60 * 60_000)) < 10_000, { laid, p1 });
+      await run('$don fish trap cancel', on);
+      check('cancelling traps clears the reminder', pending().length === 0, pending());
+      await run('$don fish trap', on);
+      shift += 61 * 60_000;
+      const collected = await run('$don fish trap', on);
+      check('collecting traps clears the reminder', collected[0]?.includes('drag the traps') && pending().length === 0, { collected, p: pending() });
+      const off = { channelName: ch, excludedCommands: ['remind'] } as unknown as ChannelConfig;
+      const quiet = await run('$don fish trap', off);
+      check('no reminder where !remind is off', !quiet[0]?.includes("I'll ping") && pending().length === 0, { quiet, p: pending() });
+    } finally {
+      Date.now = realNow;
+    }
   }
 
   // Command
