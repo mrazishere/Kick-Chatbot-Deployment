@@ -14,7 +14,7 @@
  *              games.catchCooldownMinutes (30). Bait is bought and used on the spot.
  *          $don fish sell <emoji> [n] [<emoji> [n] …] · sell all fish|junk|fish junk · sell duplicate (the same)
  *              Several items at once: "sell 🐟 🦐 🦀", "sell 🐟🦐🦀" or "sell 🐟 3 🦐 2".
- *          $don fish show [user] [fish|junk|emoji]      (also count, display, collection)
+ *          $don fish show [user] [fish|junk|emoji]      (also count, display, collection; no type shows both)
  *          $don fish stats [user|global]
  *          $don fish top [fish|coins|junk|lucky|unlucky|traps|attempts|total-…|emoji]   (also leaderboard)
  *          $don fish trap [cancel|reset]                (also net, trawl)
@@ -466,12 +466,15 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
   function show(parts: string[]): void {
     const [userOrType, optionalType] = parts;
     let showType: CatchType = 'fish';
+    // No type asked for shows both, where supibot shows fish only and junk looked missing.
+    let bothTypes = true;
     let emojiItem: CatchItem | undefined;
     let targetId = userId;
     let self = true;
     if (userOrType) {
       if (userOrType === 'fish' || userOrType === 'junk') {
         showType = userOrType;
+        bothTypes = false;
       } else {
         const name = parseUsername(userOrType);
         if (name && isBotSender(name)) return void say("I can't go fishing, if water splashed around it would damage my circuits! 😨");
@@ -481,8 +484,10 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
         self = found.user_id === userId;
       }
       if (optionalType) {
-        if (optionalType === 'fish' || optionalType === 'junk') showType = optionalType;
-        else {
+        if (optionalType === 'fish' || optionalType === 'junk') {
+          showType = optionalType;
+          bothTypes = false;
+        } else {
           emojiItem = ITEMS.find(i => i.name === optionalType);
           if (!emojiItem) return void say('You must provide a proper catch type (fish or junk) or a proper catch emoji!');
         }
@@ -497,17 +502,30 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       return void say(`${subject} have ${itemString} in ${possessive} collection.`);
     }
     const purse = getUser(db!, targetId!)?.balance ?? 0;
+    const listOf = (type: CatchType): string => {
+      const list: string[] = [];
+      for (const [emoji, count] of Object.entries(d.catch.types)) {
+        if (count <= 0) continue;
+        if (ITEMS.find(i => i.name === emoji)?.type !== type) continue;
+        list.push(count < 5 ? emoji.repeat(count) : `${count}x ${emoji}`);
+      }
+      return list.join('');
+    };
+    if (bothTypes) {
+      const fish = d.catch.fish ?? 0;
+      const junk = d.catch.junk ?? 0;
+      if (fish <= 0 && junk <= 0) {
+        return void say(`${subject} have no fish or junk in ${possessive} collection, and ${possessive} purse contains ${purse} ${cur}.`);
+      }
+      const fishPart = fish > 0 ? `${fish} fish (${listOf('fish')})` : 'no fish';
+      const junkPart = junk > 0 ? `${junk} ${junk === 1 ? 'piece' : 'pieces'} of junk (${listOf('junk')})` : 'no junk';
+      return void say(`${subject} have ${fishPart} and ${junkPart} in ${possessive} collection. ${subject} also have ${purse} ${cur} in ${possessive} purse.`);
+    }
     const amount = d.catch[showType] ?? 0;
     if (amount <= 0) {
       return void say(`${subject} have no ${TYPE_DESCRIPTIONS[showType]} in ${possessive} collection, and ${possessive} purse contains ${purse} ${cur}.`);
     }
-    const list: string[] = [];
-    for (const [emoji, count] of Object.entries(d.catch.types)) {
-      if (count <= 0) continue;
-      if (ITEMS.find(i => i.name === emoji)?.type !== showType) continue;
-      list.push(count < 5 ? emoji.repeat(count) : `${count}x ${emoji}`);
-    }
-    return void say(`${subject} have ${amount} ${TYPE_DESCRIPTIONS[showType]} in ${possessive} collection. Here they are: ${list.join('')} ${subject} also have ${purse} ${cur} in ${possessive} purse.`);
+    return void say(`${subject} have ${amount} ${TYPE_DESCRIPTIONS[showType]} in ${possessive} collection. Here they are: ${listOf(showType)} ${subject} also have ${purse} ${cur} in ${possessive} purse.`);
   }
 
   // ── stats ──

@@ -594,9 +594,16 @@ async function main(): Promise<void> {
         ensureUserTx(pdb, 13, 'bulk', 1);
         const d = initialData();
         for (const name of ['🐟', '🐟', '🦐', '🥫', '🥫', '🧦']) addItem(d, ITEMS.find(i => i.name === name)!);
+        d.lifetime.attempts = 1;
         saveFish(pdb, 13, d, 1);
       });
       const bulk = (msg: string) => run(msg, on, ['bulk', 13]);
+      const shown = await bulk('$don fish show');
+      check('show lists fish and junk', shown[0] === '@bulk You have 3 fish (🐟🐟🦐) and 3 pieces of junk (🥫🥫🧦) in your collection. You also have 0 $DON in your purse.', shown);
+      const shownJunk = await bulk('$don fish show junk');
+      check('show junk is junk only', shownJunk[0] === '@bulk You have 3 pieces of junk in your collection. Here they are: 🥫🥫🧦 You also have 0 $DON in your purse.', shownJunk);
+      const other = await run('$don fish show @bulk', on, ['seller', 12]);
+      check('show another viewer lists both', other[0]?.startsWith('@seller They have 3 fish (🐟🐟🦐) and 3 pieces of junk'), other);
       const mixed = await bulk('$don fish sell 🦐 🥫');
       check('fish and junk emojis in one sale', mixed[0] === '@bulk Sold your 🦐, 🥫 for 33 $DON - now you have 33 $DON', mixed);
       const noType = await bulk('$don fish sell all');
