@@ -1487,7 +1487,9 @@ export default function BotManager({
                   <code className="text-neutral-400">/timeout $user1 1m</code> — the bot does it through Kick&apos;s API
                   instead of posting the text. Durations take s, m, h or d (a bare number is minutes), and anything
                   after the duration is posted to chat once it works. Only mods can time out someone other than
-                  themselves.
+                  themselves. A response of <code className="text-neutral-400">/vanish</code> deletes the user&apos;s own
+                  messages from the last 10 minutes for everyone, which a timeout on Kick doesn&apos;t: timed-out messages
+                  come back when the page is reloaded.
                 </p>
                 {draftProblem?.message ? <p className="text-xs text-amber-500">{draftProblem.message}</p> : null}
                 <div className="flex justify-end gap-2">
@@ -1545,6 +1547,9 @@ export default function BotManager({
                           </span>
                           {/^\/timeout\b/i.test(c.response.trim()) ? (
                             <span className="rounded bg-red-950/50 px-1.5 py-0.5 text-[10px] text-red-400">timeout</span>
+                          ) : null}
+                          {/^\/vanish\b/i.test(c.response.trim()) ? (
+                            <span className="rounded bg-red-950/50 px-1.5 py-0.5 text-[10px] text-red-400">vanish</span>
                           ) : null}
                           <span className="text-xs tabular-nums text-neutral-600">
                             {c.counter.toLocaleString()} {c.counter === 1 ? "use" : "uses"}
