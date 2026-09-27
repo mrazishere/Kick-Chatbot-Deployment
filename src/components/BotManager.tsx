@@ -124,6 +124,16 @@ interface CustomCommandDraft {
 }
 
 type RewardActionKind = "timeout" | "roulette" | "pardon" | "shield" | "points";
+type RewardAvailability = "always" | "live" | "offline";
+
+/** When a reward can be redeemed, reading the older pauseWhenOffline flag too. Mirrors the bot. */
+function availabilityOf(a: RewardActionConfig | null): RewardAvailability {
+  if (!a) return "live";
+  if (a.availability) return a.availability;
+  return a.pauseWhenOffline === false ? "always" : "live";
+}
+
+const AVAILABILITY_LABEL: Record<RewardAvailability, string> = { always: "Always", live: "Live only", offline: "Offline only" };
 
 interface RewardActionConfig {
   rewardId?: string;
@@ -134,6 +144,9 @@ interface RewardActionConfig {
   amount?: number;
   /** Most redemptions per stream; the bot pauses the reward on Kick when it's reached. */
   maxPerStream?: number;
+  availability?: RewardAvailability;
+  /** Older setting that availability replaces: false meant always available. */
+  pauseWhenOffline?: boolean;
   reflect?: boolean;
   announce?: boolean;
   testMode?: boolean;
@@ -174,7 +187,7 @@ const REWARD_ACTION_META: Record<RewardActionKind, { label: string; description:
   points: {
     label: "Give loyalty points",
     description:
-      "Gives the redeemer this much of the channel's loyalty currency (e.g. $DON). It stays available while the stream is offline, and a redemption is only ever paid once.",
+      "Gives the redeemer this much of the channel's loyalty currency (e.g. $DON). A redemption is only ever paid once.",
   },
 };
 
@@ -198,6 +211,7 @@ interface RewardDraft {
   unit: DurationUnit;
   amount: string;
   maxPerStream: string;
+  availability: RewardAvailability;
   reflect: boolean;
   announce: boolean;
   testMode: boolean;
@@ -242,6 +256,7 @@ function draftFromReward(r: ChannelRewardRow | null): RewardDraft {
     unit,
     amount: a?.amount ? String(a.amount) : "",
     maxPerStream: a?.maxPerStream ? String(a.maxPerStream) : "",
+    availability: availabilityOf(a),
     reflect: a?.reflect ?? false,
     announce: a ? a.announce !== false : true,
     testMode: a?.testMode ?? false,
@@ -816,6 +831,7 @@ export default function BotManager({
           ...(d.actionKind !== "pardon" && d.actionKind !== "points" ? { durationSeconds: Number(d.duration) * UNIT_SECONDS[d.unit] } : {}),
           ...(d.actionKind === "points" ? { amount: Number(d.amount) } : {}),
           ...(Number(d.maxPerStream.trim() || 0) > 0 ? { maxPerStream: Number(d.maxPerStream) } : {}),
+          availability: d.availability,
           ...(d.actionKind === "shield" && d.reflect ? { reflect: true } : {}),
           announce: d.announce,
           ...(d.testMode
@@ -1771,6 +1787,7 @@ export default function BotManager({
                             const kind = e.target.value as RewardActionKind | "";
                             patchRewardDraft({
                               actionKind: kind,
+                              ...(kind && !rewardDraft.actionKind ? { availability: (kind === "points" ? "always" : "live") as RewardAvailability } : {}),
                               // Same value by default: a reward costing 5,000 gives 5,000.
                               ...(kind === "points" && !rewardDraft.amount ? { amount: rewardDraft.cost } : {}),
                               ...(kind && kind !== "pardon" && kind !== "points" && !rewardDraft.duration
@@ -1834,6 +1851,33 @@ export default function BotManager({
                               </div>
                             </label>
                           ) : null}
+                          <div>
+                            <span className="mb-1 block text-xs uppercase tracking-wider text-neutral-500">Available</span>
+                            <div className="inline-flex overflow-hidden rounded-lg border border-neutral-700" role="radiogroup" aria-label="When this reward can be redeemed">
+                              {(["always", "live", "offline"] as RewardAvailability[]).map((opt) => (
+                                <button
+                                  key={opt}
+                                  type="button"
+                                  role="radio"
+                                  aria-checked={rewardDraft.availability === opt}
+                                  disabled={!!busy}
+                                  onClick={() => patchRewardDraft({ availability: opt })}
+                                  className={`px-3 py-1.5 text-sm transition disabled:opacity-40 ${
+                                    rewardDraft.availability === opt
+                                      ? "bg-[#53FC18]/15 text-[#53FC18]"
+                                      : "text-neutral-400 hover:bg-neutral-800 hover:text-neutral-200"
+                                  }`}
+                                >
+                                  {AVAILABILITY_LABEL[opt]}
+                                </button>
+                              ))}
+                            </div>
+                            <span className="mt-1 block text-xs text-neutral-500">
+                              {rewardDraft.availability === "always"
+                                ? "Can be redeemed whether or not the stream is live."
+                                : `The bot pauses this reward on Kick while the stream is ${rewardDraft.availability === "live" ? "offline" : "live"} and unpauses it when it ${rewardDraft.availability === "live" ? "goes live" : "ends"}; anything redeemed in between is refunded.`}
+                            </span>
+                          </div>
                           <label className="block">
                             <span className="mb-1 block text-xs uppercase tracking-wider text-neutral-500">Max redemptions per stream</span>
                             <input
@@ -1973,6 +2017,11 @@ export default function BotManager({
                               {r.action ? (
                                 <span className="text-neutral-300">
                                   Bot: {describeRewardAction(r.action)}
+                                  {availabilityOf(r.action) !== "always" ? (
+                                    <span className="ml-2 rounded bg-sky-950/50 px-1.5 py-0.5 text-[10px] text-sky-300">
+                                      {AVAILABILITY_LABEL[availabilityOf(r.action)].toLowerCase()}
+                                    </span>
+                                  ) : null}
                                   {r.action.testMode ? (
                                     <span className="ml-2 rounded bg-amber-950/50 px-1.5 py-0.5 text-[10px] text-amber-500">test mode</span>
                                   ) : null}
