@@ -126,7 +126,17 @@ export default async function LeaderboardPage({ params, searchParams }: Props) {
                       >
                         #{row.rank}
                       </span>
-                      <span className="min-w-0 flex-1 truncate text-neutral-200">{row.username}</span>
+                      <span className="flex min-w-0 flex-1 items-center gap-2">
+                        <span className="truncate text-neutral-200">{row.username}</span>
+                        {row.reel ? (
+                          <span
+                            title={`Fishes with the ${row.reel} reel`}
+                            className="shrink-0 rounded-md border border-sky-900/60 bg-sky-950/40 px-1.5 py-0.5 text-xs text-sky-300"
+                          >
+                            🎣 {row.reel}
+                          </span>
+                        ) : null}
+                      </span>
                       <span className="shrink-0 tabular-nums text-neutral-300">
                         {tab === "watchtime" ? formatWatch(row.value) : `${row.value.toLocaleString("en-US")} ${currency}`}
                       </span>

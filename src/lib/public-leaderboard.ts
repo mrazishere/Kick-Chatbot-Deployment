@@ -27,13 +27,14 @@ function remember(channel: string, data: PointsLeaderboard): void {
   }
 }
 
-/** Only what a public page may show: rank, name, value. Anything else the API sends is dropped. */
+/** Only what a public page may show: rank, name, value and reel. Anything else the API sends is dropped. */
 function publicEntries(rows: unknown): PointsLeaderboardEntry[] {
   if (!Array.isArray(rows)) return [];
   return rows.slice(0, 100).flatMap((row) => {
     const r = row as Partial<PointsLeaderboardEntry> | null;
     if (!r || typeof r.username !== "string" || typeof r.rank !== "number" || typeof r.value !== "number") return [];
-    return [{ rank: r.rank, username: r.username, value: r.value }];
+    const reel = typeof r.reel === "string" && r.reel.length > 0 && r.reel.length <= 24 ? r.reel : undefined;
+    return [reel ? { rank: r.rank, username: r.username, value: r.value, reel } : { rank: r.rank, username: r.username, value: r.value }];
   });
 }
 

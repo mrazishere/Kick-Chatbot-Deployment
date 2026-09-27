@@ -296,6 +296,8 @@ export interface PointsLeaderboardEntry {
   username: string;
   /** Points, or seconds of active time (chatting while live). */
   value: number;
+  /** The fishing reel they hold, by name. Absent when they have none. */
+  reel?: string;
 }
 
 export interface PointsLeaderboard {
