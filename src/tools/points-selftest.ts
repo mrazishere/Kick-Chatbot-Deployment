@@ -127,15 +127,26 @@ async function main(): Promise<void> {
   // Fishing odds and prices per item
   {
     const stored = { games: { sellPricePercent: 300 } };
-    const set = validatePointsPatch(stored, { games: { catches: { '🐟': { weight: 5, price: 999 }, '🐬': { weight: 1, price: 150 }, '🥾': { weight: 0 } } } });
-    // 🐬 at weight 1 and 50 × 300% = 150 is the default, so nothing is stored for it.
+    const set = validatePointsPatch(stored, { games: { catches: { '🐟': { weight: 5, price: 999 }, '🐬': { weight: 1.5, price: 450 }, '🥾': { weight: 0 } } } });
+    // 🐬 at weight 1.5 and 150 × 300% = 450 is the default, so nothing is stored for it.
     check('catch overrides stored, defaults dropped', set.errors.length === 0
       && JSON.stringify(set.next?.games?.catches) === JSON.stringify({ '🐟': { weight: 5, price: 999 }, '🥾': { weight: 0 } }), set);
     const g = effectivePointsConfig(set.next).games;
     const fish = g.catches.find(c => c.name === '🐟');
     const shark = g.catches.find(c => c.name === '🦈');
     check('effective catches fill every item', g.catches.length === ITEMS.length && fish?.weight === 5 && fish.price === 999
-      && shark?.weight === 1 && shark.price === 150 && shark.defaultPrice === 150, { fish, shark });
+      && shark?.weight === 0.5 && shark.price === 1200 && shark.defaultPrice === 1200, { fish, shark });
+    const dec = validatePointsPatch({}, { games: { catches: { '🐋': { weight: 0.057 } } } });
+    check('decimal odds kept to 2 places', dec.errors.length === 0 && dec.next?.games?.catches?.['🐋']?.weight === 0.06, dec);
+    const gd = effectivePointsConfig({}).games;
+    const tally: Record<string, number> = {};
+    for (let i = 0; i < 50_000; i++) { const n = weightedCatch('fish', gd).name; tally[n] = (tally[n] ?? 0) + 1; }
+    const common = ['🐟', '🦐', '🦀', '🐸', '🐚'].reduce((sum, n) => sum + (tally[n] ?? 0), 0) / 50_000;
+    const legendary = ((tally['🐳'] ?? 0) + (tally['🐋'] ?? 0)) / 50_000;
+    check('default tiers catch as documented', Math.abs(common - 0.683) < 0.015 && legendary > 0.0012 && legendary < 0.0045, { common, legendary });
+    const avg = gd.catches.filter(c => c.type === 'fish').reduce((sum, c) => sum + c.weight * c.defaultPrice, 0)
+      / gd.catches.filter(c => c.type === 'fish').reduce((sum, c) => sum + c.weight, 0);
+    check('average fish price stays near supibot 50', avg > 48 && avg < 56, avg);
     const item = ITEMS.find(i => i.name === '🐟')!;
     check('override price is the base a size scales', sellPrice(item, g) === 999 && sellPrice(item, g, { cm: 100, record: false }) === 1998);
     check('junk sells at percent default', sellPrice(ITEMS.find(i => i.name === '🥫')!, g) === 24);

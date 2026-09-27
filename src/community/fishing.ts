@@ -3,7 +3,8 @@
  * (github.com/supinic/supibot, commands/fish). The numbers, odds and messages
  * follow supibot; the code is our own. What differs: coins are the channel's
  * loyalty currency, so a viewer's purse is their points balance, and each
- * channel's anglers are kept in that channel's points database.
+ * channel's anglers are kept in that channel's points database. supibot's fish
+ * all share one weight and one price; ours come in rarity tiers (below).
  */
 
 import * as crypto from 'crypto';
@@ -17,7 +18,7 @@ export interface CatchItem {
   type: CatchType;
   /** supibot's sell price; the channel's sellPricePercent scales it unless the dashboard sets one. */
   price: number;
-  /** Chance weight within its type. */
+  /** Chance weight within its type; decimals allowed, so lower is always rarer. */
   weight: number;
   /** Whether a catch gets a length in cm. */
   size: boolean;
@@ -30,10 +31,23 @@ export const ITEMS: readonly CatchItem[] = [
   { name: '🌿', type: 'junk', price: 2, weight: 200, size: false },
   { name: '🍂', type: 'junk', price: 1, weight: 100, size: false },
   { name: '🧦', type: 'junk', price: 5, weight: 50, size: false },
-  ...['🦂', '🦑', '🦐', '🦞', '🦀', '🐡', '🐠', '🐟', '🐬', '🐳', '🐋', '🦈', '🐊', '🐸', '🐢', '🐙']
-    .map(name => ({ name, type: 'fish' as const, price: 50, weight: 1, size: true })),
-  { name: '🐚', type: 'fish', price: 50, weight: 1, size: false }
+  ...fishTier(['🐟', '🦐', '🦀', '🐸'], 10, 25),
+  { name: '🐚', type: 'fish', price: 25, weight: 10, size: false },
+  ...fishTier(['🐠', '🐡', '🦞', '🐢'], 4, 60),
+  ...fishTier(['🦑', '🐙', '🦂', '🐬'], 1.5, 150),
+  ...fishTier(['🐊', '🦈'], 0.5, 400),
+  ...fishTier(['🐳', '🐋'], 0.1, 1500)
 ];
+
+/**
+ * Rarity tiers, where supibot has every fish at weight 1 and price 50: common
+ * fish are caught often and sell cheap, rare ones seldom and dear. The shares of
+ * fish catches are 68% / 22% / 8% / 1.4% / 0.3%, and a fish sells for about 52 on
+ * average, near supibot's 50, so fishing earns what it did overall.
+ */
+function fishTier(names: string[], weight: number, price: number): CatchItem[] {
+  return names.map(name => ({ name, type: 'fish' as const, price, weight, size: true }));
+}
 
 export const TYPE_DESCRIPTIONS: Record<CatchType, string> = { fish: 'fish', junk: 'pieces of junk' };
 
@@ -148,12 +162,13 @@ export function weightedCatch(type: CatchType, g: PointsGamesConfig): CatchItem 
   const total = weights.reduce((s, w) => s + w, 0);
   // The config keeps at least one weight per type above 0; this is a last guard.
   if (total <= 0) return items[randomInt(0, items.length - 1)];
-  let roll = randomInt(1, total);
+  // Weights can be decimals, so the roll is a fraction of the total.
+  let roll = crypto.randomInt(0, 2 ** 48 - 1) / (2 ** 48 - 1) * total;
   for (let i = 0; i < items.length; i++) {
-    if (roll <= weights[i]) return items[i];
+    if (roll < weights[i]) return items[i];
     roll -= weights[i];
   }
-  return items[items.length - 1];
+  return items.filter((_, i) => weights[i] > 0).pop() ?? items[items.length - 1];
 }
 
 /** One roll without bait, as traps make them: 1 in `odds` a fish, else 1 in 4 junk. */

@@ -294,7 +294,7 @@ export interface FishCatchSetting {
   /** The emoji, which is also the item's name in chat. */
   name: string;
   type: 'fish' | 'junk';
-  /** Chance weight within its type: 0 is never caught. */
+  /** Chance weight within its type, up to two decimals: lower is rarer, 0 is never caught. */
   weight: number;
   /** What one sells for. A sized fish's length and a record still scale it. */
   price: number;

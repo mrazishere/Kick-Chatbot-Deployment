@@ -86,6 +86,8 @@ export function defaultPointsConfig(): PointsConfig {
 }
 
 const CATCH_WEIGHT_MAX = 1_000_000;
+/** Odds keep two decimals, so 0.01 is the rarest an item can be short of never. */
+const roundWeight = (w: number): number => Math.round(w * 100) / 100;
 const CATCH_PRICE_MAX = 1_000_000_000;
 
 /**
@@ -101,7 +103,7 @@ export function effectiveCatches(stored: unknown, sellPricePercent: number): Fis
     return {
       name: item.name,
       type: item.type,
-      weight: num(ov.weight, item.weight, 0, CATCH_WEIGHT_MAX, true),
+      weight: roundWeight(num(ov.weight, item.weight, 0, CATCH_WEIGHT_MAX, false)),
       price: num(ov.price, defaultPrice, 0, CATCH_PRICE_MAX, true),
       defaultWeight: item.weight,
       defaultPrice
@@ -379,7 +381,8 @@ function validateCatches(raw: unknown, sellPricePercent: number, errors: string[
     const ov = obj(v);
     const entry: { weight?: number; price?: number } = {};
     if (ov.weight !== undefined) {
-      const w = checkNumber(`${name} odds`, ov.weight, { min: 0, max: CATCH_WEIGHT_MAX, integer: true }, errors);
+      const checked = checkNumber(`${name} odds`, ov.weight, { min: 0, max: CATCH_WEIGHT_MAX, integer: false }, errors);
+      const w = checked === undefined ? undefined : roundWeight(checked);
       if (w !== undefined) {
         weights.set(name, w);
         if (w !== item.weight) entry.weight = w;
