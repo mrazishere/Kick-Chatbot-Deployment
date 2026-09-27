@@ -88,7 +88,7 @@ export interface PointsGames {
 export interface FishCatch {
   name: string;
   type: "fish" | "junk";
-  /** Chance weight within its type; 0 is never caught. */
+  /** Chance weight within its type, up to two decimals; 0 is never caught. */
   weight: number;
   /** Sell price; a sized fish's length and a record still scale it. */
   price: number;
@@ -516,7 +516,7 @@ function buildPatch(f: SettingsForm): { patch: PointsSettingsPatch } | { error: 
     // Only items that differ from their default are sent; the rest keep following it.
     const catches: Record<string, { weight: number; price: number }> = {};
     for (const c of f.fishCatches) {
-      const weight = whole(c.weight, `${c.name} odds`, 0, 1_000_000);
+      const weight = Math.round(decimal(c.weight, `${c.name} odds`, 0, 1_000_000) * 100) / 100;
       const price = whole(c.price, `${c.name} price`, 0, 1_000_000_000);
       if (weight !== c.defaultWeight || price !== c.defaultPrice) catches[c.name] = { weight, price };
     }
@@ -711,14 +711,15 @@ function CatchTable({ rows, currency, disabled, onChange }: {
         <tbody>
           {ofType.map((r) => {
             const w = Number(r.weight);
-            const chance = !(w > 0) || total === 0 ? "never" : `${((w / total) * 100).toFixed(w / total < 0.1 ? 1 : 0)}%`;
+            const share = total > 0 ? (w / total) * 100 : 0;
+            const chance = !(w > 0) || total === 0 ? "never" : `${share.toFixed(share < 1 ? 2 : share < 10 ? 1 : 0)}%`;
             return (
               <tr key={r.name}>
                 <td className="py-0.5 text-lg leading-none">{r.name}</td>
                 <td className="py-0.5 pl-2">
                   <input
                     aria-label={`${r.name} odds`}
-                    inputMode="numeric"
+                    inputMode="decimal"
                     value={r.weight}
                     disabled={disabled}
                     onChange={(e) => edit(r.name, "weight", e.target.value)}
@@ -757,7 +758,7 @@ function CatchTable({ rows, currency, disabled, onChange }: {
         </div>
         <div className="mt-3 flex flex-wrap items-start justify-between gap-3">
           <p className="max-w-xl text-xs text-neutral-500">
-            {`Odds are relative within fish or within junk: 2 is twice as likely as 1, and 0 is never caught. Chance is the share of fish (or junk) catches that item gets; how often a cast catches anything is the catch odds above. Prices are in ${currency}; a fish's length and a record still scale its price.`}
+            {`Lower odds make an item rarer: 0.5 is half as likely as 1, and 0 is never caught. Chance is that item's share of fish (or junk) catches; how often a cast lands anything at all is the catch odds above. Prices are in ${currency}, and a fish's length and a record still scale its price.`}
           </p>
           <button
             type="button"
