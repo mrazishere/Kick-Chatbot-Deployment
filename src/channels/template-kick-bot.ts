@@ -697,6 +697,8 @@ class KickChatBot {
     // Loyalty points presence: chatting recently is what counts as watching. The text
     // decides whether this message counts (repeats, emotes and $don don't).
     this.points.noteChat(sender?.id, username, badges, message);
+    // Kept so a !vanish can delete it later.
+    this.moderator.noteMessage(username, typeof data.id === 'string' ? data.id : undefined);
 
     // Build permission flags from badges
     const isBroadcaster = badges.some(b => b.type === 'broadcaster' || b.type === 'owner');
@@ -742,6 +744,7 @@ class KickChatBot {
       },
       // Lets custom commands issue real timeouts instead of posting "/timeout" as text.
       timeout: (request) => this.moderator.timeout(request),
+      vanish: (name) => this.moderator.vanish(name),
       lookupUser: (name) => this.moderator.lookupUser(name)
     };
 

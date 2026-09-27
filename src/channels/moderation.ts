@@ -14,7 +14,7 @@ import axios from 'axios';
 import * as fs from 'fs';
 import * as path from 'path';
 import { exec } from 'child_process';
-import { ModerationBannedEvent, RawBadge, TimeoutRequest, TimeoutResult } from '../types';
+import { ModerationBannedEvent, RawBadge, TimeoutRequest, TimeoutResult, VanishResult } from '../types';
 import { getBotIdentity } from '../bot-identity';
 import { SYSTEM_BOTS } from '../system-bots';
 
@@ -25,6 +25,11 @@ const MAX_TIMEOUT_MINUTES = 10080;
 
 /** How often the moderator cache is re-warmed from the channel log. */
 const MOD_REFRESH_MS = 30 * 60 * 1000;
+
+/** How far back !vanish reaches: roughly what is still on screen in a busy chat. */
+const VANISH_WINDOW_MS = 10 * 60 * 1000;
+/** Most messages one !vanish deletes, which also bounds the API calls it makes. */
+const VANISH_MAX_MESSAGES = 25;
 
 /** A token that can issue a ban, and the name Kick will show on it. */
 interface ModerationActor {
@@ -85,6 +90,8 @@ export class ChannelModerator {
   private liftTimers = new Map<string, NodeJS.Timeout>();
   /** Scopes actually granted on a given token, keyed by the token itself. */
   private scopeCache = new Map<string, string[]>();
+  /** Recent message ids by lowercase username, oldest first, for !vanish. Memory only. */
+  private recentMessages = new Map<string, Array<{ id: string; at: number }>>();
   /** Loaded from disk on first use. */
   private state: ModerationState | null = null;
 
@@ -320,6 +327,66 @@ export class ChannelModerator {
     return { ok: true, target, seconds, actor: actor.name };
   }
 
+  /** Remember a chat message so its sender can delete it with !vanish. Seeing an id twice is harmless. */
+  noteMessage(username: string, messageId: string | undefined): void {
+    if (!messageId) return;
+    const now = Date.now();
+    const key = username.toLowerCase();
+    const list = (this.recentMessages.get(key) ?? []).filter(m => now - m.at < VANISH_WINDOW_MS);
+    if (!list.some(m => m.id === messageId)) list.push({ id: messageId, at: now });
+    this.recentMessages.set(key, list.slice(-VANISH_MAX_MESSAGES));
+    // Drop chatters who went quiet, so a long stream doesn't grow the map for ever.
+    if (this.recentMessages.size > 2000) {
+      for (const [name, msgs] of this.recentMessages) {
+        if (!msgs.some(m => now - m.at < VANISH_WINDOW_MS)) this.recentMessages.delete(name);
+      }
+    }
+  }
+
+  /**
+   * Delete `username`'s messages from the last few minutes, the !vanish itself
+   * included, for everyone. A timeout only hides messages until the page is
+   * reloaded; deleting them through Kick's API removes them for good.
+   */
+  async vanish(username: string): Promise<VanishResult> {
+    const key = username.toLowerCase();
+    const now = Date.now();
+    const ids = (this.recentMessages.get(key) ?? []).filter(m => now - m.at < VANISH_WINDOW_MS).map(m => m.id);
+    if (ids.length === 0) return { ok: true, deleted: 0 };
+
+    const { token, isChannelToken } = await this.deps.getToken().catch(() => ({ token: '', isChannelToken: false }));
+    if (!isChannelToken || !token) {
+      console.error(`[MODERATION] !vanish for ${username} skipped — ${this.deps.channelName} has no streamer token.`);
+      return { ok: false, error: 'deleting messages is not set up for this channel' };
+    }
+    const actors = await this.deleteActors(token);
+    if (actors.length === 0) {
+      console.error(`[MODERATION] !vanish for ${username} skipped — no token carries moderation:chat_message:manage.`);
+      return { ok: false, error: 'deleting messages is not set up for this channel' };
+    }
+
+    // Find who can delete with the first message, then use them for the rest.
+    const del = (t: string, id: string) =>
+      axios.delete(`${API}/chat/${encodeURIComponent(id)}`, { headers: { Authorization: `Bearer ${t}` } }).catch((err: unknown) => {
+        // Already gone (a moderator got there first) is what was wanted.
+        if (axios.isAxiosError(err) && err.response?.status === 404) return;
+        throw err;
+      });
+    const actor = await this.firstThatWorks(actors, `Deleting ${username}'s message`, t => del(t, ids[0]));
+    if (!actor) return { ok: false, error: 'I could not delete your messages' };
+    let deleted = 1;
+    for (const id of ids.slice(1)) {
+      try {
+        await del(actor.token, id);
+        deleted++;
+      } catch (err) {
+        console.error(`[MODERATION] Deleting ${username}'s message ${id} failed: ${describeError(err)}`);
+      }
+    }
+    this.recentMessages.delete(key);
+    return { ok: true, deleted };
+  }
+
   /**
    * Lift a timeout this bot issued, from a reward or a /timeout command.
    *
@@ -401,6 +468,22 @@ export class ChannelModerator {
     }
     // Empty means introspection failed: assume capable and let the API judge.
     if (streamerScopes.length === 0 || streamerScopes.includes('moderation:ban')) {
+      actors.push({ token: streamerToken, name: this.deps.channelName, isBot: false });
+    }
+    return actors;
+  }
+
+  /** Tokens that can delete chat messages, the bot's first, as for bans. */
+  private async deleteActors(streamerToken: string): Promise<ModerationActor[]> {
+    const scope = 'moderation:chat_message:manage';
+    const actors: ModerationActor[] = [];
+    const botToken = await this.deps.getBotToken().catch(() => null);
+    if (botToken && botToken !== streamerToken && (await this.grantedScopes(botToken)).includes(scope)) {
+      actors.push({ token: botToken, name: getBotIdentity()?.username || 'the bot', isBot: true });
+    }
+    const streamerScopes = await this.grantedScopes(streamerToken);
+    // Empty means introspection failed: assume capable and let the API judge.
+    if (streamerScopes.length === 0 || streamerScopes.includes(scope)) {
       actors.push({ token: streamerToken, name: this.deps.channelName, isBot: false });
     }
     return actors;

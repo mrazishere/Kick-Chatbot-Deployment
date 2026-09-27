@@ -531,10 +531,16 @@ export type TimeoutResult =
   | { ok: true; target: string; seconds: number; actor: string }
   | { ok: false; error: string };
 
+export type VanishResult =
+  | { ok: true; deleted: number }
+  | { ok: false; error: string };
+
 export interface ClientWrapper {
   say(channel: string, msg: string): Promise<void>;
   /** Time a user out through Kick's API. Absent where the bot cannot moderate. */
   timeout?(request: TimeoutRequest): Promise<TimeoutResult>;
+  /** Delete a chatter's own recent messages, for everyone. Absent where the bot cannot moderate. */
+  vanish?(username: string): Promise<VanishResult>;
   /** A Kick username's numeric user id, or null. Calls Kick's API; use sparingly. */
   lookupUser?(username: string): Promise<number | null>;
 }

@@ -31,6 +31,11 @@
  *              Anyone allowed to use the command may time themselves out; timing out
  *              someone else needs a moderator.
  *
+ * Vanish:      A response of "/vanish" deletes the user's own messages from the last
+ *              10 minutes, the command included, for everyone. A timeout on Kick only
+ *              hides messages until the page is reloaded. Text after it is posted once
+ *              it works.
+ *
  */
 
 import { isBotOwner } from '../bot-identity';
@@ -172,6 +177,23 @@ async function runTimeoutResponse(
         return;
     }
     console.log(`[CUSTOMC] !${commandName}: ${invoker} timed out ${result.target} for ${result.seconds}s (as ${result.actor})`);
+    if (followUp) await client.say(channel, followUp);
+}
+
+const VANISH_RESPONSE = /^\/vanish\b\s*([\s\S]*)$/i;
+
+async function runVanishResponse(client: ClientWrapper, channel: string, commandName: string, response: string, invoker: string): Promise<void> {
+    if (!client.vanish) {
+        console.error(`[CUSTOMC] !${commandName} wants /vanish but this bot cannot moderate`);
+        return;
+    }
+    const result = await client.vanish(invoker);
+    if (!result.ok) {
+        await client.say(channel, `@${invoker}, ${result.error}.`);
+        return;
+    }
+    console.log(`[CUSTOMC] !${commandName}: deleted ${result.deleted} message(s) from ${invoker}`);
+    const followUp = (VANISH_RESPONSE.exec(response.trim())?.[1] ?? '').trim();
     if (followUp) await client.say(channel, followUp);
 }
 
@@ -584,6 +606,9 @@ export const customC: CommandFn = async function customC(client, message, channe
             return; // Silently ignore for mod-only commands
         } else if (modOnly === "v" && !isVIPUp) {
             return; // Silently ignore for VIP+ commands
+        } else if (VANISH_RESPONSE.test(response.trim())) {
+            await runVanishResponse(client, channel, commandName, response, tags.username);
+            return;
         } else if (/^\/timeout\b/i.test(response.trim())) {
             await runTimeoutResponse(client, channel, commandName, response, tags.username, !!isModUp);
             return;
