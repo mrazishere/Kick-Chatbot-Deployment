@@ -1,8 +1,8 @@
 import { getSession, isAdmin } from "@/lib/session";
-import { channelHasData } from "@/lib/kpp-data";
+import { channelHasData, validKppChannel } from "@/lib/kpp-data";
 import { getChannel, channelsReachableBy } from "@/lib/bot-api";
 import { fetchChannelInfo, fetchUserAvatar } from "@/lib/kick-api";
-import { notFound, redirect } from "next/navigation";
+import { notFound } from "next/navigation";
 import Dashboard from "@/components/Dashboard";
 
 export const dynamic = "force-dynamic";
@@ -15,15 +15,14 @@ export default async function ChannelPage({
   const { channel } = await params;
   const slug = channel.toLowerCase();
 
+  if (!validKppChannel(slug)) notFound();
+
+  // Public and read-only, like the /api/kpp routes it reads from. Signing in
+  // only adds the payout form (owner or admin) and the bot switcher.
   const session = await getSession();
-
-  // Earnings estimates are private. This page used to render for anyone;
-  // it now requires sign-in, and you only see your own channel (admin sees all).
-  if (!session.userId || !session.username) redirect("/login");
-
-  const admin = isAdmin(session.userId);
-  const isOwner = session.username === slug || admin;
-  if (!isOwner) redirect(`/${session.username}/bot`);
+  const username = session.userId && session.username ? session.username : null;
+  const admin = !!username && isAdmin(session.userId!);
+  const isOwner = !!username && (username === slug || admin);
 
   // A channel with no KPP data is still a real page when the bot runs there —
   // never having streamed is a normal state, not a missing page. But an
@@ -43,10 +42,12 @@ export default async function ChannelPage({
   // Same header switcher as the bot pages — without it this page is a dead end
   // now that the nav no longer carries a Bot link.
   let switcher: { channel: string; isSelf: boolean }[] = [];
-  try {
-    switcher = (await channelsReachableBy(session.username)).channels;
-  } catch {
-    // Navigation aid only.
+  if (username) {
+    try {
+      switcher = (await channelsReachableBy(username)).channels;
+    } catch {
+      // Navigation aid only.
+    }
   }
 
   // The channel's own photo for the header — not the signed-in user's.
@@ -61,12 +62,12 @@ export default async function ChannelPage({
   return (
     <Dashboard
       channel={slug}
-      username={session.username}
-      avatarUrl={session.avatarUrl}
+      username={username}
+      avatarUrl={username ? session.avatarUrl : undefined}
       channelAvatarUrl={channelAvatarUrl}
       isAdmin={admin}
       isOwner={isOwner}
-      isLoggedIn={true}
+      isLoggedIn={!!username}
       switcher={switcher}
     />
   );

@@ -870,7 +870,7 @@ export default function Dashboard({
             <div className="text-3xl mb-3">📊</div>
             <div className="text-lg font-semibold text-neutral-200 mb-2">No stream data yet</div>
             <div className="text-sm text-neutral-500">
-              The bot isn&apos;t tracking KPP for <span className="text-[#53FC18]">{username}</span> yet.
+              The bot isn&apos;t tracking KPP for <span className="text-[#53FC18]">{activeChannel}</span> yet.
               <br />Contact the bot owner to get your channel enrolled.
             </div>
           </div>
