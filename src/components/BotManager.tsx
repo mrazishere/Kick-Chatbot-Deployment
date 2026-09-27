@@ -123,13 +123,15 @@ interface CustomCommandDraft {
   counter: string;
 }
 
-type RewardActionKind = "timeout" | "roulette" | "pardon" | "shield";
+type RewardActionKind = "timeout" | "roulette" | "pardon" | "shield" | "points";
 
 interface RewardActionConfig {
   rewardId?: string;
   rewardTitle?: string;
   action: RewardActionKind;
   durationSeconds?: number;
+  /** points only. */
+  amount?: number;
   reflect?: boolean;
   announce?: boolean;
   testMode?: boolean;
@@ -167,6 +169,11 @@ const REWARD_ACTION_META: Record<RewardActionKind, { label: string; description:
       "Lifts a timeout the bot gave out, on the username typed, or on the redeemer if left blank. Never lifts a moderator's own timeout or ban.",
   },
   shield: { label: "Shield", description: "Other viewers' timeout and roulette rewards can't hit the redeemer while it lasts." },
+  points: {
+    label: "Give loyalty points",
+    description:
+      "Gives the redeemer this much of the channel's loyalty currency (e.g. $DON). It stays available while the stream is offline, and a redemption is only ever paid once.",
+  },
 };
 
 type DurationUnit = "s" | "m" | "h";
@@ -187,6 +194,7 @@ interface RewardDraft {
   actionKind: RewardActionKind | "";
   duration: string;
   unit: DurationUnit;
+  amount: string;
   reflect: boolean;
   announce: boolean;
   testMode: boolean;
@@ -204,6 +212,7 @@ function formatSeconds(s: number): string {
 function describeRewardAction(a: RewardActionConfig): string {
   const meta = REWARD_ACTION_META[a.action];
   if (!meta) return String(a.action);
+  if (a.action === "points") return `${meta.label} · ${(a.amount ?? 0).toLocaleString("en-US")}`;
   const length = a.action !== "pardon" && a.durationSeconds ? ` · ${formatSeconds(a.durationSeconds)}` : "";
   const reflect = a.action === "shield" && a.reflect ? " · bounces back" : "";
   return `${meta.label}${length}${reflect}`;
@@ -227,6 +236,7 @@ function draftFromReward(r: ChannelRewardRow | null): RewardDraft {
     actionKind: a?.action ?? "",
     duration: secs ? String(secs / UNIT_SECONDS[unit]) : "",
     unit,
+    amount: a?.amount ? String(a.amount) : "",
     reflect: a?.reflect ?? false,
     announce: a ? a.announce !== false : true,
     testMode: a?.testMode ?? false,
@@ -757,7 +767,10 @@ export default function BotManager({
       if (!/^\d+$/.test(d.cost.trim()) || Number(d.cost) < 1) return "Cost must be a whole number of points.";
       if (d.description.length > 200) return "Description must be 200 characters or fewer.";
     }
-    if (d.actionKind && d.actionKind !== "pardon") {
+    if (d.actionKind === "points" && (!/^\d+$/.test(d.amount.trim()) || Number(d.amount) < 1)) {
+      return "Set how much the redeemer gets, a whole number of 1 or more.";
+    }
+    if (d.actionKind && d.actionKind !== "pardon" && d.actionKind !== "points") {
       if (!/^\d+$/.test(d.duration.trim()) || Number(d.duration) < 1) return "Set how long it lasts.";
       if (Number(d.duration) * UNIT_SECONDS[d.unit] > 604800) return "The longest Kick allows is 7 days.";
     }
@@ -792,7 +805,8 @@ export default function BotManager({
     const action = d.actionKind
       ? {
           action: d.actionKind,
-          ...(d.actionKind !== "pardon" ? { durationSeconds: Number(d.duration) * UNIT_SECONDS[d.unit] } : {}),
+          ...(d.actionKind !== "pardon" && d.actionKind !== "points" ? { durationSeconds: Number(d.duration) * UNIT_SECONDS[d.unit] } : {}),
+          ...(d.actionKind === "points" ? { amount: Number(d.amount) } : {}),
           ...(d.actionKind === "shield" && d.reflect ? { reflect: true } : {}),
           announce: d.announce,
           ...(d.testMode
@@ -1748,7 +1762,9 @@ export default function BotManager({
                             const kind = e.target.value as RewardActionKind | "";
                             patchRewardDraft({
                               actionKind: kind,
-                              ...(kind && kind !== "pardon" && !rewardDraft.duration
+                              // Same value by default: a reward costing 5,000 gives 5,000.
+                              ...(kind === "points" && !rewardDraft.amount ? { amount: rewardDraft.cost } : {}),
+                              ...(kind && kind !== "pardon" && kind !== "points" && !rewardDraft.duration
                                 ? { duration: kind === "shield" ? "10" : "1", unit: "m" as DurationUnit }
                                 : {}),
                               ...(rewardDraft.canManage && !rewardDraft.id && (kind === "timeout" || kind === "roulette")
@@ -1772,7 +1788,19 @@ export default function BotManager({
                           <p className="text-xs leading-relaxed text-neutral-500">
                             {REWARD_ACTION_META[rewardDraft.actionKind].description}
                           </p>
-                          {rewardDraft.actionKind !== "pardon" ? (
+                          {rewardDraft.actionKind === "points" ? (
+                            <label className="block">
+                              <span className="mb-1 block text-xs uppercase tracking-wider text-neutral-500">Amount given</span>
+                              <input
+                                type="text"
+                                inputMode="numeric"
+                                value={rewardDraft.amount}
+                                disabled={!!busy}
+                                onChange={(e) => patchRewardDraft({ amount: e.target.value })}
+                                className="w-32 tabular-nums rounded-lg border border-neutral-700 bg-neutral-900 px-3 py-2 text-sm text-neutral-200 outline-none transition placeholder:text-neutral-600 focus:border-neutral-500 disabled:opacity-40"
+                              />
+                            </label>
+                          ) : rewardDraft.actionKind !== "pardon" ? (
                             <label className="block">
                               <span className="mb-1 block text-xs uppercase tracking-wider text-neutral-500">{rewardDraft.actionKind === "shield" ? "Shield lasts" : "Timeout length"}</span>
                               <div className="flex gap-2">
