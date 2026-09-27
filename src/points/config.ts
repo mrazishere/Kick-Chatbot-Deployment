@@ -9,7 +9,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { FishCatchSetting, PointsBonusesConfig, PointsConfig, PointsDuelConfig, PointsGambleConfig, PointsGamesConfig, PointsGiveConfig, PointsRaffleConfig, StoredFishCatches, StoredPointsConfig, PointsTimeoutPenaltyConfig } from '../types';
+import { FishCatchSetting, FishReelSetting, PointsBonusesConfig, PointsConfig, PointsDuelConfig, PointsGambleConfig, PointsGamesConfig, PointsGiveConfig, PointsRaffleConfig, StoredFishCatches, StoredPointsConfig, PointsTimeoutPenaltyConfig } from '../types';
 import { defaultSellPrice, ITEMS } from '../community/fishing';
 
 export function defaultPointsConfig(): PointsConfig {
@@ -80,9 +80,45 @@ export function defaultPointsConfig(): PointsConfig {
       sellPricePercent: 100,
       baitPricePercent: 100,
       stories: true,
-      catches: effectiveCatches(undefined, 100)
+      catches: effectiveCatches(undefined, 100),
+      reels: DEFAULT_REELS.map(r => ({ ...r }))
     }
   };
+}
+
+/**
+ * Reels are our addition; supibot's fishing shop is empty. Priced against
+ * balances that gambling can spike to a million, and bought in order, so a
+ * jackpot buys them one at a time.
+ */
+export const DEFAULT_REELS: readonly FishReelSetting[] = [
+  { name: 'Bamboo', price: 5_000, oddsMultiplier: 1.1, rarityMultiplier: 1, valueMultiplier: 1 },
+  { name: 'Fiberglass', price: 25_000, oddsMultiplier: 1.25, rarityMultiplier: 1, valueMultiplier: 1 },
+  { name: 'Carbon', price: 100_000, oddsMultiplier: 1.4, rarityMultiplier: 1.5, valueMultiplier: 1 },
+  { name: 'Golden', price: 500_000, oddsMultiplier: 1.65, rarityMultiplier: 2, valueMultiplier: 1.25 }
+];
+const MAX_REELS = 10;
+const REEL_PRICE_MAX = 1_000_000_000;
+const REEL_MULTIPLIER = { min: 0.1, max: 10 };
+const REEL_NAME_RE = /^[^\u0000-\u001f<>@]{1,24}$/u;
+const round2 = (n: number): number => Math.round(n * 100) / 100;
+
+/** The stored reel list with values clamped; not stored means the defaults. */
+export function effectiveReels(stored: unknown): FishReelSetting[] {
+  if (!Array.isArray(stored)) return DEFAULT_REELS.map(r => ({ ...r }));
+  return stored.slice(0, MAX_REELS).flatMap(raw => {
+    const r = obj(raw);
+    const name = typeof r.name === 'string' ? r.name.trim() : '';
+    if (!REEL_NAME_RE.test(name)) return [];
+    const mult = (v: unknown) => round2(num(v, 1, REEL_MULTIPLIER.min, REEL_MULTIPLIER.max, false));
+    return [{
+      name,
+      price: num(r.price, 0, 0, REEL_PRICE_MAX, true),
+      oddsMultiplier: mult(r.oddsMultiplier),
+      rarityMultiplier: mult(r.rarityMultiplier),
+      valueMultiplier: mult(r.valueMultiplier)
+    }];
+  });
 }
 
 const CATCH_WEIGHT_MAX = 1_000_000;
@@ -247,7 +283,8 @@ export function internalPointsConfig(raw: unknown): InternalPointsConfig {
     sellPricePercent: num(ga.sellPricePercent, d.games.sellPricePercent, 0, 1000, true),
     baitPricePercent: num(ga.baitPricePercent, d.games.baitPricePercent, 0, 1000, true),
     stories: bool(ga.stories, d.games.stories),
-    catches: []
+    catches: [],
+    reels: effectiveReels(ga.reels)
   };
   games.catches = effectiveCatches(ga.catches, games.sellPricePercent);
 
@@ -399,6 +436,41 @@ function validateCatches(raw: unknown, sellPricePercent: number, errors: string[
       errors.push(`At least one ${type === 'fish' ? 'fish' : 'junk item'} needs odds above 0`);
     }
   }
+  return out;
+}
+
+/** The whole reel list, replacing the stored one. The defaults are stored as "not set". */
+function validateReels(raw: unknown, errors: string[]): FishReelSetting[] | undefined {
+  if (!Array.isArray(raw)) {
+    errors.push('games.reels must be a list');
+    return undefined;
+  }
+  if (raw.length > MAX_REELS) {
+    errors.push(`There can be at most ${MAX_REELS} reels`);
+    return undefined;
+  }
+  const out: FishReelSetting[] = [];
+  const names = new Set<string>();
+  raw.forEach((v, i) => {
+    const r = obj(v);
+    const label = `Reel ${i + 1}`;
+    const name = typeof r.name === 'string' ? r.name.trim() : '';
+    if (!REEL_NAME_RE.test(name)) errors.push(`${label} needs a name of 1 to 24 characters, without < > or @`);
+    else if (names.has(name.toLowerCase())) errors.push(`Two reels are called ${name}`);
+    names.add(name.toLowerCase());
+    const price = checkNumber(`${label} price`, r.price, { min: 0, max: REEL_PRICE_MAX, integer: true }, errors);
+    const mult = (key: string, what: string) => {
+      const n = checkNumber(`${label} ${what}`, r[key], { ...REEL_MULTIPLIER, integer: false }, errors);
+      return n === undefined ? 1 : round2(n);
+    };
+    out.push({
+      name,
+      price: price ?? 0,
+      oddsMultiplier: mult('oddsMultiplier', 'odds multiplier'),
+      rarityMultiplier: mult('rarityMultiplier', 'rarity multiplier'),
+      valueMultiplier: mult('valueMultiplier', 'value multiplier')
+    });
+  });
   return out;
 }
 
@@ -602,6 +674,14 @@ export function validatePointsPatch(current: unknown, patch: unknown): { next?: 
         if (ga[key] === undefined) continue;
         if (typeof ga[key] !== 'boolean') errors.push(`games.${key} must be true or false`);
         else next.games![key] = ga[key] as boolean;
+      }
+      if (ga.reels === null) delete next.games!.reels;
+      else if (ga.reels !== undefined) {
+        const reels = validateReels(ga.reels, errors);
+        if (reels) {
+          if (JSON.stringify(reels) === JSON.stringify(DEFAULT_REELS)) delete next.games!.reels;
+          else next.games!.reels = reels;
+        }
       }
       if (ga.catches === null) delete next.games!.catches;
       else if (ga.catches !== undefined) {

@@ -18,7 +18,7 @@
  *          $don fish stats [user|global]
  *          $don fish top [fish|coins|junk|lucky|unlucky|traps|attempts|total-…|emoji]   (also leaderboard)
  *          $don fish trap [cancel|reset]                (also net, trawl)
- *          $don fish buy
+ *          $don fish buy [reel]                         (shows the next reel; "buy reel" buys it)
  *
  * Casting and laying traps follow games.onlyWhileLive and stay silent offline,
  * like $<cmd> gamble. Everything that changes a balance or a catch runs in one
@@ -26,7 +26,7 @@
  */
 
 import fetch from 'node-fetch';
-import { ChannelConfig, CommandFn } from '../types';
+import { ChannelConfig, CommandFn, FishReelSetting } from '../types';
 import { isBotSender } from '../bot-identity';
 import { SYSTEM_BOTS } from '../system-bots';
 import { getPointsService } from '../points/service';
@@ -38,7 +38,7 @@ import { gameInvocation } from '../community/stakes';
 import { addReminder, cancelSelfRemindersStartingWith, openCommunityDb } from '../community/store';
 import { bestEmote, broadcasterIdFor } from '../community/emotes';
 import {
-  addItem, baitPrice, baitRoll, parseSellList, CatchItem, CatchType, FAILURE_EMOTES, FishData, findBait, hasFishedBefore, initialData,
+  addItem, baitPrice, baitRoll, currentReel, landsFish, parseSellList, CatchItem, CatchType, FAILURE_EMOTES, FishData, findBait, hasFishedBefore, initialData,
   ITEMS, JUNK_MESSAGES, loadFish, MISS_DELAY_MS, pick, randomInt, rollCatch, saveFish, sellPrice, STORY_STYLES, SUCCESS_EMOTES,
   takeItems, TYPE_DESCRIPTIONS, weightedCatch
 } from '../community/fishing';
@@ -221,8 +221,9 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       }
       rollMaximum = Math.max(1, rollMaximum);
       d.lifetime.attempts++;
+      const reel = currentReel(d, g);
 
-      if (randomInt(1, rollMaximum) !== 1) {
+      if (!landsFish(rollMaximum, reel)) {
         const delay = Math.round(randomInt(MISS_DELAY_MS[0], MISS_DELAY_MS[1]) / 1000) * 1000;
         d.catch.dryStreak++;
         d.catch.luckyStreak = 0;
@@ -243,7 +244,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
         return { kind: 'miss', text, delay, appendix, streak };
       }
 
-      const item = weightedCatch('fish', g);
+      const item = weightedCatch('fish', g, reel?.rarityMultiplier ?? 1);
       addItem(d, item);
       d.catch.dryStreak = 0;
       d.catch.luckyStreak++;
@@ -263,7 +264,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
         const held = { cm: size, record: beatRecord };
         d.catch.sizes ??= {};
         (d.catch.sizes[item.name] ??= []).push(held);
-        sizeString += ` Worth ${sellPrice(item, g, held)} ${cur}.`;
+        sizeString += ` Worth ${sellPrice(item, g, held, reel?.valueMultiplier ?? 1)} ${cur}.`;
       }
       saveFish(db!, uid, d, now);
       return { kind: 'catch', item, sizeString, appendix };
@@ -340,8 +341,9 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
         const skip = g.catchCooldownMinutes;
         let fishAmount = 0;
         const results: string[] = [];
+        const reel = currentReel(d, g);
         for (let i = 0; i < rolls; i++) {
-          const r = rollCatch(g);
+          const r = rollCatch(g, reel);
           if (!r.item) continue;
           // A fish costs a catch cooldown of the trap's time, so only an early one counts.
           if (r.type === 'fish' && i < rolls - skip) {
@@ -396,6 +398,8 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     const text = once(now => {
       const d = loadFish(db!, uid);
       if (!d || (d.catch.fish === 0 && d.catch.junk === 0)) return 'You have no items to sell!';
+      // The seller's reel raises what their fish fetch, whenever they were caught.
+      const value = currentReel(d, g)?.valueMultiplier ?? 1;
       const pay = (gained: number): number => gained > 0
         ? creditTx(db!, { userId: uid, username: me, amount: gained, reason: 'game:fish_sell', actor: `chat:${me}`, now })
         : getUser(db!, uid)?.balance ?? 0;
@@ -420,7 +424,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
             const n = have - threshold;
             sold += n;
             // "duplicate" keeps the biggest of each, the one worth showing off.
-            gained += takeItems(d, item, n, g, specifier === 'duplicate');
+            gained += takeItems(d, item, n, g, specifier === 'duplicate', value);
           }
           if (sold > 0) soldByType.push(`${sold} ${prefix}${TYPE_DESCRIPTIONS[type]}`);
         }
@@ -449,7 +453,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
           continue;
         }
         const n = Math.min(have, requested);
-        gained += takeItems(d, item, n, g);
+        gained += takeItems(d, item, n, g, false, value);
         soldParts.push(`${item.name}${n > 1 ? ` x${n}` : ''}`);
       }
       if (soldParts.length === 0) return `You have no ${missing.join('')} to sell!`;
@@ -458,6 +462,50 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       saveFish(db!, uid, d, now);
       const skipped = missing.length ? ` (you have no ${missing.join('')})` : '';
       return `Sold your ${soldParts.join(', ')} for ${gained} ${cur} - now you have ${balance} ${cur}${skipped}`;
+    });
+    if (text) say(text);
+  }
+
+  // ── buy ──
+  /** What a reel does, e.g. "fish odds ×1.25, rarer fish ×2, fish value ×1.25". */
+  function reelEffects(r: FishReelSetting): string {
+    const parts: string[] = [];
+    if (r.oddsMultiplier !== 1) parts.push(`fish odds ×${r.oddsMultiplier}`);
+    if (r.rarityMultiplier !== 1) parts.push(`rarer fish ×${r.rarityMultiplier}`);
+    if (r.valueMultiplier !== 1) parts.push(`fish value ×${r.valueMultiplier}`);
+    return parts.join(', ') || 'no bonus';
+  }
+
+  /**
+   * Reels, bought in order. Plain "buy" only says what's next, so nobody spends a
+   * fortune by mistake; "buy reel" buys it.
+   */
+  function buy(what: string, uid: number): void {
+    if (what !== 'reel') {
+      const d = loadFish(db!, uid);
+      const have = currentReel(d, g);
+      const level = Math.min(d?.reel ?? 0, g.reels.length);
+      const owned = have ? `You fish with the ${have.name} reel (${reelEffects(have)}). ` : '';
+      if (level >= g.reels.length) return void say(`${owned}That's the best reel in the shop!`);
+      const next = g.reels[level];
+      return void say(`${owned}Next up: the ${next.name} reel for ${groupDigits(next.price)} ${cur} (${reelEffects(next)}). Buy it with ${cmd} fish buy reel`);
+    }
+    const text = once(now => {
+      ensureUserTx(db!, uid, me, now);
+      const d = loadFish(db!, uid) ?? initialData();
+      const level = Math.min(d.reel ?? 0, g.reels.length);
+      if (level >= g.reels.length) return "You already have the best reel in the shop!";
+      const next = g.reels[level];
+      const balance = getUser(db!, uid)?.balance ?? 0;
+      if (balance < next.price) {
+        return `The ${next.name} reel costs ${groupDigits(next.price)} ${cur} and you have ${groupDigits(balance)} ${cur}.`;
+      }
+      const after = next.price > 0
+        ? debitTx(db!, { userId: uid, amount: next.price, reason: 'game:fish_reel', actor: `chat:${me}`, note: next.name, now }).balance
+        : balance;
+      d.reel = level + 1;
+      saveFish(db!, uid, d, now);
+      return `You bought the ${next.name} reel for ${groupDigits(next.price)} ${cur}! ${reelEffects(next)}. You have ${groupDigits(after)} ${cur} left.`;
     });
     if (text) say(text);
   }
@@ -519,7 +567,9 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       }
       const fishPart = fish > 0 ? `${fish} fish (${listOf('fish')})` : 'no fish';
       const junkPart = junk > 0 ? `${junk} ${junk === 1 ? 'piece' : 'pieces'} of junk (${listOf('junk')})` : 'no junk';
-      return void say(`${subject} have ${fishPart} and ${junkPart} in ${possessive} collection. ${subject} also have ${purse} ${cur} in ${possessive} purse.`);
+      const reel = currentReel(d, g);
+      const reelPart = reel ? ` ${subject} fish with the ${reel.name} reel.` : '';
+      return void say(`${subject} have ${fishPart} and ${junkPart} in ${possessive} collection.${reelPart} ${subject} also have ${purse} ${cur} in ${possessive} purse.`);
     }
     const amount = d.catch[showType] ?? 0;
     if (amount <= 0) {
@@ -586,7 +636,9 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
   try {
     switch (sub) {
       case 'buy':
-        return void say("There isn't anything you can buy at the fishing gear shop... yet.");
+        if (g.reels.length === 0) return void say("There isn't anything you can buy at the fishing gear shop... yet.");
+        if (userId === null || excluded) return ignore('no account or excluded');
+        return buy((rest[0] ?? '').toLowerCase(), userId);
       case 'show':
         return show(rest);
       case 'stats':

@@ -288,6 +288,20 @@ export interface PointsGamesConfig {
    * and its price scaled by sellPricePercent.
    */
   catches: FishCatchSetting[];
+  /** Reels in the order they're bought with `fish buy reel`. Empty: nothing to buy. */
+  reels: FishReelSetting[];
+}
+
+/** A fishing reel: a one-off purchase that improves casts and traps from then on. */
+export interface FishReelSetting {
+  name: string;
+  price: number;
+  /** Multiplies the chance a cast or a trap roll lands a fish. */
+  oddsMultiplier: number;
+  /** Multiplies the odds of every fish rarer than the most common ones. */
+  rarityMultiplier: number;
+  /** Multiplies what fish sell for. Junk is unaffected. */
+  valueMultiplier: number;
 }
 
 export interface FishCatchSetting {

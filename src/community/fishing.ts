@@ -9,7 +9,7 @@
 
 import * as crypto from 'crypto';
 import type { PointsDb } from '../points/db';
-import type { PointsGamesConfig } from '../types';
+import type { FishReelSetting, PointsGamesConfig } from '../types';
 
 export type CatchType = 'fish' | 'junk';
 
@@ -108,6 +108,8 @@ export interface FishData {
   };
   trap: { active: boolean; start: number; end: number; duration: number };
   readyTimestamp: number;
+  /** Our addition: how many of the channel's reels have been bought, in order. */
+  reel?: number;
   lifetime: {
     fish: number;
     junk: number;
@@ -156,9 +158,28 @@ function weightOf(item: CatchItem, g: PointsGamesConfig): number {
   return g.catches.find(c => c.name === item.name)?.weight ?? item.weight;
 }
 
-export function weightedCatch(type: CatchType, g: PointsGamesConfig): CatchItem {
+/** The reel a viewer fishes with: the last one bought, or null. */
+export function currentReel(d: FishData | null | undefined, g: PointsGamesConfig): FishReelSetting | null {
+  const level = Math.min(d?.reel ?? 0, g.reels.length);
+  return level > 0 ? g.reels[level - 1] : null;
+}
+
+/** Whether a cast or trap roll lands a fish: 1 in `rollMaximum`, times the reel's odds. */
+export function landsFish(rollMaximum: number, reel: FishReelSetting | null): boolean {
+  const chance = Math.min(1, (reel?.oddsMultiplier ?? 1) / Math.max(1, rollMaximum));
+  return crypto.randomInt(0, 2 ** 48 - 1) / (2 ** 48 - 1) < chance;
+}
+
+/**
+ * Pick an item of `type` by the channel's weights. `rarity` multiplies the weight
+ * of every fish rarer than the commonest, so a reel's rarity ×2 makes each of them
+ * twice as likely against the common ones.
+ */
+export function weightedCatch(type: CatchType, g: PointsGamesConfig, rarity = 1): CatchItem {
   const items = ITEMS.filter(i => i.type === type);
-  const weights = items.map(i => weightOf(i, g));
+  const base = items.map(i => weightOf(i, g));
+  const commonest = Math.max(...base);
+  const weights = type === 'fish' && rarity !== 1 ? base.map(w => (w < commonest ? w * rarity : w)) : base;
   const total = weights.reduce((s, w) => s + w, 0);
   // The config keeps at least one weight per type above 0; this is a last guard.
   if (total <= 0) return items[randomInt(0, items.length - 1)];
@@ -172,8 +193,8 @@ export function weightedCatch(type: CatchType, g: PointsGamesConfig): CatchItem 
 }
 
 /** One roll without bait, as traps make them: 1 in `odds` a fish, else 1 in 4 junk. */
-export function rollCatch(g: PointsGamesConfig): { item: CatchItem | null; type: CatchType | 'nothing' } {
-  if (randomInt(1, Math.max(1, g.catchOdds)) === 1) return { item: weightedCatch('fish', g), type: 'fish' };
+export function rollCatch(g: PointsGamesConfig, reel: FishReelSetting | null = null): { item: CatchItem | null; type: CatchType | 'nothing' } {
+  if (landsFish(g.catchOdds, reel)) return { item: weightedCatch('fish', g, reel?.rarityMultiplier ?? 1), type: 'fish' };
   if (randomInt(1, 4) === 1) return { item: weightedCatch('junk', g), type: 'junk' };
   return { item: null, type: 'nothing' };
 }
@@ -199,8 +220,10 @@ export function defaultSellPrice(item: CatchItem, sellPricePercent: number): num
   return Math.round(item.price * sellPricePercent / 100);
 }
 
-export function sellPrice(item: CatchItem, g: PointsGamesConfig, held?: HeldFish): number {
-  const base = g.catches.find(c => c.name === item.name)?.price ?? defaultSellPrice(item, g.sellPricePercent);
+/** `value` is the seller's reel's value multiplier; it applies to fish only. */
+export function sellPrice(item: CatchItem, g: PointsGamesConfig, held?: HeldFish, value = 1): number {
+  const listed = g.catches.find(c => c.name === item.name)?.price ?? defaultSellPrice(item, g.sellPricePercent);
+  const base = item.type === 'fish' ? listed * value : listed;
   if (!held) return Math.round(base);
   return Math.round(base * sizeMultiplier(held.cm) * (held.record ? 1.5 : 1));
 }
@@ -209,7 +232,7 @@ export function sellPrice(item: CatchItem, g: PointsGamesConfig, held?: HeldFish
  * Remove `n` of a fish or junk item and price them: sized fish oldest first (or, with
  * keepBiggest, all but the largest), then any without a size. Returns what they sell for.
  */
-export function takeItems(d: FishData, item: CatchItem, n: number, g: PointsGamesConfig, keepBiggest = false): number {
+export function takeItems(d: FishData, item: CatchItem, n: number, g: PointsGamesConfig, keepBiggest = false, value = 1): number {
   const have = d.catch.types[item.name] ?? 0;
   n = Math.min(n, have);
   if (n <= 0) return 0;
@@ -223,18 +246,18 @@ export function takeItems(d: FishData, item: CatchItem, n: number, g: PointsGame
     if (keepBiggest) list.sort((a, b) => a.cm - b.cm);
     // Sell unsized ones first when keeping the biggest, so the kept one is a real size.
     let fromUnsized = keepBiggest ? Math.min(n, Math.max(0, unsized)) : 0;
-    total += fromUnsized * sellPrice(item, g);
+    total += fromUnsized * sellPrice(item, g, undefined, value);
     taken += fromUnsized;
     while (taken < n && list.length) {
-      total += sellPrice(item, g, list.shift());
+      total += sellPrice(item, g, list.shift(), value);
       taken++;
     }
     fromUnsized = n - taken;
-    total += fromUnsized * sellPrice(item, g);
+    total += fromUnsized * sellPrice(item, g, undefined, value);
     taken += fromUnsized;
     d.catch.sizes[item.name] = list;
   } else {
-    total = n * sellPrice(item, g);
+    total = n * sellPrice(item, g, undefined, value);
     taken = n;
   }
   d.catch.types[item.name] = have - taken;
@@ -303,6 +326,7 @@ function withDefaults(raw: Partial<FishData>): FishData {
     catch: { ...d.catch, ...(raw.catch ?? {}), types: { ...(raw.catch?.types ?? {}) }, sizes: { ...(raw.catch?.sizes ?? {}) } },
     trap: { ...d.trap, ...(raw.trap ?? {}) },
     readyTimestamp: raw.readyTimestamp ?? 0,
+    reel: raw.reel ?? 0,
     lifetime: { ...d.lifetime, ...(raw.lifetime ?? {}), trap: { ...d.lifetime.trap, ...(raw.lifetime?.trap ?? {}) } }
   };
 }

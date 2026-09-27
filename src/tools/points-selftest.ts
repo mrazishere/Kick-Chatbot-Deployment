@@ -25,7 +25,7 @@ import {
 } from '../points/store';
 import { WebhookPoller } from '../channels/webhook-poller';
 import { points as pointsCommand } from '../bot-commands/points';
-import { addItem, initialData, ITEMS, parseSellList, saveFish, sellPrice, weightedCatch } from '../community/fishing';
+import { addItem, initialData, ITEMS, landsFish, parseSellList, saveFish, sellPrice, weightedCatch } from '../community/fishing';
 import { openCommunityDb } from '../community/store';
 import { fish as fishCommand } from '../bot-commands/fish';
 
@@ -612,6 +612,56 @@ async function main(): Promise<void> {
       check('duplicate across both types', dup[0] === '@bulk You sold 1 duplicate fish for a grand total of 25 $DON - now you have 58 $DON', dup);
       const both = await bulk('$don fish sell all fish junk');
       check('sell all fish junk sells both', both[0] === '@bulk You sold 1 fish and 2 pieces of junk for a grand total of 38 $DON - now you have 96 $DON', both);
+      // Reels
+      const defaults = effectivePointsConfig({}).games.reels;
+      check('four default reels, cheapest first', defaults.map(r => `${r.name}:${r.price}`).join(',') === 'Bamboo:5000,Fiberglass:25000,Carbon:100000,Golden:500000', defaults);
+      const customReels = [{ name: 'Twig', price: 10, oddsMultiplier: 2, rarityMultiplier: 1, valueMultiplier: 1.5 }];
+      const setReels = validatePointsPatch({}, { games: { reels: customReels } });
+      check('custom reels stored', setReels.errors.length === 0 && JSON.stringify(setReels.next?.games?.reels) === JSON.stringify(customReels), setReels);
+      check('default reels are not stored', validatePointsPatch({}, { games: { reels: defaults } }).next?.games?.reels === undefined);
+      const badReels = validatePointsPatch({}, { games: { reels: [{ name: '', price: -1, oddsMultiplier: 20, rarityMultiplier: 1, valueMultiplier: 1 }, { name: 'A', price: 1, oddsMultiplier: 1, rarityMultiplier: 1, valueMultiplier: 1 }, { name: 'a', price: 1, oddsMultiplier: 1, rarityMultiplier: 1, valueMultiplier: 1 }] } });
+      check('bad reels refused', !badReels.next && badReels.errors.length === 4, badReels.errors);
+      check('no reels at all is allowed', validatePointsPatch({}, { games: { reels: [] } }).next?.games?.reels?.length === 0);
+      let lands = 0;
+      for (let i = 0; i < 40_000; i++) if (landsFish(20, { name: 'x', price: 0, oddsMultiplier: 2, rarityMultiplier: 1, valueMultiplier: 1 })) lands++;
+      check('odds multiplier doubles the catch rate', Math.abs(lands / 40_000 - 0.1) < 0.008, lands / 40_000);
+      const gd2 = effectivePointsConfig({}).games;
+      let commons = 0;
+      const commonSet = new Set(['🐟', '🦐', '🦀', '🐸', '🐚']);
+      for (let i = 0; i < 40_000; i++) if (commonSet.has(weightedCatch('fish', gd2, 2).name)) commons++;
+      check('rarity ×2 doubles every non-common fish', Math.abs(commons / 40_000 - 50 / 96.4) < 0.015, commons / 40_000);
+      check('value multiplier is fish only', sellPrice(ITEMS.find(i => i.name === '🐟')!, gd2, undefined, 2) === 50 && sellPrice(ITEMS.find(i => i.name === '🥫')!, gd2, undefined, 2) === 8);
+
+      runWrite(pdb, () => creditTx(pdb, { userId: 14, username: 'buyer', amount: 6000, reason: 'mod_add', now: 1 }));
+      const buyer = (msg: string) => run(msg, on, ['buyer', 14]);
+      const peek = await buyer('$don fish buy');
+      check('buy shows the next reel without buying', peek[0] === '@buyer Next up: the Bamboo reel for 5,000 $DON (fish odds ×1.1). Buy it with $don fish buy reel' && balance(ch, 14) === 6000, peek);
+      const bought = await buyer('$don fish buy reel');
+      check('buy reel buys it', bought[0] === '@buyer You bought the Bamboo reel for 5,000 $DON! fish odds ×1.1. You have 1,000 $DON left.' && balance(ch, 14) === 1000, bought);
+      const poorer = await buyer('$don fish buy reel');
+      check('the next reel needs the money', poorer[0] === '@buyer The Fiberglass reel costs 25,000 $DON and you have 1,000 $DON.' && balance(ch, 14) === 1000, poorer);
+      const owned = await buyer('$don fish buy');
+      check('buy mentions the reel held', owned[0]?.startsWith('@buyer You fish with the Bamboo reel (fish odds ×1.1). Next up: the Fiberglass reel'), owned);
+
+      writeConfig(root, ch, { enabled: true, currencyName: '$DON', games: { enabled: true, onlyWhileLive: false, trapMinutes: 60, reels: [{ name: 'Twig', price: 0, oddsMultiplier: 1, rarityMultiplier: 1, valueMultiplier: 2 }] } });
+      runWrite(pdb, () => {
+        ensureUserTx(pdb, 15, 'valued', 1);
+        const d = initialData();
+        addItem(d, ITEMS.find(i => i.name === '🐟')!);
+        d.lifetime.attempts = 1;
+        saveFish(pdb, 15, d, 1);
+      });
+      const valued = (msg: string) => run(msg, on, ['valued', 15]);
+      await valued('$don fish buy reel');
+      const worth = await valued('$don fish sell 🐟');
+      check('a reel with value ×2 doubles a sale', worth[0] === '@valued Sold your 🐟 for 50 $DON - now you have 50 $DON', worth);
+      const best = await valued('$don fish buy');
+      check('the last reel is the best', best[0] === "@valued You fish with the Twig reel (fish value ×2). That's the best reel in the shop!", best);
+      writeConfig(root, ch, { enabled: true, currencyName: '$DON', games: { enabled: true, onlyWhileLive: false, trapMinutes: 60, reels: [] } });
+      const shut = await valued('$don fish buy');
+      check('no reels means an empty shop', shut[0] === "@valued There isn't anything you can buy at the fishing gear shop... yet.", shut);
+      writeConfig(root, ch, { enabled: true, currencyName: '$DON', games: { enabled: true, onlyWhileLive: false, trapMinutes: 60 } });
+
       const emptied = await bulk('$don fish sell 🐟');
       check('both types emptied', emptied[0] === '@bulk You have no items to sell!', emptied);
     } finally {
