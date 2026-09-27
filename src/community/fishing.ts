@@ -15,7 +15,7 @@ export type CatchType = 'fish' | 'junk';
 export interface CatchItem {
   name: string;
   type: CatchType;
-  /** supibot's sell price; the channel's sellPricePercent scales it. */
+  /** supibot's sell price; the channel's sellPricePercent scales it unless the dashboard sets one. */
   price: number;
   /** Chance weight within its type. */
   weight: number;
@@ -137,21 +137,29 @@ export function pick<T>(list: readonly T[]): T {
   return list[crypto.randomInt(0, list.length)];
 }
 
-export function weightedCatch(type: CatchType): CatchItem {
+/** The channel's weight for an item: its dashboard override, else supibot's. */
+function weightOf(item: CatchItem, g: PointsGamesConfig): number {
+  return g.catches.find(c => c.name === item.name)?.weight ?? item.weight;
+}
+
+export function weightedCatch(type: CatchType, g: PointsGamesConfig): CatchItem {
   const items = ITEMS.filter(i => i.type === type);
-  const total = items.reduce((s, i) => s + i.weight, 0);
+  const weights = items.map(i => weightOf(i, g));
+  const total = weights.reduce((s, w) => s + w, 0);
+  // The config keeps at least one weight per type above 0; this is a last guard.
+  if (total <= 0) return items[randomInt(0, items.length - 1)];
   let roll = randomInt(1, total);
-  for (const item of items) {
-    if (roll <= item.weight) return item;
-    roll -= item.weight;
+  for (let i = 0; i < items.length; i++) {
+    if (roll <= weights[i]) return items[i];
+    roll -= weights[i];
   }
   return items[items.length - 1];
 }
 
 /** One roll without bait, as traps make them: 1 in `odds` a fish, else 1 in 4 junk. */
-export function rollCatch(odds: number): { item: CatchItem | null; type: CatchType | 'nothing' } {
-  if (randomInt(1, Math.max(1, odds)) === 1) return { item: weightedCatch('fish'), type: 'fish' };
-  if (randomInt(1, 4) === 1) return { item: weightedCatch('junk'), type: 'junk' };
+export function rollCatch(g: PointsGamesConfig): { item: CatchItem | null; type: CatchType | 'nothing' } {
+  if (randomInt(1, Math.max(1, g.catchOdds)) === 1) return { item: weightedCatch('fish', g), type: 'fish' };
+  if (randomInt(1, 4) === 1) return { item: weightedCatch('junk', g), type: 'junk' };
   return { item: null, type: 'nothing' };
 }
 
@@ -171,8 +179,13 @@ export function sizeMultiplier(cm: number): number {
   return c <= 50 ? 0.5 + 0.5 * (c - 1) / 49 : 1 + (c - 50) / 50;
 }
 
+/** supibot's price scaled by the channel's sellPricePercent: an item's price with no override. */
+export function defaultSellPrice(item: CatchItem, sellPricePercent: number): number {
+  return Math.round(item.price * sellPricePercent / 100);
+}
+
 export function sellPrice(item: CatchItem, g: PointsGamesConfig, held?: HeldFish): number {
-  const base = item.price * g.sellPricePercent / 100;
+  const base = g.catches.find(c => c.name === item.name)?.price ?? defaultSellPrice(item, g.sellPricePercent);
   if (!held) return Math.round(base);
   return Math.round(base * sizeMultiplier(held.cm) * (held.record ? 1.5 : 1));
 }

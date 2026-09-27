@@ -25,6 +25,7 @@ import {
 } from '../points/store';
 import { WebhookPoller } from '../channels/webhook-poller';
 import { points as pointsCommand } from '../bot-commands/points';
+import { ITEMS, sellPrice, weightedCatch } from '../community/fishing';
 
 const MIN = 60_000;
 
@@ -122,6 +123,36 @@ async function main(): Promise<void> {
   process.env.KICK_USERNAME = 'thebotacct';
   process.env.BOT_DASHBOARD_URL = 'https://example.test/kick';
   console.log(`[selftest] data root ${root}`);
+
+  // Fishing odds and prices per item
+  {
+    const stored = { games: { sellPricePercent: 300 } };
+    const set = validatePointsPatch(stored, { games: { catches: { '🐟': { weight: 5, price: 999 }, '🐬': { weight: 1, price: 150 }, '🥾': { weight: 0 } } } });
+    // 🐬 at weight 1 and 50 × 300% = 150 is the default, so nothing is stored for it.
+    check('catch overrides stored, defaults dropped', set.errors.length === 0
+      && JSON.stringify(set.next?.games?.catches) === JSON.stringify({ '🐟': { weight: 5, price: 999 }, '🥾': { weight: 0 } }), set);
+    const g = effectivePointsConfig(set.next).games;
+    const fish = g.catches.find(c => c.name === '🐟');
+    const shark = g.catches.find(c => c.name === '🦈');
+    check('effective catches fill every item', g.catches.length === ITEMS.length && fish?.weight === 5 && fish.price === 999
+      && shark?.weight === 1 && shark.price === 150 && shark.defaultPrice === 150, { fish, shark });
+    const item = ITEMS.find(i => i.name === '🐟')!;
+    check('override price is the base a size scales', sellPrice(item, g) === 999 && sellPrice(item, g, { cm: 100, record: false }) === 1998);
+    check('junk sells at percent default', sellPrice(ITEMS.find(i => i.name === '🥫')!, g) === 24);
+    let boots = 0;
+    for (let i = 0; i < 2000; i++) if (weightedCatch('junk', g).name === '🥾') boots++;
+    check('weight 0 is never caught', boots === 0, boots);
+    const onlyShark = Object.fromEntries(ITEMS.filter(i => i.type === 'fish').map(i => [i.name, { weight: i.name === '🦈' ? 1 : 0 }]));
+    const gs = effectivePointsConfig(validatePointsPatch({}, { games: { catches: onlyShark } }).next).games;
+    check('one fish with odds is the only catch', Array.from({ length: 200 }, () => weightedCatch('fish', gs).name).every(n => n === '🦈'));
+    const none = validatePointsPatch({}, { games: { catches: Object.fromEntries(ITEMS.filter(i => i.type === 'fish').map(i => [i.name, { weight: 0 }])) } });
+    check('all fish at 0 rejected', !none.next && none.errors.some(e => e.includes('fish')), none.errors);
+    check('unknown item rejected', validatePointsPatch({}, { games: { catches: { '🍕': { weight: 1 } } } }).errors.length === 1);
+    const cleared = validatePointsPatch(set.next, { games: { catches: null } });
+    check('null clears overrides', cleared.errors.length === 0 && cleared.next?.games?.catches === undefined, cleared);
+    const handEdit = effectivePointsConfig({ games: { catches: Object.fromEntries(ITEMS.filter(i => i.type === 'junk').map(i => [i.name, { weight: 0 }])) } }).games;
+    check('hand-edited all-zero junk falls back to defaults', handEdit.catches.filter(c => c.type === 'junk').every(c => c.weight === c.defaultWeight));
+  }
 
   // Config
   {

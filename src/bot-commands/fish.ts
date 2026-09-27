@@ -228,7 +228,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
         if (d.catch.dryStreak > d.lifetime.dryStreak) d.lifetime.dryStreak = d.catch.dryStreak;
         let text: string;
         if (randomInt(1, 100) <= 25) {
-          const item = weightedCatch('junk');
+          const item = weightedCatch('junk', g);
           addItem(d, item);
           text = `${pick(JUNK_MESSAGES)} You reel out a ${item.name}`;
         } else {
@@ -241,7 +241,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
         return { kind: 'miss', text, delay, appendix, streak };
       }
 
-      const item = weightedCatch('fish');
+      const item = weightedCatch('fish', g);
       addItem(d, item);
       d.catch.dryStreak = 0;
       d.catch.luckyStreak++;
@@ -314,7 +314,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
         let fishAmount = 0;
         const results: string[] = [];
         for (let i = 0; i < rolls; i++) {
-          const r = rollCatch(g.catchOdds);
+          const r = rollCatch(g);
           if (!r.item) continue;
           // A fish costs a catch cooldown of the trap's time, so only an early one counts.
           if (r.type === 'fish' && i < rolls - skip) {

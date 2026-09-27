@@ -9,7 +9,8 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { PointsBonusesConfig, PointsConfig, PointsDuelConfig, PointsGambleConfig, PointsGamesConfig, PointsGiveConfig, PointsRaffleConfig, StoredPointsConfig, PointsTimeoutPenaltyConfig } from '../types';
+import { FishCatchSetting, PointsBonusesConfig, PointsConfig, PointsDuelConfig, PointsGambleConfig, PointsGamesConfig, PointsGiveConfig, PointsRaffleConfig, StoredFishCatches, StoredPointsConfig, PointsTimeoutPenaltyConfig } from '../types';
+import { defaultSellPrice, ITEMS } from '../community/fishing';
 
 export function defaultPointsConfig(): PointsConfig {
   return {
@@ -78,9 +79,39 @@ export function defaultPointsConfig(): PointsConfig {
       trapMinutes: 60,
       sellPricePercent: 100,
       baitPricePercent: 100,
-      stories: true
+      stories: true,
+      catches: effectiveCatches(undefined, 100)
     }
   };
+}
+
+const CATCH_WEIGHT_MAX = 1_000_000;
+const CATCH_PRICE_MAX = 1_000_000_000;
+
+/**
+ * Every item with the channel's overrides applied. Values edited into the file
+ * are clamped; a type whose weights all end up 0 could never be caught, so it
+ * falls back to supibot's weights.
+ */
+export function effectiveCatches(stored: unknown, sellPricePercent: number): FishCatchSetting[] {
+  const o = obj(stored);
+  const list = ITEMS.map(item => {
+    const ov = obj(o[item.name]);
+    const defaultPrice = defaultSellPrice(item, sellPricePercent);
+    return {
+      name: item.name,
+      type: item.type,
+      weight: num(ov.weight, item.weight, 0, CATCH_WEIGHT_MAX, true),
+      price: num(ov.price, defaultPrice, 0, CATCH_PRICE_MAX, true),
+      defaultWeight: item.weight,
+      defaultPrice
+    };
+  });
+  for (const type of ['fish', 'junk'] as const) {
+    const ofType = list.filter(c => c.type === type);
+    if (ofType.every(c => c.weight === 0)) for (const c of ofType) c.weight = c.defaultWeight;
+  }
+  return list;
 }
 
 /** The defaults. A fresh copy each time, so callers can't mutate the shared object. */
@@ -213,8 +244,10 @@ export function internalPointsConfig(raw: unknown): InternalPointsConfig {
     trapMinutes: num(ga.trapMinutes, d.games.trapMinutes, 31, 1440, true),
     sellPricePercent: num(ga.sellPricePercent, d.games.sellPricePercent, 0, 1000, true),
     baitPricePercent: num(ga.baitPricePercent, d.games.baitPricePercent, 0, 1000, true),
-    stories: bool(ga.stories, d.games.stories)
+    stories: bool(ga.stories, d.games.stories),
+    catches: []
   };
+  games.catches = effectiveCatches(ga.catches, games.sellPricePercent);
 
   return {
     enabled: bool(r.enabled, d.enabled),
@@ -325,6 +358,47 @@ const GAMES_NUMBERS: Record<string, Rule> = {
   sellPricePercent: { min: 0, max: 1000, integer: true },
   baitPricePercent: { min: 0, max: 1000, integer: true }
 };
+/**
+ * The whole set of per-item overrides, replacing the stored one: each key an item's
+ * emoji, each value its weight and/or price. Fields equal to the default are dropped
+ * so a later change to a default still reaches the item.
+ */
+function validateCatches(raw: unknown, sellPricePercent: number, errors: string[]): StoredFishCatches | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    errors.push('games.catches must be an object');
+    return undefined;
+  }
+  const out: StoredFishCatches = {};
+  const weights = new Map<string, number>();
+  for (const [name, v] of Object.entries(raw as Record<string, unknown>)) {
+    const item = ITEMS.find(i => i.name === name);
+    if (!item) {
+      errors.push(`games.catches: ${name} isn't a fish or junk item`);
+      continue;
+    }
+    const ov = obj(v);
+    const entry: { weight?: number; price?: number } = {};
+    if (ov.weight !== undefined) {
+      const w = checkNumber(`${name} odds`, ov.weight, { min: 0, max: CATCH_WEIGHT_MAX, integer: true }, errors);
+      if (w !== undefined) {
+        weights.set(name, w);
+        if (w !== item.weight) entry.weight = w;
+      }
+    }
+    if (ov.price !== undefined) {
+      const pr = checkNumber(`${name} price`, ov.price, { min: 0, max: CATCH_PRICE_MAX, integer: true }, errors);
+      if (pr !== undefined && pr !== defaultSellPrice(item, sellPricePercent)) entry.price = pr;
+    }
+    if (Object.keys(entry).length) out[name] = entry;
+  }
+  for (const type of ['fish', 'junk'] as const) {
+    if (ITEMS.filter(i => i.type === type).every(i => (weights.get(i.name) ?? i.weight) === 0)) {
+      errors.push(`At least one ${type === 'fish' ? 'fish' : 'junk item'} needs odds above 0`);
+    }
+  }
+  return out;
+}
+
 const GAMBLE_NUMBERS: Record<string, Rule> = {
   // Decimals allowed, e.g. 47.5; the roll has 0.01% steps.
   winChancePercent: { min: 0, max: 100, integer: false },
@@ -525,6 +599,15 @@ export function validatePointsPatch(current: unknown, patch: unknown): { next?: 
         if (ga[key] === undefined) continue;
         if (typeof ga[key] !== 'boolean') errors.push(`games.${key} must be true or false`);
         else next.games![key] = ga[key] as boolean;
+      }
+      if (ga.catches === null) delete next.games!.catches;
+      else if (ga.catches !== undefined) {
+        const percent = typeof next.games!.sellPricePercent === 'number' ? next.games!.sellPricePercent : POINTS_DEFAULTS.games.sellPricePercent;
+        const catches = validateCatches(ga.catches, percent, errors);
+        if (catches) {
+          if (Object.keys(catches).length) next.games!.catches = catches;
+          else delete next.games!.catches;
+        }
       }
     }
   }

@@ -282,7 +282,28 @@ export interface PointsGamesConfig {
   baitPricePercent: number;
   /** A short AI story on 1 in 3 catches. */
   stories: boolean;
+  /**
+   * Every fish and junk item with its odds and price as they apply. Stored as
+   * overrides only (StoredFishCatches); an item without one keeps supibot's weight
+   * and its price scaled by sellPricePercent.
+   */
+  catches: FishCatchSetting[];
 }
+
+export interface FishCatchSetting {
+  /** The emoji, which is also the item's name in chat. */
+  name: string;
+  type: 'fish' | 'junk';
+  /** Chance weight within its type: 0 is never caught. */
+  weight: number;
+  /** What one sells for. A sized fish's length and a record still scale it. */
+  price: number;
+  defaultWeight: number;
+  defaultPrice: number;
+}
+
+/** Per-item overrides by emoji. */
+export type StoredFishCatches = Record<string, { weight?: number; price?: number }>;
 
 export interface PointsConfig {
   enabled: boolean;
@@ -317,7 +338,7 @@ export type StoredPointsConfig = Partial<Omit<PointsConfig, 'bonuses' | 'give' |
   gamble?: Partial<PointsGambleConfig>;
   duel?: Partial<PointsDuelConfig>;
   raffle?: Partial<PointsRaffleConfig>;
-  games?: Partial<PointsGamesConfig>;
+  games?: Partial<Omit<PointsGamesConfig, 'catches'>> & { catches?: StoredFishCatches };
   /** Staging only, set by editing the file: treat the channel as live. Never exposed by the API. */
   debugForceLive?: boolean;
 };
