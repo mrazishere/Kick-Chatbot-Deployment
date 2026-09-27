@@ -2808,11 +2808,42 @@ app.get('/internal/bot/:channel/points/leaderboard', internalGuard(false), (req,
 
   try {
     const board = pointsLeaderboard(channel, cfg, limit, broadcasterIdOf(config));
-    return res.json({ channel, currencyName: cfg.currencyName, updatedAt: new Date().toISOString(), ...board });
+    return res.json({ channel, currencyName: cfg.currencyName, updatedAt: new Date().toISOString(), ...board, fishing: publicFishing(cfg) });
   } catch (e) {
     return pointsUnavailable(res, channel, e);
   }
 });
+
+/**
+ * What the public leaderboard's Fishing tab shows: every catch with its share of
+ * catches, a rarity name and its sell price as the channel has them set. Null
+ * where fishing is off.
+ */
+function publicFishing(cfg: ReturnType<typeof effectivePointsConfig>): Record<string, unknown> | null {
+  const g = cfg.games;
+  if (!g.enabled) return null;
+  const list = (type: 'fish' | 'junk') => {
+    const items = g.catches.filter(c => c.type === type);
+    const total = items.reduce((sum, c) => sum + c.weight, 0);
+    return items
+      .map(c => {
+        const chance = total > 0 ? (c.weight / total) * 100 : 0;
+        return { emoji: c.name, chance: Math.round(chance * 100) / 100, rarity: rarityName(chance), price: c.price };
+      })
+      .sort((a, b) => b.chance - a.chance || a.price - b.price);
+  };
+  return { catchOdds: g.catchOdds, fish: list('fish'), junk: list('junk') };
+}
+
+/** A name for a share of catches. The default fish tiers land one per name. */
+function rarityName(chancePercent: number): string {
+  if (chancePercent <= 0) return 'Never';
+  if (chancePercent >= 10) return 'Common';
+  if (chancePercent >= 4) return 'Uncommon';
+  if (chancePercent >= 1) return 'Rare';
+  if (chancePercent >= 0.4) return 'Epic';
+  return 'Legendary';
+}
 
 /**
  * Patch channel settings. Every key is optional; only what's present is written,
