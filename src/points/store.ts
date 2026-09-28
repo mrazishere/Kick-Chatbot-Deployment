@@ -750,6 +750,38 @@ export function searchPointsUsers(channel: string, cfg: PointsConfig, q: string,
   });
 }
 
+/** A viewer as the public leaderboard lists them: no ids, only what's shown. */
+export interface PublicViewerRow { rank: number | null; username: string; balance: number; watchSeconds: number; reel?: string }
+
+/**
+ * The public leaderboard's viewer list: the top by balance with no query, or a
+ * username-prefix search that also finds viewers excluded from ranking (the
+ * streamer included), so anyone's history can be looked up.
+ */
+export function publicViewerSearch(channel: string, cfg: PointsConfig, q: string, limit: number, broadcasterUserId?: number | null): PublicViewerRow[] {
+  const n = Math.min(100, Math.max(1, Math.floor(limit) || 100));
+  return withReadDb(channel, [] as PublicViewerRow[], db => {
+    const ex = exclusionsFor(channel, cfg, broadcasterUserId);
+    const reels = reelNames(db, cfg);
+    const prefix = String(q ?? '').trim().replace(/^@+/, '').toLowerCase();
+    const users = prefix
+      ? db.prepare('SELECT * FROM users WHERE username_lc >= ? AND username_lc < ? ORDER BY balance DESC, username_lc LIMIT ?')
+          .all(prefix, prefix + '\x7f', Math.min(n, 50)) as UserRecord[]
+      : topBy(db, 'balance', n, ex);
+    return users.map(u => {
+      const row: PublicViewerRow = {
+        rank: isExcluded(ex, u.user_id, u.username) ? null : rankBy(db, u.user_id, 'balance', ex),
+        username: u.username,
+        balance: u.balance,
+        watchSeconds: u.watch_seconds
+      };
+      const reel = reels.get(u.user_id);
+      if (reel) row.reel = reel;
+      return row;
+    });
+  });
+}
+
 export function getPointsUserDetail(channel: string, cfg: PointsConfig, userId: number, broadcasterUserId?: number | null): PointsUserDetail | null {
   return withReadDb(channel, null as PointsUserDetail | null, db => {
     const u = getUser(db, userId);
@@ -774,6 +806,60 @@ export function getPointsUserDetail(channel: string, cfg: PointsConfig, userId: 
         note: l.note,
         counterparty: l.counterparty
       }))
+    };
+  });
+}
+
+/**
+ * One viewer's $DON history as the public leaderboard shows it, so anyone can
+ * check where a balance came from: active-time earnings (kept apart from the
+ * ledger), a total per reason over the whole ledger, and the latest entries.
+ * Active-time earnings plus every ledger entry always equal the balance.
+ */
+export interface PublicUserHistory {
+  username: string;
+  balance: number;
+  /** Null for a viewer excluded from earning (e.g. the broadcaster). */
+  rank: number | null;
+  watchSeconds: number;
+  activeTimeEarned: number;
+  totals: Array<{ reason: string; total: number; count: number }>;
+  ledgerCount: number;
+  ledger: Array<{ id: number; ts: string; delta: number; balanceAfter: number; reason: string; actor: string | null; note: string | null; counterparty: string | null }>;
+  /** The same figures the admin dashboard's viewer panel shows. */
+  lifetimeEarned: number;
+  isSub: boolean;
+  firstSeenAt: string | null;
+  lastSeenAt: string | null;
+  gamble: GambleStats;
+}
+
+export function publicUserHistory(channel: string, cfg: PointsConfig, name: string, limit: number, broadcasterUserId?: number | null): PublicUserHistory | null {
+  return withReadDb(channel, null as PublicUserHistory | null, db => {
+    const found = findUserByName(db, name.replace(/^@+/, '').toLowerCase());
+    const u = found ? getUser(db, found.user_id) : undefined;
+    if (!u) return null;
+    const ex = exclusionsFor(channel, cfg, broadcasterUserId);
+    const active = db.prepare('SELECT COALESCE(SUM(points), 0) AS p FROM watch_ledger WHERE user_id = ?').get(u.user_id) as { p: number };
+    const totals = db.prepare('SELECT reason, SUM(delta) AS total, COUNT(*) AS count FROM ledger WHERE user_id = ? GROUP BY reason ORDER BY ABS(SUM(delta)) DESC')
+      .all(u.user_id) as Array<{ reason: string; total: number; count: number }>;
+    return {
+      username: u.username,
+      balance: u.balance,
+      rank: isExcluded(ex, u.user_id, u.username) ? null : rankBy(db, u.user_id, 'balance', ex),
+      watchSeconds: u.watch_seconds,
+      activeTimeEarned: active.p,
+      totals,
+      ledgerCount: totals.reduce((n, t) => n + t.count, 0),
+      ledger: ledgerFor(db, u.user_id, Math.min(200, Math.max(1, limit))).map(l => ({
+        id: l.id, ts: iso(l.ts)!, delta: l.delta, balanceAfter: l.balance_after, reason: l.reason,
+        actor: l.actor, note: l.note, counterparty: l.counterparty
+      })),
+      lifetimeEarned: u.lifetime_earned,
+      isSub: u.is_sub === 1,
+      firstSeenAt: iso(u.first_seen_at),
+      lastSeenAt: iso(u.last_seen_at),
+      gamble: gambleStatsFor(db, u.user_id)
     };
   });
 }

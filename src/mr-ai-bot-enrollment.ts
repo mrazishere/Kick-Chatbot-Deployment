@@ -16,6 +16,7 @@ import { resolveBotIdentity } from './bot-identity';
 import { SYSTEM_BOTS } from './system-bots';
 import { commandWordCollides, effectiveCommand, effectivePointsConfig, readSubscriptionStatus, validatePointsPatch } from './points/config';
 import { closePointsDb } from './points/db';
+import { publicUserHistory, publicViewerSearch } from './points/store';
 import { adjustPoints, backupPoints, getPointsUserDetail, pointsLeaderboard, pointsSummary, resetAllPoints, searchPointsUsers } from './points/store';
 
 /* eslint-disable @typescript-eslint/no-var-requires, @typescript-eslint/no-explicit-any */
@@ -2809,6 +2810,45 @@ app.get('/internal/bot/:channel/points/leaderboard', internalGuard(false), (req,
   try {
     const board = pointsLeaderboard(channel, cfg, limit, broadcasterIdOf(config));
     return res.json({ channel, currencyName: cfg.currencyName, updatedAt: new Date().toISOString(), ...board, fishing: publicFishing(cfg) });
+  } catch (e) {
+    return pointsUnavailable(res, channel, e);
+  }
+});
+
+// The public leaderboard's viewer list and search. ?q=<username prefix>, empty for the top 100.
+app.get('/internal/bot/:channel/points/public-viewers', internalGuard(false), (req, res) => {
+  const channelRaw = req.params['channel'];
+  const channel = (typeof channelRaw === 'string' ? channelRaw : '').toLowerCase();
+  if (!validateChannelName(channel)) return res.status(400).json({ error: 'Invalid channel name' });
+  const config = readChannelConfig(channel);
+  if (!config) return res.status(404).json({ error: 'Not enrolled' });
+  const cfg = effectivePointsConfig(config['points']);
+  if (!cfg.enabled || !cfg.publicLeaderboard) return res.status(404).json({ error: 'This channel has no public leaderboard' });
+  const q = (typeof req.query['q'] === 'string' ? req.query['q'] : '').trim().replace(/^@+/, '');
+  if (q && !/^[A-Za-z0-9_]{1,25}$/.test(q)) return res.status(400).json({ error: 'q must be the start of a Kick username' });
+  try {
+    return res.json({ channel, currencyName: cfg.currencyName, viewers: publicViewerSearch(channel, cfg, q, 100, broadcasterIdOf(config)) });
+  } catch (e) {
+    return pointsUnavailable(res, channel, e);
+  }
+});
+
+// One viewer's history for the public leaderboard: read only, and only where the
+// channel has its public leaderboard on. ?name=<kick username>
+app.get('/internal/bot/:channel/points/public-history', internalGuard(false), (req, res) => {
+  const channelRaw = req.params['channel'];
+  const channel = (typeof channelRaw === 'string' ? channelRaw : '').toLowerCase();
+  if (!validateChannelName(channel)) return res.status(400).json({ error: 'Invalid channel name' });
+  const config = readChannelConfig(channel);
+  if (!config) return res.status(404).json({ error: 'Not enrolled' });
+  const cfg = effectivePointsConfig(config['points']);
+  if (!cfg.enabled || !cfg.publicLeaderboard) return res.status(404).json({ error: 'This channel has no public leaderboard' });
+  const name = (typeof req.query['name'] === 'string' ? req.query['name'] : '').trim().replace(/^@+/, '');
+  if (!/^[A-Za-z0-9_]{2,25}$/.test(name)) return res.status(400).json({ error: 'name must be a Kick username' });
+  try {
+    const history = publicUserHistory(channel, cfg, name, 100, broadcasterIdOf(config));
+    if (!history) return res.status(404).json({ error: 'No such viewer here' });
+    return res.json({ channel, currencyName: cfg.currencyName, ...history });
   } catch (e) {
     return pointsUnavailable(res, channel, e);
   }
