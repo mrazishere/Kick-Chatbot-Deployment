@@ -77,6 +77,8 @@ interface LimitState { key: string; counts: Record<string, number>; pausedForLim
 const RESOLUTION_KEEP_MS = 7 * 24 * 3_600_000;
 /** Space between accept/reject calls, and retries when Kick answers 429. */
 const RESOLVE_SPACING_MS = 400;
+/** Kick's most ids per accept/reject request. */
+const RESOLVE_BATCH = 25;
 const RESOLVE_RETRY_MS = [1_500, 3_000, 6_000];
 /** Pages of Kick's pending list the backstop reads per pass (25 per page). */
 const RECONCILE_MAX_PAGES = 10;
@@ -92,8 +94,19 @@ type Outcome =
    * timeout that landed on its target. A shield bounce, a roulette result or
    * a failure each explain something Kick's notice does not.
    */
-  | { ok: true; announce: string; log: string; quiet?: boolean }
+  | { ok: true; announce: string; log: string; quiet?: boolean; purchase?: Purchase }
   | { ok: false; reason: string };
+
+/** A `points` payout, announced as soon as it's paid and merged with the same viewer's others. */
+interface Purchase { amount: number; balance: number | null; currency: string }
+
+/**
+ * Purchases by one viewer this close together share one chat line, so a rush
+ * ("×9") is a message per viewer rather than a flood Kick's chat limit drops.
+ */
+const PURCHASE_MERGE_MS = 3_000;
+/** A viewer who keeps buying still hears back this often. */
+const PURCHASE_MERGE_MAX_MS = 10_000;
 
 /** Scopes a reward action cannot work without. */
 const REQUIRED_SCOPES = ['moderation:ban', 'channel:rewards:write'];
@@ -119,8 +132,13 @@ export interface RewardHandlerDeps {
 export class RewardRedemptionHandler {
   private deps: RewardHandlerDeps;
   private seen: string[] = [];
-  /** Serialises accept/reject calls so a burst doesn't trip Kick's rate limit. */
-  private resolveChain: Promise<unknown> = Promise.resolve();
+  /** Pending chat lines for points purchases, by viewer and reward. */
+  private purchaseLines = new Map<string, { redeemer: string; title: string; count: number; total: number; balance: number | null; currency: string; firstAt: number; timer: NodeJS.Timeout | null }>();
+  /** Redemptions whose accept/reject is queued or in flight, so the backstop doesn't queue it again. */
+  private settling = new Set<string>();
+  /** Accept/reject calls waiting to go to Kick, sent in batches by pumpResolves. */
+  private resolveQueue: Array<{ id: string; accept: boolean; done: (ok: boolean) => void }> = [];
+  private resolvePumping = false;
   private started = false;
   private scopeGapNotified = false;
   private reconcileTimer: NodeJS.Timeout | null = null;
@@ -382,8 +400,13 @@ export class RewardRedemptionHandler {
 
     console.log(`[REWARD]${isTest ? ' [TEST]' : ''} ${outcome.log} via "${event.reward.title}"`);
 
+    // A purchase is final once paid, so say so now rather than after Kick's queue.
+    const purchaseAnnounced = !!outcome.purchase && !isTest && action.announce !== false;
+    if (purchaseAnnounced) this.announcePurchase(redeemer, event.reward.title, outcome.purchase!);
+
     // A test run rejects rather than accepts, which is what refunds the points.
     const resolved = canResolve ? await this.settle(event.id, !isTest) : false;
+    if (purchaseAnnounced) return;
 
     // A test still speaks up even when quiet: its line carries the refund result,
     // which Kick's own notice says nothing about.
@@ -529,6 +552,7 @@ export class RewardRedemptionHandler {
         const now = paid.balance === null ? '' : `, you now have ${paid.balance.toLocaleString('en-US')} ${paid.currency}`;
         return {
           ok: true,
+          purchase: { amount, balance: paid.balance, currency: paid.currency },
           announce: `you got ${shown} ${paid.currency}${now}`,
           log: `${redeemer} bought ${amount} ${paid.currency}${paid.balance === null ? ' (already paid)' : ''}`
         };
@@ -596,6 +620,8 @@ export class RewardRedemptionHandler {
       for (const row of pending) {
         // Decided before but Kick never took it: tell Kick again, never decide twice.
         const decided = decisions[row.id];
+        // Already waiting in the accept queue: a second call would only lengthen it.
+        if (decided && this.settling.has(row.id)) continue;
         if (decided) {
           const ok = await this.settle(row.id, decided.accept);
           console.log(`[REWARD] Reconcile: "${row.rewardTitle}" was already ${decided.accept ? 'accepted' : 'refunded'} by the bot — ${ok ? 'Kick has it now' : 'Kick still refused, will retry'}.`);
@@ -894,6 +920,25 @@ export class RewardRedemptionHandler {
     }
   }
 
+  private announcePurchase(redeemer: string, title: string, p: Purchase): void {
+    const key = `${redeemer.toLowerCase()}|${title}`;
+    const line = this.purchaseLines.get(key) ?? { redeemer, title, count: 0, total: 0, balance: null, currency: p.currency, firstAt: Date.now(), timer: null };
+    line.count++;
+    line.total += p.amount;
+    if (p.balance !== null) line.balance = p.balance;
+    if (line.timer) clearTimeout(line.timer);
+    this.purchaseLines.set(key, line);
+    const wait = Date.now() - line.firstAt >= PURCHASE_MERGE_MAX_MS ? 0 : PURCHASE_MERGE_MS;
+    line.timer = setTimeout(() => {
+      this.purchaseLines.delete(key);
+      const times = line.count > 1 ? ` ×${line.count}` : '';
+      const now = line.balance === null ? '' : `, you now have ${line.balance.toLocaleString('en-US')} ${line.currency}`;
+      void this.deps.sendMessage(
+        `@${line.redeemer} redeemed "${line.title}"${times} — you got ${line.total.toLocaleString('en-US')} ${line.currency}${now}.`
+      ).catch(() => {});
+    }, wait);
+  }
+
   private resolutionPath(): string {
     return path.join(process.cwd(), 'data', RESOLUTION_DIR, `${this.deps.channelName}.json`);
   }
@@ -932,7 +977,8 @@ export class RewardRedemptionHandler {
     const before = this.loadResolutions();
     before[redemptionId] = { accept, at: before[redemptionId]?.at ?? Date.now() };
     this.saveResolutions(before);
-    const ok = await this.resolve(redemptionId, accept);
+    this.settling.add(redemptionId);
+    const ok = await this.resolve(redemptionId, accept).finally(() => this.settling.delete(redemptionId));
     if (ok) {
       const after = this.loadResolutions();
       delete after[redemptionId];
@@ -941,24 +987,67 @@ export class RewardRedemptionHandler {
     return ok;
   }
 
-  /** One accept/reject call, queued behind the others and retried while Kick rate-limits. */
+  /**
+   * Accept or reject on Kick. Calls wait in one queue; whatever is waiting with the
+   * same answer goes in a single request (Kick takes up to 25 ids), so a rush of
+   * 100 redemptions is a handful of calls rather than 100 against the rate limit.
+   */
   private resolve(redemptionId: string, accept: boolean): Promise<boolean> {
-    const run = this.resolveChain.then(() => this.resolveNow(redemptionId, accept));
-    this.resolveChain = run.then(() => new Promise(r => setTimeout(r, RESOLVE_SPACING_MS)));
-    return run;
+    return new Promise(done => {
+      this.resolveQueue.push({ id: redemptionId, accept, done });
+      if (!this.resolvePumping) void this.pumpResolves();
+    });
   }
 
-  private async resolveNow(redemptionId: string, accept: boolean): Promise<boolean> {
+  private async pumpResolves(): Promise<void> {
+    this.resolvePumping = true;
+    try {
+      while (this.resolveQueue.length > 0) {
+        const accept = this.resolveQueue[0].accept;
+        const batch: typeof this.resolveQueue = [];
+        this.resolveQueue = this.resolveQueue.filter(item => {
+          if (item.accept !== accept || batch.length >= RESOLVE_BATCH || batch.some(b => b.id === item.id)) return true;
+          batch.push(item);
+          return false;
+        });
+        const results = await this.resolveBatch(batch.map(b => b.id), accept);
+        for (const b of batch) b.done(results.get(b.id) ?? false);
+        await new Promise(r => setTimeout(r, RESOLVE_SPACING_MS));
+      }
+    } finally {
+      this.resolvePumping = false;
+    }
+  }
+
+  /** One request for up to 25 ids, retried while Kick rate-limits. Returns each id's success. */
+  private async resolveBatch(ids: string[], accept: boolean): Promise<Map<string, boolean>> {
+    const out = new Map<string, boolean>(ids.map(id => [id, false]));
     for (let attempt = 0; ; attempt++) {
       try {
         const { token, isChannelToken } = await this.deps.getToken();
-        if (!isChannelToken || !token) return false;
-        await axios.post(
+        if (!isChannelToken || !token) return out;
+        const res = await axios.post(
           `${API}/channels/rewards/redemptions/${accept ? 'accept' : 'reject'}`,
-          { ids: [redemptionId] },
+          { ids },
           { headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' } }
         );
-        return true;
+        // Kick lists only the ids that failed. NOT_PENDING means it was already
+        // resolved (a retry after a lost reply), which is what we wanted.
+        const failed = new Map<string, string>();
+        const rows = (res.data as { data?: unknown } | null)?.data;
+        if (Array.isArray(rows)) {
+          for (const row of rows as Array<{ id?: unknown; reason?: unknown }>) {
+            if (typeof row?.id === 'string') failed.set(row.id, String(row.reason ?? 'UNKNOWN'));
+          }
+        }
+        for (const id of ids) {
+          const reason = failed.get(id);
+          out.set(id, !reason || reason === 'NOT_PENDING');
+          if (reason && reason !== 'NOT_PENDING') {
+            console.error(`[REWARD] Kick would not ${accept ? 'accept' : 'reject'} redemption ${id}: ${reason}`);
+          }
+        }
+        return out;
       } catch (err) {
         const limited = axios.isAxiosError(err) && err.response?.status === 429;
         if (limited && attempt < RESOLVE_RETRY_MS.length) {
@@ -968,8 +1057,8 @@ export class RewardRedemptionHandler {
         const detail = axios.isAxiosError(err)
           ? JSON.stringify(err.response?.data ?? err.message)
           : (err instanceof Error ? err.message : String(err));
-        console.error(`[REWARD] Failed to ${accept ? 'accept' : 'reject'} redemption ${redemptionId}: ${detail}`);
-        return false;
+        console.error(`[REWARD] Failed to ${accept ? 'accept' : 'reject'} ${ids.length} redemption(s) (${ids.join(', ')}): ${detail}`);
+        return out;
       }
     }
   }
