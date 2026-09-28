@@ -46,7 +46,16 @@ export default function ViewerHistory({ h, onOpen }: { h: PublicHistory; /** Ope
       ) : null}
 
       <div className="border-t border-neutral-800 pt-4">
-        <h4 className={LABEL}>History</h4>
+        <h4 className={LABEL}>
+          History
+          {h.ledger.length > 0 ? (
+            <span className="ml-2 normal-case tracking-normal text-neutral-600">
+              {h.ledgerCount > h.ledger.length
+                ? `latest ${h.ledger.length} of ${h.ledgerCount.toLocaleString()} changes (up to 100 are shown)`
+                : `all ${h.ledgerCount.toLocaleString()} changes`}
+            </span>
+          ) : null}
+        </h4>
         {h.ledger.length === 0 ? (
           <p className="text-sm text-neutral-500">No changes besides active-time earnings yet.</p>
         ) : (
