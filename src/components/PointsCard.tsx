@@ -1,5 +1,6 @@
 "use client";
 
+import { COUNTERPARTY_PREFIX, REASON_LABEL } from "@/lib/points-labels";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ChevronDown, Coins, ExternalLink, Loader2, Search } from "lucide-react";
 import { Button, Card, Checkbox, Stat, Toggle } from "./ui";
@@ -642,52 +643,6 @@ function formatDate(iso: string | null): string {
  * has an opponent. Reasons that never have a second party aren't listed, so their
  * rows stay as they were.
  */
-const COUNTERPARTY_PREFIX: Record<string, string> = {
-  give_out: "to",
-  give_in: "from",
-  "game:duel_hold": "vs",
-  "game:duel_stake": "vs",
-  "game:duel_win": "beat",
-  "game:duel_refund": "vs",
-};
-
-const REASON_LABEL: Record<string, string> = {
-  follow: "Follow bonus",
-  sub_new: "New sub",
-  sub_renewal: "Resub",
-  gift_sub: "Gifted subs",
-  gift_recv: "Received a gifted sub",
-  kicks: "Kicks",
-  give_out: "Gave",
-  give_in: "Received",
-  mod_add: "Added by mod",
-  mod_remove: "Removed by mod",
-  mod_set: "Set by mod",
-  dash_add: "Added in dashboard",
-  dash_remove: "Removed in dashboard",
-  dash_set: "Set in dashboard",
-  dash_reset: "Channel reset",
-  pusher_sub: "Sub",
-  "game:gamble": "Gamble bet",
-  "game:gamble_win": "Gamble win",
-  "game:duel_hold": "Duel challenge (held)",
-  "game:duel_stake": "Duel accepted (stake)",
-  "game:duel_win": "Duel win",
-  "game:duel_refund": "Duel refund",
-  "game:raffle_win": "Raffle win",
-  "game:fish": "Fishing cast",
-  "game:fish_win": "Fishing catch",
-  "game:fish_bait": "Fishing bait",
-  "game:fish_sell": "Sold fish",
-  "game:fish_reel": "Bought a reel",
-  "game:fish_reel_refund": "Reel taken back, refunded",
-  channel_points: "Bought with channel points",
-  channel_points_reversal: "Channel points refunded, taken back",
-  "game:slots": "Slots bet",
-  "game:slots_win": "Slots win",
-  cookie: "Daily cookie",
-};
-
 async function callApi<T>(channel: string, path: string, init?: RequestInit): Promise<{ data?: T; error?: string }> {
   try {
     const res = await fetch(`${BASE_PATH}/api/bot/${encodeURIComponent(channel)}${path}`, {

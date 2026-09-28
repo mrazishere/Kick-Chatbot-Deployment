@@ -667,6 +667,58 @@ export function resetPoints(
  * The public top lists. No secret needed, and a short timeout: this backs a page
  * anyone can open, which should say "unavailable" quickly rather than hang.
  */
+export interface PublicHistoryEntry {
+  id: number;
+  ts: string;
+  delta: number;
+  balanceAfter: number;
+  reason: string;
+  actor: string | null;
+  note: string | null;
+  counterparty: string | null;
+}
+
+/** One viewer's $DON history for the public leaderboard. */
+export interface PublicHistory {
+  channel: string;
+  currencyName: string;
+  username: string;
+  balance: number;
+  rank: number | null;
+  watchSeconds: number;
+  /** $DON from chatting while live, which the ledger doesn't list. It plus every entry equals the balance. */
+  activeTimeEarned: number;
+  totals: { reason: string; total: number; count: number }[];
+  ledgerCount: number;
+  ledger: PublicHistoryEntry[];
+  lifetimeEarned: number;
+  isSub: boolean;
+  firstSeenAt: string | null;
+  lastSeenAt: string | null;
+  gamble: { gambles: number; wins: number; staked: number; net: number } | null;
+}
+
+/** A viewer in the public leaderboard's list; no ids. */
+export interface PublicViewer {
+  rank: number | null;
+  username: string;
+  balance: number;
+  watchSeconds: number;
+  reel?: string;
+}
+
+export function getPublicViewers(channel: string, q: string): Promise<{ currencyName: string; viewers: PublicViewer[] }> {
+  return request(`/internal/bot/${encodeURIComponent(channel)}/points/public-viewers?q=${encodeURIComponent(q)}`, {
+    timeoutMs: 10_000,
+  });
+}
+
+export function getPublicHistory(channel: string, name: string): Promise<PublicHistory> {
+  return request(`/internal/bot/${encodeURIComponent(channel)}/points/public-history?name=${encodeURIComponent(name)}`, {
+    timeoutMs: 10_000,
+  });
+}
+
 export function getPointsLeaderboard(channel: string, limit = 100): Promise<PointsLeaderboard> {
   return request(`/internal/bot/${encodeURIComponent(channel)}/points/leaderboard?limit=${limit}`, {
     timeoutMs: 10_000,

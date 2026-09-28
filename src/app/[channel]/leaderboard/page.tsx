@@ -3,7 +3,8 @@ import { notFound } from "next/navigation";
 import SiteHeader from "@/components/SiteHeader";
 import { validChannel } from "@/lib/bot-auth";
 import { getSession } from "@/lib/session";
-import { loadPublicLeaderboard } from "@/lib/public-leaderboard";
+import { loadPublicLeaderboard, loadPublicViewers } from "@/lib/public-leaderboard";
+import PublicViewers from "@/components/PublicViewers";
 import type { PublicCatch, PublicFishing } from "@/lib/bot-api";
 
 export const dynamic = "force-dynamic";
@@ -12,7 +13,7 @@ const BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
 
 type Props = {
   params: Promise<{ channel: string }>;
-  searchParams: Promise<{ tab?: string | string[] }>;
+  searchParams: Promise<{ tab?: string | string[]; user?: string | string[] }>;
 };
 
 // The one page here that anyone can open signed out. It never redirects to login,
@@ -109,7 +110,10 @@ export default async function LeaderboardPage({ params, searchParams }: Props) {
   const slug = channel.toLowerCase();
   if (!validChannel(slug)) notFound();
 
-  const { tab: rawTab } = await searchParams;
+  const { tab: rawTab, user: rawUser } = await searchParams;
+  // ?user=<name> opens that viewer's history in the list.
+  const lookup = (Array.isArray(rawUser) ? rawUser[0] : rawUser)?.trim().replace(/^@+/, "");
+  const openFirst = lookup && /^[A-Za-z0-9_]{2,25}$/.test(lookup) ? lookup : null;
   const wanted = Array.isArray(rawTab) ? rawTab[0] : rawTab;
   const tab: Tab = wanted === "watchtime" ? "watchtime" : wanted === "fishing" ? "fishing" : "points";
 
@@ -125,6 +129,8 @@ export default async function LeaderboardPage({ params, searchParams }: Props) {
   }
 
   const data = result.kind === "ok" ? result.data : null;
+  // The $DON tab's list comes from the same source as its search, with active time and reels.
+  const firstViewers = tab === "points" && data ? await loadPublicViewers(slug, "") : null;
   const fishing = data?.fishing ?? null;
   const currency = data?.currencyName ?? "Points";
   const rows = data ? (tab === "watchtime" ? data.watchtime : data.points) : [];
@@ -178,7 +184,9 @@ export default async function LeaderboardPage({ params, searchParams }: Props) {
               </p>
             ) : null}
 
-            {tab === "fishing" ? (
+            {tab === "points" && firstViewers?.kind === "ok" ? (
+              <PublicViewers channel={slug} currency={currency} initial={firstViewers.viewers} openFirst={openFirst} />
+            ) : tab === "fishing" ? (
               fishing ? (
                 <FishingTab fishing={fishing} currency={currency} />
               ) : (
@@ -204,7 +212,13 @@ export default async function LeaderboardPage({ params, searchParams }: Props) {
                         #{row.rank}
                       </span>
                       <span className="flex min-w-0 flex-1 items-center gap-2">
-                        <span className="truncate text-neutral-200">{row.username}</span>
+                        <a
+                          href={`${BASE_PATH}/${slug}/leaderboard?user=${encodeURIComponent(row.username)}`}
+                          className="truncate text-neutral-200 hover:underline"
+                          title={`${row.username}'s ${currency} history`}
+                        >
+                          {row.username}
+                        </a>
                         {row.reel ? (
                           <span
                             title={`Fishes with the ${row.reel} reel`}
