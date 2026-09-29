@@ -89,7 +89,50 @@ export interface PointsGames {
   catches?: FishCatch[];
   /** Reels in buying order. Absent from a bot service older than reels. */
   reels?: FishReel[];
+  /** `fish steal`. Absent from a bot service older than stealing. */
+  steal?: FishSteal;
 }
+
+/** `fish steal`: a hook to try, rarity odds, a burned fine when caught, and guards. Mirrors the bot's FishStealSetting. */
+export interface FishSteal {
+  enabled: boolean;
+  hookPrice: number;
+  hookUses: number;
+  fee: number;
+  finePercent: number;
+  fineMinimum: number;
+  oddsCommon: number;
+  oddsUncommon: number;
+  oddsRare: number;
+  oddsEpic: number;
+  oddsLegendary: number;
+  graceMinutes: number;
+  protectMinutes: number;
+  guardPercent: number;
+  guardMinimum: number;
+  guardHours: number;
+}
+
+type StealNumber = Exclude<keyof FishSteal, "enabled">;
+
+/** The steal settings' inputs, in the order shown, with the bot's bounds and defaults. */
+const STEAL_FIELDS: Array<{ key: StealNumber; label: string; hint: string; min: number; max: number }> = [
+  { key: "hookPrice", label: "Hook price", hint: "default 500", min: 0, max: 1_000_000_000 },
+  { key: "hookUses", label: "Tries per hook", hint: "default 3", min: 1, max: 100 },
+  { key: "fee", label: "Fee per try", hint: "burned, default 50", min: 0, max: 1_000_000_000 },
+  { key: "finePercent", label: "Fine (% of the fish)", hint: "burned, default 50", min: 0, max: 1000 },
+  { key: "fineMinimum", label: "Smallest fine", hint: "default 100", min: 0, max: 1_000_000_000 },
+  { key: "oddsCommon", label: "Common (%)", hint: "chance it works, default 40", min: 0, max: 100 },
+  { key: "oddsUncommon", label: "Uncommon (%)", hint: "default 30", min: 0, max: 100 },
+  { key: "oddsRare", label: "Rare (%)", hint: "default 20", min: 0, max: 100 },
+  { key: "oddsEpic", label: "Epic (%)", hint: "default 10", min: 0, max: 100 },
+  { key: "oddsLegendary", label: "Legendary (%)", hint: "default 5", min: 0, max: 100 },
+  { key: "graceMinutes", label: "Safe after landing (min)", hint: "default 30", min: 0, max: 1440 },
+  { key: "protectMinutes", label: "Target left alone (min)", hint: "after a try, default 60", min: 0, max: 1440 },
+  { key: "guardPercent", label: "Guard price (% of fish held)", hint: "default 5", min: 0, max: 100 },
+  { key: "guardMinimum", label: "Cheapest guard", hint: "default 200", min: 0, max: 1_000_000_000 },
+  { key: "guardHours", label: "Guard lasts (hours)", hint: "1–168, default 12", min: 1, max: 168 },
+];
 
 export interface FishReel {
   name: string;
@@ -322,6 +365,8 @@ interface SettingsForm {
   fishCatches: { name: string; type: "fish" | "junk"; weight: string; price: string; defaultWeight: number; defaultPrice: number }[];
   /** null when the bot service doesn't report reels. */
   fishReels: { name: string; price: string; odds: string; rarity: string; value: string }[] | null;
+  /** null when the bot service doesn't report stealing. */
+  fishSteal: ({ enabled: boolean } & Record<StealNumber, string>) | null;
 }
 
 function formFromConfig(c: PointsConfig): SettingsForm {
@@ -391,6 +436,12 @@ function formFromConfig(c: PointsConfig): SettingsForm {
           rarity: String(r.rarityMultiplier),
           value: String(r.valueMultiplier),
         }))
+      : null,
+    fishSteal: c.games?.steal
+      ? {
+          enabled: c.games.steal.enabled,
+          ...(Object.fromEntries(STEAL_FIELDS.map(({ key }) => [key, String(c.games!.steal![key])])) as Record<StealNumber, string>),
+        }
       : null,
   };
 }
@@ -575,6 +626,11 @@ function buildPatch(f: SettingsForm): { patch: PointsSettingsPatch } | { error: 
     });
     if (f.fishReels.length > 10) errors.push("There can be at most 10 reels");
   }
+  if (f.fishSteal) {
+    const steal = { enabled: f.fishSteal.enabled } as FishSteal;
+    for (const { key, label, min, max } of STEAL_FIELDS) steal[key] = whole(f.fishSteal[key], `Stealing: ${label}`, min, max);
+    patch.games.steal = steal;
+  }
 
   return errors.length > 0 ? { error: errors.join("; ") } : { patch };
 }
@@ -684,6 +740,49 @@ const CELL_INPUT =
   "w-full rounded-md border border-neutral-700 bg-neutral-900 px-2 py-1 text-right text-sm tabular-nums text-neutral-200 outline-none transition focus:border-neutral-500 disabled:opacity-40";
 
 type CatchRow = SettingsForm["fishCatches"][number];
+type StealForm = NonNullable<SettingsForm["fishSteal"]>;
+
+/** `fish steal`, off until a channel turns it on; the numbers only show once it's on. */
+function StealSettings({ value, currency, command, disabled, onChange }: {
+  value: StealForm;
+  currency: string;
+  command: string;
+  disabled: boolean;
+  onChange: (v: StealForm) => void;
+}) {
+  return (
+    <div className="mt-4 rounded-md border border-neutral-800 p-3">
+      <Checkbox
+        label={`Let viewers steal fish from each other ($${command} fish steal @user)`}
+        checked={value.enabled}
+        disabled={disabled}
+        onChange={(enabled) => onChange({ ...value, enabled })}
+      />
+      {value.enabled ? (
+        <>
+          <div className="mt-3 grid gap-4 sm:grid-cols-5">
+            {STEAL_FIELDS.map(({ key, label, hint }) => (
+              <Field key={key} label={label} hint={hint}>
+                <input
+                  value={value[key]}
+                  inputMode="numeric"
+                  disabled={disabled}
+                  onChange={(e) => onChange({ ...value, [key]: e.target.value })}
+                  className={INPUT}
+                />
+              </Field>
+            ))}
+          </div>
+          <p className="mt-3 text-xs text-neutral-500">
+            {`A thief first buys a 🪝 grappling hook with $${command} fish buy hook. Each try costs the fee, one hook use and the fishing cooldown, and reaches for one random fish the target has held longer than the safe time. `}
+            {`It works at the chance for that fish's rarity; otherwise the thief is caught, pays the fine (a share of the fish's value, at least the smallest fine, never more than they have) and loses the hook. Fees and fines go nowhere: nobody receives them. `}
+            {`A viewer can hire a guard with $${command} fish buy guard, priced on what their fish are worth right now. A guarded target turns every try away for one hook use and nothing else; only the owner sees how long their guard has left. Prices are in ${currency}.`}
+          </p>
+        </>
+      ) : null}
+    </div>
+  );
+}
 type ReelRow = NonNullable<SettingsForm["fishReels"]>[number];
 
 /**
@@ -1554,6 +1653,15 @@ export default function PointsCard({
                     command={commandPreview || "…"}
                     disabled={readOnly || !!busy}
                     onChange={(rows) => set("fishReels", rows)}
+                  />
+                ) : null}
+                {form.fishSteal ? (
+                  <StealSettings
+                    value={form.fishSteal}
+                    currency={form.currencyName.trim() || "points"}
+                    command={commandPreview || "…"}
+                    disabled={readOnly || !!busy}
+                    onChange={(v) => set("fishSteal", v)}
                   />
                 ) : null}
                 {form.fishCatches.length > 0 ? (

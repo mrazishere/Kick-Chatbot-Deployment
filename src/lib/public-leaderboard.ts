@@ -73,7 +73,7 @@ function publicFishing(raw: unknown): PublicFishing | null {
   const f = raw as Partial<PublicFishing> | null | undefined;
   if (!f || typeof f.catchOdds !== "number") return null;
   const fish = publicCatches(f.fish);
-  return fish.length ? { catchOdds: f.catchOdds, fish, junk: publicCatches(f.junk), rarest: publicRarest(f.rarest) } : null;
+  return fish.length ? { catchOdds: f.catchOdds, fish, junk: publicCatches(f.junk), rarest: publicRarest(f.rarest), steal: f.steal === true } : null;
 }
 
 function publicShape(raw: PointsLeaderboard, channel: string): PointsLeaderboard {

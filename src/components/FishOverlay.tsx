@@ -23,6 +23,8 @@ type Scene =
   | { v: "catch"; item: string; rarity: string | null; cm: number | null }
   | { v: "miss"; junk: string | null }
   | { v: "trap"; haul: string[] }
+  | { v: "steal"; item: string; victim: string | null; cm: number | null }
+  | { v: "caught"; item: string; victim: string | null; fine: string | null }
   | { v: "lay" }
   | { v: "sell"; amount: string | null }
   | { v: "wait"; trap: boolean; time: string | null }
@@ -57,6 +59,13 @@ function sceneOf(ev: FishOverlayEvent): Scene | null {
   if (ev.kind === "catch" && ev.item) {
     const cm = /It is (\d+) cm/.exec(t);
     return { v: "catch", item: ev.item, rarity: ev.rarity ?? null, cm: cm ? Number(cm[1]) : null };
+  }
+  if (ev.kind === "steal" && ev.item) {
+    const cm = /\((\d+) cm\)/.exec(t);
+    return { v: "steal", item: ev.item, victim: /@(\w+)/.exec(t)?.[1] ?? null, cm: cm ? Number(cm[1]) : null };
+  }
+  if (ev.kind === "caught" && ev.item) {
+    return { v: "caught", item: ev.item, victim: /@(\w+)/.exec(t)?.[1] ?? null, fine: /paid a ([\d,]+) /.exec(t)?.[1] ?? null };
   }
   if (ev.kind === "miss") return { v: "miss", junk: /You reel out an? (\S+)/.exec(t)?.[1] ?? null };
   if (ev.kind === "trap") {
@@ -119,6 +128,10 @@ function lengthOf(s: Scene): number {
       return s.junk ? 3.2 : 2.6;
     case "trap":
       return 0.7 + s.haul.length * 0.12 + 2 + 0.6;
+    case "steal":
+      return 3.8;
+    case "caught":
+      return 4;
     case "lay":
       return 2.3;
     case "sell":
@@ -330,6 +343,28 @@ function LaneView({ lane }: { lane: Lane }) {
             );
           })
         : null}
+
+      {scene.v === "steal" || scene.v === "caught" ? (
+        <>
+          <div className="fo-ripple r1" />
+          <div className="fo-loot">
+            <span>{scene.item}</span>
+          </div>
+          <div className="fo-hook">
+            <span>🪝</span>
+          </div>
+          {scene.v === "caught" ? (
+            <div className="fo-siren">
+              <span>🚨</span>
+            </div>
+          ) : null}
+          <div className="fo-tag fo-tag-heist">
+            {scene.v === "steal"
+              ? `🪝 from ${scene.victim ?? "someone"}${scene.cm ? ` · ${scene.cm} cm` : ""}`
+              : `Caught by ${scene.victim ?? "the owner"}${scene.fine ? ` · −${scene.fine}` : ""}`}
+          </div>
+        </>
+      ) : null}
 
       {scene.v === "sell" ? (
         <>
@@ -639,4 +674,26 @@ const CSS = `
 
 @keyframes fo-in{from{opacity:0}to{opacity:1}}
 @keyframes fo-out{to{opacity:0}}
+
+.fo-loot{bottom:var(--surf);transform:translateX(-50%);line-height:1;animation:fo-loot-up ${T(0.5)} ease-out ${T(0.65)} both}
+.fo-loot>span{display:block;font-size:2.2em;filter:drop-shadow(0 .06em .1em rgba(0,0,0,.5))}
+@keyframes fo-loot-up{from{transform:translate(-50%,.5em) scale(.3);opacity:0}to{transform:translate(-50%,-.9em) scale(1);opacity:1}}
+.fo-hook{bottom:var(--surf);transform:translate(-50%,-3em);line-height:1;animation:fo-hook-drop ${T(0.6)} cubic-bezier(.5,0,.8,.6) both}
+.fo-hook>span{display:block;font-size:1.7em;filter:drop-shadow(0 .06em .1em rgba(0,0,0,.6))}
+.fo-hook::before{content:"";position:absolute;left:50%;bottom:1.5em;width:.09em;height:14em;margin-left:-.045em;background:rgba(235,240,245,.75)}
+@keyframes fo-hook-drop{from{transform:translate(-50%,-12em)}to{transform:translate(-50%,-3em)}}
+.v-steal .fo-hook{animation:fo-hook-drop ${T(0.6)} cubic-bezier(.5,0,.8,.6) both,fo-yank-hook ${T(1.1)} cubic-bezier(.5,-.3,.7,1) ${T(1.35)} forwards}
+.v-steal .fo-loot{animation:fo-loot-up ${T(0.5)} ease-out ${T(0.65)} both,fo-yank-loot ${T(1.1)} cubic-bezier(.5,-.3,.7,1) ${T(1.35)} forwards}
+@keyframes fo-yank-hook{0%{transform:translate(-50%,-3em)}25%{transform:translate(-50%,-2.6em)}100%{transform:translate(calc(-50% + 8em),-11em) rotate(20deg);opacity:0}}
+@keyframes fo-yank-loot{0%{transform:translate(-50%,-.9em)}25%{transform:translate(-50%,-.5em)}100%{transform:translate(calc(-50% + 8em),-9em) rotate(35deg);opacity:0}}
+.v-caught .fo-hook{animation:fo-hook-drop ${T(0.6)} cubic-bezier(.5,0,.8,.6) both,fo-hook-fall ${T(0.8)} ease-in ${T(1.45)} forwards}
+.v-caught .fo-loot{animation:fo-loot-up ${T(0.5)} ease-out ${T(0.65)} both,fo-loot-dive ${T(0.6)} ease-in ${T(1.45)} forwards}
+@keyframes fo-hook-fall{0%{transform:translate(-50%,-3em)}25%{transform:translate(-50%,-3.6em) rotate(-25deg)}100%{transform:translate(calc(-50% - 3em),1.5em) rotate(-140deg);opacity:0}}
+@keyframes fo-loot-dive{to{transform:translate(-50%,.8em) scale(.4);opacity:0}}
+.fo-siren{bottom:calc(var(--surf) + .9em);transform:translateX(-50%);line-height:1;
+  animation:fo-big-in ${T(0.45)} cubic-bezier(.3,1.6,.5,1) ${T(1.45)} both,fo-out .5s ease-in ${END} forwards}
+.fo-siren>span{display:block;font-size:2.3em;filter:drop-shadow(0 0 .35em rgba(255,40,40,.95));animation:fo-flash .5s steps(2) ${T(1.45)} 5}
+@keyframes fo-flash{50%{filter:drop-shadow(0 0 .7em rgba(80,120,255,.95)) brightness(1.5)}}
+.fo-lane .fo-tag-heist{bottom:calc(var(--surf) + 4.4em);animation:fo-in .35s ease-out ${T(1.4)} both,fo-out .5s ease-in ${END} forwards}
+.v-caught .fo-tag-heist{color:#fecaca}
 `;

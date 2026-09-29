@@ -6,7 +6,7 @@ import type { FishOverlayEvent, PublicFishing } from "./bot-api";
  * casts. Mirrors the bot's fish command: a cast lands a fish 1 in catchOdds, a miss
  * snags junk 1 in 4; traps roll once a minute for 75–90% of their time.
  */
-export type DemoOdds = Pick<PublicFishing, "catchOdds" | "fish" | "junk">;
+export type DemoOdds = Pick<PublicFishing, "catchOdds" | "fish" | "junk" | "steal">;
 
 /** Where the channel's odds can't be read: the bot's defaults, roughly. */
 const FALLBACK: DemoOdds = {
@@ -34,6 +34,11 @@ const FALLBACK: DemoOdds = {
 
 /** A trap haul's share of replies: 400 of 1,102 in sukasblood, 22–29 Sep 2026. */
 const TRAP_SHARE = 0.36;
+/** Where the channel has stealing on, this share of replies are steals. No real data yet: a guess. */
+const STEAL_SHARE = 0.05;
+/** The bot's default success chance by rarity. */
+const STEAL_ODDS: Record<string, number> = { Common: 40, Uncommon: 30, Rare: 20, Epic: 10, Legendary: 5 };
+
 /** The bot's defaults; the public odds don't carry them. */
 const TRAP_MINUTES = 60;
 const CATCH_COOLDOWN_MINUTES = 30;
@@ -117,11 +122,33 @@ export function demoGenerator(odds: DemoOdds | null) {
     return { kind: "trap", text: fishes ? `${lead} and you spot some fish! ${haul.join("")}` : `${lead} and find a bunch of junk. ${haul.join("")}` };
   }
 
+  function steal(name: string): Omit<FishOverlayEvent, "id" | "ts" | "username"> {
+    const victim = pick(NAMES.filter((n) => n !== name));
+    const f = weighted(fish);
+    const cm = int(1, 100);
+    const worth = Math.round(f.price * sizeMultiplier(cm));
+    if (Math.random() * 100 < (STEAL_ODDS[f.rarity] ?? 0)) {
+      return {
+        kind: "steal",
+        item: f.emoji,
+        rarity: f.rarity,
+        text: `🪝 You snuck up on @${victim} and made off with their ✨${f.emoji}✨ (${cm} cm), worth ${worth.toLocaleString("en-US")} $DON! (${int(0, 2)} tries left on your hook, ${CATCH_COOLDOWN_MINUTES}m cooldown)`,
+      };
+    }
+    const fine = Math.max(100, Math.round(worth / 2)).toLocaleString("en-US");
+    return {
+      kind: "caught",
+      item: f.emoji,
+      rarity: f.rarity,
+      text: `🚨 @${victim} caught you red-handed reaching for their ✨${f.emoji}✨! You paid a ${fine} $DON fine and your 🪝 hook was confiscated. (${CATCH_COOLDOWN_MINUTES}m cooldown)`,
+    };
+  }
+
   /** `n` replies from different anglers, newest id first as a poll would hand them over. */
   return function burst(startId: number, n = NAMES.length): FishOverlayEvent[] {
     const now = Date.now();
     return NAMES.slice(0, n).map((username, i) => ({
-      ...(Math.random() < TRAP_SHARE ? trap() : cast(username)),
+      ...(o.steal && Math.random() < STEAL_SHARE ? steal(username) : Math.random() < TRAP_SHARE ? trap() : cast(username)),
       id: startId - i,
       ts: now,
       username,

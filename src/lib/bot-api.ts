@@ -339,6 +339,8 @@ export interface PublicFishing {
   junk: PublicCatch[];
   /** The rarest fish landed, rarest first. Empty from a bot service older than it. */
   rarest: PublicRareCatch[];
+  /** Whether viewers can steal fish here. Absent from a bot service older than stealing. */
+  steal?: boolean;
 }
 
 export interface EarningsSettings {
@@ -740,7 +742,7 @@ export interface FishOverlayEvent {
   id: number;
   ts: number;
   username: string;
-  kind: "catch" | "trap" | "miss" | "info";
+  kind: "catch" | "trap" | "miss" | "steal" | "caught" | "info";
   text: string;
   item?: string;
   rarity?: string;

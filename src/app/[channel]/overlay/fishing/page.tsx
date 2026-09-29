@@ -36,7 +36,7 @@ export default async function FishOverlayPage({ params, searchParams }: Props) {
   if (demo) {
     const board = await loadPublicLeaderboard(slug);
     const f = board.kind === "ok" ? board.data.fishing : null;
-    if (f) demoOdds = { catchOdds: f.catchOdds, fish: f.fish, junk: f.junk };
+    if (f) demoOdds = { catchOdds: f.catchOdds, fish: f.fish, junk: f.junk, steal: f.steal };
   }
   return (
     <>

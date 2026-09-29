@@ -35,8 +35,8 @@ export function validOverlayKey(channel: string, key: string | null | undefined)
 export function overlayLinks(channel: string): OverlayLink[] {
   const base = (process.env.NEXT_PUBLIC_BASE_URL ?? "").replace(/\/+$/, "");
   const looks: Array<{ style: OverlayStyle; label: string; hint: string }> = [
-    { style: "scene", label: "Fishing scene", hint: "An animated strip of water: casts, catches and trap hauls. About 1920×260 along the bottom." },
-    { style: "cards", label: "Text cards", hint: "Each cast result and trap haul as a card stacked in a corner. About 800×600." },
+    { style: "scene", label: "Fishing scene", hint: "An animated strip of water: casts, catches, trap hauls and steals. About 1920×260 along the bottom." },
+    { style: "cards", label: "Text cards", hint: "Each cast result, trap haul and steal as a card stacked in a corner. About 800×600." },
   ];
   return looks.flatMap(({ style, label, hint }) => {
     const key = overlayKey(channel, style);
@@ -58,7 +58,7 @@ const TTL_MS = 1_000;
 const cache = new Map<string, { at: number; data: FishOverlayFeed }>();
 const inFlight = new Map<string, Promise<FishOverlayFeed>>();
 
-const KINDS = new Set(["catch", "trap", "miss", "info"]);
+const KINDS = new Set(["catch", "trap", "miss", "steal", "caught", "info"]);
 
 function shape(raw: FishOverlayFeed): FishOverlayFeed {
   const events = (Array.isArray(raw.events) ? raw.events : []).slice(-50).flatMap((e): FishOverlayEvent[] => {

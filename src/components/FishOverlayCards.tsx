@@ -84,7 +84,7 @@ function Words({ text, emotes }: { text: string; emotes?: Record<string, string>
   );
 }
 
-const ICON: Record<FishOverlayEvent["kind"], string> = { catch: "🐟", trap: "🪤", miss: "🎣", info: "🎣" };
+const ICON: Record<FishOverlayEvent["kind"], string> = { catch: "🐟", trap: "🪤", miss: "🎣", steal: "🪝", caught: "🚨", info: "🎣" };
 
 function CardView({ card, side }: { card: Card; side: "left" | "right" }) {
   const { ev } = card;
