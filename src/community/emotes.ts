@@ -15,6 +15,8 @@ export type EmoteSource = 'kick' | 'kick-global' | 'kick-emoji' | '7tv';
 export interface Emote {
   name: string;
   source: EmoteSource;
+  /** An image of it, for the overlay. */
+  url?: string;
 }
 
 const CACHE_MS = 60 * 60_000;
@@ -31,19 +33,25 @@ async function json(url: string): Promise<unknown> {
 }
 
 async function kickEmotes(channel: string): Promise<Emote[]> {
-  const sets = await json(`https://kick.com/emotes/${encodeURIComponent(channel)}`) as Array<{ slug?: string; name?: string; emotes?: Array<{ name?: string }> }>;
+  const sets = await json(`https://kick.com/emotes/${encodeURIComponent(channel)}`) as Array<{ slug?: string; name?: string; emotes?: Array<{ id?: number; name?: string }> }>;
   const out: Emote[] = [];
   for (const set of Array.isArray(sets) ? sets : []) {
     const label = String(set.slug ?? set.name ?? '');
     const source: EmoteSource = label === 'Global' ? 'kick-global' : label === 'Emojis' ? 'kick-emoji' : 'kick';
-    for (const e of set.emotes ?? []) if (e.name) out.push({ name: e.name, source });
+    for (const e of set.emotes ?? []) {
+      if (!e.name) continue;
+      out.push(Number.isInteger(e.id) ? { name: e.name, source, url: `https://files.kick.com/emotes/${e.id}/fullsize` } : { name: e.name, source });
+    }
   }
   return out;
 }
 
 async function sevenTvEmotes(kickUserId: number): Promise<Emote[]> {
-  const data = await json(`https://7tv.io/v3/users/kick/${kickUserId}`) as { emote_set?: { emotes?: Array<{ name?: string }> } };
-  return (data.emote_set?.emotes ?? []).filter(e => e.name).map(e => ({ name: e.name as string, source: '7tv' as const }));
+  const data = await json(`https://7tv.io/v3/users/kick/${kickUserId}`) as { emote_set?: { emotes?: Array<{ id?: string; name?: string }> } };
+  return (data.emote_set?.emotes ?? []).filter(e => e.name).map(e => {
+    const id = typeof e.id === 'string' && /^[A-Za-z0-9]+$/.test(e.id) ? e.id : null;
+    return id ? { name: e.name as string, source: '7tv' as const, url: `https://cdn.7tv.app/emote/${id}/2x.webp` } : { name: e.name as string, source: '7tv' as const };
+  });
 }
 
 /** Every emote the channel can show, cached for an hour. */
@@ -91,4 +99,19 @@ export async function bestEmote(channel: string, broadcasterUserId: number | nul
   }
   const have = wanted.filter(w => names.has(w));
   return have.length ? have[crypto.randomInt(0, have.length)] : fallback;
+}
+
+/**
+ * Image URLs for the channel's emotes that appear as words in `text`, for the
+ * overlay. From the cache only, never a fetch: the reply that carries an emote
+ * picked it through bestEmote, which filled the cache.
+ */
+export function emoteImages(channel: string, text: string): Record<string, string> {
+  const emotes = cache.get(channel.replace(/^#/, '').toLowerCase())?.emotes ?? [];
+  const words = new Set(text.split(/\s+/));
+  const out: Record<string, string> = {};
+  for (const e of emotes) {
+    if (e.url && words.has(e.name) && !(e.name in out)) out[e.name] = e.url;
+  }
+  return out;
 }

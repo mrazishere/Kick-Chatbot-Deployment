@@ -283,6 +283,11 @@ export interface PointsGamesConfig {
   /** A short AI story on 1 in 3 catches. */
   stories: boolean;
   /**
+   * Post fishing replies in chat. They always go to the fishing overlay (a
+   * browser source), so a channel can turn this off and show them on stream only.
+   */
+  chatReplies: boolean;
+  /**
    * Every fish and junk item with its odds and price as they apply. Stored as
    * overrides only (StoredFishCatches); an item without one keeps supibot's weight
    * and its price scaled by sellPricePercent.

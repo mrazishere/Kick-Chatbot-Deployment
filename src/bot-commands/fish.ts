@@ -36,9 +36,10 @@ import { applyOnce, creditTx, debitTx, ensureUserTx, findUserByName, getUser, is
 import { makeCooldown, parseUsername, span } from '../community/format';
 import { gameInvocation } from '../community/stakes';
 import { addReminder, cancelSelfRemindersStartingWith, openCommunityDb } from '../community/store';
-import { bestEmote, broadcasterIdFor } from '../community/emotes';
+import { bestEmote, broadcasterIdFor, emoteImages } from '../community/emotes';
+import { OverlayKind, pushOverlay } from '../community/fish-overlay';
 import {
-  addItem, baitPrice, baitRoll, currentReel, landsFish, parseSellList, CatchItem, CatchType, FAILURE_EMOTES, FishData, findBait, hasFishedBefore, initialData,
+  addItem, baitPrice, baitRoll, currentReel, landsFish, parseSellList, CatchItem, CatchType, FAILURE_EMOTES, FishData, findBait, hasFishedBefore, initialData, rarityOf, recordCatch,
   ITEMS, JUNK_MESSAGES, loadFish, MISS_DELAY_MS, pick, randomInt, rollCatch, saveFish, sellPrice, STORY_STYLES, SUCCESS_EMOTES,
   takeItems, TYPE_DESCRIPTIONS, weightedCatch
 } from '../community/fishing';
@@ -138,7 +139,6 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
   if (!call) return;
   const me = tags.username;
   const meLc = me.toLowerCase();
-  const say = (text: string) => client.say(channel, `@${me} ${text}`);
   if (call.form === 'redirect') return void (pointer(meLc) || client.say(channel, `@${me} it's ${call.usage} here`));
   if (SYSTEM_BOTS.has(meLc) || isBotSender(me, tags.senderId)) return;
   if (cooldown(meLc)) return;
@@ -151,6 +151,17 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
   const g = cfg.games;
   const cur = cfg.currencyName;
   const cmd = call.usage.replace(/ fish$/, '');
+
+  /** Reply: always to the overlay, and to chat unless the channel turned that off. */
+  const say = (text: string, meta: { kind?: OverlayKind; item?: string } = {}) => {
+    const emotes = emoteImages(chan, text);
+    const rarity = meta.item ? rarityOf(g, meta.item) : null;
+    pushOverlay(db, {
+      username: me, kind: meta.kind ?? 'info', text,
+      ...(meta.item ? { item: meta.item } : {}), ...(rarity ? { rarity } : {}), ...(Object.keys(emotes).length ? { emotes } : {})
+    });
+    if (g.chatReplies) return client.say(channel, `@${me} ${text}`);
+  };
 
   let skipStory = false;
   const args = call.args.filter(a => {
@@ -265,6 +276,9 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
         d.catch.sizes ??= {};
         (d.catch.sizes[item.name] ??= []).push(held);
         sizeString += ` Worth ${sellPrice(item, g, held, reel?.valueMultiplier ?? 1)} ${cur}.`;
+        recordCatch(db!, uid, item.name, 'cast', size, now);
+      } else {
+        recordCatch(db!, uid, item.name, 'cast', null, now);
       }
       saveFish(db!, uid, d, now);
       return { kind: 'catch', item, sizeString, appendix };
@@ -274,7 +288,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
 
     if (out.kind === 'miss') {
       const emote = await emotesFor(FAILURE_EMOTES, '😔');
-      return void say(`No luck... ${emote} ${out.text} (${span(out.delay)} cooldown${out.appendix})${out.streak}`);
+      return void say(`No luck... ${emote} ${out.text} (${span(out.delay)} cooldown${out.appendix})${out.streak}`, { kind: 'miss' });
     }
 
     console.log(`[FISH] ${me} caught ${out.item.name} in ${chan}`);
@@ -282,14 +296,14 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     if (g.stories && !skipStory && randomInt(1, 3) === 1) {
       try {
         const text = await story(me, out.item.name, out.sizeString);
-        if (text) return void say(`✨${out.item.name}✨ ${text} (${minutes}m cooldown${out.appendix})`);
+        if (text) return void say(`✨${out.item.name}✨ ${text} (${minutes}m cooldown${out.appendix})`, { kind: 'catch', item: out.item.name });
       } catch (err) {
         console.error(`[FISH] Story for ${me} failed: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
     const emote = await emotesFor(SUCCESS_EMOTES, '😃');
     const size = out.sizeString ? ` ${out.sizeString}` : '';
-    return void say(`You caught a ✨${out.item.name}✨${size} ${emote} Now, go do something productive! (${minutes} minute fishing cooldown after a successful catch)`);
+    return void say(`You caught a ✨${out.item.name}✨${size} ${emote} Now, go do something productive! (${minutes} minute fishing cooldown after a successful catch)`, { kind: 'catch', item: out.item.name });
   }
 
   /**
@@ -322,6 +336,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     const waitEmote = await emotesFor(['PauseChamp'], '⌛');
     // What the traps are after this message: laid until a time, emptied, or untouched.
     let after: { laidUntil: number | null } | null = null;
+    let collected = false;
 
     const text = once(now => {
       ensureUserTx(db!, uid, me, now);
@@ -337,6 +352,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
         return `You have laid your fishing traps. Now we wait... ${waitEmote} You can check them in about ${span(duration)}.${ping}`;
       };
       const collect = (): string => {
+        collected = true;
         const rolls = Math.floor(d.trap.duration / 60_000 * randomInt(75, 90) / 100);
         const skip = g.catchCooldownMinutes;
         let fishAmount = 0;
@@ -350,6 +366,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
             fishAmount++;
             i += skip;
             addItem(d, r.item);
+            recordCatch(db!, uid, r.item.name, 'trap', null, now);
             results.push(r.item.name);
           } else if (r.type === 'junk') {
             addItem(d, r.item);
@@ -389,7 +406,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     // "reset" collects then lays again, which leaves `after` holding the new traps.
     const settled = after as { laidUntil: number | null } | null;
     if (text && settled) syncTrapReminder(settled.laidUntil);
-    if (text) say(text);
+    if (text) say(text, { kind: collected ? 'trap' : 'info' });
   }
 
   // ── sell ──

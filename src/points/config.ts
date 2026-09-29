@@ -80,6 +80,7 @@ export function defaultPointsConfig(): PointsConfig {
       sellPricePercent: 100,
       baitPricePercent: 100,
       stories: true,
+      chatReplies: true,
       catches: effectiveCatches(undefined, 100),
       reels: DEFAULT_REELS.map(r => ({ ...r }))
     }
@@ -283,6 +284,7 @@ export function internalPointsConfig(raw: unknown): InternalPointsConfig {
     sellPricePercent: num(ga.sellPricePercent, d.games.sellPricePercent, 0, 1000, true),
     baitPricePercent: num(ga.baitPricePercent, d.games.baitPricePercent, 0, 1000, true),
     stories: bool(ga.stories, d.games.stories),
+    chatReplies: bool(ga.chatReplies, d.games.chatReplies),
     catches: [],
     reels: effectiveReels(ga.reels)
   };
@@ -670,7 +672,7 @@ export function validatePointsPatch(current: unknown, patch: unknown): { next?: 
         const v = checkNumber(`games.${key}`, ga[key], rule, errors);
         if (v !== undefined) (next.games as Record<string, unknown>)[key] = v;
       }
-      for (const key of ['enabled', 'onlyWhileLive', 'stories'] as const) {
+      for (const key of ['enabled', 'onlyWhileLive', 'stories', 'chatReplies'] as const) {
         if (ga[key] === undefined) continue;
         if (typeof ga[key] !== 'boolean') errors.push(`games.${key} must be true or false`);
         else next.games![key] = ga[key] as boolean;

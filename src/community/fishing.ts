@@ -192,6 +192,24 @@ export function weightedCatch(type: CatchType, g: PointsGamesConfig, rarity = 1)
   return items.filter((_, i) => weights[i] > 0).pop() ?? items[items.length - 1];
 }
 
+/** A name for a share of catches. The default fish tiers land one per name. */
+export function rarityName(chancePercent: number): string {
+  if (chancePercent <= 0) return 'Never';
+  if (chancePercent >= 10) return 'Common';
+  if (chancePercent >= 4) return 'Uncommon';
+  if (chancePercent >= 1) return 'Rare';
+  if (chancePercent >= 0.4) return 'Epic';
+  return 'Legendary';
+}
+
+/** A catch's rarity name from its share of its type (fish or junk) as the channel has the odds set. */
+export function rarityOf(g: PointsGamesConfig, name: string): string | null {
+  const item = g.catches.find(c => c.name === name);
+  if (!item) return null;
+  const total = g.catches.filter(c => c.type === item.type).reduce((sum, c) => sum + c.weight, 0);
+  return rarityName(total > 0 ? (item.weight / total) * 100 : 0);
+}
+
 /** One roll without bait, as traps make them: 1 in `odds` a fish, else 1 in 4 junk. */
 export function rollCatch(g: PointsGamesConfig, reel: FishReelSetting | null = null): { item: CatchItem | null; type: CatchType | 'nothing' } {
   if (landsFish(g.catchOdds, reel)) return { item: weightedCatch('fish', g, reel?.rarityMultiplier ?? 1), type: 'fish' };
@@ -339,6 +357,14 @@ export function loadFish(db: PointsDb, userId: number): FishData | null {
   } catch {
     return null;
   }
+}
+
+/**
+ * Record one fish landed, for the leaderboard's rarest catches. Call inside the
+ * write transaction that adds it; the user row must exist (ensureUserTx).
+ */
+export function recordCatch(db: PointsDb, userId: number, name: string, source: 'cast' | 'trap', cm: number | null, now: number): void {
+  db.prepare('INSERT INTO catches (ts, user_id, name, source, cm) VALUES (?, ?, ?, ?, ?)').run(now, userId, name, source, cm);
 }
 
 /** Call inside a write transaction; the user row must exist (ensureUserTx). */

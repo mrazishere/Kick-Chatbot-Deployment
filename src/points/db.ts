@@ -188,7 +188,38 @@ CREATE TABLE fish (
 );
 `;
 
-const SCHEMA_VERSION = 5;
+/**
+ * v6: every fish landed, one row each, so the public leaderboard can name the
+ * rarest catches and who made them. The fish document only holds what is still
+ * unsold, and a sale's ledger row doesn't say which fish, so neither can answer.
+ * Junk isn't recorded.
+ */
+const SCHEMA_V6 = `
+CREATE TABLE catches (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts INTEGER NOT NULL,
+  user_id INTEGER NOT NULL REFERENCES users(user_id),
+  name TEXT NOT NULL,
+  source TEXT NOT NULL,
+  cm INTEGER
+);
+CREATE INDEX catches_name_ts ON catches(name, ts);
+`;
+
+/**
+ * v7: the fishing overlay's feed. Each fish reply the bot gives, kept a few
+ * minutes for the browser source to poll through the enrollment service.
+ */
+const SCHEMA_V7 = `
+CREATE TABLE overlay_feed (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts INTEGER NOT NULL,
+  data TEXT NOT NULL
+);
+CREATE INDEX overlay_feed_ts ON overlay_feed(ts);
+`;
+
+const SCHEMA_VERSION = 7;
 
 export function migrate(db: PointsDb): void {
   if ((db.pragma('user_version', { simple: true }) as number) >= SCHEMA_VERSION) return;
@@ -202,6 +233,8 @@ export function migrate(db: PointsDb): void {
     if (version < 3) db.exec(SCHEMA_V3);
     if (version < 4) db.exec(SCHEMA_V4);
     if (version < 5) db.exec(SCHEMA_V5);
+    if (version < 6) db.exec(SCHEMA_V6);
+    if (version < 7) db.exec(SCHEMA_V7);
     if (version < SCHEMA_VERSION) db.pragma(`user_version = ${SCHEMA_VERSION}`);
   }).immediate();
 }

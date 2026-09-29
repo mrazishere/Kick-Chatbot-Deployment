@@ -21,12 +21,13 @@ import {
   acceptDuel, adjustPoints, backupPoints, createDuel, creditTx, debitTx, duelStats, gambleStats, getUser, grantTick, invariantViolations,
   openRaffle, raffleEntries, gamble,
   ensureUserTx, outgoingDuel, refundDuel, resetAllPoints,
-  pointsLeaderboard, pointsSummary, searchPointsUsers, getPointsUserDetail, transfer
+  caughtFish, pointsLeaderboard, pointsSummary, searchPointsUsers, getPointsUserDetail, transfer
 } from '../points/store';
 import { WebhookPoller } from '../channels/webhook-poller';
 import { points as pointsCommand } from '../bot-commands/points';
-import { addItem, initialData, ITEMS, landsFish, parseSellList, saveFish, sellPrice, weightedCatch } from '../community/fishing';
+import { addItem, initialData, ITEMS, landsFish, loadFish, parseSellList, recordCatch, saveFish, sellPrice, weightedCatch } from '../community/fishing';
 import { openCommunityDb } from '../community/store';
+import { readOverlay } from '../community/fish-overlay';
 import { fish as fishCommand } from '../bot-commands/fish';
 
 const MIN = 60_000;
@@ -206,7 +207,7 @@ async function main(): Promise<void> {
   // Store basics
   {
     const db = openPointsDb('basics', { create: true })!;
-    check('migrated to user_version 5', db.pragma('user_version', { simple: true }) === 5);
+    check('migrated to user_version 7', db.pragma('user_version', { simple: true }) === 7);
     runWrite(db, () => creditTx(db, { userId: 1, username: 'alice', amount: 100, reason: 'mod_add', now: 1 }));
     const over = runWrite(db, () => debitTx(db, { userId: 1, amount: 150, reason: 'mod_remove', now: 2 }));
     check('debit beyond balance refused', !over.ok && over.balance === 100);
@@ -530,6 +531,19 @@ async function main(): Promise<void> {
     check('replayed .proc batch pays the follow once', calls.follow === 3 && balance(ch, 50) === 50, { calls, bal: balance(ch, 50) });
   }
 
+  // chatReplies off: the overlay gets the reply, chat doesn't
+  {
+    const ch = 'fishquiet';
+    writeConfig(root, ch, { enabled: true, currencyName: '$DON', games: { enabled: true, onlyWhileLive: false, chatReplies: false } });
+    makeService(ch, { broadcaster: 999 });
+    const qdb = openPointsDb(ch, { create: true })!;
+    const out: string[] = [];
+    const t: KickTags = { username: 'quiet', 'display-name': 'quiet', badges: {}, isBroadcaster: false, isModUp: false, isVIPUp: false, rawBadges: [], senderId: 21 };
+    await fishCommand({ say: async (_c, m) => { out.push(m); } }, '$don fish trap', `#${ch}`, t, { channelName: ch } as ChannelConfig);
+    const f = readOverlay(qdb);
+    check('chatReplies off: the overlay only', out.length === 0 && f.events.length === 1 && f.events[0].kind === 'info' && f.events[0].text.includes('laid your fishing traps'), { out, f });
+  }
+
   // Fishing traps set a reminder for when they're full
   {
     const ch = 'fishch';
@@ -563,6 +577,12 @@ async function main(): Promise<void> {
       shift += 61 * 60_000;
       const collected = await run('$don fish trap', on);
       check('collecting traps clears the reminder', collected[0]?.includes('drag the traps') && pending().length === 0, { collected, p: pending() });
+      const pdb0 = openPointsDb(ch, { create: false })!;
+      const recorded = (pdb0.prepare("SELECT COUNT(*) AS n FROM catches WHERE user_id = 11 AND source = 'trap'").get() as { n: number }).n;
+      check('every trapped fish is recorded', recorded === loadFish(pdb0, 11)!.lifetime.fish, { recorded, lifetime: loadFish(pdb0, 11)!.lifetime.fish });
+      const feed = readOverlay(pdb0);
+      check('fish replies reach the overlay feed', feed.events.some(e => e.kind === 'trap' && e.username === 'angler' && e.text.includes('drag the traps'))
+        && feed.lastId === feed.events[feed.events.length - 1].id, feed.events.map(e => [e.kind, e.text.slice(0, 30)]));
       const off = { channelName: ch, excludedCommands: ['remind'] } as unknown as ChannelConfig;
       const quiet = await run('$don fish trap', off);
       check('no reminder where !remind is off', !quiet[0]?.includes("I'll ping") && pending().length === 0, { quiet, p: pending() });
@@ -1021,25 +1041,25 @@ async function main(): Promise<void> {
     const mch = 'migrate1ch';
     const mdb = openPointsDb(mch, { create: true })!;
     runWrite(mdb, () => creditTx(mdb, { userId: 1, username: 'old', amount: 77, reason: 'mod_add', now: 1 }));
-    mdb.exec('DROP TABLE fish; DROP TABLE duels; DROP TABLE raffle_entries; DROP TABLE raffles; DROP INDEX ledger_ref');
+    mdb.exec('DROP TABLE overlay_feed; DROP TABLE catches; DROP TABLE fish; DROP TABLE duels; DROP TABLE raffle_entries; DROP TABLE raffles; DROP INDEX ledger_ref');
     mdb.pragma('user_version = 1');
     closePointsDb(mch);
     const reopened = openPointsDb(mch, { create: false })!;
     const hasTable = (n: string) => !!reopened.prepare('SELECT 1 FROM sqlite_master WHERE name = ?').get(n);
     check('a v1 database migrates to the latest version keeping balances',
-      reopened.pragma('user_version', { simple: true }) === 5 && balance(mch, 1) === 77
-      && hasTable('duels') && hasTable('raffles') && hasTable('raffle_entries') && hasTable('fish'));
+      reopened.pragma('user_version', { simple: true }) === 7 && balance(mch, 1) === 77
+      && hasTable('duels') && hasTable('raffles') && hasTable('raffle_entries') && hasTable('fish') && hasTable('catches') && hasTable('overlay_feed'));
 
     // v2 → v3 specifically: a database that already has duels gains the raffle tables.
     const m2 = 'migrate2ch';
     const m2db = openPointsDb(m2, { create: true })!;
     runWrite(m2db, () => creditTx(m2db, { userId: 1, username: 'old2', amount: 42, reason: 'mod_add', now: 1 }));
-    m2db.exec('DROP TABLE fish; DROP TABLE raffle_entries; DROP TABLE raffles; DROP INDEX ledger_ref');
+    m2db.exec('DROP TABLE overlay_feed; DROP TABLE catches; DROP TABLE fish; DROP TABLE raffle_entries; DROP TABLE raffles; DROP INDEX ledger_ref');
     m2db.pragma('user_version = 2');
     closePointsDb(m2);
     const re2 = openPointsDb(m2, { create: false })!;
     check('a v2 database gains the raffle tables and keeps its balances',
-      re2.pragma('user_version', { simple: true }) === 5 && balance(m2, 1) === 42
+      re2.pragma('user_version', { simple: true }) === 7 && balance(m2, 1) === 42
       && !!re2.prepare("SELECT 1 FROM sqlite_master WHERE name = 'raffles'").get());
     void svc;
     makeService(ch, { broadcaster: 999 });
@@ -1248,6 +1268,18 @@ async function main(): Promise<void> {
     check('adjust short reason is 400', (adjustPoints(ch, cfg, { userId: 2, mode: 'add', amount: 1, reason: 'x', actor: 'd', requestId: 'r4' }) as { status: number }).status === 400);
     const detail = getPointsUserDetail(ch, cfg, 2, 999);
     check('user detail with ledger', !!detail && detail.ledger[0]?.reason === 'dash_remove' && detail.ledger[0]?.note === 'cleanup', detail?.ledger.slice(0, 2));
+    const cdbx = openPointsDb(ch, { create: true })!;
+    runWrite(cdbx, () => {
+      recordCatch(cdbx, 2, '🐋', 'trap', null, 3000);
+      recordCatch(cdbx, 1, '🐋', 'cast', 40, 1000);
+      recordCatch(cdbx, 1, '🐟', 'cast', 10, 2000);
+      ensureUserTx(cdbx, 999, 'streamer', 1);
+      recordCatch(cdbx, 999, '🦈', 'cast', 90, 500);
+    });
+    const caught = caughtFish(ch, cfg, 999);
+    const whale = caught.find(c => c.name === '🐋');
+    check('caught fish: count, first and latest catcher, excluded left out', caught.length === 2 && whale?.times === 2
+      && whale.firstBy === 'alice' && whale.lastBy === 'bob' && whale.firstAt === new Date(1000).toISOString() && !caught.some(c => c.name === '🦈'), caught);
     const lb = pointsLeaderboard(ch, cfg, 100, 999);
     check('leaderboard excludes system bots', !lb.points.some(r => r.username === 'botrix') && lb.points[0]?.username === 'alice', lb.points);
     const bk = await backupPoints(ch);

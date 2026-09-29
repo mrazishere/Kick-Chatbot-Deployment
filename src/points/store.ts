@@ -981,6 +981,34 @@ export function pointsLeaderboard(
 
 export interface LeaderboardRow { rank: number; username: string; value: number; /** Name of the fishing reel they hold. */ reel?: string }
 
+/** One kind of fish as the leaderboard's rarest catches show it. */
+export interface CaughtFish { name: string; times: number; firstBy: string; firstAt: string; lastBy: string; lastAt: string }
+
+/**
+ * Every kind of fish landed here, with how often and who landed it first and
+ * last. Excluded accounts are left out, as on the ranked boards.
+ */
+export function caughtFish(channel: string, cfg: PointsConfig, broadcasterUserId?: number | null): CaughtFish[] {
+  return withReadDb(channel, [] as CaughtFish[], db => {
+    const clause = exclusionClause(exclusionsFor(channel, cfg, broadcasterUserId));
+    let rows: Array<{ name: string; ts: number; username: string }>;
+    try {
+      rows = db.prepare(`SELECT c.name, c.ts, u.username FROM catches c JOIN (SELECT user_id, username FROM users WHERE ${clause.sql}) u ON u.user_id = c.user_id ORDER BY c.ts, c.id`)
+        .all(...clause.params) as typeof rows;
+    } catch {
+      return []; // a database from before v6 has no catches table
+    }
+    const out = new Map<string, CaughtFish>();
+    for (const r of rows) {
+      const at = new Date(r.ts).toISOString();
+      const seen = out.get(r.name);
+      if (seen) Object.assign(seen, { times: seen.times + 1, lastBy: r.username, lastAt: at });
+      else out.set(r.name, { name: r.name, times: 1, firstBy: r.username, firstAt: at, lastBy: r.username, lastAt: at });
+    }
+    return [...out.values()];
+  });
+}
+
 /** The reel each viewer fishes with, by user id: the last of the channel's reels they bought. */
 function reelNames(db: PointsDb, cfg: PointsConfig): Map<number, string> {
   const out = new Map<number, string>();

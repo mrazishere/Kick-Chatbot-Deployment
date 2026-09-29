@@ -15,9 +15,11 @@ import { clipSessionStatus, installClipToken } from './channels/clip-session';
 import { resolveBotIdentity } from './bot-identity';
 import { SYSTEM_BOTS } from './system-bots';
 import { commandWordCollides, effectiveCommand, effectivePointsConfig, readSubscriptionStatus, validatePointsPatch } from './points/config';
-import { closePointsDb } from './points/db';
+import { closePointsDb, openPointsDb } from './points/db';
+import { readOverlay } from './community/fish-overlay';
 import { publicUserHistory, publicViewerSearch } from './points/store';
-import { adjustPoints, backupPoints, getPointsUserDetail, pointsLeaderboard, pointsSummary, resetAllPoints, searchPointsUsers } from './points/store';
+import { rarityName } from './community/fishing';
+import { adjustPoints, backupPoints, caughtFish, getPointsUserDetail, pointsLeaderboard, pointsSummary, resetAllPoints, searchPointsUsers } from './points/store';
 
 /* eslint-disable @typescript-eslint/no-var-requires, @typescript-eslint/no-explicit-any */
 const puppeteer = require('puppeteer-extra');
@@ -2809,7 +2811,26 @@ app.get('/internal/bot/:channel/points/leaderboard', internalGuard(false), (req,
 
   try {
     const board = pointsLeaderboard(channel, cfg, limit, broadcasterIdOf(config));
-    return res.json({ channel, currencyName: cfg.currencyName, updatedAt: new Date().toISOString(), ...board, fishing: publicFishing(cfg) });
+    return res.json({ channel, currencyName: cfg.currencyName, updatedAt: new Date().toISOString(), ...board, fishing: publicFishing(channel, cfg, broadcasterIdOf(config)) });
+  } catch (e) {
+    return pointsUnavailable(res, channel, e);
+  }
+});
+
+// The fishing overlay's feed: the latest fish replies, for the dashboard's browser-source
+// page. The dashboard checks the overlay key before calling; this only answers locally.
+app.get('/internal/bot/:channel/overlay/fishing', internalGuard(false), (req, res) => {
+  const channelRaw = req.params['channel'];
+  const channel = (typeof channelRaw === 'string' ? channelRaw : '').toLowerCase();
+  if (!validateChannelName(channel)) return res.status(400).json({ error: 'Invalid channel name' });
+  const config = readChannelConfig(channel);
+  if (!config) return res.status(404).json({ error: 'Not enrolled' });
+  const cfg = effectivePointsConfig(config['points']);
+  if (!cfg.enabled || !cfg.games.enabled) return res.status(404).json({ error: 'Fishing is off in this channel' });
+  const db = openPointsDb(channel, { create: false });
+  if (!db) return res.json({ lastId: 0, events: [] });
+  try {
+    return res.json(readOverlay(db));
   } catch (e) {
     return pointsUnavailable(res, channel, e);
   }
@@ -2856,10 +2877,10 @@ app.get('/internal/bot/:channel/points/public-history', internalGuard(false), (r
 
 /**
  * What the public leaderboard's Fishing tab shows: every catch with its share of
- * catches, a rarity name and its sell price as the channel has them set. Null
- * where fishing is off.
+ * catches, a rarity name and its sell price as the channel has them set, and the
+ * rarest fish anyone has landed. Null where fishing is off.
  */
-function publicFishing(cfg: ReturnType<typeof effectivePointsConfig>): Record<string, unknown> | null {
+function publicFishing(channel: string, cfg: ReturnType<typeof effectivePointsConfig>, broadcasterUserId: number | null): Record<string, unknown> | null {
   const g = cfg.games;
   if (!g.enabled) return null;
   const list = (type: 'fish' | 'junk') => {
@@ -2872,17 +2893,17 @@ function publicFishing(cfg: ReturnType<typeof effectivePointsConfig>): Record<st
       })
       .sort((a, b) => b.chance - a.chance || a.price - b.price);
   };
-  return { catchOdds: g.catchOdds, fish: list('fish'), junk: list('junk') };
-}
-
-/** A name for a share of catches. The default fish tiers land one per name. */
-function rarityName(chancePercent: number): string {
-  if (chancePercent <= 0) return 'Never';
-  if (chancePercent >= 10) return 'Common';
-  if (chancePercent >= 4) return 'Uncommon';
-  if (chancePercent >= 1) return 'Rare';
-  if (chancePercent >= 0.4) return 'Epic';
-  return 'Legendary';
+  const fish = list('fish');
+  // Rarest first by today's odds; a fish since removed from the channel's list is left out.
+  const odds = new Map(fish.map(f => [f.emoji, f]));
+  const rarest = caughtFish(channel, cfg, broadcasterUserId)
+    .flatMap(c => {
+      const f = odds.get(c.name);
+      return f ? [{ emoji: c.name, chance: f.chance, rarity: f.rarity, times: c.times, firstBy: c.firstBy, firstAt: c.firstAt, lastBy: c.lastBy, lastAt: c.lastAt }] : [];
+    })
+    .sort((a, b) => a.chance - b.chance || a.firstAt.localeCompare(b.firstAt))
+    .slice(0, 5);
+  return { catchOdds: g.catchOdds, fish, junk: list('junk'), rarest };
 }
 
 /**
