@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { FishOverlayEvent } from "@/lib/bot-api";
+import { demoGenerator, type DemoOdds } from "@/lib/fish-demo";
 
 // The first overlay design: each fish reply as a text card. Kept beside the
 // fishing scene (FishOverlay) so both can be compared; its URL has its own key.
@@ -116,28 +117,6 @@ function CardView({ card, side }: { card: Card; side: "left" | "right" }) {
   );
 }
 
-// ─── Demo: a burst of ten anglers, repeated, to see how the queue copes ──────
-
-const DEMO_NAMES = ["ReelDeal", "Kayla_Fishes", "Sn1perSam", "FishyBiz", "noodle_rider", "mochiii", "bigtuna88", "CastAway", "TideTurner", "LuckyLure"];
-
-function demoBurst(startId: number): FishOverlayEvent[] {
-  const now = Date.now();
-  const miss = (n: number) => `No luck... sadE Your fishing line landed ${n} cm away. (${30 + (n % 60)}s cooldown)`;
-  const rows: Array<Omit<FishOverlayEvent, "id" | "ts" | "username">> = [
-    { kind: "miss", text: miss(194) },
-    { kind: "catch", item: "🐟", rarity: "Common", text: "You caught a ✨🐟✨ It is 42 cm in length. Worth 63 $DON. Now, go do something productive! (30 minute fishing cooldown after a successful catch)" },
-    { kind: "miss", text: miss(426) },
-    { kind: "trap", text: "You drag the traps out of the water... and you spot some fish! 🍂🥫🧦🌿🦑🍂" },
-    { kind: "miss", text: miss(88) },
-    { kind: "catch", item: "🦈", rarity: "Epic", text: "You caught a ✨🦈✨ It is 91 cm in length. This is a new record! Worth 1,640 $DON. (30 minute fishing cooldown after a successful catch)" },
-    { kind: "miss", text: `${miss(301)} This is your attempt #4 since your last catch.` },
-    { kind: "miss", text: miss(57) },
-    { kind: "catch", item: "🐋", rarity: "Legendary", text: "✨🐋✨ The line screamed as a leviathan rose from the deep, and the whole chat held its breath. (30m cooldown)" },
-    { kind: "miss", text: miss(12) },
-  ];
-  return rows.map((r, i) => ({ ...r, id: startId - i, ts: now, username: DEMO_NAMES[i] }));
-}
-
 // ─── The overlay ─────────────────────────────────────────────────────────────
 
 export default function FishOverlayCards({
@@ -147,6 +126,7 @@ export default function FishOverlayCards({
   max,
   scale,
   demo,
+  demoOdds,
 }: {
   channel: string;
   overlayKey: string;
@@ -154,6 +134,8 @@ export default function FishOverlayCards({
   max: number;
   scale: number;
   demo: boolean;
+  /** The channel's odds for the demo; null uses the bot's defaults. */
+  demoOdds: DemoOdds | null;
 }) {
   const queue = useRef<FishOverlayEvent[]>([]);
   const cards = useRef<Card[]>([]);
@@ -191,6 +173,8 @@ export default function FishOverlayCards({
 
   useEffect(() => {
     if (!demo) return;
+    // Ten anglers at once, repeated, rolled at the channel's odds, to see how a burst plays.
+    const demoBurst = demoGenerator(demoOdds);
     let id = -1;
     const fire = () => {
       queue.current.push(...demoBurst(id));
@@ -200,7 +184,7 @@ export default function FishOverlayCards({
     fire();
     const t = setInterval(fire, 25_000);
     return () => clearInterval(t);
-  }, [demo]);
+  }, [demo, demoOdds]);
 
   // The scheduler: expire, make room, release.
   useEffect(() => {

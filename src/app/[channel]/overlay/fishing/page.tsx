@@ -2,6 +2,8 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import { validChannel } from "@/lib/bot-auth";
 import { overlayStyleFor } from "@/lib/fish-overlay";
+import { loadPublicLeaderboard } from "@/lib/public-leaderboard";
+import type { DemoOdds } from "@/lib/fish-demo";
 import FishOverlay from "@/components/FishOverlay";
 import FishOverlayCards from "@/components/FishOverlayCards";
 
@@ -29,6 +31,13 @@ export default async function FishOverlayPage({ params, searchParams }: Props) {
 
   const scale = Math.min(3, Math.max(0.5, Number(one(q.scale)) || 1));
   const demo = one(q.demo) === "1";
+  // The demo rolls at the channel's own odds, from what its public leaderboard shows.
+  let demoOdds: DemoOdds | null = null;
+  if (demo) {
+    const board = await loadPublicLeaderboard(slug);
+    const f = board.kind === "ok" ? board.data.fishing : null;
+    if (f) demoOdds = { catchOdds: f.catchOdds, fish: f.fish, junk: f.junk };
+  }
   return (
     <>
       <style>{"html,body{background:transparent!important;overflow:hidden}"}</style>
@@ -40,6 +49,7 @@ export default async function FishOverlayPage({ params, searchParams }: Props) {
           max={Math.min(8, Math.max(1, Math.round(Number(one(q.max)) || 5)))}
           scale={scale}
           demo={demo}
+          demoOdds={demoOdds}
         />
       ) : (
         <FishOverlay
@@ -48,6 +58,7 @@ export default async function FishOverlayPage({ params, searchParams }: Props) {
           max={Math.min(10, Math.max(1, Math.round(Number(one(q.max)) || 6)))}
           scale={scale}
           demo={demo}
+          demoOdds={demoOdds}
         />
       )}
     </>

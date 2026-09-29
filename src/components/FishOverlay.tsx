@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import type { FishOverlayEvent } from "@/lib/bot-api";
+import { demoGenerator, type DemoOdds } from "@/lib/fish-demo";
 
 const BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
 
@@ -344,27 +345,6 @@ function LaneView({ lane }: { lane: Lane }) {
   );
 }
 
-// ─── Demo: ten anglers at once, repeated, to see how a burst plays ───────────
-
-const DEMO_NAMES = ["ReelDeal", "Kayla_Fishes", "Sn1perSam", "FishyBiz", "noodle_rider", "mochiii", "bigtuna88", "CastAway", "TideTurner", "LuckyLure"];
-
-function demoBurst(startId: number): FishOverlayEvent[] {
-  const now = Date.now();
-  const rows: Array<Omit<FishOverlayEvent, "id" | "ts" | "username">> = [
-    { kind: "miss", text: "No luck... sadE Your fishing line landed 194 cm away. (44s cooldown)" },
-    { kind: "catch", item: "🐟", rarity: "Common", text: "You caught a ✨🐟✨ It is 42 cm in length. Worth 63 $DON." },
-    { kind: "miss", text: "No luck... Wow! Would you look at that! ...nevermind, it's just junk. You reel out a 🥫 (36s cooldown)" },
-    { kind: "trap", text: "You drag the traps out of the water... and you spot some fish! 🍂🥫🧦🌿🦑🍂" },
-    { kind: "miss", text: "No luck... sadE Your fishing line landed 88 cm away. (51s cooldown)" },
-    { kind: "catch", item: "🦈", rarity: "Epic", text: "You caught a ✨🦈✨ It is 91 cm in length. This is a new record! Worth 1,640 $DON." },
-    { kind: "miss", text: "No luck... sadE Your fishing line landed 301 cm away. (38s cooldown)" },
-    { kind: "trap", text: "You drag the traps out of the water... and you spot some fish! 🐟🥫🦐🌿" },
-    { kind: "catch", item: "🐋", rarity: "Legendary", text: "You caught a ✨🐋✨ It is 97 cm in length. Worth 12,000 $DON." },
-    { kind: "catch", item: "🦐", rarity: "Uncommon", text: "You caught a ✨🦐✨ It is 18 cm in length. Worth 40 $DON." },
-  ];
-  return rows.map((r, i) => ({ ...r, id: startId - i, ts: now, username: DEMO_NAMES[i] }));
-}
-
 // ─── The overlay ─────────────────────────────────────────────────────────────
 
 export default function FishOverlay({
@@ -373,12 +353,15 @@ export default function FishOverlay({
   max,
   scale,
   demo,
+  demoOdds,
 }: {
   channel: string;
   overlayKey: string;
   max: number;
   scale: number;
   demo: boolean;
+  /** The channel's odds for the demo; null uses the bot's defaults. */
+  demoOdds: DemoOdds | null;
 }) {
   const queue = useRef<Waiting[]>([]);
   const lanes = useRef<Array<Lane | null>>([]);
@@ -435,6 +418,8 @@ export default function FishOverlay({
 
   useEffect(() => {
     if (!demo) return;
+    // Ten anglers at once, repeated, rolled at the channel's odds, to see how a burst plays.
+    const demoBurst = demoGenerator(demoOdds);
     let id = -1;
     const fire = () => {
       enqueue(demoBurst(id));
@@ -443,7 +428,7 @@ export default function FishOverlay({
     fire();
     const t = setInterval(fire, 15_000);
     return () => clearInterval(t);
-  }, [demo]);
+  }, [demo, demoOdds]);
 
   // The scheduler: free finished lanes, then start the next scene in a random free lane.
   useEffect(() => {
