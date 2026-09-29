@@ -594,7 +594,10 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       const extended = (d.guardUntil ?? 0) > now;
       d.guardUntil = Math.max(now, d.guardUntil ?? 0) + st.guardHours * 3_600_000;
       saveFish(db!, uid, d, now);
-      return `You ${extended ? 'kept the guard on' : 'hired a guard'} for ${groupDigits(price)} ${cur}. Nobody can steal your fish for ${span(d.guardUntil - now)}. You have ${groupDigits(after)} ${cur} left.`;
+      // No time in the reply: chat is public, and a guard's time left is the owner's secret.
+      return extended
+        ? `You paid your guard ${groupDigits(price)} ${cur} to stay on longer. You have ${groupDigits(after)} ${cur} left.`
+        : `You hired a guard for ${groupDigits(price)} ${cur}. Your fish are safe from thieves for now. You have ${groupDigits(after)} ${cur} left.`;
     });
     if (text) say(text);
   }
@@ -757,16 +760,15 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     if (bothTypes) {
       const fish = d.catch.fish ?? 0;
       const junk = d.catch.junk ?? 0;
+      // Your own hook's tries. A guard's time is never shown: chat is public, so anyone could read it.
+      const gear = self && (d.hook ?? 0) > 0 ? ` Your 🪝 hook has ${tries(d.hook!)} left.` : '';
       if (fish <= 0 && junk <= 0) {
-        return void say(`${subject} have no fish or junk in ${possessive} collection, and ${possessive} purse contains ${purse} ${cur}.`);
+        return void say(`${subject} have no fish or junk in ${possessive} collection, and ${possessive} purse contains ${purse} ${cur}.${gear}`);
       }
       const fishPart = fish > 0 ? `${fish} fish (${listOf('fish')})` : 'no fish';
       const junkPart = junk > 0 ? `${junk} ${junk === 1 ? 'piece' : 'pieces'} of junk (${listOf('junk')})` : 'no junk';
       const reel = currentReel(d, g);
-      let reelPart = reel ? ` ${subject} fish with the ${reel.name} reel.` : '';
-      // Your own hook and guard only: how long someone else's guard lasts stays their secret.
-      if (self && (d.hook ?? 0) > 0) reelPart += ` Your 🪝 hook has ${tries(d.hook!)} left.`;
-      if (self && (d.guardUntil ?? 0) > Date.now()) reelPart += ` Your fish are guarded for another ${span(d.guardUntil! - Date.now())}.`;
+      const reelPart = (reel ? ` ${subject} fish with the ${reel.name} reel.` : '') + gear;
       return void say(`${subject} have ${fishPart} and ${junkPart} in ${possessive} collection.${reelPart} ${subject} also have ${purse} ${cur} in ${possessive} purse.`);
     }
     const amount = d.catch[showType] ?? 0;

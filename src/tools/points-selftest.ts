@@ -592,6 +592,7 @@ async function main(): Promise<void> {
       };
       check('steal needs a hook', (await run('$don fish steal @mark')).includes('need a 🪝 grappling hook'));
       const bought = await run('$don fish buy hook');
+      check('show gives your hook\'s tries even with nothing caught', (await run('$don fish show')).includes('Your 🪝 hook has 3 tries left'));
       check('buying a hook costs its price and gives its tries', bought.includes('grappling hook for 500') && fishOf(31).hook === 3 && balance(ch, 31) === 1500, bought);
       check('one hook at a time', (await run('$don fish buy hook')).includes('already have') && balance(ch, 31) === 1500);
 
@@ -637,10 +638,10 @@ async function main(): Promise<void> {
       check('no fish, no guard', t36.includes("don't have any fish"), t36);
       runWrite(sdb, () => creditTx(sdb, { userId: 32, username: 'mark', amount: 1000, reason: 'mod_add', now: 2 }));
       const g2 = await run('$don fish buy guard', ['mark', 32]);
-      check('buying a guard charges the minimum for a small collection and shows its own time', g2.includes('hired a guard for 200') && balance(ch, 32) === 810
+      check('buying a guard charges the minimum for a small collection and never says for how long', g2.includes('hired a guard for 200') && !/\d+h|\d+m/.test(g2) && balance(ch, 32) === 810
         && (fishOf(32).guardUntil ?? 0) > Date.now(), g2);
       const shown = await run('$don fish show', ['mark', 32]);
-      check('only the owner sees how long their guard lasts', shown.includes('guarded for another') && !(await run('$don fish show mark')).includes('guarded'), shown);
+      check('show never gives a guard\'s time, not even to its owner', !shown.includes('guard') && !(await run('$don fish show mark')).includes('guard'), shown);
       check('the thieves board ranks fish stolen', (await run('$don fish top thieves')).includes('master thieves') );
       writeConfig(root, ch, { enabled: true, currencyName: '$DON', debugStealTesters: ['Rich'], games: { enabled: true, onlyWhileLive: false, steal: { enabled: false, oddsCommon: 100 } } });
       const tried = await run('$don fish steal @mark3', ['rich', 38]);
