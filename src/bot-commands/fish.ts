@@ -18,9 +18,13 @@
  *          $don fish stats [user|global]
  *          $don fish top [fish|coins|junk|lucky|unlucky|traps|attempts|total-…|emoji]   (also leaderboard)
  *          $don fish trap [cancel|reset]                (also net, trawl)
- *          $don fish buy [reel]                         (shows the next reel; "buy reel" buys it)
+ *          $don fish buy [reel|hook|guard]              (shows the shop; "buy reel" buys the next reel)
+ *          $don fish steal @user                        (also rob; needs a hook, see games.steal)
+ *              Reaches for one random fish the target has held a while; succeeds by
+ *              its rarity. Caught: a fine nobody receives and the hook is taken. A
+ *              guarded target turns it away for one hook use.
  *
- * Casting and laying traps follow games.onlyWhileLive and stay silent offline,
+ * Casting, laying traps and stealing follow games.onlyWhileLive and stay silent offline,
  * like $<cmd> gamble. Everything that changes a balance or a catch runs in one
  * points-database transaction keyed on the Kick message id.
  */
@@ -39,7 +43,7 @@ import { addReminder, cancelSelfRemindersStartingWith, openCommunityDb } from '.
 import { bestEmote, broadcasterIdFor, emoteImages } from '../community/emotes';
 import { OverlayKind, pushOverlay } from '../community/fish-overlay';
 import {
-  addItem, baitPrice, baitRoll, currentReel, landsFish, parseSellList, CatchItem, CatchType, FAILURE_EMOTES, FishData, findBait, hasFishedBefore, initialData, rarityOf, recordCatch,
+  addItem, baitPrice, baitRoll, currentReel, heldFishValue, landsFish, moveFish, pickHeld, stealableFish, parseSellList, CatchItem, CatchType, FAILURE_EMOTES, FishData, findBait, hasFishedBefore, initialData, rarityOf, recordCatch,
   ITEMS, JUNK_MESSAGES, loadFish, MISS_DELAY_MS, pick, randomInt, rollCatch, saveFish, sellPrice, STORY_STYLES, SUCCESS_EMOTES,
   takeItems, TYPE_DESCRIPTIONS, weightedCatch
 } from '../community/fishing';
@@ -47,11 +51,12 @@ import {
 const cooldown = makeCooldown(5000);
 const pointer = makeCooldown(60_000);
 
-const SUBCOMMANDS: Record<string, 'buy' | 'sell' | 'show' | 'stats' | 'top' | 'trap'> = {
+const SUBCOMMANDS: Record<string, 'buy' | 'sell' | 'show' | 'stats' | 'top' | 'trap' | 'steal'> = {
   buy: 'buy', sell: 'sell',
   show: 'show', count: 'show', display: 'show', collection: 'show',
   stats: 'stats', top: 'top', leaderboard: 'top',
-  trap: 'trap', net: 'trap', trawl: 'trap'
+  trap: 'trap', net: 'trap', trawl: 'trap',
+  steal: 'steal', rob: 'steal'
 };
 
 const STORY_MODEL = 'claude-haiku-4-5-20251001';
@@ -77,6 +82,7 @@ const BOARDS = new Map<string, Board>([
   ['total-unlucky', { path: '$.lifetime.dryStreak', name: 'all-time unluckiest anglers', value: d => d.lifetime.dryStreak }],
   ['traps', { path: '$.lifetime.trap.times', name: 'most persistent trappers', value: d => d.lifetime.trap.times }],
   ['attempts', { path: '$.lifetime.attempts', name: 'most persistent trawlers', value: d => d.lifetime.attempts }],
+  ['thieves', { path: '$.lifetime.steal.stolen', name: 'master thieves', value: d => d.lifetime.steal.stolen }],
   ...ITEMS.map(i => [i.name, { path: `$.catch.types."${i.name}"`, name: `${i.name} collectors`, value: (d: FishData) => d.catch.types[i.name] ?? null }] as [string, Board])
 ]);
 
@@ -181,7 +187,8 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
 
   const senderId = Number(tags.senderId);
   const userId = Number.isInteger(senderId) && senderId > 0 ? senderId : findUserByName(db, meLc)?.user_id ?? null;
-  const excluded = isExcluded(svc.exclusions(), userId, meLc);
+  const offLimits = (id: number | null, name: string) => isExcluded(svc.exclusions(), id, name);
+  const excluded = offLimits(userId, meLc);
   const ignore = (why: string) => void console.log(`[FISH] ${me} ignored in ${chan}: ${why}`);
 
   /** Run a change once per chat message, in one transaction. A replay stays silent. */
@@ -505,14 +512,22 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
    * fortune by mistake; "buy reel" buys it.
    */
   function buy(what: string, uid: number): void {
+    if (what === 'hook' || what === 'guard') {
+      if (!g.steal.enabled) return void say("Nobody steals fish here, so there's no need for that.");
+      return what === 'hook' ? buyHook(uid) : buyGuard(uid);
+    }
+    const thieves = g.steal.enabled
+      ? ` For thieves: a 🪝 grappling hook (${groupDigits(g.steal.hookPrice)} ${cur}, ${tries(g.steal.hookUses)}) with ${cmd} fish buy hook; against them, ${cmd} fish buy guard.`
+      : '';
+    if (what !== 'reel' && g.reels.length === 0) return void say(`There aren't any reels at the fishing gear shop... yet.${thieves}`);
     if (what !== 'reel') {
       const d = loadFish(db!, uid);
       const have = currentReel(d, g);
       const level = Math.min(d?.reel ?? 0, g.reels.length);
       const owned = have ? `You fish with the ${have.name} reel (${reelEffects(have)}). ` : '';
-      if (level >= g.reels.length) return void say(`${owned}That's the best reel in the shop!`);
+      if (level >= g.reels.length) return void say(`${owned}That's the best reel in the shop!${thieves}`);
       const next = g.reels[level];
-      return void say(`${owned}Next up: the ${next.name} reel for ${groupDigits(next.price)} ${cur} (${reelEffects(next)}). Buy it with ${cmd} fish buy reel`);
+      return void say(`${owned}Next up: the ${next.name} reel for ${groupDigits(next.price)} ${cur} (${reelEffects(next)}). Buy it with ${cmd} fish buy reel${thieves ? `.${thieves}` : ''}`);
     }
     const text = once(now => {
       ensureUserTx(db!, uid, me, now);
@@ -532,6 +547,148 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       return `You bought the ${next.name} reel for ${groupDigits(next.price)} ${cur}! ${reelEffects(next)}. You have ${groupDigits(after)} ${cur} left.`;
     });
     if (text) say(text);
+  }
+
+  const tries = (n: number) => `${n} ${n === 1 ? 'try' : 'tries'}`;
+
+  /** A grappling hook: stealing needs one. One at a time; getting caught loses it. */
+  function buyHook(uid: number): void {
+    const st = g.steal;
+    const text = once(now => {
+      ensureUserTx(db!, uid, me, now);
+      const d = loadFish(db!, uid) ?? initialData();
+      if ((d.hook ?? 0) > 0) return `You already have a 🪝 grappling hook with ${tries(d.hook!)} left.`;
+      const balance = getUser(db!, uid)?.balance ?? 0;
+      if (balance < st.hookPrice) return `A 🪝 grappling hook costs ${groupDigits(st.hookPrice)} ${cur} and you have ${groupDigits(balance)} ${cur}.`;
+      const after = st.hookPrice > 0
+        ? debitTx(db!, { userId: uid, amount: st.hookPrice, reason: 'game:fish_hook', actor: `chat:${me}`, now }).balance
+        : balance;
+      d.hook = st.hookUses;
+      saveFish(db!, uid, d, now);
+      return `You bought a 🪝 grappling hook for ${groupDigits(st.hookPrice)} ${cur}: ${tries(st.hookUses)} at ${cmd} fish steal @user. Get caught and it's taken from you. You have ${groupDigits(after)} ${cur} left.`;
+    });
+    if (text) say(text);
+  }
+
+  /**
+   * A guard: priced on what the fish held right now are worth, and adds its hours
+   * to any guard still running.
+   */
+  function buyGuard(uid: number): void {
+    const st = g.steal;
+    const text = once(now => {
+      ensureUserTx(db!, uid, me, now);
+      const d = loadFish(db!, uid) ?? initialData();
+      const worth = heldFishValue(d, g);
+      if (worth <= 0) return "You don't have any fish to guard!";
+      const price = Math.max(st.guardMinimum, Math.round(worth * st.guardPercent / 100));
+      const balance = getUser(db!, uid)?.balance ?? 0;
+      if (balance < price) return `Guarding your fish costs ${groupDigits(price)} ${cur} right now (${st.guardPercent}% of what they're worth) and you have ${groupDigits(balance)} ${cur}.`;
+      const after = price > 0
+        ? debitTx(db!, { userId: uid, amount: price, reason: 'game:fish_guard', actor: `chat:${me}`, now }).balance
+        : balance;
+      const extended = (d.guardUntil ?? 0) > now;
+      d.guardUntil = Math.max(now, d.guardUntil ?? 0) + st.guardHours * 3_600_000;
+      saveFish(db!, uid, d, now);
+      return `You ${extended ? 'kept the guard on' : 'hired a guard'} for ${groupDigits(price)} ${cur}. Nobody can steal your fish for ${span(d.guardUntil - now)}. You have ${groupDigits(after)} ${cur} left.`;
+    });
+    if (text) say(text);
+  }
+
+  // ── steal ──
+  /**
+   * Reach for one random fish the target has held past the grace time, weighted by
+   * how many of each they hold. It works by that fish's rarity; otherwise the thief
+   * is caught, fined (the fine goes nowhere) and loses the hook. A guard turns the
+   * try away for one hook use and nothing else.
+   */
+  async function steal(targetRaw: string | undefined, uid: number): Promise<void> {
+    const st = g.steal;
+    if (!st.enabled) return void say("Nobody steals fish here. Go catch your own!");
+    if (!(await liveOk())) return;
+    const name = parseUsername(targetRaw);
+    if (!name) return void say(`Steal from whom? ${cmd} fish steal @user`);
+    const nameLc = name.toLowerCase();
+    if (isBotSender(name) || SYSTEM_BOTS.has(nameLc)) return void say("My fish are bolted down. Nice try!");
+    const victim = findUserByName(db!, nameLc);
+    if (!victim) return void say('No such user exists!');
+    if (victim.user_id === uid) return void say("You can't steal from yourself!");
+    if (nameLc === chan || offLimits(victim.user_id, nameLc)) return void say(`${victim.username}'s fish are off limits.`);
+
+    let overlay: { kind: OverlayKind; item: string } | null = null;
+    const text = once(now => {
+      ensureUserTx(db!, uid, me, now);
+      const d = loadFish(db!, uid) ?? initialData();
+      if (!hasFishedBefore(d)) return 'Go fishing at least once before you try stealing!';
+      if ((d.hook ?? 0) <= 0) return `You need a 🪝 grappling hook to steal. Get one with ${cmd} fish buy hook (${groupDigits(st.hookPrice)} ${cur} for ${tries(st.hookUses)}).`;
+      if (d.readyTimestamp !== 0 && now < d.readyTimestamp) return `Hol' up partner! You can go fishing or stealing again in ${span(d.readyTimestamp - now)}!`;
+      const v = loadFish(db!, victim.user_id);
+      const log = (outcome: string, item: string | null, cm: number | null) =>
+        db!.prepare('INSERT INTO steals (ts, thief_id, victim_id, name, cm, outcome) VALUES (?, ?, ?, ?, ?, ?)').run(now, uid, victim.user_id, item, cm, outcome);
+
+      if (v && (v.guardUntil ?? 0) > now) {
+        d.hook = (d.hook ?? 1) - 1;
+        d.lifetime.steal.blocked++;
+        saveFish(db!, uid, d, now);
+        log('guarded', null, null);
+        const left = d.hook > 0 ? `${tries(d.hook)} left on it` : "that was its last try";
+        return `@${victim.username} has a guard watching their fish! Your 🪝 hook bounced off (${left}).`;
+      }
+      const went = "outcome IN ('stolen', 'caught')";
+      const lastOnVictim = (db!.prepare(`SELECT MAX(ts) AS t FROM steals WHERE victim_id = ? AND ${went}`).get(victim.user_id) as { t: number | null }).t;
+      if (lastOnVictim !== null && now - lastOnVictim < st.protectMinutes * 60_000) {
+        return `${victim.username} is still on alert after the last attempt. Try again in ${span(lastOnVictim + st.protectMinutes * 60_000 - now)}.`;
+      }
+      const lastPair = (db!.prepare(`SELECT MAX(ts) AS t FROM steals WHERE thief_id = ? AND victim_id = ? AND ${went}`).get(uid, victim.user_id) as { t: number | null }).t;
+      if (lastPair !== null && now - lastPair < 86_400_000) {
+        return `You already tried ${victim.username} today. You can try them again in ${span(lastPair + 86_400_000 - now)}.`;
+      }
+      const pool = v ? stealableFish(db!, v, victim.user_id, now, st.graceMinutes * 60_000) : [];
+      if (!v || !pool.length) return `${victim.username} has no fish you can get your hook into right now.`;
+      const balance = getUser(db!, uid)?.balance ?? 0;
+      if (balance < st.fee + st.fineMinimum) {
+        return `You need at least ${groupDigits(st.fee + st.fineMinimum)} ${cur} on hand to try a steal: ${groupDigits(st.fee)} for the attempt, and more if you get caught.`;
+      }
+
+      // The attempt goes ahead: the fee, a hook use and the fishing cooldown are spent whatever happens.
+      const afterFee = st.fee > 0 ? debitTx(db!, { userId: uid, amount: st.fee, reason: 'game:fish_steal', actor: `chat:${me}`, note: victim.username, now }).balance : balance;
+      d.hook = (d.hook ?? 1) - 1;
+      d.readyTimestamp = now + g.catchCooldownMinutes * 60_000;
+      d.lifetime.steal.attempts++;
+      let r = randomInt(1, pool.reduce((sum, p) => sum + p.n, 0));
+      const item = pool.find(p => (r -= p.n) <= 0)!.item;
+      const picked = pickHeld(v, item);
+      const worth = sellPrice(item, g, picked.held);
+      const odds: Record<string, number> = {
+        Common: st.oddsCommon, Uncommon: st.oddsUncommon, Rare: st.oddsRare, Epic: st.oddsEpic, Legendary: st.oddsLegendary
+      };
+      const chance = odds[rarityOf(g, item.name) ?? 'Common'] ?? 0;
+      const cooldown = `${g.catchCooldownMinutes}m cooldown`;
+
+      if (randomInt(1, 100) <= chance) {
+        moveFish(v, d, item, picked);
+        d.lifetime.steal.stolen++;
+        v.lifetime.steal.lost++;
+        saveFish(db!, uid, d, now);
+        saveFish(db!, victim.user_id, v, now);
+        log('stolen', item.name, picked.held?.cm ?? null);
+        overlay = { kind: 'steal', item: item.name };
+        const size = picked.held ? ` (${picked.held.cm} cm)` : '';
+        const left = d.hook > 0 ? `${tries(d.hook)} left on your hook` : 'your hook is used up';
+        return `🪝 You snuck up on @${victim.username} and made off with their ✨${item.name}✨${size}, worth ${groupDigits(worth)} ${cur}! (${left}, ${cooldown})`;
+      }
+
+      const fine = Math.min(afterFee, Math.max(st.fineMinimum, Math.round(worth * st.finePercent / 100)));
+      if (fine > 0) debitTx(db!, { userId: uid, amount: fine, reason: 'game:fish_steal_fine', actor: `chat:${me}`, note: victim.username, now });
+      d.hook = 0;
+      d.lifetime.steal.caught++;
+      saveFish(db!, uid, d, now);
+      log('caught', item.name, picked.held?.cm ?? null);
+      overlay = { kind: 'caught', item: item.name };
+      return `🚨 @${victim.username} caught you red-handed reaching for their ✨${item.name}✨! You paid a ${groupDigits(fine)} ${cur} fine and your 🪝 hook was confiscated. (${cooldown})`;
+    });
+    const out = overlay as { kind: OverlayKind; item: string } | null;
+    if (text) say(text, out ?? {});
   }
 
   // ── show ──
@@ -592,7 +749,10 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       const fishPart = fish > 0 ? `${fish} fish (${listOf('fish')})` : 'no fish';
       const junkPart = junk > 0 ? `${junk} ${junk === 1 ? 'piece' : 'pieces'} of junk (${listOf('junk')})` : 'no junk';
       const reel = currentReel(d, g);
-      const reelPart = reel ? ` ${subject} fish with the ${reel.name} reel.` : '';
+      let reelPart = reel ? ` ${subject} fish with the ${reel.name} reel.` : '';
+      // Your own hook and guard only: how long someone else's guard lasts stays their secret.
+      if (self && (d.hook ?? 0) > 0) reelPart += ` Your 🪝 hook has ${tries(d.hook!)} left.`;
+      if (self && (d.guardUntil ?? 0) > Date.now()) reelPart += ` Your fish are guarded for another ${span(d.guardUntil! - Date.now())}.`;
       return void say(`${subject} have ${fishPart} and ${junkPart} in ${possessive} collection.${reelPart} ${subject} also have ${purse} ${cur} in ${possessive} purse.`);
     }
     const amount = d.catch[showType] ?? 0;
@@ -627,12 +787,13 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       `SELECT ${j('$.lifetime.attempts')} AS attempts, ${j('$.lifetime.baitUsed')} AS bait, ${j('$.lifetime.fish')} AS fish,
          ${j('$.lifetime.junk')} AS junk, ${j('$.lifetime.sold')} AS sold, ${j('$.lifetime.scrapped')} AS scrapped,
          ${j('$.lifetime.trap.times')} AS traps, ${j('$.lifetime.dryStreak', 'MAX')} AS dry, ${j('$.lifetime.luckyStreak', 'MAX')} AS lucky,
+         ${j('$.lifetime.steal.stolen')} AS stolen, ${j('$.lifetime.steal.caught')} AS caught,
          COALESCE(SUM(CAST(json_extract(data, '$.lifetime.attempts') AS INTEGER) > 0), 0) AS anglers
        FROM fish ${targetId === null ? '' : 'WHERE user_id = ?'}`
     ).get(...(targetId === null ? [] : [targetId])) as Record<string, number>;
     const prefix = targetId === null ? 'Global' : self ? 'Your' : 'Their';
     const anglers = targetId === null ? ` anglers: ${groupDigits(row.anglers)};` : '';
-    say(`${prefix} fishing stats → attempts: ${groupDigits(row.attempts)};${anglers} caught fish: ${groupDigits(row.fish)}; caught junk: ${groupDigits(row.junk)}; traps set up: ${groupDigits(row.traps)}; bait used: ${groupDigits(row.bait)}; fish sold: ${groupDigits(row.sold)}; junk scrapped: ${groupDigits(row.scrapped)}; worst dry streak: ${groupDigits(row.dry)}; best lucky streak: ${groupDigits(row.lucky)}.`);
+    say(`${prefix} fishing stats → attempts: ${groupDigits(row.attempts)};${anglers} caught fish: ${groupDigits(row.fish)}; caught junk: ${groupDigits(row.junk)}; traps set up: ${groupDigits(row.traps)}; bait used: ${groupDigits(row.bait)}; fish sold: ${groupDigits(row.sold)}; junk scrapped: ${groupDigits(row.scrapped)}; worst dry streak: ${groupDigits(row.dry)}; best lucky streak: ${groupDigits(row.lucky)}${g.steal.enabled ? `; fish stolen: ${groupDigits(row.stolen)}; caught stealing: ${groupDigits(row.caught)}` : ''}.`);
   }
 
   // ── top ──
@@ -660,7 +821,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
   try {
     switch (sub) {
       case 'buy':
-        if (g.reels.length === 0) return void say("There isn't anything you can buy at the fishing gear shop... yet.");
+        if (g.reels.length === 0 && !g.steal.enabled) return void say("There isn't anything you can buy at the fishing gear shop... yet.");
         if (userId === null || excluded) return ignore('no account or excluded');
         return buy((rest[0] ?? '').toLowerCase(), userId);
       case 'show':
@@ -675,6 +836,9 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       case 'trap':
         if (userId === null || excluded) return ignore('no account or excluded');
         return await trap((rest[0] ?? '').toLowerCase(), userId);
+      case 'steal':
+        if (userId === null || excluded) return ignore('no account or excluded');
+        return await steal(rest[0], userId);
       default:
         if (userId === null || excluded) return ignore('no account or excluded');
         return await cast(rest[0], userId);

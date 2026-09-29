@@ -110,6 +110,10 @@ export interface FishData {
   readyTimestamp: number;
   /** Our addition: how many of the channel's reels have been bought, in order. */
   reel?: number;
+  /** Our addition: tries left on the grappling hook stealing needs; 0 or absent is none. */
+  hook?: number;
+  /** Our addition: when the guard against stealing runs out (ms), 0 or absent for none. */
+  guardUntil?: number;
   lifetime: {
     fish: number;
     junk: number;
@@ -124,6 +128,8 @@ export interface FishData {
     maxFishSize: number;
     maxFishType: string | null;
     trap: { times: number; timeSpent: number; bestFishCatch: number; cancelled: number };
+    /** Our addition. As a thief: tries, fish taken, times caught, tries a guard stopped. As a target: fish lost. */
+    steal: { attempts: number; stolen: number; caught: number; blocked: number; lost: number };
   };
 }
 
@@ -135,7 +141,8 @@ export function initialData(): FishData {
     lifetime: {
       fish: 0, junk: 0, coins: 0, sold: 0, scrapped: 0, baitUsed: 0, attempts: 0,
       dryStreak: 0, luckyStreak: 0, maxFishSize: 0, maxFishType: null,
-      trap: { times: 0, timeSpent: 0, bestFishCatch: 0, cancelled: 0 }
+      trap: { times: 0, timeSpent: 0, bestFishCatch: 0, cancelled: 0 },
+      steal: { attempts: 0, stolen: 0, caught: 0, blocked: 0, lost: 0 }
     }
   };
 }
@@ -345,7 +352,13 @@ function withDefaults(raw: Partial<FishData>): FishData {
     trap: { ...d.trap, ...(raw.trap ?? {}) },
     readyTimestamp: raw.readyTimestamp ?? 0,
     reel: raw.reel ?? 0,
-    lifetime: { ...d.lifetime, ...(raw.lifetime ?? {}), trap: { ...d.lifetime.trap, ...(raw.lifetime?.trap ?? {}) } }
+    hook: raw.hook ?? 0,
+    guardUntil: raw.guardUntil ?? 0,
+    lifetime: {
+      ...d.lifetime, ...(raw.lifetime ?? {}),
+      trap: { ...d.lifetime.trap, ...(raw.lifetime?.trap ?? {}) },
+      steal: { ...d.lifetime.steal, ...(raw.lifetime?.steal ?? {}) }
+    }
   };
 }
 
@@ -365,6 +378,69 @@ export function loadFish(db: PointsDb, userId: number): FishData | null {
  */
 export function recordCatch(db: PointsDb, userId: number, name: string, source: 'cast' | 'trap', cm: number | null, now: number): void {
   db.prepare('INSERT INTO catches (ts, user_id, name, source, cm) VALUES (?, ?, ?, ?, ?)').run(now, userId, name, source, cm);
+}
+
+// ─── Stealing ───────────────────────────────────────────────────────────────
+
+/** What every fish someone holds would sell for, before any reel bonus: what a guard is priced on. */
+export function heldFishValue(d: FishData, g: PointsGamesConfig): number {
+  let total = 0;
+  for (const item of ITEMS) {
+    if (item.type !== 'fish') continue;
+    const have = d.catch.types[item.name] ?? 0;
+    if (have <= 0) continue;
+    const sized = (d.catch.sizes?.[item.name] ?? []).slice(0, have);
+    for (const held of sized) total += sellPrice(item, g, held);
+    total += (have - sized.length) * sellPrice(item, g);
+  }
+  return total;
+}
+
+/**
+ * The fish a thief can reach for: everything held except what the owner landed
+ * or stole in the last `graceMs`, so a fresh catch can still be sold first.
+ */
+export function stealableFish(db: PointsDb, d: FishData, userId: number, now: number, graceMs: number): Array<{ item: CatchItem; n: number }> {
+  const since = now - graceMs;
+  const fresh = new Map<string, number>();
+  const rows = db.prepare(
+    `SELECT name, COUNT(*) AS n FROM (
+       SELECT name FROM catches WHERE user_id = ? AND ts > ?
+       UNION ALL SELECT name FROM steals WHERE thief_id = ? AND ts > ? AND outcome = 'stolen'
+     ) GROUP BY name`
+  ).all(userId, since, userId, since) as Array<{ name: string; n: number }>;
+  for (const r of rows) fresh.set(r.name, r.n);
+  const out: Array<{ item: CatchItem; n: number }> = [];
+  for (const item of ITEMS) {
+    if (item.type !== 'fish') continue;
+    const n = (d.catch.types[item.name] ?? 0) - (fresh.get(item.name) ?? 0);
+    if (n > 0) out.push({ item, n });
+  }
+  return out;
+}
+
+/**
+ * One of `item` the owner holds, at random: a sized one (with its length) or, among
+ * fish from traps and older catches, an unsized one. Doesn't remove it.
+ */
+export function pickHeld(d: FishData, item: CatchItem): { index: number; held?: HeldFish } {
+  const have = d.catch.types[item.name] ?? 0;
+  const sized = d.catch.sizes?.[item.name] ?? [];
+  const index = crypto.randomInt(0, Math.max(1, have));
+  return index < sized.length ? { index, held: sized[index] } : { index: -1 };
+}
+
+/** Move one fish picked by pickHeld from `from` to `to`. It keeps its length but not a record bonus, which was the catcher's. */
+export function moveFish(from: FishData, to: FishData, item: CatchItem, picked: { index: number; held?: HeldFish }): void {
+  from.catch.types[item.name] = Math.max(0, (from.catch.types[item.name] ?? 0) - 1);
+  from.catch.fish = Math.max(0, from.catch.fish - 1);
+  if (picked.held && picked.index >= 0) from.catch.sizes?.[item.name]?.splice(picked.index, 1);
+  to.catch.types[item.name] = (to.catch.types[item.name] ?? 0) + 1;
+  to.catch.fish++;
+  if (picked.held) {
+    to.catch.sizes ??= {};
+    (to.catch.sizes[item.name] ??= []).push({ cm: picked.held.cm, record: false });
+  }
 }
 
 /** Call inside a write transaction; the user row must exist (ensureUserTx). */

@@ -2903,7 +2903,7 @@ function publicFishing(channel: string, cfg: ReturnType<typeof effectivePointsCo
     })
     .sort((a, b) => a.chance - b.chance || a.firstAt.localeCompare(b.firstAt))
     .slice(0, 5);
-  return { catchOdds: g.catchOdds, fish, junk: list('junk'), rarest };
+  return { catchOdds: g.catchOdds, fish, junk: list('junk'), rarest, steal: g.steal.enabled };
 }
 
 /**

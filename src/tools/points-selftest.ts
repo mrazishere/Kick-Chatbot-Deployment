@@ -25,7 +25,7 @@ import {
 } from '../points/store';
 import { WebhookPoller } from '../channels/webhook-poller';
 import { points as pointsCommand } from '../bot-commands/points';
-import { addItem, initialData, ITEMS, landsFish, loadFish, parseSellList, recordCatch, saveFish, sellPrice, weightedCatch } from '../community/fishing';
+import { addItem, FishData, initialData, ITEMS, landsFish, loadFish, parseSellList, recordCatch, saveFish, sellPrice, weightedCatch } from '../community/fishing';
 import { openCommunityDb } from '../community/store';
 import { readOverlay } from '../community/fish-overlay';
 import { fish as fishCommand } from '../bot-commands/fish';
@@ -207,7 +207,7 @@ async function main(): Promise<void> {
   // Store basics
   {
     const db = openPointsDb('basics', { create: true })!;
-    check('migrated to user_version 7', db.pragma('user_version', { simple: true }) === 7);
+    check('migrated to user_version 8', db.pragma('user_version', { simple: true }) === 8);
     runWrite(db, () => creditTx(db, { userId: 1, username: 'alice', amount: 100, reason: 'mod_add', now: 1 }));
     const over = runWrite(db, () => debitTx(db, { userId: 1, amount: 150, reason: 'mod_remove', now: 2 }));
     check('debit beyond balance refused', !over.ok && over.balance === 100);
@@ -550,6 +550,95 @@ async function main(): Promise<void> {
     const stats = await run('$don fish stats', 'asker', 23);
     check('chatReplies off: laying traps and lookups still go to chat, not the overlay',
       lay[0]?.includes('laid your fishing traps') && stats.length === 1 && readOverlay(qdb).events.length === 1, { lay, stats, f: readOverlay(qdb) });
+  }
+
+  // Stealing: a hook to try, rarity odds, a burned fine, guards, grace and protection
+  {
+    const ch = 'fishsteal';
+    const cfgWith = (steal: Record<string, unknown>) => writeConfig(root, ch, {
+      enabled: true, currencyName: '$DON', games: { enabled: true, onlyWhileLive: false, steal: { enabled: true, ...steal } }
+    });
+    cfgWith({ oddsCommon: 100 });
+    makeService(ch, { broadcaster: 999 });
+    const sdb = openPointsDb(ch, { create: true })!;
+    const fishOf = (id: number) => loadFish(sdb, id)!;
+    const seed = (id: number, name: string, bal: number, fish: number, extra: (d: FishData) => void = () => {}) => runWrite(sdb, () => {
+      creditTx(sdb, { userId: id, username: name, amount: bal, reason: 'mod_add', now: 1 });
+      const d = initialData();
+      d.lifetime.attempts = 1;
+      for (let i = 0; i < fish; i++) addItem(d, ITEMS.find(x => x.name === '🐟')!);
+      if (fish) d.catch.sizes = { '🐟': Array.from({ length: fish }, () => ({ cm: 50, record: false })) };
+      extra(d);
+      saveFish(sdb, id, d, 1);
+    });
+    seed(31, 'thief', 2000, 0);
+    seed(32, 'mark', 10, 3);
+    seed(33, 'guarded', 10, 3, d => { d.guardUntil = Date.now() + 3_600_000; });
+    seed(34, 'mark3', 10, 2);
+    seed(35, 'fresh', 10, 1);
+    seed(36, 'poor', 120, 0, d => { d.hook = 3; });
+    const realNow = Date.now;
+    let shift = 0;
+    Date.now = () => realNow() + shift;
+    try {
+      const run = async (msg: string, who: [string, number] = ['thief', 31]) => {
+        shift += 6_000;
+        const out: string[] = [];
+        const t: KickTags = { username: who[0], 'display-name': who[0], badges: {}, isBroadcaster: false, isModUp: false, isVIPUp: false, rawBadges: [], senderId: who[1] };
+        await fishCommand({ say: async (_c, m) => { out.push(m); } }, msg, `#${ch}`, t, { channelName: ch } as ChannelConfig);
+        return out[0] ?? '';
+      };
+      check('steal needs a hook', (await run('$don fish steal @mark')).includes('need a 🪝 grappling hook'));
+      const bought = await run('$don fish buy hook');
+      check('buying a hook costs its price and gives its tries', bought.includes('grappling hook for 500') && fishOf(31).hook === 3 && balance(ch, 31) === 1500, bought);
+      check('one hook at a time', (await run('$don fish buy hook')).includes('already have') && balance(ch, 31) === 1500);
+
+      const got = await run('$don fish steal @mark');
+      check('a steal that works moves one fish, keeps its length, burns the fee and a try', got.includes('made off with') && got.includes('@mark')
+        && fishOf(31).catch.types['🐟'] === 1 && fishOf(31).catch.sizes?.['🐟']?.[0]?.cm === 50 && fishOf(32).catch.types['🐟'] === 2
+        && fishOf(32).catch.sizes?.['🐟']?.length === 2 && fishOf(31).hook === 2 && balance(ch, 31) === 1450
+        && fishOf(31).lifetime.steal.stolen === 1 && fishOf(32).lifetime.steal.lost === 1 && fishOf(31).lifetime.fish === 0, got);
+      check('a stolen fish reaches the overlay', readOverlay(sdb).events.some(e => e.kind === 'steal' && e.item === '🐟'));
+      check('a steal takes the fishing cooldown', (await run('$don fish steal @mark3')).includes("Hol' up partner"));
+      shift += 31 * 60_000;
+      check('a target is left alone for a while after a try', (await run('$don fish steal @mark')).includes('still on alert') && fishOf(31).hook === 2);
+
+      const blocked = await run('$don fish steal @guarded');
+      check('a guard turns the try away for one hook use, no fee, no cooldown, no time shown',
+        blocked.includes('@guarded has a guard') && !/\d+h|\d+m/.test(blocked) && fishOf(31).hook === 1 && balance(ch, 31) === 1450
+        && fishOf(33).catch.types['🐟'] === 3 && fishOf(31).lifetime.steal.blocked === 1, blocked);
+      runWrite(sdb, () => recordCatch(sdb, 35, '🐟', 'cast', 50, Date.now()));
+      check('fish landed within the grace time can\'t be stolen', (await run('$don fish steal @fresh')).includes('no fish you can get your hook into'));
+      check('the streamer is off limits', (await run(`$don fish steal @${ch}`)).length > 0 && fishOf(31).hook === 1);
+      check('a thief needs the fee and the minimum fine on hand', (await run('$don fish steal @mark3', ['poor', 36])).includes('at least 150'));
+
+      cfgWith({ oddsCommon: 0 });
+      const caught = await run('$don fish steal @mark3');
+      // A 50 cm 🐟 is worth its price; the fine is half that but at least 100.
+      check('caught: the fine is burned, the hook is taken, the fish stays', caught.includes('caught you red-handed') && caught.includes('100 $DON fine')
+        && fishOf(31).hook === 0 && balance(ch, 31) === 1300 && balance(ch, 34) === 10 && fishOf(34).catch.types['🐟'] === 2
+        && fishOf(31).lifetime.steal.caught === 1, caught);
+      check('a caught thief reaches the overlay', readOverlay(sdb).events.some(e => e.kind === 'caught'));
+      shift += 61 * 60_000;   // past the cooldown and mark3's protection, well within the day
+      check('one try per target a day', (await run('$don fish buy hook')).includes('grappling hook for') && (await run('$don fish steal @mark3')).includes('already tried mark3 today'));
+
+      check('a guard costs money up front', (await run('$don fish buy guard', ['mark', 32])).includes('costs 200') && balance(ch, 32) === 10);
+      const t36 = await run('$don fish buy guard', ['poor', 36]);
+      check('no fish, no guard', t36.includes("don't have any fish"), t36);
+      runWrite(sdb, () => creditTx(sdb, { userId: 32, username: 'mark', amount: 1000, reason: 'mod_add', now: 2 }));
+      const g2 = await run('$don fish buy guard', ['mark', 32]);
+      check('buying a guard charges the minimum for a small collection and shows its own time', g2.includes('hired a guard for 200') && balance(ch, 32) === 810
+        && (fishOf(32).guardUntil ?? 0) > Date.now(), g2);
+      const shown = await run('$don fish show', ['mark', 32]);
+      check('only the owner sees how long their guard lasts', shown.includes('guarded for another') && !(await run('$don fish show mark')).includes('guarded'), shown);
+      check('the thieves board ranks fish stolen', (await run('$don fish top thieves')).includes('master thieves') );
+    } finally {
+      Date.now = realNow;
+    }
+    const bad = validatePointsPatch({}, { games: { steal: { oddsCommon: 101, hookUses: 0, enabled: 'yes' } } });
+    check('steal settings are validated', bad.errors.length === 3, bad.errors);
+    const kept = validatePointsPatch({}, { games: { steal: { enabled: true, fee: 50, hookPrice: 800 } } });
+    check('only steal settings that differ from the defaults are stored', kept.next?.games?.steal?.enabled === true && kept.next?.games?.steal?.hookPrice === 800 && Object.keys(kept.next?.games?.steal ?? {}).length === 2, kept);
   }
 
   // Fishing traps set a reminder for when they're full
@@ -1050,25 +1139,25 @@ async function main(): Promise<void> {
     const mch = 'migrate1ch';
     const mdb = openPointsDb(mch, { create: true })!;
     runWrite(mdb, () => creditTx(mdb, { userId: 1, username: 'old', amount: 77, reason: 'mod_add', now: 1 }));
-    mdb.exec('DROP TABLE overlay_feed; DROP TABLE catches; DROP TABLE fish; DROP TABLE duels; DROP TABLE raffle_entries; DROP TABLE raffles; DROP INDEX ledger_ref');
+    mdb.exec('DROP TABLE steals; DROP TABLE overlay_feed; DROP TABLE catches; DROP TABLE fish; DROP TABLE duels; DROP TABLE raffle_entries; DROP TABLE raffles; DROP INDEX ledger_ref');
     mdb.pragma('user_version = 1');
     closePointsDb(mch);
     const reopened = openPointsDb(mch, { create: false })!;
     const hasTable = (n: string) => !!reopened.prepare('SELECT 1 FROM sqlite_master WHERE name = ?').get(n);
     check('a v1 database migrates to the latest version keeping balances',
-      reopened.pragma('user_version', { simple: true }) === 7 && balance(mch, 1) === 77
-      && hasTable('duels') && hasTable('raffles') && hasTable('raffle_entries') && hasTable('fish') && hasTable('catches') && hasTable('overlay_feed'));
+      reopened.pragma('user_version', { simple: true }) === 8 && balance(mch, 1) === 77
+      && hasTable('duels') && hasTable('raffles') && hasTable('raffle_entries') && hasTable('fish') && hasTable('catches') && hasTable('overlay_feed') && hasTable('steals'));
 
     // v2 → v3 specifically: a database that already has duels gains the raffle tables.
     const m2 = 'migrate2ch';
     const m2db = openPointsDb(m2, { create: true })!;
     runWrite(m2db, () => creditTx(m2db, { userId: 1, username: 'old2', amount: 42, reason: 'mod_add', now: 1 }));
-    m2db.exec('DROP TABLE overlay_feed; DROP TABLE catches; DROP TABLE fish; DROP TABLE raffle_entries; DROP TABLE raffles; DROP INDEX ledger_ref');
+    m2db.exec('DROP TABLE steals; DROP TABLE overlay_feed; DROP TABLE catches; DROP TABLE fish; DROP TABLE raffle_entries; DROP TABLE raffles; DROP INDEX ledger_ref');
     m2db.pragma('user_version = 2');
     closePointsDb(m2);
     const re2 = openPointsDb(m2, { create: false })!;
     check('a v2 database gains the raffle tables and keeps its balances',
-      re2.pragma('user_version', { simple: true }) === 7 && balance(m2, 1) === 42
+      re2.pragma('user_version', { simple: true }) === 8 && balance(m2, 1) === 42
       && !!re2.prepare("SELECT 1 FROM sqlite_master WHERE name = 'raffles'").get());
     void svc;
     makeService(ch, { broadcaster: 999 });

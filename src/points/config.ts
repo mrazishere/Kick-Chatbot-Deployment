@@ -9,7 +9,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { FishCatchSetting, FishReelSetting, PointsBonusesConfig, PointsConfig, PointsDuelConfig, PointsGambleConfig, PointsGamesConfig, PointsGiveConfig, PointsRaffleConfig, StoredFishCatches, StoredPointsConfig, PointsTimeoutPenaltyConfig } from '../types';
+import { FishCatchSetting, FishReelSetting, FishStealSetting, PointsBonusesConfig, PointsConfig, PointsDuelConfig, PointsGambleConfig, PointsGamesConfig, PointsGiveConfig, PointsRaffleConfig, StoredFishCatches, StoredPointsConfig, PointsTimeoutPenaltyConfig } from '../types';
 import { defaultSellPrice, ITEMS } from '../community/fishing';
 
 export function defaultPointsConfig(): PointsConfig {
@@ -82,10 +82,50 @@ export function defaultPointsConfig(): PointsConfig {
       stories: true,
       chatReplies: true,
       catches: effectiveCatches(undefined, 100),
-      reels: DEFAULT_REELS.map(r => ({ ...r }))
+      reels: DEFAULT_REELS.map(r => ({ ...r })),
+      steal: { ...DEFAULT_STEAL }
     }
   };
 }
+
+/** Off until a channel turns it on. Prices sit against a common fish's 75 and a whale's 50,000. */
+export const DEFAULT_STEAL: Readonly<FishStealSetting> = {
+  enabled: false,
+  hookPrice: 500,
+  hookUses: 3,
+  fee: 50,
+  finePercent: 50,
+  fineMinimum: 100,
+  oddsCommon: 40,
+  oddsUncommon: 30,
+  oddsRare: 20,
+  oddsEpic: 10,
+  oddsLegendary: 5,
+  graceMinutes: 30,
+  protectMinutes: 60,
+  guardPercent: 5,
+  guardMinimum: 200,
+  guardHours: 12
+};
+
+/** Bounds for each number in games.steal, shared by reading and validating. */
+const STEAL_NUMBERS: Record<Exclude<keyof FishStealSetting, 'enabled'>, Rule> = {
+  hookPrice: { min: 0, max: 1_000_000_000, integer: true },
+  hookUses: { min: 1, max: 100, integer: true },
+  fee: { min: 0, max: 1_000_000_000, integer: true },
+  finePercent: { min: 0, max: 1000, integer: true },
+  fineMinimum: { min: 0, max: 1_000_000_000, integer: true },
+  oddsCommon: { min: 0, max: 100, integer: true },
+  oddsUncommon: { min: 0, max: 100, integer: true },
+  oddsRare: { min: 0, max: 100, integer: true },
+  oddsEpic: { min: 0, max: 100, integer: true },
+  oddsLegendary: { min: 0, max: 100, integer: true },
+  graceMinutes: { min: 0, max: 1440, integer: true },
+  protectMinutes: { min: 0, max: 1440, integer: true },
+  guardPercent: { min: 0, max: 100, integer: true },
+  guardMinimum: { min: 0, max: 1_000_000_000, integer: true },
+  guardHours: { min: 1, max: 168, integer: true }
+};
 
 /**
  * Reels are our addition; supibot's fishing shop is empty. Priced against
@@ -103,6 +143,16 @@ const REEL_PRICE_MAX = 1_000_000_000;
 const REEL_MULTIPLIER = { min: 0.1, max: 10 };
 const REEL_NAME_RE = /^[^\u0000-\u001f<>@]{1,24}$/u;
 const round2 = (n: number): number => Math.round(n * 100) / 100;
+
+/** The stored steal settings with values clamped; anything not stored keeps its default. */
+export function effectiveSteal(stored: unknown): FishStealSetting {
+  const st = obj(stored);
+  const out: FishStealSetting = { ...DEFAULT_STEAL, enabled: bool(st.enabled, DEFAULT_STEAL.enabled) };
+  for (const [key, rule] of Object.entries(STEAL_NUMBERS) as Array<[keyof typeof STEAL_NUMBERS, Rule]>) {
+    out[key] = num(st[key], DEFAULT_STEAL[key], rule.min, rule.max, rule.integer ?? false);
+  }
+  return out;
+}
 
 /** The stored reel list with values clamped; not stored means the defaults. */
 export function effectiveReels(stored: unknown): FishReelSetting[] {
@@ -286,7 +336,8 @@ export function internalPointsConfig(raw: unknown): InternalPointsConfig {
     stories: bool(ga.stories, d.games.stories),
     chatReplies: bool(ga.chatReplies, d.games.chatReplies),
     catches: [],
-    reels: effectiveReels(ga.reels)
+    reels: effectiveReels(ga.reels),
+    steal: effectiveSteal(ga.steal)
   };
   games.catches = effectiveCatches(ga.catches, games.sellPricePercent);
 
@@ -683,6 +734,27 @@ export function validatePointsPatch(current: unknown, patch: unknown): { next?: 
         if (reels) {
           if (JSON.stringify(reels) === JSON.stringify(DEFAULT_REELS)) delete next.games!.reels;
           else next.games!.reels = reels;
+        }
+      }
+      if (ga.steal === null) delete next.games!.steal;
+      else if (ga.steal !== undefined) {
+        if (!ga.steal || typeof ga.steal !== 'object' || Array.isArray(ga.steal)) errors.push('games.steal must be an object');
+        else {
+          const st = ga.steal as Record<string, unknown>;
+          const out: Partial<FishStealSetting> = { ...(next.games!.steal ?? {}) };
+          for (const [key, rule] of Object.entries(STEAL_NUMBERS)) {
+            if (st[key] === undefined) continue;
+            const v = checkNumber(`games.steal.${key}`, st[key], rule, errors);
+            if (v !== undefined) (out as Record<string, unknown>)[key] = v;
+          }
+          if (st.enabled !== undefined) {
+            if (typeof st.enabled !== 'boolean') errors.push('games.steal.enabled must be true or false');
+            else out.enabled = st.enabled;
+          }
+          // Only what differs from the defaults is kept, so a later default change still applies.
+          for (const key of Object.keys(out) as Array<keyof FishStealSetting>) if (out[key] === DEFAULT_STEAL[key]) delete out[key];
+          if (Object.keys(out).length) next.games!.steal = out;
+          else delete next.games!.steal;
         }
       }
       if (ga.catches === null) delete next.games!.catches;

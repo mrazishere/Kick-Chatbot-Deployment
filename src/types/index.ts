@@ -296,6 +296,41 @@ export interface PointsGamesConfig {
   catches: FishCatchSetting[];
   /** Reels in the order they're bought with `fish buy reel`. Empty: nothing to buy. */
   reels: FishReelSetting[];
+  /** `fish steal`: taking a fish from another viewer, and guards against it. */
+  steal: FishStealSetting;
+}
+
+/**
+ * Stealing is our addition. A thief needs a grappling hook (a few tries, lost when
+ * caught); each try burns a fee and the fishing cooldown, reaches for one random
+ * fish the target has held a while, and succeeds by that fish's rarity. Caught, the
+ * thief pays a fine nobody receives. A guard, priced on what the owner holds, turns
+ * every try away for a while and costs the thief only a hook use.
+ */
+export interface FishStealSetting {
+  enabled: boolean;
+  hookPrice: number;
+  /** Tries one hook gives. */
+  hookUses: number;
+  /** Paid per try that goes ahead, win or lose. */
+  fee: number;
+  /** A caught thief's fine: this share of the fish's value, at least fineMinimum, at most their balance. */
+  finePercent: number;
+  fineMinimum: number;
+  /** Success chance in percent by the fish's rarity, as the channel's odds name it. */
+  oddsCommon: number;
+  oddsUncommon: number;
+  oddsRare: number;
+  oddsEpic: number;
+  oddsLegendary: number;
+  /** A fish can't be stolen until its owner has held it this long. */
+  graceMinutes: number;
+  /** After a try that went ahead (stolen or caught), the target is left alone this long. */
+  protectMinutes: number;
+  /** A guard costs this share of the owner's held fish value, at least guardMinimum. */
+  guardPercent: number;
+  guardMinimum: number;
+  guardHours: number;
 }
 
 /** A fishing reel: a one-off purchase that improves casts and traps from then on. */
@@ -358,7 +393,7 @@ export type StoredPointsConfig = Partial<Omit<PointsConfig, 'bonuses' | 'give' |
   gamble?: Partial<PointsGambleConfig>;
   duel?: Partial<PointsDuelConfig>;
   raffle?: Partial<PointsRaffleConfig>;
-  games?: Partial<Omit<PointsGamesConfig, 'catches'>> & { catches?: StoredFishCatches };
+  games?: Partial<Omit<PointsGamesConfig, 'catches' | 'steal'>> & { catches?: StoredFishCatches; steal?: Partial<FishStealSetting> };
   /** Staging only, set by editing the file: treat the channel as live. Never exposed by the API. */
   debugForceLive?: boolean;
 };

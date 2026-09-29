@@ -1,5 +1,5 @@
 /**
- * The fishing overlay's feed: each cast's result and trap haul, kept a few minutes
+ * The fishing overlay's feed: each cast's result, trap haul and steal, kept a few minutes
  * in the channel's points database (overlay_feed, schema v7). The bot writes it;
  * the enrollment service reads it for the dashboard's browser-source page, which
  * polls. They go here whether or not they also go to chat (games.chatReplies);
@@ -15,10 +15,11 @@ const READ_LIMIT = 50;
 
 /**
  * catch: a fish landed by a cast. trap: traps collected. miss: a cast that came
- * back empty or with junk. info: any other reply, only in feeds from before
- * replies were split between chat and the overlay.
+ * back empty or with junk. steal: a fish taken from another viewer. caught: a
+ * thief caught red-handed. info: any other reply, only in feeds from before replies
+ * were split between chat and the overlay.
  */
-export type OverlayKind = 'catch' | 'trap' | 'miss' | 'info';
+export type OverlayKind = 'catch' | 'trap' | 'miss' | 'steal' | 'caught' | 'info';
 
 export interface OverlayEvent {
   id: number;

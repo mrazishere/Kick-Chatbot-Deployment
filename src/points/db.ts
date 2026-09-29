@@ -219,7 +219,26 @@ CREATE TABLE overlay_feed (
 CREATE INDEX overlay_feed_ts ON overlay_feed(ts);
 `;
 
-const SCHEMA_VERSION = 7;
+/**
+ * v8: every steal try that went ahead or hit a guard. Keeps a target from being
+ * piled on (protectMinutes), a thief to one try per target a day, and a stolen
+ * fish fresh for its new owner like a caught one.
+ */
+const SCHEMA_V8 = `
+CREATE TABLE steals (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts INTEGER NOT NULL,
+  thief_id INTEGER NOT NULL REFERENCES users(user_id),
+  victim_id INTEGER NOT NULL REFERENCES users(user_id),
+  name TEXT,
+  cm INTEGER,
+  outcome TEXT NOT NULL
+);
+CREATE INDEX steals_victim_ts ON steals(victim_id, ts);
+CREATE INDEX steals_thief_ts ON steals(thief_id, ts);
+`;
+
+const SCHEMA_VERSION = 8;
 
 export function migrate(db: PointsDb): void {
   if ((db.pragma('user_version', { simple: true }) as number) >= SCHEMA_VERSION) return;
@@ -235,6 +254,7 @@ export function migrate(db: PointsDb): void {
     if (version < 5) db.exec(SCHEMA_V5);
     if (version < 6) db.exec(SCHEMA_V6);
     if (version < 7) db.exec(SCHEMA_V7);
+    if (version < 8) db.exec(SCHEMA_V8);
     if (version < SCHEMA_VERSION) db.pragma(`user_version = ${SCHEMA_VERSION}`);
   }).immediate();
 }
