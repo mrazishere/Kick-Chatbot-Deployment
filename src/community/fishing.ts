@@ -396,17 +396,25 @@ export function heldFishValue(d: FishData, g: PointsGamesConfig): number {
   return total;
 }
 
-/**
- * What a thief must hold before trying, besides the fee: the fine for the dearest
- * Epic fish at full length (100 cm, double price), as the channel prices and names
- * them. Rarer fish can fine more; the fine is still capped at what the thief has.
- * With no Epic fish in the channel's odds, just the smallest fine.
- */
-export function stealStake(g: PointsGamesConfig): number {
+/** What a steal try costs for a fish of this value: the fee, and the fine on top when caught. */
+export function stealCharges(g: PointsGamesConfig, worth: number): { fee: number; fine: number } {
   const st = g.steal;
-  const epic = ITEMS.filter(i => i.type === 'fish' && rarityOf(g, i.name) === 'Epic');
-  const dearest = epic.reduce((max, i) => Math.max(max, sellPrice(i, g, { cm: 100, record: false })), 0);
-  return Math.max(st.fineMinimum, Math.round(dearest * st.finePercent / 100));
+  return {
+    fee: Math.max(st.feeMinimum, Math.round(worth * st.feePercent / 100)),
+    fine: Math.max(st.fineMinimum, Math.round(worth * st.finePercent / 100))
+  };
+}
+
+/** The most any one of these fish is worth to its owner right now, by its own length. */
+export function priciestHeld(d: FishData, g: PointsGamesConfig, pool: Array<{ item: CatchItem }>): number {
+  let max = 0;
+  for (const { item } of pool) {
+    const have = d.catch.types[item.name] ?? 0;
+    const sized = (d.catch.sizes?.[item.name] ?? []).slice(0, have);
+    for (const held of sized) max = Math.max(max, sellPrice(item, g, held));
+    if (have > sized.length) max = Math.max(max, sellPrice(item, g));
+  }
+  return max;
 }
 
 /**

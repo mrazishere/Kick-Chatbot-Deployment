@@ -21,8 +21,10 @@
  *          $don fish buy [reel|hook|guard]              (shows the shop; "buy reel" buys the next reel)
  *          $don fish steal @user                        (also rob; needs a hook, see games.steal)
  *              Reaches for one random fish the target has held a while; succeeds by
- *              its rarity. Caught: a fine nobody receives and the hook is taken. A
- *              guarded target turns it away for one hook use.
+ *              its rarity. The fee is a share of that fish's value; caught, a fine
+ *              too, and the hook is taken. Nobody receives either. A thief who can't
+ *              cover both for the target's most valuable fish, or who meets a guard,
+ *              loses one hook use and nothing else.
  *
  * Casting, laying traps and stealing follow games.onlyWhileLive and stay silent offline,
  * like $<cmd> gamble. Everything that changes a balance or a catch runs in one
@@ -43,7 +45,7 @@ import { addReminder, cancelSelfRemindersStartingWith, openCommunityDb } from '.
 import { bestEmote, broadcasterIdFor, emoteImages } from '../community/emotes';
 import { OverlayKind, pushOverlay } from '../community/fish-overlay';
 import {
-  addItem, baitPrice, baitRoll, currentReel, heldFishValue, landsFish, moveFish, pickHeld, stealableFish, stealStake, parseSellList, CatchItem, CatchType, FAILURE_EMOTES, FishData, findBait, hasFishedBefore, initialData, rarityOf, recordCatch,
+  addItem, baitPrice, baitRoll, currentReel, heldFishValue, landsFish, moveFish, pickHeld, priciestHeld, stealableFish, stealCharges, parseSellList, CatchItem, CatchType, FAILURE_EMOTES, FishData, findBait, hasFishedBefore, initialData, rarityOf, recordCatch,
   ITEMS, JUNK_MESSAGES, loadFish, MISS_DELAY_MS, pick, randomInt, rollCatch, saveFish, sellPrice, STORY_STYLES, SUCCESS_EMOTES,
   takeItems, TYPE_DESCRIPTIONS, weightedCatch
 } from '../community/fishing';
@@ -599,8 +601,9 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
   /**
    * Reach for one random fish the target has held past the grace time, weighted by
    * how many of each they hold. It works by that fish's rarity; otherwise the thief
-   * is caught, fined (the fine goes nowhere) and loses the hook. A guard turns the
-   * try away for one hook use and nothing else.
+   * is caught, fined on top of the fee (both go nowhere) and loses the hook. A guard,
+   * or a thief who couldn't pay for the target's most valuable fish, costs one hook
+   * use and nothing else.
    */
   async function steal(targetRaw: string | undefined, uid: number): Promise<void> {
     const st = g.steal;
@@ -645,14 +648,20 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       }
       const pool = v ? stealableFish(db!, v, victim.user_id, now, st.graceMinutes * 60_000) : [];
       if (!v || !pool.length) return `${victim.username} has no fish you can get your hook into right now.`;
+      // The thief must be able to pay for the worst the hook could grab: the fee and the
+      // fine on the target's most valuable fish. Short of that, the try costs a hook use.
       const balance = getUser(db!, uid)?.balance ?? 0;
-      const needed = st.fee + stealStake(g);
+      const worst = stealCharges(g, priciestHeld(v, g, pool));
+      const needed = worst.fee + worst.fine;
       if (balance < needed) {
-        return `You need at least ${groupDigits(needed)} ${cur} on hand to try a steal: ${groupDigits(st.fee)} for the attempt, and enough to pay the fine if you're caught reaching for an epic fish.`;
+        d.hook = (d.hook ?? 1) - 1;
+        saveFish(db!, uid, d, now);
+        log('short', null, null);
+        const left = d.hook > 0 ? `${tries(d.hook)} left on it` : 'that was its last try';
+        return `You fumbled your 🪝 hook (${left}). To try ${victim.username} you need ${groupDigits(needed)} ${cur} on hand: the fee and the fine for their most valuable fish.`;
       }
 
-      // The attempt goes ahead: the fee, a hook use and the fishing cooldown are spent whatever happens.
-      const afterFee = st.fee > 0 ? debitTx(db!, { userId: uid, amount: st.fee, reason: 'game:fish_steal', actor: `chat:${me}`, note: victim.username, now }).balance : balance;
+      // The attempt goes ahead: a hook use and the fishing cooldown are spent whatever happens, and the fee once the fish is known.
       d.hook = (d.hook ?? 1) - 1;
       d.readyTimestamp = now + g.catchCooldownMinutes * 60_000;
       d.lifetime.steal.attempts++;
@@ -660,6 +669,8 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       const item = pool.find(p => (r -= p.n) <= 0)!.item;
       const picked = pickHeld(v, item);
       const worth = sellPrice(item, g, picked.held);
+      const { fee, fine } = stealCharges(g, worth);
+      if (fee > 0) debitTx(db!, { userId: uid, amount: fee, reason: 'game:fish_steal', actor: `chat:${me}`, note: `${victim.username} ${item.name}`, now });
       const odds: Record<string, number> = {
         Common: st.oddsCommon, Uncommon: st.oddsUncommon, Rare: st.oddsRare, Epic: st.oddsEpic, Legendary: st.oddsLegendary
       };
@@ -676,17 +687,16 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
         overlay = { kind: 'steal', item: item.name };
         const size = picked.held ? ` (${picked.held.cm} cm)` : '';
         const left = d.hook > 0 ? `${tries(d.hook)} left on your hook` : 'your hook is used up';
-        return `🪝 You snuck up on @${victim.username} and made off with their ✨${item.name}✨${size}, worth ${groupDigits(worth)} ${cur}! (${left}, ${cooldown})`;
+        return `🪝 You snuck up on @${victim.username} and made off with their ✨${item.name}✨${size}, worth ${groupDigits(worth)} ${cur}! (${groupDigits(fee)} ${cur} fee, ${left}, ${cooldown})`;
       }
 
-      const fine = Math.min(afterFee, Math.max(st.fineMinimum, Math.round(worth * st.finePercent / 100)));
       if (fine > 0) debitTx(db!, { userId: uid, amount: fine, reason: 'game:fish_steal_fine', actor: `chat:${me}`, note: victim.username, now });
       d.hook = 0;
       d.lifetime.steal.caught++;
       saveFish(db!, uid, d, now);
       log('caught', item.name, picked.held?.cm ?? null);
       overlay = { kind: 'caught', item: item.name };
-      return `🚨 @${victim.username} caught you red-handed reaching for their ✨${item.name}✨! You paid a ${groupDigits(fine)} ${cur} fine and your 🪝 hook was confiscated. (${cooldown})`;
+      return `🚨 @${victim.username} caught you red-handed reaching for their ✨${item.name}✨! You paid a ${groupDigits(fine)} ${cur} fine on top of the ${groupDigits(fee)} ${cur} fee, and your 🪝 hook was confiscated. (${cooldown})`;
     });
     const out = overlay as { kind: OverlayKind; item: string } | null;
     if (text) say(text, out ?? {});
