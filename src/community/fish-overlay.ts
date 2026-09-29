@@ -1,8 +1,9 @@
 /**
- * The fishing overlay's feed: every fish reply the bot gives, kept a few minutes
+ * The fishing overlay's feed: each cast's result and trap haul, kept a few minutes
  * in the channel's points database (overlay_feed, schema v7). The bot writes it;
  * the enrollment service reads it for the dashboard's browser-source page, which
- * polls. Replies go here whether or not they also go to chat (games.chatReplies).
+ * polls. They go here whether or not they also go to chat (games.chatReplies);
+ * every other fish reply only goes to chat.
  */
 
 import { PointsDb, runWrite } from '../points/db';
@@ -12,7 +13,11 @@ const KEEP_MS = 5 * 60_000;
 /** The most a poll returns. */
 const READ_LIMIT = 50;
 
-/** catch: a fish landed by a cast. trap: traps collected. miss: a cast that came back empty or with junk. */
+/**
+ * catch: a fish landed by a cast. trap: traps collected. miss: a cast that came
+ * back empty or with junk. info: any other reply, only in feeds from before
+ * replies were split between chat and the overlay.
+ */
 export type OverlayKind = 'catch' | 'trap' | 'miss' | 'info';
 
 export interface OverlayEvent {

@@ -531,17 +531,25 @@ async function main(): Promise<void> {
     check('replayed .proc batch pays the follow once', calls.follow === 3 && balance(ch, 50) === 50, { calls, bal: balance(ch, 50) });
   }
 
-  // chatReplies off: the overlay gets the reply, chat doesn't
+  // chatReplies off: a cast's result goes to the overlay only; other replies still go to chat
   {
     const ch = 'fishquiet';
     writeConfig(root, ch, { enabled: true, currencyName: '$DON', games: { enabled: true, onlyWhileLive: false, chatReplies: false } });
     makeService(ch, { broadcaster: 999 });
     const qdb = openPointsDb(ch, { create: true })!;
-    const out: string[] = [];
-    const t: KickTags = { username: 'quiet', 'display-name': 'quiet', badges: {}, isBroadcaster: false, isModUp: false, isVIPUp: false, rawBadges: [], senderId: 21 };
-    await fishCommand({ say: async (_c, m) => { out.push(m); } }, '$don fish trap', `#${ch}`, t, { channelName: ch } as ChannelConfig);
+    const run = async (msg: string, name: string, senderId: number) => {
+      const out: string[] = [];
+      const t: KickTags = { username: name, 'display-name': name, badges: {}, isBroadcaster: false, isModUp: false, isVIPUp: false, rawBadges: [], senderId };
+      await fishCommand({ say: async (_c, m) => { out.push(m); } }, msg, `#${ch}`, t, { channelName: ch } as ChannelConfig);
+      return out;
+    };
+    const cast = await run('$don fish', 'quiet', 21);
     const f = readOverlay(qdb);
-    check('chatReplies off: the overlay only', out.length === 0 && f.events.length === 1 && f.events[0].kind === 'info' && f.events[0].text.includes('laid your fishing traps'), { out, f });
+    check('chatReplies off: a cast goes to the overlay only', cast.length === 0 && f.events.length === 1 && ['catch', 'miss'].includes(f.events[0].kind), { cast, f });
+    const lay = await run('$don fish trap', 'layer', 22);
+    const stats = await run('$don fish stats', 'asker', 23);
+    check('chatReplies off: laying traps and lookups still go to chat, not the overlay',
+      lay[0]?.includes('laid your fishing traps') && stats.length === 1 && readOverlay(qdb).events.length === 1, { lay, stats, f: readOverlay(qdb) });
   }
 
   // Fishing traps set a reminder for when they're full
@@ -581,7 +589,8 @@ async function main(): Promise<void> {
       const recorded = (pdb0.prepare("SELECT COUNT(*) AS n FROM catches WHERE user_id = 11 AND source = 'trap'").get() as { n: number }).n;
       check('every trapped fish is recorded', recorded === loadFish(pdb0, 11)!.lifetime.fish, { recorded, lifetime: loadFish(pdb0, 11)!.lifetime.fish });
       const feed = readOverlay(pdb0);
-      check('fish replies reach the overlay feed', feed.events.some(e => e.kind === 'trap' && e.username === 'angler' && e.text.includes('drag the traps'))
+      check('a trap haul reaches the overlay feed, laying traps doesn\'t', feed.events.some(e => e.kind === 'trap' && e.username === 'angler' && e.text.includes('drag the traps'))
+        && !feed.events.some(e => e.text.includes('laid your fishing traps'))
         && feed.lastId === feed.events[feed.events.length - 1].id, feed.events.map(e => [e.kind, e.text.slice(0, 30)]));
       const off = { channelName: ch, excludedCommands: ['remind'] } as unknown as ChannelConfig;
       const quiet = await run('$don fish trap', off);

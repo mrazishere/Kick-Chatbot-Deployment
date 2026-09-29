@@ -152,15 +152,22 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
   const cur = cfg.currencyName;
   const cmd = call.usage.replace(/ fish$/, '');
 
-  /** Reply: always to the overlay, and to chat unless the channel turned that off. */
+  /**
+   * Reply in chat. A cast's result or a trap haul (meta.kind) also goes to the
+   * overlay, and skips chat where the channel turned chat replies off. Every
+   * other reply always goes to chat.
+   */
   const say = (text: string, meta: { kind?: OverlayKind; item?: string } = {}) => {
-    const emotes = emoteImages(chan, text);
-    const rarity = meta.item ? rarityOf(g, meta.item) : null;
-    pushOverlay(db, {
-      username: me, kind: meta.kind ?? 'info', text,
-      ...(meta.item ? { item: meta.item } : {}), ...(rarity ? { rarity } : {}), ...(Object.keys(emotes).length ? { emotes } : {})
-    });
-    if (g.chatReplies) return client.say(channel, `@${me} ${text}`);
+    if (meta.kind) {
+      const emotes = emoteImages(chan, text);
+      const rarity = meta.item ? rarityOf(g, meta.item) : null;
+      pushOverlay(db, {
+        username: me, kind: meta.kind, text,
+        ...(meta.item ? { item: meta.item } : {}), ...(rarity ? { rarity } : {}), ...(Object.keys(emotes).length ? { emotes } : {})
+      });
+      if (!g.chatReplies) return;
+    }
+    return client.say(channel, `@${me} ${text}`);
   };
 
   let skipStory = false;
@@ -406,7 +413,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     // "reset" collects then lays again, which leaves `after` holding the new traps.
     const settled = after as { laidUntil: number | null } | null;
     if (text && settled) syncTrapReminder(settled.laidUntil);
-    if (text) say(text, { kind: collected ? 'trap' : 'info' });
+    if (text) say(text, collected ? { kind: 'trap' } : {});
   }
 
   // ── sell ──

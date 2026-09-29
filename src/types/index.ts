@@ -283,8 +283,9 @@ export interface PointsGamesConfig {
   /** A short AI story on 1 in 3 catches. */
   stories: boolean;
   /**
-   * Post fishing replies in chat. They always go to the fishing overlay (a
-   * browser source), so a channel can turn this off and show them on stream only.
+   * Post cast results and trap hauls in chat. They always go to the fishing
+   * overlay (a browser source), so a channel can turn this off and show them on
+   * stream only. Every other fishing reply always goes to chat.
    */
   chatReplies: boolean;
   /**
