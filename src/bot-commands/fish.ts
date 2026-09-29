@@ -719,7 +719,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
         bothTypes = false;
       } else {
         const name = parseUsername(userOrType);
-        if (name && isBotSender(name)) return void say("I can't go fishing, if water splashed around it would damage my circuits! 😨");
+        if (name && isBotSender(name) && !tester) return void say("I can't go fishing, if water splashed around it would damage my circuits! 😨");
         const found = name ? findUserByName(db!, name.toLowerCase()) : undefined;
         if (!found) return void say('No such user exists!');
         targetId = found.user_id;
@@ -782,7 +782,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     if (userOrGlobal !== 'global') {
       if (userOrGlobal) {
         const name = parseUsername(userOrGlobal);
-        if (name && isBotSender(name)) return void say("I'm sitting on the streamer's table, there's no fish to catch here!");
+        if (name && isBotSender(name) && !tester) return void say("I'm sitting on the streamer's table, there's no fish to catch here!");
         const found = name ? findUserByName(db!, name.toLowerCase()) : undefined;
         if (!found) return void say('No such user exists!');
         targetId = found.user_id;
