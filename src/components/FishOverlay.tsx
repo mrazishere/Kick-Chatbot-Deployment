@@ -688,6 +688,7 @@ const CSS = `
 @keyframes fo-yank-loot{0%{transform:translate(-50%,-.9em)}25%{transform:translate(-50%,-.5em)}100%{transform:translate(calc(-50% + 8em),-9em) rotate(35deg);opacity:0}}
 .v-caught .fo-hook{animation:fo-hook-drop ${T(0.6)} cubic-bezier(.5,0,.8,.6) both,fo-hook-fall ${T(0.8)} ease-in ${T(1.45)} forwards}
 .v-caught .fo-loot{animation:fo-loot-up ${T(0.5)} ease-out ${T(0.65)} both,fo-loot-dive ${T(0.6)} ease-in ${T(1.45)} forwards}
+.v-caught .fo-hook::before{animation:fo-out ${T(0.15)} ease-in ${T(1.45)} forwards}
 @keyframes fo-hook-fall{0%{transform:translate(-50%,-3em)}25%{transform:translate(-50%,-3.6em) rotate(-25deg)}100%{transform:translate(calc(-50% - 3em),1.5em) rotate(-140deg);opacity:0}}
 @keyframes fo-loot-dive{to{transform:translate(-50%,.8em) scale(.4);opacity:0}}
 .fo-siren{bottom:calc(var(--surf) + .9em);transform:translateX(-50%);line-height:1;
