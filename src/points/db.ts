@@ -238,7 +238,14 @@ CREATE INDEX steals_victim_ts ON steals(victim_id, ts);
 CREATE INDEX steals_thief_ts ON steals(thief_id, ts);
 `;
 
-const SCHEMA_VERSION = 8;
+/** v9: what each steal was about, for the leaderboard's heists: the fish's value, the fee and the fine. */
+const SCHEMA_V9 = `
+ALTER TABLE steals ADD COLUMN worth INTEGER;
+ALTER TABLE steals ADD COLUMN fee INTEGER;
+ALTER TABLE steals ADD COLUMN fine INTEGER;
+`;
+
+const SCHEMA_VERSION = 9;
 
 export function migrate(db: PointsDb): void {
   if ((db.pragma('user_version', { simple: true }) as number) >= SCHEMA_VERSION) return;
@@ -255,6 +262,7 @@ export function migrate(db: PointsDb): void {
     if (version < 6) db.exec(SCHEMA_V6);
     if (version < 7) db.exec(SCHEMA_V7);
     if (version < 8) db.exec(SCHEMA_V8);
+    if (version < 9) db.exec(SCHEMA_V9);
     if (version < SCHEMA_VERSION) db.pragma(`user_version = ${SCHEMA_VERSION}`);
   }).immediate();
 }

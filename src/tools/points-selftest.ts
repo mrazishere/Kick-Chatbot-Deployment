@@ -21,7 +21,7 @@ import {
   acceptDuel, adjustPoints, backupPoints, createDuel, creditTx, debitTx, duelStats, gambleStats, getUser, grantTick, invariantViolations,
   openRaffle, raffleEntries, gamble,
   ensureUserTx, outgoingDuel, refundDuel, resetAllPoints,
-  caughtFish, pointsLeaderboard, pointsSummary, searchPointsUsers, getPointsUserDetail, transfer
+  caughtFish, heistBoard, pointsLeaderboard, pointsSummary, searchPointsUsers, getPointsUserDetail, transfer
 } from '../points/store';
 import { WebhookPoller } from '../channels/webhook-poller';
 import { points as pointsCommand } from '../bot-commands/points';
@@ -207,7 +207,7 @@ async function main(): Promise<void> {
   // Store basics
   {
     const db = openPointsDb('basics', { create: true })!;
-    check('migrated to user_version 8', db.pragma('user_version', { simple: true }) === 8);
+    check('migrated to user_version 9', db.pragma('user_version', { simple: true }) === 9);
     runWrite(db, () => creditTx(db, { userId: 1, username: 'alice', amount: 100, reason: 'mod_add', now: 1 }));
     const over = runWrite(db, () => debitTx(db, { userId: 1, amount: 150, reason: 'mod_remove', now: 2 }));
     check('debit beyond balance refused', !over.ok && over.balance === 100);
@@ -643,6 +643,17 @@ async function main(): Promise<void> {
       const shown = await run('$don fish show', ['mark', 32]);
       check('show never gives a guard\'s time, not even to its owner', !shown.includes('guard') && !(await run('$don fish show mark')).includes('guard'), shown);
       check('the thieves board ranks fish stolen', (await run('$don fish top thieves')).includes('master thieves') );
+      check('the hall of shame ranks the caught', (await run('$don fish top caught')).includes('hall of shame') && (await run('$don fish top robbed')).includes('easy pickings'));
+      const hb = heistBoard(ch, effectivePointsConfig({ enabled: true, games: { enabled: true } }), 999)!;
+      check('the heist board: totals, thieves, shame, biggest, robbed, fort knox, blotter',
+        // Burned: thief's 10 fee, 10 + 25 when caught, and rich's 90 fee on the whale.
+        hb.totals.stolen === 2 && hb.totals.caught === 1 && hb.totals.guarded === 1 && hb.totals.burned === 10 + 35 + 90
+        // Tied on fish stolen, the bigger loot ranks first.
+        && hb.thieves[0]?.name === 'rich' && hb.thieves[0]?.loot === 3000 && hb.thieves[1]?.name === 'thief' && hb.thieves[1]?.attempts === 2
+        && hb.shame[0]?.name === 'thief' && hb.shame[0]?.fines === 35
+        && hb.biggest[0]?.fish === '🐋' && hb.biggest[0]?.victim === 'whale' && hb.biggest[0]?.cm === 100
+        && hb.robbed.some(r => r.name === 'mark' && r.lost === 1) && hb.fortKnox[0]?.name === 'guarded' && hb.fortKnox[0]?.turnedAway === 1
+        && hb.blotter[0]?.thief === 'rich' && hb.blotter.length === 3, hb);
       writeConfig(root, ch, { enabled: true, currencyName: '$DON', debugStealTesters: ['Rich'], games: { enabled: true, onlyWhileLive: false, steal: { enabled: false, oddsCommon: 100 } } });
       const tried = await run('$don fish steal @mark3', ['rich', 38]);
       check('a tester can steal where stealing is off, past the target\'s protection', tried.includes('made off with'), tried);
@@ -1167,7 +1178,7 @@ async function main(): Promise<void> {
     const reopened = openPointsDb(mch, { create: false })!;
     const hasTable = (n: string) => !!reopened.prepare('SELECT 1 FROM sqlite_master WHERE name = ?').get(n);
     check('a v1 database migrates to the latest version keeping balances',
-      reopened.pragma('user_version', { simple: true }) === 8 && balance(mch, 1) === 77
+      reopened.pragma('user_version', { simple: true }) === 9 && balance(mch, 1) === 77
       && hasTable('duels') && hasTable('raffles') && hasTable('raffle_entries') && hasTable('fish') && hasTable('catches') && hasTable('overlay_feed') && hasTable('steals'));
 
     // v2 → v3 specifically: a database that already has duels gains the raffle tables.
@@ -1179,7 +1190,7 @@ async function main(): Promise<void> {
     closePointsDb(m2);
     const re2 = openPointsDb(m2, { create: false })!;
     check('a v2 database gains the raffle tables and keeps its balances',
-      re2.pragma('user_version', { simple: true }) === 8 && balance(m2, 1) === 42
+      re2.pragma('user_version', { simple: true }) === 9 && balance(m2, 1) === 42
       && !!re2.prepare("SELECT 1 FROM sqlite_master WHERE name = 'raffles'").get());
     void svc;
     makeService(ch, { broadcaster: 999 });

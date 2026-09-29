@@ -1009,6 +1009,81 @@ export function caughtFish(channel: string, cfg: PointsConfig, broadcasterUserId
   });
 }
 
+/** The Fishing tab's heists: who steals, who gets caught, the biggest hauls and the latest. */
+export interface HeistBoard {
+  totals: { attempts: number; stolen: number; caught: number; guarded: number; burned: number };
+  thieves: Array<{ name: string; stolen: number; attempts: number; loot: number }>;
+  shame: Array<{ name: string; caught: number; fines: number }>;
+  biggest: Array<{ thief: string; victim: string; fish: string; cm: number | null; worth: number; at: string }>;
+  robbed: Array<{ name: string; lost: number; value: number }>;
+  fortKnox: Array<{ name: string; turnedAway: number }>;
+  blotter: Array<{ thief: string; victim: string; fish: string; outcome: 'stolen' | 'caught'; at: string }>;
+}
+
+/**
+ * Every steal ranked for the leaderboard. Excluded accounts are left out on both
+ * sides, as on the ranked boards. Tries that stopped at "not enough on hand" don't
+ * count: nothing happened but a hook use.
+ */
+export function heistBoard(channel: string, cfg: PointsConfig, broadcasterUserId?: number | null): HeistBoard | null {
+  return withReadDb(channel, null as HeistBoard | null, db => {
+    const clause = exclusionClause(exclusionsFor(channel, cfg, broadcasterUserId));
+    const users = `(SELECT user_id, username FROM users WHERE ${clause.sql})`;
+    type Row = { ts: number; thief: string; victim: string; name: string | null; cm: number | null; outcome: string; worth: number | null; fee: number | null; fine: number | null };
+    let rows: Row[];
+    try {
+      rows = db.prepare(
+        `SELECT s.ts, t.username AS thief, v.username AS victim, s.name, s.cm, s.outcome, s.worth, s.fee, s.fine FROM steals s
+         JOIN ${users} t ON t.user_id = s.thief_id JOIN ${users} v ON v.user_id = s.victim_id
+         WHERE s.outcome IN ('stolen', 'caught', 'guarded') ORDER BY s.ts, s.id`
+      ).all(...clause.params, ...clause.params) as Row[];
+    } catch {
+      return null; // a database from before v9
+    }
+    if (!rows.length) return null;
+    const at = (ts: number) => new Date(ts).toISOString();
+    const tally = <T>(key: (r: Row) => string | null, init: (name: string) => T, add: (t: T, r: Row) => void) => {
+      const m = new Map<string, T>();
+      for (const r of rows) {
+        const k = key(r);
+        if (k === null) continue;
+        let t = m.get(k);
+        if (!t) m.set(k, t = init(k));
+        add(t, r);
+      }
+      return [...m.values()];
+    };
+    const went = rows.filter(r => r.outcome !== 'guarded');
+    const totals = {
+      attempts: went.length,
+      stolen: went.filter(r => r.outcome === 'stolen').length,
+      caught: went.filter(r => r.outcome === 'caught').length,
+      guarded: rows.length - went.length,
+      burned: went.reduce((s, r) => s + (r.fee ?? 0) + (r.fine ?? 0), 0)
+    };
+    const thieves = tally(r => r.outcome === 'guarded' ? null : r.thief, name => ({ name, stolen: 0, attempts: 0, loot: 0 }), (t, r) => {
+      t.attempts++;
+      if (r.outcome === 'stolen') { t.stolen++; t.loot += r.worth ?? 0; }
+    }).filter(t => t.stolen > 0).sort((a, b) => b.stolen - a.stolen || b.loot - a.loot).slice(0, 5);
+    const shame = tally(r => r.outcome === 'caught' ? r.thief : null, name => ({ name, caught: 0, fines: 0 }), (t, r) => {
+      t.caught++;
+      t.fines += (r.fee ?? 0) + (r.fine ?? 0);
+    }).sort((a, b) => b.caught - a.caught || b.fines - a.fines).slice(0, 5);
+    const biggest = rows.filter(r => r.outcome === 'stolen' && r.name)
+      .sort((a, b) => (b.worth ?? 0) - (a.worth ?? 0) || a.ts - b.ts).slice(0, 3)
+      .map(r => ({ thief: r.thief, victim: r.victim, fish: r.name!, cm: r.cm, worth: r.worth ?? 0, at: at(r.ts) }));
+    const robbed = tally(r => r.outcome === 'stolen' ? r.victim : null, name => ({ name, lost: 0, value: 0 }), (t, r) => {
+      t.lost++;
+      t.value += r.worth ?? 0;
+    }).sort((a, b) => b.lost - a.lost || b.value - a.value).slice(0, 5);
+    const fortKnox = tally(r => r.outcome === 'guarded' ? r.victim : null, name => ({ name, turnedAway: 0 }), t => { t.turnedAway++; })
+      .sort((a, b) => b.turnedAway - a.turnedAway).slice(0, 5);
+    const blotter = went.filter(r => r.name).slice(-5).reverse()
+      .map(r => ({ thief: r.thief, victim: r.victim, fish: r.name!, outcome: r.outcome as 'stolen' | 'caught', at: at(r.ts) }));
+    return { totals, thieves, shame, biggest, robbed, fortKnox, blotter };
+  });
+}
+
 /** The reel each viewer fishes with, by user id: the last of the channel's reels they bought. */
 function reelNames(db: PointsDb, cfg: PointsConfig): Map<number, string> {
   const out = new Map<number, string>();

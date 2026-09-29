@@ -16,7 +16,7 @@
  *              Several items at once: "sell 🐟 🦐 🦀", "sell 🐟🦐🦀" or "sell 🐟 3 🦐 2".
  *          $don fish show [user] [fish|junk|emoji]      (also count, display, collection; no type shows both)
  *          $don fish stats [user|global]
- *          $don fish top [fish|coins|junk|lucky|unlucky|traps|attempts|total-…|emoji]   (also leaderboard)
+ *          $don fish top [fish|coins|junk|lucky|unlucky|traps|attempts|thieves|caught|robbed|total-…|emoji]   (also leaderboard)
  *          $don fish trap [cancel|reset]                (also net, trawl)
  *          $don fish buy [reel|hook|guard]              (shows the shop; "buy reel" buys the next reel)
  *          $don fish steal @user                        (also rob; needs a hook, see games.steal)
@@ -86,6 +86,8 @@ const BOARDS = new Map<string, Board>([
   ['traps', { path: '$.lifetime.trap.times', name: 'most persistent trappers', value: d => d.lifetime.trap.times }],
   ['attempts', { path: '$.lifetime.attempts', name: 'most persistent trawlers', value: d => d.lifetime.attempts }],
   ['thieves', { path: '$.lifetime.steal.stolen', name: 'master thieves', value: d => d.lifetime.steal.stolen }],
+  ['caught', { path: '$.lifetime.steal.caught', name: 'hall of shame (caught red-handed)', value: d => d.lifetime.steal.caught }],
+  ['robbed', { path: '$.lifetime.steal.lost', name: 'easy pickings (fish lost to thieves)', value: d => d.lifetime.steal.lost }],
   ...ITEMS.map(i => [i.name, { path: `$.catch.types."${i.name}"`, name: `${i.name} collectors`, value: (d: FishData) => d.catch.types[i.name] ?? null }] as [string, Board])
 ]);
 
@@ -632,8 +634,9 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       if ((d.hook ?? 0) <= 0) return `You need a 🪝 grappling hook to steal. Get one with ${cmd} fish buy hook (${groupDigits(st.hookPrice)} ${cur} for ${tries(st.hookUses)}).`;
       if (!tester && d.readyTimestamp !== 0 && now < d.readyTimestamp) return `Hol' up partner! You can go fishing or stealing again in ${span(d.readyTimestamp - now)}!`;
       const v = loadFish(db!, victim.user_id);
-      const log = (outcome: string, item: string | null, cm: number | null) =>
-        db!.prepare('INSERT INTO steals (ts, thief_id, victim_id, name, cm, outcome) VALUES (?, ?, ?, ?, ?, ?)').run(now, uid, victim.user_id, item, cm, outcome);
+      const log = (outcome: string, item: string | null, cm: number | null, money: { worth: number; fee: number; fine: number } | null = null) =>
+        db!.prepare('INSERT INTO steals (ts, thief_id, victim_id, name, cm, outcome, worth, fee, fine) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+          .run(now, uid, victim.user_id, item, cm, outcome, money?.worth ?? null, money?.fee ?? null, money?.fine ?? null);
 
       if (v && (v.guardUntil ?? 0) > now) {
         d.hook = (d.hook ?? 1) - 1;
@@ -685,7 +688,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
         v.lifetime.steal.lost++;
         saveFish(db!, uid, d, now);
         saveFish(db!, victim.user_id, v, now);
-        log('stolen', item.name, picked.held?.cm ?? null);
+        log('stolen', item.name, picked.held?.cm ?? null, { worth, fee, fine: 0 });
         overlay = { kind: 'steal', item: item.name };
         const size = picked.held ? ` (${picked.held.cm} cm)` : '';
         const left = d.hook > 0 ? `${tries(d.hook)} left on your hook` : 'your hook is used up';
@@ -695,7 +698,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       if (fine > 0) debitTx(db!, { userId: uid, amount: fine, reason: 'game:fish_steal_fine', actor: `chat:${me}`, note: victim.username, now });
       d.lifetime.steal.caught++;
       saveFish(db!, uid, d, now);
-      log('caught', item.name, picked.held?.cm ?? null);
+      log('caught', item.name, picked.held?.cm ?? null, { worth, fee, fine });
       overlay = { kind: 'caught', item: item.name };
       const hookLeft = d.hook > 0 ? `${tries(d.hook)} left on your 🪝 hook` : 'your 🪝 hook is used up';
       return `🚨 @${victim.username} caught you red-handed reaching for their ✨${item.name}✨! You paid a ${groupDigits(fine)} ${cur} fine on top of the ${groupDigits(fee)} ${cur} fee. (${hookLeft}, ${cooldown})`;

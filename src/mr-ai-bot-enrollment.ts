@@ -19,7 +19,7 @@ import { closePointsDb, openPointsDb } from './points/db';
 import { readOverlay } from './community/fish-overlay';
 import { publicUserHistory, publicViewerSearch } from './points/store';
 import { rarityName } from './community/fishing';
-import { adjustPoints, backupPoints, caughtFish, getPointsUserDetail, pointsLeaderboard, pointsSummary, resetAllPoints, searchPointsUsers } from './points/store';
+import { adjustPoints, backupPoints, caughtFish, heistBoard, getPointsUserDetail, pointsLeaderboard, pointsSummary, resetAllPoints, searchPointsUsers } from './points/store';
 
 /* eslint-disable @typescript-eslint/no-var-requires, @typescript-eslint/no-explicit-any */
 const puppeteer = require('puppeteer-extra');
@@ -2903,7 +2903,8 @@ function publicFishing(channel: string, cfg: ReturnType<typeof effectivePointsCo
     })
     .sort((a, b) => a.chance - b.chance || a.firstAt.localeCompare(b.firstAt))
     .slice(0, 5);
-  return { catchOdds: g.catchOdds, fish, junk: list('junk'), rarest, steal: g.steal.enabled };
+  // Null until the first steal; the page shows an empty heists section while stealing is on.
+  return { catchOdds: g.catchOdds, fish, junk: list('junk'), rarest, steal: g.steal.enabled, heists: heistBoard(channel, cfg, broadcasterUserId) };
 }
 
 /**
