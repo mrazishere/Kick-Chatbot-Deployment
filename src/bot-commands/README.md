@@ -37,7 +37,7 @@ Each file exports a `CommandFn` registered in the channel config and dispatched 
 | Followage | `!followage [@user]` · `!fa` · `!subage` · `!accountage` | All users (1/5s) | All channels |
 | Chat summary | `!chatsummary` · `!csum` · `!catchup` | All users (1/min per channel) | All channels |
 | Mini games | `!8ball` · `!roll [20\|5-10\|2d6]` · `!coinflip` · `!pick a b c` · `!percent` | All users (1/5s) | All channels |
-| Fishing | `$<currency> fish` · `sell` · `show` · `stats` · `top` · `trap` | All users | Channels with points and Fishing on (Points settings) |
+| Fishing | `$<currency> fish` · `sell` · `show` · `stats` · `top` · `trap` · `buy` · `steal` | All users | Channels with points and Fishing on (Points settings); `steal` where stealing is on too |
 | Slots | `!slots words…` · `!slots pattern:7tv` · `!slots winners` | All users (1/5s) | All channels |
 | Fortune cookie | `!cookie` · `donate @user` · `stats` · `top` | All users (1/10s) | All channels |
 
@@ -508,7 +508,7 @@ $don cancel                   → withdraw your own challenge
 $don raffle 5000 120          → open a raffle: 5000 split between winners, 120s (Mods+)
 $don sraffle 5000 120         → same, but one winner takes it all (Mods+)
 $don join                     → enter the open raffle, free, one entry each
-$don fish [bait]              → go fishing; also sell, show, stats, top, trap (Fishing on; see Games)
+$don fish [bait]              → go fishing; also sell, show, stats, top, trap, buy, steal (Fishing on; see Games)
 $don raffle cancel            → close it without drawing (Mods+)
 $don add|remove|set @user 500 → adjust a balance (broadcaster and bot owner only)
 ```
@@ -702,21 +702,45 @@ Fishing, slots and the cookie are ports of [supibot](https://github.com/supinic/
 $don fish                     → cast: 1 in 20 lands a fish, else 1 in 4 snags junk
 $don fish worm|fly|cricket    → buy bait and use it on the spot: 1/16, 1/14, 1/12 (2, 5, 8 $DON)
 $don fish skipStory:true      → no AI story if you catch something
-$don fish sell 🐠 [n]         → sell a catch (fish 50, junk 1–20)
-$don fish sell all fish|junk  → sell a whole type; "duplicate" keeps one of each
-$don fish show [user] [fish|junk|emoji]  → the collection and purse (also count, display, collection)
-$don fish stats [user|global] → attempts, catches, traps, bait, sales, streaks
-$don fish top [type]          → top 10: fish, coins, junk, lucky, unlucky, traps, attempts, total-…, or an emoji
-$don fish trap [cancel|reset] → lay traps for an hour (also net, trawl); no casting meanwhile
-$don fish buy                 → nothing yet, as in supibot
+$don fish sell 🐟 🦐 3 🦀     → sell one or more kinds at once, each with an optional count ("🐟🦐🦀" works too)
+$don fish sell all fish|junk  → sell a whole type, or both ("all fish junk"); "duplicate" keeps the biggest of each
+$don fish show [user] [fish|junk|emoji]  → the collection, reel and purse; your own also shows your hook's tries
+$don fish stats [user|global] → attempts, catches, traps, bait, sales, streaks, and steals where stealing is on
+$don fish top [type]          → top 10: fish, coins, junk, lucky, unlucky, traps, attempts, thieves, caught, robbed, total-…, or an emoji
+$don fish trap [cancel|reset] → lay traps (also net, trawl); no casting meanwhile; pings you when full if !remind is on
+$don fish buy [reel|hook|guard] → the shop: plain "buy" shows the next reel's price; "buy reel" buys it
+$don fish steal @user         → steal one of their fish (also rob); needs a hook, see Stealing
 ```
 
 - A miss waits 30–90 seconds, a catch `catchCooldownMinutes` (30). Fish have a size (1–100 cm) and your record is kept. On 1 catch in 3, Claude Haiku writes a short story (`stories`).
-- **Our addition to supibot:** a fish's price scales with its length (0.5× at 1 cm, 1× at 50 cm, 2× at 100 cm) and a fish that beat an earlier record is worth 50% more; each held fish's size is kept for this. Junk, trap fish and fish caught before sizes were kept sell at the base price. The catch message shows what the fish is worth.
-- Catches are kept until sold. The purse is the points balance: bait is a `game:fish_bait` debit, selling a `game:fish_sell` credit. Each viewer's catch lives in the channel's points database (`fish` table, schema v5), so a sale and its payout are one transaction, keyed on the Kick message id so a replayed message acts once.
+- **Odds and prices per catch:** every fish and junk item has a weight (its share of catches) and a sell price, set per channel on the dashboard (`games.catches`, overrides only). The defaults put fish in five rarity tiers, Common to Legendary (68% / 22% / 8% / 1.4% / 0.3% of fish), priced 25 / 60 / 150 / 400 / 1,500. A catch's rarity name comes from its share as the channel has the odds set.
+- **Size and price:** a fish's price scales with its length (0.5× at 1 cm, 1× at 50 cm, 2× at 100 cm), and a fish that beat an earlier record is worth 50% more. Junk, trap fish and fish caught before sizes were kept sell at the base price.
+- **Reels:** bought in order with `buy reel`, each multiplying catch odds, the odds of rarer fish and the value of fish sold (`games.reels`; defaults Bamboo, Fiberglass, Carbon, Golden). `$don` and the public leaderboard name the reel a viewer holds.
+- **Storage:** catches are kept until sold. The purse is the points balance (`game:fish_bait`, `game:fish_sell`, `game:fish_reel`… in the ledger). Each viewer's collection is a document in the channel's points database (`fish` table); every fish landed is also a row in `catches` (schema v6) for the rarest-catches board. A change and its payout are one transaction keyed on the Kick message id, so a replayed message acts once.
 - Traps roll once a minute at 75–90% efficiency. A fish costs the rest of a catch cooldown, so a one-hour trap lands at most one fish, plus junk.
-- Casting and laying traps follow `onlyWhileLive` and stay silent offline, like `$don gamble`. Selling, show, stats and top work any time.
-- Settings (`points.games`): `enabled`, `onlyWhileLive`, `catchOdds` (20; bait odds scale with it), `catchCooldownMinutes` (30), `trapMinutes` (60, at least 31), `sellPricePercent` and `baitPricePercent` (100), `stories` (on).
+- Casting, laying traps and stealing follow `onlyWhileLive` and stay silent offline, like `$don gamble`. Selling, show, stats, top and the shop work any time.
+
+**Fishing overlay.** Cast results (a catch, or no luck/junk), trap hauls and steals go to an overlay feed (`overlay_feed`, schema v7, kept 5 minutes; `community/fish-overlay.ts`) that the dashboard serves as an OBS browser source: an animated fishing scene or text cards, each behind its own per-channel key (the bot page shows both links; add `&demo=1` for a demo rolled at the channel's real odds, `&steals=1` to include steals). `games.chatReplies` off sends cast results and trap hauls to the overlay only; every other reply, steals included, always goes to chat.
+
+**Rarest catches.** The public leaderboard's Fishing tab lists every catch with its chance, rarity and price, and the five rarest fish ever landed with who landed them first and last. `src/tools/backfill-catches.ts` filled `catches` once from the bot log for fish landed before it existed.
+
+#### Stealing (`games.steal`, off by default)
+
+```
+$don fish buy hook            → a 🪝 grappling hook: 3 tries (150); one hook at a time
+$don fish steal @user         → the hook grabs one random fish they've held 30+ minutes
+$don fish buy guard           → protect your fish for 12 hours; priced on what they're worth (5%, at least 200)
+```
+
+- **A try:** the hook grabs one of the target's fish at random, weighted by how many of each they hold (fish landed or stolen in the last `graceMinutes` are safe). It works at the chance for that fish's rarity (40 / 30 / 20 / 10 / 5% Common to Legendary). Every try uses one hook try, a fee (3% of the fish's value, at least 10) and the fishing cooldown. Success moves the fish, length kept (not a record bonus, and not a catch). Caught, the thief also pays a fine. Fees and fines are burned: nobody receives them.
+- **Balanced by the odds:** the fine is set from the fish's chance so that, on average, a try loses `edgePercent` (20%) of what it could expect to win, whether the hook grabs a frog or a whale: fine = (chance × value × 1.2 − fee) / (1 − chance), at least 25. Cheap fish don't repay the hook; valuable ones are a fair gamble with a house edge.
+- **Must be able to pay:** a thief must hold the fee and fine for the target's costliest fish before trying; short of that, the try only uses a hook try and says how much they'd need.
+- **Guards:** a guarded target turns every try away for one hook try and nothing else; the thief is told, the owner is pinged. A guard's time left is never shown in chat, not even to its owner, since chat is public.
+- **Limits:** after a try that went ahead, the target is left alone for `protectMinutes` (60); one try per thief and target a day; the streamer, bots and excluded accounts are off limits; a thief must have fished at least once.
+- **Heists:** each try is a row in `steals` (schema v8, with value, fee and fine since v9). The public leaderboard's Fishing tab shows the totals, master thieves, the hall of shame, the biggest heists, easy pickings, Fort Knox and a police blotter (`heistBoard` in `points/store.ts`). In chat, `top thieves`, `top caught` and `top robbed`.
+- **Testing:** `points.debugStealTesters` (a list of lowercase names, set by editing the channel config; never shown or set by the dashboard) lets those viewers steal where stealing is off or the stream is offline, target the bot's account, and skip the cooldown and once-per-target limits.
+
+Settings (`points.games`): `enabled`, `onlyWhileLive`, `catchOdds` (20; bait odds scale with it), `catchCooldownMinutes` (30), `trapMinutes` (60, at least 31), `sellPricePercent` and `baitPricePercent` (100), `stories` (on), `chatReplies` (on), `catches`, `reels`, and `steal`: `enabled`, `hookPrice` (150), `hookUses` (3), `feePercent` (3), `feeMinimum` (10), `edgePercent` (20), `fineMinimum` (25), `oddsCommon`…`oddsLegendary` (40/30/20/10/5), `graceMinutes` (30), `protectMinutes` (60), `guardPercent` (5), `guardMinimum` (200), `guardHours` (12).
 
 ### `!cookie` — fortune cookie (`cookie.ts`)
 

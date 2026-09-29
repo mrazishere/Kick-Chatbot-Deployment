@@ -10,7 +10,7 @@ It does AI chat with Claude (with a live look at the stream), a StreamElements-s
 - **Loyalty points:** a per-channel currency earned by chatting while live and from follows, subs, gifted subs and Kicks. Viewers can give, gamble, duel and join raffles; moderators can adjust. Timeouts cost points. Public leaderboard.
 - **Channel-point rewards:** redemptions mapped to moderation actions (timeout, roulette, pardon, shield).
 - **Community:** `!remind`, `!lastseen`/`!firstseen`, `!followage`/`!subage`/`!accountage`, and `!chatsummary` ("what did I miss?").
-- **Chat games:** ports of supibot's fishing (`$don fish`, played for points: cast, sell, show, stats, top, trap), slots (`!slots`) and fortune cookie (`!cookie`), plus `!8ball`, `!roll`, `!coinflip`, `!pick` and `!percent`.
+- **Chat games:** ports of supibot's fishing (`$don fish`, played for points: cast, sell, show, stats, top, trap), with our additions: rarity tiers, reels, an OBS fishing overlay, rarest catches and stealing with hooks and guards. Plus slots (`!slots`), fortune cookie (`!cookie`), `!8ball`, `!roll`, `!coinflip`, `!pick` and `!percent`.
 - **Stream tools:** `!clip`, `!blerp` sound suggestions, countdown overlay (`!countd`), KPP and earnings estimates, top chatters, Hall of Shame.
 - **Utilities:** translation (on demand and automatic), weather, currency conversion, dictionary, jokes and facts, custom text commands.
 - **Operations:** self-service enrollment, per-channel command toggles, token refresh with a cross-process lock, reconnect and self-healing, Telegram alerts.
@@ -50,7 +50,7 @@ The full command reference, with permissions, cooldowns and examples, is in **[s
 - **Commands** are modules in `src/bot-commands/`. Every module is loaded at start and handed every chat message; each one decides whether the message is for it. A channel turns a module off by listing it in `excludedCommands` (with `!config exclude` in chat, or from the dashboard).
 - **Channel settings** live in `data/channel-configs/<channel>.json`: OAuth tokens, excluded commands, auto-translate, Claude, points and games, rewards, location. The points service re-reads its block within 15 seconds; most other settings apply on restart.
 - **Storage** is per channel, under `data/`:
-  - `data/points/<channel>/points.sqlite`: balances, ledger, duels, raffles, fishing catches, with daily backups
+  - `data/points/<channel>/points.sqlite`: balances, ledger, duels, raffles, fishing collections, every catch and steal, the overlay feed, with daily backups
   - `data/community/<channel>.sqlite`: last seen, reminders, cookies, slots winners
   - JSON files for custom commands, KPP and earnings sessions, and lore
 - **Auth.** The bot account's token is shared by every process in `dist/.tokens.json`, refreshed under a cross-process lock. Channels enrolled through the web flow also carry the streamer's own token, used for moderation and rewards.
@@ -85,7 +85,7 @@ Everything is per channel and can be edited from the dashboard or in `data/chann
 
 - **Commands:** `excludedCommands` switches modules off. In chat, the broadcaster can run `!config exclude add fish`.
 - **Command format:** anything that spends or pays loyalty points is `$<currency> <subcommand>` (`$don gamble 100`, `$don fish`) and exists only where points are on. `!` commands never touch points.
-- **Points:** `points` holds the currency name and command, earn rate, bonuses, give, gamble, duel, raffle, timeout penalty, and `games`: whether fishing is on, live-only, catch odds, cooldown, trap time, sell and bait prices, and AI stories.
+- **Points:** `points` holds the currency name and command, earn rate, bonuses, give, gamble, duel, raffle, timeout penalty, and `games`: whether fishing is on, live-only, catch odds, cooldown, trap time, sell and bait prices, per-catch odds and prices, reels, AI stories, chat replies (versus the overlay only) and stealing. `debugForceLive` and `debugStealTesters` are staging-only, set by editing the file.
 - **Claude:** the system prompt, and vision on the live stream.
 - **Auto-translate:** on or off, with an optional list of source languages.
 - **Rewards:** `rewardActions` maps channel-point rewards to timeouts and similar actions.
