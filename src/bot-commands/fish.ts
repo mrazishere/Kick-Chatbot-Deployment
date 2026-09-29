@@ -43,7 +43,7 @@ import { addReminder, cancelSelfRemindersStartingWith, openCommunityDb } from '.
 import { bestEmote, broadcasterIdFor, emoteImages } from '../community/emotes';
 import { OverlayKind, pushOverlay } from '../community/fish-overlay';
 import {
-  addItem, baitPrice, baitRoll, currentReel, heldFishValue, landsFish, moveFish, pickHeld, stealableFish, parseSellList, CatchItem, CatchType, FAILURE_EMOTES, FishData, findBait, hasFishedBefore, initialData, rarityOf, recordCatch,
+  addItem, baitPrice, baitRoll, currentReel, heldFishValue, landsFish, moveFish, pickHeld, stealableFish, stealStake, parseSellList, CatchItem, CatchType, FAILURE_EMOTES, FishData, findBait, hasFishedBefore, initialData, rarityOf, recordCatch,
   ITEMS, JUNK_MESSAGES, loadFish, MISS_DELAY_MS, pick, randomInt, rollCatch, saveFish, sellPrice, STORY_STYLES, SUCCESS_EMOTES,
   takeItems, TYPE_DESCRIPTIONS, weightedCatch
 } from '../community/fishing';
@@ -159,9 +159,9 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
   const cmd = call.usage.replace(/ fish$/, '');
 
   /**
-   * Reply in chat. A cast's result or a trap haul (meta.kind) also goes to the
-   * overlay, and skips chat where the channel turned chat replies off. Every
-   * other reply always goes to chat.
+   * Reply in chat. A cast's result, a trap haul or a steal (meta.kind) also goes to
+   * the overlay. Only cast results and trap hauls skip chat where the channel turned
+   * chat replies off; every other reply, steals included, always goes to chat.
    */
   const say = (text: string, meta: { kind?: OverlayKind; item?: string } = {}) => {
     if (meta.kind) {
@@ -171,7 +171,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
         username: me, kind: meta.kind, text,
         ...(meta.item ? { item: meta.item } : {}), ...(rarity ? { rarity } : {}), ...(Object.keys(emotes).length ? { emotes } : {})
       });
-      if (!g.chatReplies) return;
+      if (!g.chatReplies && (meta.kind === 'catch' || meta.kind === 'miss' || meta.kind === 'trap')) return;
     }
     return client.say(channel, `@${me} ${text}`);
   };
@@ -646,8 +646,9 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       const pool = v ? stealableFish(db!, v, victim.user_id, now, st.graceMinutes * 60_000) : [];
       if (!v || !pool.length) return `${victim.username} has no fish you can get your hook into right now.`;
       const balance = getUser(db!, uid)?.balance ?? 0;
-      if (balance < st.fee + st.fineMinimum) {
-        return `You need at least ${groupDigits(st.fee + st.fineMinimum)} ${cur} on hand to try a steal: ${groupDigits(st.fee)} for the attempt, and more if you get caught.`;
+      const needed = st.fee + stealStake(g);
+      if (balance < needed) {
+        return `You need at least ${groupDigits(needed)} ${cur} on hand to try a steal: ${groupDigits(st.fee)} for the attempt, and enough to pay the fine if you're caught reaching for an epic fish.`;
       }
 
       // The attempt goes ahead: the fee, a hook use and the fishing cooldown are spent whatever happens.

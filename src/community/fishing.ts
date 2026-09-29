@@ -397,6 +397,19 @@ export function heldFishValue(d: FishData, g: PointsGamesConfig): number {
 }
 
 /**
+ * What a thief must hold before trying, besides the fee: the fine for the dearest
+ * Epic fish at full length (100 cm, double price), as the channel prices and names
+ * them. Rarer fish can fine more; the fine is still capped at what the thief has.
+ * With no Epic fish in the channel's odds, just the smallest fine.
+ */
+export function stealStake(g: PointsGamesConfig): number {
+  const st = g.steal;
+  const epic = ITEMS.filter(i => i.type === 'fish' && rarityOf(g, i.name) === 'Epic');
+  const dearest = epic.reduce((max, i) => Math.max(max, sellPrice(i, g, { cm: 100, record: false })), 0);
+  return Math.max(st.fineMinimum, Math.round(dearest * st.finePercent / 100));
+}
+
+/**
  * The fish a thief can reach for: everything held except what the owner landed
  * or stole in the last `graceMs`, so a fresh catch can still be sold first.
  */

@@ -610,15 +610,17 @@ async function main(): Promise<void> {
       runWrite(sdb, () => recordCatch(sdb, 35, '🐟', 'cast', 50, Date.now()));
       check('fish landed within the grace time can\'t be stolen', (await run('$don fish steal @fresh')).includes('no fish you can get your hook into'));
       check('the streamer is off limits', (await run(`$don fish steal @${ch}`)).length > 0 && fishOf(31).hook === 1);
-      check('a thief needs the fee and the minimum fine on hand', (await run('$don fish steal @mark3', ['poor', 36])).includes('at least 150'));
+      // Default prices: the dearest Epic fish (400) at 100 cm is 800, half of it the fine, plus the 50 fee.
+      check('a thief needs the fee and an epic fish\'s fine on hand', (await run('$don fish steal @mark3', ['poor', 36])).includes('at least 450'));
 
       cfgWith({ oddsCommon: 0 });
+      writeConfig(root, ch, { enabled: true, currencyName: '$DON', games: { enabled: true, onlyWhileLive: false, chatReplies: false, steal: { enabled: true, oddsCommon: 0 } } });
       const caught = await run('$don fish steal @mark3');
       // A 50 cm 🐟 is worth its price; the fine is half that but at least 100.
       check('caught: the fine is burned, the hook is taken, the fish stays', caught.includes('caught you red-handed') && caught.includes('100 $DON fine')
         && fishOf(31).hook === 0 && balance(ch, 31) === 1300 && balance(ch, 34) === 10 && fishOf(34).catch.types['🐟'] === 2
         && fishOf(31).lifetime.steal.caught === 1, caught);
-      check('a caught thief reaches the overlay', readOverlay(sdb).events.some(e => e.kind === 'caught'));
+      check('a caught thief reaches the overlay, and chat even with chat replies off', readOverlay(sdb).events.some(e => e.kind === 'caught') && caught.length > 0);
       shift += 61 * 60_000;   // past the cooldown and mark3's protection, well within the day
       check('one try per target a day', (await run('$don fish buy hook')).includes('grappling hook for') && (await run('$don fish steal @mark3')).includes('already tried mark3 today'));
 
