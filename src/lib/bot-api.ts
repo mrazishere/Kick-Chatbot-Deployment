@@ -341,6 +341,19 @@ export interface PublicFishing {
   rarest: PublicRareCatch[];
   /** Whether viewers can steal fish here. Absent from a bot service older than stealing. */
   steal?: boolean;
+  /** Every steal ranked; null before the first one. Absent from a bot service older than it. */
+  heists?: PublicHeists | null;
+}
+
+/** The Fishing tab's heists. Names only, as everywhere on the public page. */
+export interface PublicHeists {
+  totals: { attempts: number; stolen: number; caught: number; guarded: number; burned: number };
+  thieves: Array<{ name: string; stolen: number; attempts: number; loot: number }>;
+  shame: Array<{ name: string; caught: number; fines: number }>;
+  biggest: Array<{ thief: string; victim: string; fish: string; cm: number | null; worth: number; at: string }>;
+  robbed: Array<{ name: string; lost: number; value: number }>;
+  fortKnox: Array<{ name: string; turnedAway: number }>;
+  blotter: Array<{ thief: string; victim: string; fish: string; outcome: "stolen" | "caught"; at: string }>;
 }
 
 export interface EarningsSettings {

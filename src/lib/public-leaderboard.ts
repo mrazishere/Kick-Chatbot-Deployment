@@ -1,5 +1,5 @@
 import "server-only";
-import { BotApiError, getPointsLeaderboard, getPublicHistory, getPublicViewers, type PublicHistory, type PublicViewer, type PointsLeaderboard, type PointsLeaderboardEntry, type PublicCatch, type PublicFishing, type PublicRareCatch } from "./bot-api";
+import { BotApiError, getPointsLeaderboard, getPublicHistory, getPublicViewers, type PublicHistory, type PublicViewer, type PointsLeaderboard, type PointsLeaderboardEntry, type PublicCatch, type PublicFishing, type PublicHeists, type PublicRareCatch } from "./bot-api";
 
 /**
  * The public leaderboard page is the one page anyone can open signed out, so it
@@ -69,11 +69,43 @@ function publicRarest(rows: unknown): PublicRareCatch[] {
   });
 }
 
+/** The heists, keeping only well-formed rows: every name a username, every number a number. */
+function publicHeists(raw: unknown): PublicHeists | null {
+  const h = raw as Partial<PublicHeists> | null | undefined;
+  if (!h || typeof h !== "object" || !h.totals) return null;
+  const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+  const name = (v: unknown) => typeof v === "string" && USERNAME.test(v);
+  const fish = (v: unknown) => typeof v === "string" && v.length <= 8;
+  const iso = (v: unknown) => (typeof v === "string" ? v.slice(0, 40) : "");
+  const list = <T,>(rows: unknown, max: number, keep: (r: Record<string, unknown>) => T | null): T[] =>
+    (Array.isArray(rows) ? rows : []).slice(0, max).flatMap((r) => {
+      const out = r && typeof r === "object" ? keep(r as Record<string, unknown>) : null;
+      return out ? [out] : [];
+    });
+  return {
+    totals: { attempts: n(h.totals.attempts), stolen: n(h.totals.stolen), caught: n(h.totals.caught), guarded: n(h.totals.guarded), burned: n(h.totals.burned) },
+    thieves: list(h.thieves, 5, (r) => (name(r.name) ? { name: r.name as string, stolen: n(r.stolen), attempts: n(r.attempts), loot: n(r.loot) } : null)),
+    shame: list(h.shame, 5, (r) => (name(r.name) ? { name: r.name as string, caught: n(r.caught), fines: n(r.fines) } : null)),
+    biggest: list(h.biggest, 3, (r) =>
+      name(r.thief) && name(r.victim) && fish(r.fish)
+        ? { thief: r.thief as string, victim: r.victim as string, fish: r.fish as string, cm: typeof r.cm === "number" ? r.cm : null, worth: n(r.worth), at: iso(r.at) }
+        : null,
+    ),
+    robbed: list(h.robbed, 5, (r) => (name(r.name) ? { name: r.name as string, lost: n(r.lost), value: n(r.value) } : null)),
+    fortKnox: list(h.fortKnox, 5, (r) => (name(r.name) ? { name: r.name as string, turnedAway: n(r.turnedAway) } : null)),
+    blotter: list(h.blotter, 5, (r) =>
+      name(r.thief) && name(r.victim) && fish(r.fish) && (r.outcome === "stolen" || r.outcome === "caught")
+        ? { thief: r.thief as string, victim: r.victim as string, fish: r.fish as string, outcome: r.outcome, at: iso(r.at) }
+        : null,
+    ),
+  };
+}
+
 function publicFishing(raw: unknown): PublicFishing | null {
   const f = raw as Partial<PublicFishing> | null | undefined;
   if (!f || typeof f.catchOdds !== "number") return null;
   const fish = publicCatches(f.fish);
-  return fish.length ? { catchOdds: f.catchOdds, fish, junk: publicCatches(f.junk), rarest: publicRarest(f.rarest), steal: f.steal === true } : null;
+  return fish.length ? { catchOdds: f.catchOdds, fish, junk: publicCatches(f.junk), rarest: publicRarest(f.rarest), steal: f.steal === true, heists: publicHeists(f.heists) } : null;
 }
 
 function publicShape(raw: PointsLeaderboard, channel: string): PointsLeaderboard {

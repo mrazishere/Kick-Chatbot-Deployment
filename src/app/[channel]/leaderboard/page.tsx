@@ -5,6 +5,7 @@ import { validChannel } from "@/lib/bot-auth";
 import { getSession } from "@/lib/session";
 import { loadPublicLeaderboard, loadPublicViewers } from "@/lib/public-leaderboard";
 import PublicViewers from "@/components/PublicViewers";
+import Heists, { formatDay } from "@/components/Heists";
 import type { PublicCatch, PublicFishing, PublicRareCatch } from "@/lib/bot-api";
 
 export const dynamic = "force-dynamic";
@@ -92,11 +93,6 @@ function CatchTable({ title, rows, currency }: { title: string; rows: PublicCatc
   );
 }
 
-function formatDay(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "";
-  return d.toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: process.env.TZ || "Asia/Singapore" });
-}
 
 function RarestCatches({ rows, channel }: { rows: PublicRareCatch[]; channel: string }) {
   const who = (name: string) => (
@@ -137,6 +133,7 @@ function FishingTab({ fishing, currency, channel }: { fishing: PublicFishing; cu
         {`Prices are for an average 50 cm fish: length scales it from half (1 cm) to double (100 cm), and beating your record adds 50%.`}
       </p>
       {fishing.rarest.length ? <RarestCatches rows={fishing.rarest} channel={channel} /> : null}
+      {fishing.steal || fishing.heists ? <Heists heists={fishing.heists ?? null} currency={currency} channel={channel} /> : null}
       <CatchTable title="Fish" rows={fishing.fish} currency={currency} />
       {fishing.junk.length ? <CatchTable title="Junk" rows={fishing.junk} currency={currency} /> : null}
     </div>
