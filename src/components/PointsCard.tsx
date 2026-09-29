@@ -776,6 +776,7 @@ function StealSettings({ value, currency, command, disabled, onChange }: {
           <p className="mt-3 text-xs text-neutral-500">
             {`A thief first buys a 🪝 grappling hook with $${command} fish buy hook. Each try costs the fee, one hook use and the fishing cooldown, and reaches for one random fish the target has held longer than the safe time. `}
             {`It works at the chance for that fish's rarity; otherwise the thief is caught, pays the fine (a share of the fish's value, at least the smallest fine, never more than they have) and loses the hook. Fees and fines go nowhere: nobody receives them. `}
+            {`To try at all, a thief needs the fee plus the fine for the dearest Epic fish at full length (100 cm, double its price) on hand, so pricier Epic fish raise the bar. Steals always reply in chat, whatever the chat setting above, and also play on the overlay. `}
             {`A viewer can hire a guard with $${command} fish buy guard, priced on what their fish are worth right now. A guarded target turns every try away for one hook use and nothing else; only the owner sees how long their guard has left. Prices are in ${currency}.`}
           </p>
         </>
