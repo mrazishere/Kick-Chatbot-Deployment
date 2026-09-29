@@ -83,7 +83,7 @@ export interface PointsGames {
   baitPricePercent: number;
   /** A short AI story on 1 in 3 catches. */
   stories: boolean;
-  /** Fishing replies go to chat. They always go to the fishing overlay. Absent from an older bot service. */
+  /** Cast results and trap hauls go to chat. They always go to the fishing overlay; other fishing replies always go to chat. Absent from an older bot service. */
   chatReplies?: boolean;
   /** Every fish and junk item's odds and price. Absent from a bot service older than per-item settings. */
   catches?: FishCatch[];
@@ -1578,14 +1578,14 @@ export default function PointsCard({
                     onChange={(v) => set("fishStories", v)}
                   />
                   <Checkbox
-                    label="Post fishing replies in chat"
+                    label="Post cast results and trap hauls in chat"
                     checked={form.fishChatReplies}
                     disabled={readOnly || !!busy}
                     onChange={(v) => set("fishChatReplies", v)}
                   />
                   {!form.fishChatReplies ? (
                     <p className="pl-6 text-xs text-amber-300/80">
-                      Fishing is silent in chat: viewers only see what happens on the fishing overlay, so make sure it&apos;s on stream.
+                      Cast results and trap hauls only show on the fishing overlay, so make sure it&apos;s on stream. Every other fishing reply still goes to chat.
                     </p>
                   ) : null}
                 </div>

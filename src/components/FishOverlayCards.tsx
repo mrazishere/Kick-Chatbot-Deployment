@@ -131,7 +131,7 @@ function demoBurst(startId: number): FishOverlayEvent[] {
     { kind: "miss", text: miss(88) },
     { kind: "catch", item: "🦈", rarity: "Epic", text: "You caught a ✨🦈✨ It is 91 cm in length. This is a new record! Worth 1,640 $DON. (30 minute fishing cooldown after a successful catch)" },
     { kind: "miss", text: `${miss(301)} This is your attempt #4 since your last catch.` },
-    { kind: "info", text: "You have laid your fishing traps. Now we wait... You can check them in about 1h." },
+    { kind: "miss", text: miss(57) },
     { kind: "catch", item: "🐋", rarity: "Legendary", text: "✨🐋✨ The line screamed as a leviathan rose from the deep, and the whole chat held its breath. (30m cooldown)" },
     { kind: "miss", text: miss(12) },
   ];

@@ -357,28 +357,12 @@ function demoBurst(startId: number): FishOverlayEvent[] {
     { kind: "trap", text: "You drag the traps out of the water... and you spot some fish! 🍂🥫🧦🌿🦑🍂" },
     { kind: "miss", text: "No luck... sadE Your fishing line landed 88 cm away. (51s cooldown)" },
     { kind: "catch", item: "🦈", rarity: "Epic", text: "You caught a ✨🦈✨ It is 91 cm in length. This is a new record! Worth 1,640 $DON." },
-    { kind: "info", text: "Sold your 🐟 x2, 🦐 for 100 $DON - now you have 1,100 $DON" },
-    { kind: "info", text: "You have laid your fishing traps. Now we wait... You can check them in about 1h." },
+    { kind: "miss", text: "No luck... sadE Your fishing line landed 301 cm away. (38s cooldown)" },
+    { kind: "trap", text: "You drag the traps out of the water... and you spot some fish! 🐟🥫🦐🌿" },
     { kind: "catch", item: "🐋", rarity: "Legendary", text: "You caught a ✨🐋✨ It is 97 cm in length. Worth 12,000 $DON." },
     { kind: "catch", item: "🦐", rarity: "Uncommon", text: "You caught a ✨🦐✨ It is 18 cm in length. Worth 40 $DON." },
   ];
   return rows.map((r, i) => ({ ...r, id: startId - i, ts: now, username: DEMO_NAMES[i] }));
-}
-
-/** The other replies: lookups, the reel shop, cooldowns and errors. */
-function demoInfo(startId: number): FishOverlayEvent[] {
-  const now = Date.now();
-  const texts = [
-    "Hol' up partner! You can go fishing again in 12m!",
-    "You have 3 fish (🐟🐟🦐) and 7 pieces of junk (5x 🥫🧦🌿) in your collection. You also have 1,100 $DON in your purse.",
-    "Global fishing stats → attempts: 1,234; anglers: 56; caught fish: 199; caught junk: 300; traps set up: 80; bait used: 2; fish sold: 150; junk scrapped: 20; worst dry streak: 40; best lucky streak: 3.",
-    "Top 10 anglers: Rank #1 (12): ReelDeal Rank #2 (9): Kayla_Fishes Sn1perSam Rank #4 (5): LuckyLure Your rank is: #14 (1)",
-    "You bought the Bamboo reel for 5,000 $DON! Casts land fish 1.25x as often. You have 1,200 $DON left.",
-    'You cannot go fishing while your traps are laid out - you would be disturbing the catch! Your traps are ready to be collected! Go ahead and use "$don fish trap" to get your stuff.',
-    "You need 5 $DON for one worm! (you have 2 $DON)",
-    "You have successfully retrieved your traps before they filled up. You don't get any junk or fish.",
-  ];
-  return texts.map((text, i) => ({ id: startId - i, ts: now, username: DEMO_NAMES[i], kind: "info" as const, text }));
 }
 
 // ─── The overlay ─────────────────────────────────────────────────────────────
@@ -452,10 +436,8 @@ export default function FishOverlay({
   useEffect(() => {
     if (!demo) return;
     let id = -1;
-    let round = 0;
-    // Alternate a fishing burst with a burst of the other replies.
     const fire = () => {
-      enqueue(round++ % 2 === 0 ? demoBurst(id) : demoInfo(id));
+      enqueue(demoBurst(id));
       id -= 10;
     };
     fire();

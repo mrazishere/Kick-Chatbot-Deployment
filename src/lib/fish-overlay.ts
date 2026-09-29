@@ -35,8 +35,8 @@ export function validOverlayKey(channel: string, key: string | null | undefined)
 export function overlayLinks(channel: string): OverlayLink[] {
   const base = (process.env.NEXT_PUBLIC_BASE_URL ?? "").replace(/\/+$/, "");
   const looks: Array<{ style: OverlayStyle; label: string; hint: string }> = [
-    { style: "scene", label: "Fishing scene", hint: "An animated strip of water: casts, catches, traps and sales. About 1920×260 along the bottom." },
-    { style: "cards", label: "Text cards", hint: "Each reply as a card stacked in a corner. About 800×600." },
+    { style: "scene", label: "Fishing scene", hint: "An animated strip of water: casts, catches and trap hauls. About 1920×260 along the bottom." },
+    { style: "cards", label: "Text cards", hint: "Each cast result and trap haul as a card stacked in a corner. About 800×600." },
   ];
   return looks.flatMap(({ style, label, hint }) => {
     const key = overlayKey(channel, style);
