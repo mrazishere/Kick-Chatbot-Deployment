@@ -737,7 +737,8 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     }
     const d = targetId === null ? null : loadFish(db!, targetId);
     const [subject, possessive] = self ? ['You', 'your'] : ['They', 'their'];
-    if (!d || !hasFishedBefore(d)) return void say(`${subject} have never gone fishing before.`);
+    // Holding anything counts too: fish can arrive without a cast (a steal, or a tester's setup).
+    if (!d || (!hasFishedBefore(d) && d.catch.fish + d.catch.junk === 0)) return void say(`${subject} have never gone fishing before.`);
     if (emojiItem) {
       const n = d.catch.types[emojiItem.name] ?? 0;
       const itemString = !n ? 'no' : n < 5 ? `${emojiItem.name} `.repeat(n).trim() : `${n}x ${emojiItem.name}`;
