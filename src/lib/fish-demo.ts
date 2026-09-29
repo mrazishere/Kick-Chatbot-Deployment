@@ -130,8 +130,11 @@ export function demoGenerator(odds: DemoOdds | null) {
     const f = weighted(fish);
     const cm = int(1, 100);
     const worth = Math.round(f.price * sizeMultiplier(cm));
-    const fee = Math.max(50, Math.round(worth / 10)).toLocaleString("en-US");
-    if (Math.random() * 100 < (STEAL_ODDS[f.rarity] ?? 0)) {
+    // The bot's defaults: a 3% fee, and a fine set from the odds for a 20% thief's edge.
+    const p = (STEAL_ODDS[f.rarity] ?? 0) / 100;
+    const feeN = Math.max(10, Math.round(worth * 0.03));
+    const fee = feeN.toLocaleString("en-US");
+    if (Math.random() < p) {
       return {
         kind: "steal",
         item: f.emoji,
@@ -139,12 +142,12 @@ export function demoGenerator(odds: DemoOdds | null) {
         text: `🪝 You snuck up on @${victim} and made off with their ✨${f.emoji}✨ (${cm} cm), worth ${worth.toLocaleString("en-US")} $DON! (${fee} $DON fee, ${int(0, 2)} tries left on your hook, ${CATCH_COOLDOWN_MINUTES}m cooldown)`,
       };
     }
-    const fine = Math.max(100, Math.round(worth / 2)).toLocaleString("en-US");
+    const fine = Math.max(25, Math.round((p * worth * 1.2 - feeN) / (1 - p))).toLocaleString("en-US");
     return {
       kind: "caught",
       item: f.emoji,
       rarity: f.rarity,
-      text: `🚨 @${victim} caught you red-handed reaching for their ✨${f.emoji}✨! You paid a ${fine} $DON fine on top of the ${fee} $DON fee, and your 🪝 hook was confiscated. (${CATCH_COOLDOWN_MINUTES}m cooldown)`,
+      text: `🚨 @${victim} caught you red-handed reaching for their ✨${f.emoji}✨! You paid a ${fine} $DON fine on top of the ${fee} $DON fee. (${int(0, 2)} tries left on your 🪝 hook, ${CATCH_COOLDOWN_MINUTES}m cooldown)`,
     };
   }
 

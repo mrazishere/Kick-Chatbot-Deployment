@@ -100,7 +100,7 @@ export interface FishSteal {
   hookUses: number;
   feePercent: number;
   feeMinimum: number;
-  finePercent: number;
+  edgePercent: number;
   fineMinimum: number;
   oddsCommon: number;
   oddsUncommon: number;
@@ -118,12 +118,12 @@ type StealNumber = Exclude<keyof FishSteal, "enabled">;
 
 /** The steal settings' inputs, in the order shown, with the bot's bounds and defaults. */
 const STEAL_FIELDS: Array<{ key: StealNumber; label: string; hint: string; min: number; max: number }> = [
-  { key: "hookPrice", label: "Hook price", hint: "default 500", min: 0, max: 1_000_000_000 },
+  { key: "hookPrice", label: "Hook price", hint: "default 150", min: 0, max: 1_000_000_000 },
   { key: "hookUses", label: "Tries per hook", hint: "default 3", min: 1, max: 100 },
-  { key: "feePercent", label: "Fee (% of the fish)", hint: "every try, burned, default 10", min: 0, max: 1000 },
-  { key: "feeMinimum", label: "Smallest fee", hint: "default 50", min: 0, max: 1_000_000_000 },
-  { key: "finePercent", label: "Fine (% of the fish)", hint: "when caught, burned, default 50", min: 0, max: 1000 },
-  { key: "fineMinimum", label: "Smallest fine", hint: "default 100", min: 0, max: 1_000_000_000 },
+  { key: "feePercent", label: "Fee (% of the fish)", hint: "every try, burned, default 3", min: 0, max: 1000 },
+  { key: "feeMinimum", label: "Smallest fee", hint: "default 10", min: 0, max: 1_000_000_000 },
+  { key: "edgePercent", label: "Thief's edge (%)", hint: "average loss, sets the fine, default 20", min: 0, max: 1000 },
+  { key: "fineMinimum", label: "Smallest fine", hint: "default 25", min: 0, max: 1_000_000_000 },
   { key: "oddsCommon", label: "Common (%)", hint: "chance it works, default 40", min: 0, max: 100 },
   { key: "oddsUncommon", label: "Uncommon (%)", hint: "default 30", min: 0, max: 100 },
   { key: "oddsRare", label: "Rare (%)", hint: "default 20", min: 0, max: 100 },
@@ -776,9 +776,9 @@ function StealSettings({ value, currency, command, disabled, onChange }: {
             ))}
           </div>
           <p className="mt-3 text-xs text-neutral-500">
-            {`A thief first buys a 🪝 grappling hook with $${command} fish buy hook, then picks a target; the hook grabs one random fish that target has held longer than the safe time. Each try costs one hook use, the fishing cooldown and a fee on the grabbed fish's value. `}
-            {`It works at the chance for that fish's rarity; otherwise the thief is caught, pays a fine on the fish's value on top of the fee and loses the hook. Fees and fines go nowhere: nobody receives them. `}
-            {`A thief must hold the fee and fine for the target's most valuable fish before trying; short of that, the try only costs a hook use, and the reply says how much they need. Steals always reply in chat, whatever the chat setting above, and also play on the overlay. `}
+            {`A thief first buys a 🪝 grappling hook with $${command} fish buy hook, then picks a target; the hook grabs one random fish that target has held longer than the safe time. Every try uses one hook try, the fishing cooldown and a fee on the grabbed fish's value. `}
+            {`It works at the chance for that fish's rarity; otherwise the thief is caught and pays a fine on top. The fine is set from the odds so that, on average, a thief loses the edge % of what a try could expect to win, whether the hook grabs a frog or a whale; at the defaults a thief loses about a fifth, and cheap fish don't repay the hook. Fees and fines go nowhere: nobody receives them. `}
+            {`A thief must hold the fee and fine for the target's costliest fish before trying; short of that, the try only costs a hook use, and the reply says how much they need. Steals always reply in chat, whatever the chat setting above, and also play on the overlay. `}
             {`A viewer can hire a guard with $${command} fish buy guard, priced on what their fish are worth right now. A guarded target turns every try away for one hook use and nothing else. How long a guard lasts is set below but never shown in chat, not even to its owner, since chat is public. Prices are in ${currency}.`}
           </p>
         </>
