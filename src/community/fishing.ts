@@ -396,23 +396,41 @@ export function heldFishValue(d: FishData, g: PointsGamesConfig): number {
   return total;
 }
 
-/** What a steal try costs for a fish of this value: the fee, and the fine on top when caught. */
-export function stealCharges(g: PointsGamesConfig, worth: number): { fee: number; fine: number } {
+/** A steal's chance of working on this fish, in percent, by its rarity as the channel's odds name it. */
+export function stealChance(g: PointsGamesConfig, name: string): number {
   const st = g.steal;
-  return {
-    fee: Math.max(st.feeMinimum, Math.round(worth * st.feePercent / 100)),
-    fine: Math.max(st.fineMinimum, Math.round(worth * st.finePercent / 100))
+  const byRarity: Record<string, number> = {
+    Common: st.oddsCommon, Uncommon: st.oddsUncommon, Rare: st.oddsRare, Epic: st.oddsEpic, Legendary: st.oddsLegendary
   };
+  return byRarity[rarityOf(g, name) ?? 'Common'] ?? 0;
 }
 
-/** The most any one of these fish is worth to its owner right now, by its own length. */
-export function priciestHeld(d: FishData, g: PointsGamesConfig, pool: Array<{ item: CatchItem }>): number {
+/**
+ * What a steal try on a fish costs: the fee every time, and the fine on top when
+ * caught. The fine is set from the odds so that, on average, a try loses edgePercent
+ * of what it could expect to win (chance x value), whether it's a frog or a whale.
+ */
+export function stealCharges(g: PointsGamesConfig, worth: number, chancePercent: number): { fee: number; fine: number } {
+  const st = g.steal;
+  const p = Math.min(1, Math.max(0, chancePercent / 100));
+  const fee = Math.max(st.feeMinimum, Math.round(worth * st.feePercent / 100));
+  const balanced = p < 1 ? (p * worth * (1 + st.edgePercent / 100) - fee) / (1 - p) : 0;
+  return { fee, fine: Math.max(st.fineMinimum, Math.round(balanced)) };
+}
+
+/** The most a single try on any of these fish could cost (fee and fine), by each one's own length and odds. */
+export function worstStealCharges(d: FishData, g: PointsGamesConfig, pool: Array<{ item: CatchItem }>): number {
   let max = 0;
   for (const { item } of pool) {
     const have = d.catch.types[item.name] ?? 0;
     const sized = (d.catch.sizes?.[item.name] ?? []).slice(0, have);
-    for (const held of sized) max = Math.max(max, sellPrice(item, g, held));
-    if (have > sized.length) max = Math.max(max, sellPrice(item, g));
+    const values = sized.map(held => sellPrice(item, g, held));
+    if (have > sized.length) values.push(sellPrice(item, g));
+    const chance = stealChance(g, item.name);
+    for (const worth of values) {
+      const { fee, fine } = stealCharges(g, worth, chance);
+      max = Math.max(max, fee + fine);
+    }
   }
   return max;
 }

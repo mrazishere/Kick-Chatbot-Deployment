@@ -301,13 +301,14 @@ export interface PointsGamesConfig {
 }
 
 /**
- * Stealing is our addition. A thief needs a grappling hook (a few tries, lost when
- * caught). A try reaches for one random fish the target has held a while and works
- * by that fish's rarity; it burns a fee on that fish's value and the fishing
- * cooldown, and a caught thief also pays a fine on it. Nobody receives either. The
- * thief must hold the fee and fine for the target's most valuable fish, or the try
- * only costs a hook use. A guard, priced on what the owner holds, turns every try
- * away for a while and also costs the thief only a hook use.
+ * Stealing is our addition. A thief needs a grappling hook; every try uses one of
+ * its tries. A try reaches for one random fish the target has held a while and works
+ * by that fish's rarity. It burns a fee on that fish's value and the fishing
+ * cooldown; a caught thief also pays a fine, set from the odds so the average try
+ * loses edgePercent of what it could expect to win, whatever the fish. Nobody
+ * receives either. The thief must hold the fee and fine for the target's costliest
+ * fish, or the try only costs a hook use. A guard, priced on what the owner holds,
+ * turns every try away for a while and also costs the thief only a hook use.
  */
 export interface FishStealSetting {
   enabled: boolean;
@@ -317,8 +318,12 @@ export interface FishStealSetting {
   /** Paid per try that goes ahead, win or lose: this share of the grabbed fish's value, at least feeMinimum. */
   feePercent: number;
   feeMinimum: number;
-  /** A caught thief's fine on top of the fee: this share of the fish's value, at least fineMinimum. */
-  finePercent: number;
+  /**
+   * The thief's average loss, as a share of what a try could expect to win (chance x
+   * value). A caught thief's fine is set so fee and fine together come to that,
+   * at least fineMinimum.
+   */
+  edgePercent: number;
   fineMinimum: number;
   /** Success chance in percent by the fish's rarity, as the channel's odds name it. */
   oddsCommon: number;

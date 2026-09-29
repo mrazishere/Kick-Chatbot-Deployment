@@ -25,7 +25,7 @@ import {
 } from '../points/store';
 import { WebhookPoller } from '../channels/webhook-poller';
 import { points as pointsCommand } from '../bot-commands/points';
-import { addItem, FishData, initialData, ITEMS, landsFish, loadFish, parseSellList, recordCatch, saveFish, sellPrice, weightedCatch } from '../community/fishing';
+import { addItem, FishData, initialData, stealCharges, ITEMS, landsFish, loadFish, parseSellList, recordCatch, saveFish, sellPrice, weightedCatch } from '../community/fishing';
 import { openCommunityDb } from '../community/store';
 import { readOverlay } from '../community/fish-overlay';
 import { fish as fishCommand } from '../bot-commands/fish';
@@ -576,7 +576,7 @@ async function main(): Promise<void> {
     seed(33, 'guarded', 10, 3, d => { d.guardUntil = Date.now() + 3_600_000; });
     seed(34, 'mark3', 10, 2);
     seed(35, 'fresh', 10, 1);
-    seed(36, 'poor', 120, 0, d => { d.hook = 3; });
+    seed(36, 'poor', 20, 0, d => { d.hook = 3; });
     seed(37, 'whale', 10, 0, d => { addItem(d, ITEMS.find(x => x.name === '🐋')!); d.catch.sizes = { '🐋': [{ cm: 100, record: false }] }; });
     seed(38, 'rich', 5000, 0, d => { d.hook = 3; });
     const realNow = Date.now;
@@ -593,13 +593,13 @@ async function main(): Promise<void> {
       check('steal needs a hook', (await run('$don fish steal @mark')).includes('need a 🪝 grappling hook'));
       const bought = await run('$don fish buy hook');
       check('show gives your hook\'s tries even with nothing caught', (await run('$don fish show')).includes('Your 🪝 hook has 3 tries left'));
-      check('buying a hook costs its price and gives its tries', bought.includes('grappling hook for 500') && fishOf(31).hook === 3 && balance(ch, 31) === 1500, bought);
-      check('one hook at a time', (await run('$don fish buy hook')).includes('already have') && balance(ch, 31) === 1500);
+      check('buying a hook costs its price and gives its tries', bought.includes('grappling hook for 150') && fishOf(31).hook === 3 && balance(ch, 31) === 1850, bought);
+      check('one hook at a time', (await run('$don fish buy hook')).includes('already have') && balance(ch, 31) === 1850);
 
       const got = await run('$don fish steal @mark');
       check('a steal that works moves one fish, keeps its length, burns the fee and a try', got.includes('made off with') && got.includes('@mark')
         && fishOf(31).catch.types['🐟'] === 1 && fishOf(31).catch.sizes?.['🐟']?.[0]?.cm === 50 && fishOf(32).catch.types['🐟'] === 2
-        && fishOf(32).catch.sizes?.['🐟']?.length === 2 && fishOf(31).hook === 2 && balance(ch, 31) === 1450
+        && fishOf(32).catch.sizes?.['🐟']?.length === 2 && fishOf(31).hook === 2 && balance(ch, 31) === 1840
         && fishOf(31).lifetime.steal.stolen === 1 && fishOf(32).lifetime.steal.lost === 1 && fishOf(31).lifetime.fish === 0, got);
       check('a stolen fish reaches the overlay', readOverlay(sdb).events.some(e => e.kind === 'steal' && e.item === '🐟'));
       check('a steal takes the fishing cooldown', (await run('$don fish steal @mark3')).includes("Hol' up partner"));
@@ -608,27 +608,27 @@ async function main(): Promise<void> {
 
       const blocked = await run('$don fish steal @guarded');
       check('a guard turns the try away for one hook use, no fee, no cooldown, no time shown',
-        blocked.includes('@guarded has a guard') && !/\d+h|\d+m/.test(blocked) && fishOf(31).hook === 1 && balance(ch, 31) === 1450
+        blocked.includes('@guarded has a guard') && !/\d+h|\d+m/.test(blocked) && fishOf(31).hook === 1 && balance(ch, 31) === 1840
         && fishOf(33).catch.types['🐟'] === 3 && fishOf(31).lifetime.steal.blocked === 1, blocked);
       runWrite(sdb, () => recordCatch(sdb, 35, '🐟', 'cast', 50, Date.now()));
       check('fish landed within the grace time can\'t be stolen', (await run('$don fish steal @fresh')).includes('no fish you can get your hook into'));
       check('the streamer is off limits', (await run(`$don fish steal @${ch}`)).length > 0 && fishOf(31).hook === 1);
-      // mark3's fish are 🐟 worth 25: the fee and fine are their minimums, 50 and 100.
+      // mark3's fish are 🐟 worth 25 at 40%: the fee and fine are their minimums, 10 and 25.
       const short = await run('$don fish steal @mark3', ['poor', 36]);
-      check('short of the fee and fine for the target\'s dearest fish: one hook use, nothing else', short.includes('need 150') && fishOf(36).hook === 2
-        && balance(ch, 36) === 120 && fishOf(34).catch.types['🐟'] === 2, short);
+      check('short of the fee and fine for the target\'s costliest fish: one hook use, nothing else', short.includes('need 35') && fishOf(36).hook === 2
+        && balance(ch, 36) === 20 && fishOf(34).catch.types['🐟'] === 2, short);
 
       cfgWith({ oddsCommon: 0 });
       writeConfig(root, ch, { enabled: true, currencyName: '$DON', games: { enabled: true, onlyWhileLive: false, chatReplies: false, steal: { enabled: true, oddsCommon: 0 } } });
       const caught = await run('$don fish steal @mark3');
-      // A 50 cm 🐟 is worth its price; the fine is half that but at least 100.
-      check('caught: the fine is burned, the hook is taken, the fish stays', caught.includes('caught you red-handed') && caught.includes('100 $DON fine')
-        && fishOf(31).hook === 0 && balance(ch, 31) === 1300 && balance(ch, 34) === 10 && fishOf(34).catch.types['🐟'] === 2
+      // At 0% the balanced fine is nothing, so the minimum: 25, with the 10 fee.
+      check('caught: the fine is burned, one hook try is used, the fish stays', caught.includes('caught you red-handed') && caught.includes('25 $DON fine')
+        && fishOf(31).hook === 0 && balance(ch, 31) === 1805 && balance(ch, 34) === 10 && fishOf(34).catch.types['🐟'] === 2
         && fishOf(31).lifetime.steal.caught === 1, caught);
-      // A 🐋 at 100 cm is worth 3,000: the thief needs 300 + 1,500, and pays a 300 fee when it works.
+      // A 🐋 at 100 cm is worth 3,000: a 3% fee of 90 when it works.
       cfgWith({ oddsLegendary: 100 });
       const whale = await run('$don fish steal @whale', ['rich', 38]);
-      check('the fee is a share of the grabbed fish\'s value', whale.includes('made off with') && whale.includes('300 $DON fee') && balance(ch, 38) === 4700, whale);
+      check('the fee is a share of the grabbed fish\'s value', whale.includes('made off with') && whale.includes('90 $DON fee') && balance(ch, 38) === 4910, whale);
       check('a caught thief reaches the overlay, and chat even with chat replies off', readOverlay(sdb).events.some(e => e.kind === 'caught') && caught.length > 0);
       shift += 61 * 60_000;   // past the cooldown and mark3's protection, well within the day
       check('one try per target a day', (await run('$don fish buy hook')).includes('grappling hook for') && (await run('$don fish steal @mark3')).includes('already tried mark3 today'));
@@ -650,11 +650,16 @@ async function main(): Promise<void> {
     } finally {
       Date.now = realNow;
     }
+    // The balanced fine: at 20% odds on a 3,000 fish, fee 90; fine (0.2 x 3,000 x 1.2 - 90) / 0.8 = 787.5, so 788.
+    const bal = effectivePointsConfig({ games: { enabled: true } }).games;
+    const ch20 = stealCharges(bal, 3000, 20);
+    check('the fine is set from the odds so thieves lose the edge on average', ch20.fee === 90 && ch20.fine === 788
+      && Math.abs((0.2 * 3000 - ch20.fee - 0.8 * ch20.fine) / (0.2 * 3000) + 0.2) < 0.01, ch20);
     check('effective config strips debugStealTesters', !('debugStealTesters' in effectivePointsConfig({ debugStealTesters: ['x'] })));
     check('debugStealTesters survives a dashboard save', validatePointsPatch({ debugStealTesters: ['x'] }, { enabled: true }).next?.debugStealTesters?.[0] === 'x');
     const bad = validatePointsPatch({}, { games: { steal: { oddsCommon: 101, hookUses: 0, enabled: 'yes' } } });
     check('steal settings are validated', bad.errors.length === 3, bad.errors);
-    const kept = validatePointsPatch({}, { games: { steal: { enabled: true, feePercent: 10, hookPrice: 800 } } });
+    const kept = validatePointsPatch({}, { games: { steal: { enabled: true, feePercent: 3, hookPrice: 800 } } });
     check('only steal settings that differ from the defaults are stored', kept.next?.games?.steal?.enabled === true && kept.next?.games?.steal?.hookPrice === 800 && Object.keys(kept.next?.games?.steal ?? {}).length === 2, kept);
   }
 
