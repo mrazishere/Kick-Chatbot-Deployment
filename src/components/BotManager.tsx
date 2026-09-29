@@ -7,6 +7,7 @@ import {
 } from "lucide-react";
 import SiteHeader from "./SiteHeader";
 import PointsCard, { type PointsConfig } from "./PointsCard";
+import type { OverlayLink } from "@/lib/fish-overlay";
 import ClipSessionCard from "./ClipSessionCard";
 import { Button, Card, Checkbox, Stat, Toggle } from "./ui";
 
@@ -409,7 +410,7 @@ function StatusPill({ status }: { status: string }) {
 export default function BotManager({
   channel, username, avatarUrl, channelAvatarUrl, isAdmin, role, canAdminister,
   initialBot, availableCommands, initialManagers, managerSuggestions, managersError, switcher,
-  isLive, viewerCount, loadError, initialCustomCommands, customCommandsError,
+  isLive, viewerCount, loadError, initialCustomCommands, customCommandsError, fishOverlays,
 }: {
   channel: string;
   username: string;
@@ -434,6 +435,8 @@ export default function BotManager({
   loadError: string | null;
   initialCustomCommands: CustomCommand[];
   customCommandsError: string | null;
+  /** The fishing overlay's browser-source links, one per look. */
+  fishOverlays: OverlayLink[];
 }) {
   const [bot, setBot] = useState<BotChannel | null>(initialBot);
   const [error, setError] = useState<string | null>(loadError);
@@ -2127,6 +2130,7 @@ export default function BotManager({
             channel={channel}
             canAdminister={canAdminister}
             points={bot.points ?? null}
+            fishOverlays={fishOverlays}
             onSaved={(data) => setBot(data as unknown as BotChannel)}
           />
 

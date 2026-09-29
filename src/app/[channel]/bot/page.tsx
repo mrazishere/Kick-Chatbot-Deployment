@@ -4,6 +4,7 @@ import { authorizeChannel, validChannel, visibleTo } from "@/lib/bot-auth";
 import { fetchChannelInfo, fetchUserAvatar } from "@/lib/kick-api";
 import { notFound, redirect } from "next/navigation";
 import BotManager from "@/components/BotManager";
+import { overlayLinks } from "@/lib/fish-overlay";
 
 export const dynamic = "force-dynamic";
 
@@ -126,6 +127,7 @@ export default async function BotPage({
       loadError={loadError}
       initialCustomCommands={customCommands}
       customCommandsError={customCommandsError}
+      fishOverlays={overlayLinks(slug)}
     />
   );
 }

@@ -135,6 +135,8 @@ export interface PointsGames {
   baitPricePercent: number;
   /** A short AI story on 1 in 3 catches. */
   stories: boolean;
+  /** Fishing replies go to chat. They always go to the fishing overlay. Absent from an older bot service. */
+  chatReplies?: boolean;
 }
 
 /**
@@ -318,11 +320,25 @@ export interface PublicCatch {
   price: number;
 }
 
+/** One kind of fish someone has landed, for the Fishing tab's rarest catches. */
+export interface PublicRareCatch {
+  emoji: string;
+  chance: number;
+  rarity: PublicCatch["rarity"];
+  times: number;
+  firstBy: string;
+  firstAt: string;
+  lastBy: string;
+  lastAt: string;
+}
+
 export interface PublicFishing {
   /** 1 in this many plain casts lands a fish. */
   catchOdds: number;
   fish: PublicCatch[];
   junk: PublicCatch[];
+  /** The rarest fish landed, rarest first. Empty from a bot service older than it. */
+  rarest: PublicRareCatch[];
 }
 
 export interface EarningsSettings {
@@ -717,6 +733,27 @@ export function getPublicHistory(channel: string, name: string): Promise<PublicH
   return request(`/internal/bot/${encodeURIComponent(channel)}/points/public-history?name=${encodeURIComponent(name)}`, {
     timeoutMs: 10_000,
   });
+}
+
+/** One fish reply on the overlay. */
+export interface FishOverlayEvent {
+  id: number;
+  ts: number;
+  username: string;
+  kind: "catch" | "trap" | "miss" | "info";
+  text: string;
+  item?: string;
+  rarity?: string;
+  emotes?: Record<string, string>;
+}
+
+export interface FishOverlayFeed {
+  lastId: number;
+  events: FishOverlayEvent[];
+}
+
+export function getFishOverlay(channel: string): Promise<FishOverlayFeed> {
+  return request(`/internal/bot/${encodeURIComponent(channel)}/overlay/fishing`, { timeoutMs: 5_000 });
 }
 
 export function getPointsLeaderboard(channel: string, limit = 100): Promise<PointsLeaderboard> {

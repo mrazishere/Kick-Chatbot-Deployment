@@ -5,7 +5,7 @@ import { validChannel } from "@/lib/bot-auth";
 import { getSession } from "@/lib/session";
 import { loadPublicLeaderboard, loadPublicViewers } from "@/lib/public-leaderboard";
 import PublicViewers from "@/components/PublicViewers";
-import type { PublicCatch, PublicFishing } from "@/lib/bot-api";
+import type { PublicCatch, PublicFishing, PublicRareCatch } from "@/lib/bot-api";
 
 export const dynamic = "force-dynamic";
 
@@ -92,13 +92,51 @@ function CatchTable({ title, rows, currency }: { title: string; rows: PublicCatc
   );
 }
 
-function FishingTab({ fishing, currency }: { fishing: PublicFishing; currency: string }) {
+function formatDay(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toLocaleDateString("en-GB", { day: "numeric", month: "short", timeZone: process.env.TZ || "Asia/Singapore" });
+}
+
+function RarestCatches({ rows, channel }: { rows: PublicRareCatch[]; channel: string }) {
+  const who = (name: string) => (
+    <a href={`${BASE_PATH}/${channel}/leaderboard?user=${encodeURIComponent(name)}`} className="text-neutral-200 hover:underline">
+      {name}
+    </a>
+  );
+  return (
+    <section className="overflow-hidden rounded-xl border border-neutral-800 bg-neutral-950/60">
+      <h2 className="border-b border-neutral-800 px-5 py-2 text-xs text-neutral-500">Rarest catches</h2>
+      <ol className="divide-y divide-neutral-800">
+        {rows.map((r) => (
+          <li key={r.emoji} className="flex items-center gap-4 px-5 py-3 text-sm">
+            <span className="w-8 shrink-0 text-xl leading-none">{r.emoji}</span>
+            <span className="min-w-0 flex-1">
+              <span className="flex flex-wrap items-center gap-2">
+                <span className={`rounded-md border px-1.5 py-0.5 text-xs ${RARITY_CLASS[r.rarity]}`}>{r.rarity}</span>
+                <span className="text-xs tabular-nums text-neutral-500">{formatChance(r.chance)}</span>
+              </span>
+              <span className="mt-1 block text-xs text-neutral-500">
+                First by {who(r.firstBy)} on {formatDay(r.firstAt)}
+                {r.times > 1 ? <> · latest by {who(r.lastBy)} on {formatDay(r.lastAt)}</> : null}
+              </span>
+            </span>
+            <span className="shrink-0 tabular-nums text-neutral-300">{r.times}×</span>
+          </li>
+        ))}
+      </ol>
+    </section>
+  );
+}
+
+function FishingTab({ fishing, currency, channel }: { fishing: PublicFishing; currency: string; channel: string }) {
   return (
     <div className="space-y-4">
       <p className="text-xs text-neutral-500">
         {`A cast lands a fish 1 time in ${fishing.catchOdds}; bait and reels improve that. Chance is how often a catch is that fish. `}
         {`Prices are for an average 50 cm fish: length scales it from half (1 cm) to double (100 cm), and beating your record adds 50%.`}
       </p>
+      {fishing.rarest.length ? <RarestCatches rows={fishing.rarest} channel={channel} /> : null}
       <CatchTable title="Fish" rows={fishing.fish} currency={currency} />
       {fishing.junk.length ? <CatchTable title="Junk" rows={fishing.junk} currency={currency} /> : null}
     </div>
@@ -188,7 +226,7 @@ export default async function LeaderboardPage({ params, searchParams }: Props) {
               <PublicViewers channel={slug} currency={currency} initial={firstViewers.viewers} openFirst={openFirst} />
             ) : tab === "fishing" ? (
               fishing ? (
-                <FishingTab fishing={fishing} currency={currency} />
+                <FishingTab fishing={fishing} currency={currency} channel={slug} />
               ) : (
                 <p className="rounded-xl border border-neutral-800 bg-neutral-950/60 px-5 py-8 text-center text-sm text-neutral-500">
                   Fishing isn&apos;t on in this channel.

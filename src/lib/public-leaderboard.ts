@@ -1,5 +1,5 @@
 import "server-only";
-import { BotApiError, getPointsLeaderboard, getPublicHistory, getPublicViewers, type PublicHistory, type PublicViewer, type PointsLeaderboard, type PointsLeaderboardEntry, type PublicCatch, type PublicFishing } from "./bot-api";
+import { BotApiError, getPointsLeaderboard, getPublicHistory, getPublicViewers, type PublicHistory, type PublicViewer, type PointsLeaderboard, type PointsLeaderboardEntry, type PublicCatch, type PublicFishing, type PublicRareCatch } from "./bot-api";
 
 /**
  * The public leaderboard page is the one page anyone can open signed out, so it
@@ -51,11 +51,29 @@ function publicCatches(rows: unknown): PublicCatch[] {
   });
 }
 
+const USERNAME = /^[A-Za-z0-9_]{1,25}$/;
+
+/** The rarest catches, keeping only well-formed rows. */
+function publicRarest(rows: unknown): PublicRareCatch[] {
+  if (!Array.isArray(rows)) return [];
+  return rows.slice(0, 5).flatMap((row) => {
+    const r = row as Partial<PublicRareCatch> | null;
+    if (!r || typeof r.emoji !== "string" || r.emoji.length > 8 || typeof r.chance !== "number" || typeof r.times !== "number") return [];
+    if (typeof r.rarity !== "string" || !RARITIES.has(r.rarity)) return [];
+    if (typeof r.firstBy !== "string" || !USERNAME.test(r.firstBy) || typeof r.lastBy !== "string" || !USERNAME.test(r.lastBy)) return [];
+    if (typeof r.firstAt !== "string" || typeof r.lastAt !== "string") return [];
+    return [{
+      emoji: r.emoji, chance: r.chance, rarity: r.rarity, times: r.times,
+      firstBy: r.firstBy, firstAt: r.firstAt.slice(0, 40), lastBy: r.lastBy, lastAt: r.lastAt.slice(0, 40),
+    }];
+  });
+}
+
 function publicFishing(raw: unknown): PublicFishing | null {
   const f = raw as Partial<PublicFishing> | null | undefined;
   if (!f || typeof f.catchOdds !== "number") return null;
   const fish = publicCatches(f.fish);
-  return fish.length ? { catchOdds: f.catchOdds, fish, junk: publicCatches(f.junk) } : null;
+  return fish.length ? { catchOdds: f.catchOdds, fish, junk: publicCatches(f.junk), rarest: publicRarest(f.rarest) } : null;
 }
 
 function publicShape(raw: PointsLeaderboard, channel: string): PointsLeaderboard {

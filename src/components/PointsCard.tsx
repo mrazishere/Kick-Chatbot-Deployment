@@ -2,7 +2,8 @@
 
 import { COUNTERPARTY_PREFIX, REASON_LABEL } from "@/lib/points-labels";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ChevronDown, Coins, ExternalLink, Loader2, Search } from "lucide-react";
+import { Check, ChevronDown, Coins, Copy, ExternalLink, Loader2, Search } from "lucide-react";
+import type { OverlayLink } from "@/lib/fish-overlay";
 import { Button, Card, Checkbox, Stat, Toggle } from "./ui";
 
 const BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
@@ -82,6 +83,8 @@ export interface PointsGames {
   baitPricePercent: number;
   /** A short AI story on 1 in 3 catches. */
   stories: boolean;
+  /** Fishing replies go to chat. They always go to the fishing overlay. Absent from an older bot service. */
+  chatReplies?: boolean;
   /** Every fish and junk item's odds and price. Absent from a bot service older than per-item settings. */
   catches?: FishCatch[];
   /** Reels in buying order. Absent from a bot service older than reels. */
@@ -117,6 +120,7 @@ const GAMES_DEFAULTS: PointsGames = {
   sellPricePercent: 100,
   baitPricePercent: 100,
   stories: true,
+  chatReplies: true,
 };
 
 /** `$<cmd> duel @user <amount>`: viewer against viewer, 50/50, winner takes both stakes. */
@@ -314,6 +318,7 @@ interface SettingsForm {
   fishSellPct: string;
   fishBaitPct: string;
   fishStories: boolean;
+  fishChatReplies: boolean;
   fishCatches: { name: string; type: "fish" | "junk"; weight: string; price: string; defaultWeight: number; defaultPrice: number }[];
   /** null when the bot service doesn't report reels. */
   fishReels: { name: string; price: string; odds: string; rarity: string; value: string }[] | null;
@@ -376,6 +381,7 @@ function formFromConfig(c: PointsConfig): SettingsForm {
     fishSellPct: String((c.games ?? GAMES_DEFAULTS).sellPricePercent),
     fishBaitPct: String((c.games ?? GAMES_DEFAULTS).baitPricePercent),
     fishStories: (c.games ?? GAMES_DEFAULTS).stories,
+    fishChatReplies: (c.games ?? GAMES_DEFAULTS).chatReplies !== false,
     fishCatches: (c.games?.catches ?? []).map((x) => ({ ...x, weight: String(x.weight), price: String(x.price) })),
     fishReels: c.games?.reels
       ? c.games.reels.map((r) => ({
@@ -533,6 +539,7 @@ function buildPatch(f: SettingsForm): { patch: PointsSettingsPatch } | { error: 
     sellPricePercent: whole(f.fishSellPct, "Sell prices", 0, 1000),
     baitPricePercent: whole(f.fishBaitPct, "Bait prices", 0, 1000),
     stories: f.fishStories,
+    chatReplies: f.fishChatReplies,
   };
   if (f.fishCatches.length > 0) {
     // Only items that differ from their default are sent; the rest keep following it.
@@ -865,14 +872,76 @@ function CatchTable({ rows, currency, disabled, onChange }: {
   );
 }
 
+/**
+ * The fishing overlay's browser-source links. Shown whatever the chat setting:
+ * a channel can keep replies in chat and show the overlay too.
+ */
+function FishOverlayLinks({ links }: { links: OverlayLink[] }) {
+  const [copied, setCopied] = useState<string | null>(null);
+  if (!links.length) return null;
+  const copy = async (url: string) => {
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopied(url);
+      setTimeout(() => setCopied((c) => (c === url ? null : c)), 1500);
+    } catch {
+      // clipboard blocked; the link is selectable
+    }
+  };
+  return (
+    <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
+      <p className="text-sm text-neutral-200">Fishing overlay</p>
+      <p className="mt-0.5 text-xs text-neutral-500">
+        Add one as a Browser Source in OBS. It shows fishing on stream whether or not replies also go to chat. Keep the links
+        private: anyone with one can show this channel&apos;s fishing. Add &amp;demo=1 to preview a burst.
+      </p>
+      <div className="mt-3 space-y-3">
+        {links.map((l) => (
+          <div key={l.url}>
+            <p className="text-xs font-medium text-neutral-300">{l.label}</p>
+            <p className="text-xs text-neutral-500">{l.hint}</p>
+            <div className="mt-1 flex items-center gap-2">
+              <input
+                readOnly
+                value={l.url}
+                onFocus={(e) => e.currentTarget.select()}
+                className="min-w-0 flex-1 rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1 font-mono text-xs text-neutral-300"
+              />
+              <button
+                type="button"
+                onClick={() => void copy(l.url)}
+                className="inline-flex shrink-0 items-center gap-1 rounded-md border border-neutral-700 px-2 py-1 text-xs text-neutral-300 hover:border-neutral-500"
+              >
+                {copied === l.url ? <Check className="h-3.5 w-3.5 text-[#53FC18]" /> : <Copy className="h-3.5 w-3.5" />}
+                {copied === l.url ? "Copied" : "Copy"}
+              </button>
+              <a
+                href={`${l.url}&demo=1`}
+                target="_blank"
+                rel="noreferrer"
+                title="Open a preview"
+                className="inline-flex shrink-0 items-center rounded-md border border-neutral-700 px-2 py-1 text-xs text-neutral-300 hover:border-neutral-500"
+              >
+                <ExternalLink className="h-3.5 w-3.5" />
+              </a>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export default function PointsCard({
-  channel, canAdminister, points, onSaved,
+  channel, canAdminister, points, fishOverlays, onSaved,
 }: {
   channel: string;
   /** Owner/admin edit the settings; managers see them read-only but can still adjust balances. */
   canAdminister: boolean;
   /** null when the bot service is older than the points system. */
   points: PointsConfig | null;
+  /** The fishing overlay's browser-source links, one per look. */
+  fishOverlays: OverlayLink[];
   /** Receives the updated channel after a settings save, so the rest of the page stays current. */
   onSaved: (bot: { points?: PointsConfig | null }) => void;
 }) {
@@ -1508,6 +1577,20 @@ export default function PointsCard({
                     disabled={readOnly || !!busy}
                     onChange={(v) => set("fishStories", v)}
                   />
+                  <Checkbox
+                    label="Post fishing replies in chat"
+                    checked={form.fishChatReplies}
+                    disabled={readOnly || !!busy}
+                    onChange={(v) => set("fishChatReplies", v)}
+                  />
+                  {!form.fishChatReplies ? (
+                    <p className="pl-6 text-xs text-amber-300/80">
+                      Fishing is silent in chat: viewers only see what happens on the fishing overlay, so make sure it&apos;s on stream.
+                    </p>
+                  ) : null}
+                </div>
+                <div className="mt-4">
+                  <FishOverlayLinks links={fishOverlays} />
                 </div>
                 <p className="mt-3 text-xs text-neutral-500">
                   {`supibot's fishing game, played as $${commandPreview || "…"} fish like every command that uses ${form.currencyName.trim() || "points"}: cast (with worm, fly or cricket bait), then sell, show, stats, top and trap. `}
