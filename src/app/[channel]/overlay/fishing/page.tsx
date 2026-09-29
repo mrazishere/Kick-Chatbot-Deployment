@@ -20,7 +20,7 @@ const one = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v);
 
 // A browser source for OBS: fishing plays out as a small animated scene over a transparent page.
 // ?key= is required, and picks the look: the scene, or the earlier text cards.
-// Optional: max=lanes (scene) or cards, scale=0.5–3, demo=1 (steals=1 adds steals where stealing is off); side=left|right for cards.
+// Optional: max=lanes (scene) or cards, scale=0.5–3, demo=1 (with steals=1, 3 in 10 demo replies are steals); side=left|right for cards.
 export default async function FishOverlayPage({ params, searchParams }: Props) {
   const { channel } = await params;
   const slug = channel.toLowerCase();
@@ -36,7 +36,9 @@ export default async function FishOverlayPage({ params, searchParams }: Props) {
   if (demo) {
     const board = await loadPublicLeaderboard(slug);
     const f = board.kind === "ok" ? board.data.fishing : null;
-    if (f) demoOdds = { catchOdds: f.catchOdds, fish: f.fish, junk: f.junk, steal: f.steal || one(q.steals) === "1" };
+    // steals=1 is for reviewing them: on even where stealing is off, and 3 in 10 replies.
+    const review = one(q.steals) === "1";
+    if (f) demoOdds = { catchOdds: f.catchOdds, fish: f.fish, junk: f.junk, steal: f.steal || review, ...(review ? { stealShare: 0.3 } : {}) };
   }
   return (
     <>

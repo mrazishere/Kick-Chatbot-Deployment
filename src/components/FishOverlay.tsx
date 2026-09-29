@@ -129,7 +129,7 @@ function lengthOf(s: Scene): number {
     case "trap":
       return 0.7 + s.haul.length * 0.12 + 2 + 0.6;
     case "steal":
-      return 3.8;
+      return 4.7;
     case "caught":
       return 4;
     case "lay":
@@ -357,7 +357,9 @@ function LaneView({ lane }: { lane: Lane }) {
             <div className="fo-siren">
               <span>🚨</span>
             </div>
-          ) : null}
+          ) : (
+            <div className="fo-stamp">🥷 Stolen!</div>
+          )}
           <div className="fo-tag fo-tag-heist">
             {scene.v === "steal"
               ? `🪝 from ${scene.victim ?? "someone"}${scene.cm ? ` · ${scene.cm} cm` : ""}`
@@ -682,10 +684,20 @@ const CSS = `
 .fo-hook>span{display:block;font-size:1.7em;filter:drop-shadow(0 .06em .1em rgba(0,0,0,.6))}
 .fo-hook::before{content:"";position:absolute;left:50%;bottom:1.5em;width:.09em;height:14em;margin-left:-.045em;background:rgba(235,240,245,.75)}
 @keyframes fo-hook-drop{from{transform:translate(-50%,-12em)}to{transform:translate(-50%,-3em)}}
-.v-steal .fo-hook{animation:fo-hook-drop ${T(0.6)} cubic-bezier(.5,0,.8,.6) both,fo-yank-hook ${T(1.1)} cubic-bezier(.5,-.3,.7,1) ${T(1.35)} forwards}
-.v-steal .fo-loot{animation:fo-loot-up ${T(0.5)} ease-out ${T(0.65)} both,fo-yank-loot ${T(1.1)} cubic-bezier(.5,-.3,.7,1) ${T(1.35)} forwards}
-@keyframes fo-yank-hook{0%{transform:translate(-50%,-3em)}25%{transform:translate(-50%,-2.6em)}100%{transform:translate(calc(-50% + 8em),-11em) rotate(20deg);opacity:0}}
-@keyframes fo-yank-loot{0%{transform:translate(-50%,-.9em)}25%{transform:translate(-50%,-.5em)}100%{transform:translate(calc(-50% + 8em),-9em) rotate(35deg);opacity:0}}
+/* A steal: the hook lifts the fish into the air, STOLEN! slams down while it hangs there, then the hook yanks it away. */
+.v-steal .fo-hook{animation:fo-hook-drop ${T(0.6)} cubic-bezier(.5,0,.8,.6) both,fo-lift-hook ${T(0.55)} cubic-bezier(.3,1.4,.5,1) ${T(1.2)} forwards,fo-yank-hook ${T(0.9)} cubic-bezier(.5,-.3,.7,1) ${T(3.2)} forwards}
+.v-steal .fo-loot{animation:fo-loot-up ${T(0.5)} ease-out ${T(0.65)} both,fo-lift-loot ${T(0.55)} cubic-bezier(.3,1.4,.5,1) ${T(1.2)} forwards,fo-dangle 1s ease-in-out ${T(1.75)} 2 alternate,fo-yank-loot ${T(0.9)} cubic-bezier(.5,-.3,.7,1) ${T(3.2)} forwards}
+@keyframes fo-lift-hook{from{transform:translate(-50%,-3em)}to{transform:translate(-50%,-7.4em)}}
+@keyframes fo-lift-loot{from{transform:translate(-50%,-.9em)}to{transform:translate(-50%,-5.3em)}}
+@keyframes fo-dangle{from{transform:translate(-50%,-5.3em) rotate(-9deg)}to{transform:translate(-50%,-5.3em) rotate(9deg)}}
+@keyframes fo-yank-hook{0%{transform:translate(-50%,-7.4em)}20%{transform:translate(-50%,-6.9em)}100%{transform:translate(calc(-50% + 8em),-15em) rotate(20deg);opacity:0}}
+@keyframes fo-yank-loot{0%{transform:translate(-50%,-5.3em)}20%{transform:translate(-50%,-4.8em)}100%{transform:translate(calc(-50% + 8em),-13em) rotate(35deg);opacity:0}}
+.fo-stamp{bottom:calc(var(--surf) + 2.2em);transform:translateX(-50%) rotate(-7deg);white-space:nowrap;font-size:1.05em;font-weight:900;letter-spacing:.08em;
+  text-transform:uppercase;color:#fde047;padding:.08em .45em;border:.14em solid #fde047;border-radius:.35em;background:rgba(25,18,0,.72);
+  text-shadow:0 1px 2px #000;box-shadow:0 0 .8em rgba(253,224,71,.55);
+  animation:fo-stamp ${T(0.35)} cubic-bezier(.2,1.6,.4,1) ${T(1.55)} both,fo-out .4s ease-in ${T(3.35)} forwards}
+@keyframes fo-stamp{from{transform:translateX(-50%) rotate(-7deg) scale(2.8);opacity:0}to{transform:translateX(-50%) rotate(-7deg) scale(1);opacity:1}}
+.fo-lane.v-steal .fo-tag-heist{bottom:calc(var(--surf) + .3em)}
 .v-caught .fo-hook{animation:fo-hook-drop ${T(0.6)} cubic-bezier(.5,0,.8,.6) both,fo-hook-fall ${T(0.8)} ease-in ${T(1.45)} forwards}
 .v-caught .fo-loot{animation:fo-loot-up ${T(0.5)} ease-out ${T(0.65)} both,fo-loot-dive ${T(0.6)} ease-in ${T(1.45)} forwards}
 .v-caught .fo-hook::before{animation:fo-out ${T(0.15)} ease-in ${T(1.45)} forwards}

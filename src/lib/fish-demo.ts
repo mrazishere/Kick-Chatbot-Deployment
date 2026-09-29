@@ -6,7 +6,10 @@ import type { FishOverlayEvent, PublicFishing } from "./bot-api";
  * casts. Mirrors the bot's fish command: a cast lands a fish 1 in catchOdds, a miss
  * snags junk 1 in 4; traps roll once a minute for 75–90% of their time.
  */
-export type DemoOdds = Pick<PublicFishing, "catchOdds" | "fish" | "junk" | "steal">;
+export type DemoOdds = Pick<PublicFishing, "catchOdds" | "fish" | "junk" | "steal"> & {
+  /** Overrides the share of steals, for reviewing them (?steals=1). */
+  stealShare?: number;
+};
 
 /** Where the channel's odds can't be read: the bot's defaults, roughly. */
 const FALLBACK: DemoOdds = {
@@ -148,7 +151,7 @@ export function demoGenerator(odds: DemoOdds | null) {
   return function burst(startId: number, n = NAMES.length): FishOverlayEvent[] {
     const now = Date.now();
     return NAMES.slice(0, n).map((username, i) => ({
-      ...(o.steal && Math.random() < STEAL_SHARE ? steal(username) : Math.random() < TRAP_SHARE ? trap() : cast(username)),
+      ...(o.steal && Math.random() < (odds?.stealShare ?? STEAL_SHARE) ? steal(username) : Math.random() < TRAP_SHARE ? trap() : cast(username)),
       id: startId - i,
       ts: now,
       username,
