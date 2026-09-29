@@ -189,6 +189,8 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
 
   const senderId = Number(tags.senderId);
   const userId = Number.isInteger(senderId) && senderId > 0 ? senderId : findUserByName(db, meLc)?.user_id ?? null;
+  // Staging: named testers can try stealing anywhere, any time (debugStealTesters).
+  const tester = cfg.debugStealTesters.includes(meLc);
   const offLimits = (id: number | null, name: string) => isExcluded(svc.exclusions(), id, name);
   const excluded = offLimits(userId, meLc);
   const ignore = (why: string) => void console.log(`[FISH] ${me} ignored in ${chan}: ${why}`);
@@ -515,7 +517,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
    */
   function buy(what: string, uid: number): void {
     if (what === 'hook' || what === 'guard') {
-      if (!g.steal.enabled) return void say("Nobody steals fish here, so there's no need for that.");
+      if (!g.steal.enabled && !tester) return void say("Nobody steals fish here, so there's no need for that.");
       return what === 'hook' ? buyHook(uid) : buyGuard(uid);
     }
     const thieves = g.steal.enabled
@@ -607,16 +609,16 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
    */
   async function steal(targetRaw: string | undefined, uid: number): Promise<void> {
     const st = g.steal;
-    if (!st.enabled) return void say("Nobody steals fish here. Go catch your own!");
-    if (!(await liveOk())) return;
+    if (!st.enabled && !tester) return void say("Nobody steals fish here. Go catch your own!");
+    if (!tester && !(await liveOk())) return;
     const name = parseUsername(targetRaw);
     if (!name) return void say(`Steal from whom? ${cmd} fish steal @user`);
     const nameLc = name.toLowerCase();
-    if (isBotSender(name) || SYSTEM_BOTS.has(nameLc)) return void say("My fish are bolted down. Nice try!");
+    if (!tester && (isBotSender(name) || SYSTEM_BOTS.has(nameLc))) return void say("My fish are bolted down. Nice try!");
     const victim = findUserByName(db!, nameLc);
     if (!victim) return void say('No such user exists!');
     if (victim.user_id === uid) return void say("You can't steal from yourself!");
-    if (nameLc === chan || offLimits(victim.user_id, nameLc)) return void say(`${victim.username}'s fish are off limits.`);
+    if (nameLc === chan || (!tester && offLimits(victim.user_id, nameLc))) return void say(`${victim.username}'s fish are off limits.`);
 
     let overlay: { kind: OverlayKind; item: string } | null = null;
     const text = once(now => {
@@ -624,7 +626,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       const d = loadFish(db!, uid) ?? initialData();
       if (!hasFishedBefore(d)) return 'Go fishing at least once before you try stealing!';
       if ((d.hook ?? 0) <= 0) return `You need a 🪝 grappling hook to steal. Get one with ${cmd} fish buy hook (${groupDigits(st.hookPrice)} ${cur} for ${tries(st.hookUses)}).`;
-      if (d.readyTimestamp !== 0 && now < d.readyTimestamp) return `Hol' up partner! You can go fishing or stealing again in ${span(d.readyTimestamp - now)}!`;
+      if (!tester && d.readyTimestamp !== 0 && now < d.readyTimestamp) return `Hol' up partner! You can go fishing or stealing again in ${span(d.readyTimestamp - now)}!`;
       const v = loadFish(db!, victim.user_id);
       const log = (outcome: string, item: string | null, cm: number | null) =>
         db!.prepare('INSERT INTO steals (ts, thief_id, victim_id, name, cm, outcome) VALUES (?, ?, ?, ?, ?, ?)').run(now, uid, victim.user_id, item, cm, outcome);
@@ -639,11 +641,11 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       }
       const went = "outcome IN ('stolen', 'caught')";
       const lastOnVictim = (db!.prepare(`SELECT MAX(ts) AS t FROM steals WHERE victim_id = ? AND ${went}`).get(victim.user_id) as { t: number | null }).t;
-      if (lastOnVictim !== null && now - lastOnVictim < st.protectMinutes * 60_000) {
+      if (!tester && lastOnVictim !== null && now - lastOnVictim < st.protectMinutes * 60_000) {
         return `${victim.username} is still on alert after the last attempt. Try again in ${span(lastOnVictim + st.protectMinutes * 60_000 - now)}.`;
       }
       const lastPair = (db!.prepare(`SELECT MAX(ts) AS t FROM steals WHERE thief_id = ? AND victim_id = ? AND ${went}`).get(uid, victim.user_id) as { t: number | null }).t;
-      if (lastPair !== null && now - lastPair < 86_400_000) {
+      if (!tester && lastPair !== null && now - lastPair < 86_400_000) {
         return `You already tried ${victim.username} today. You can try them again in ${span(lastPair + 86_400_000 - now)}.`;
       }
       const pool = v ? stealableFish(db!, v, victim.user_id, now, st.graceMinutes * 60_000) : [];

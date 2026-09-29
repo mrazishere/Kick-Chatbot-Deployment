@@ -399,6 +399,8 @@ export type StoredPointsConfig = Partial<Omit<PointsConfig, 'bonuses' | 'give' |
   games?: Partial<Omit<PointsGamesConfig, 'catches' | 'steal'>> & { catches?: StoredFishCatches; steal?: Partial<FishStealSetting> };
   /** Staging only, set by editing the file: treat the channel as live. Never exposed by the API. */
   debugForceLive?: boolean;
+  /** Staging only, set by editing the file: who can test stealing (see InternalPointsConfig). */
+  debugStealTesters?: string[];
 };
 
 /** A Kick user as it appears in webhook payloads. */

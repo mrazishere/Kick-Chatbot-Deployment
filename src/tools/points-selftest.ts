@@ -642,9 +642,15 @@ async function main(): Promise<void> {
       const shown = await run('$don fish show', ['mark', 32]);
       check('only the owner sees how long their guard lasts', shown.includes('guarded for another') && !(await run('$don fish show mark')).includes('guarded'), shown);
       check('the thieves board ranks fish stolen', (await run('$don fish top thieves')).includes('master thieves') );
+      writeConfig(root, ch, { enabled: true, currencyName: '$DON', debugStealTesters: ['Rich'], games: { enabled: true, onlyWhileLive: false, steal: { enabled: false, oddsCommon: 100 } } });
+      const tried = await run('$don fish steal @mark3', ['rich', 38]);
+      check('a tester can steal where stealing is off, past the target\'s protection', tried.includes('made off with'), tried);
+      check('everyone else still can\'t', (await run('$don fish steal @mark', ['thief', 31])).includes('Nobody steals fish here'));
     } finally {
       Date.now = realNow;
     }
+    check('effective config strips debugStealTesters', !('debugStealTesters' in effectivePointsConfig({ debugStealTesters: ['x'] })));
+    check('debugStealTesters survives a dashboard save', validatePointsPatch({ debugStealTesters: ['x'] }, { enabled: true }).next?.debugStealTesters?.[0] === 'x');
     const bad = validatePointsPatch({}, { games: { steal: { oddsCommon: 101, hookUses: 0, enabled: 'yes' } } });
     check('steal settings are validated', bad.errors.length === 3, bad.errors);
     const kept = validatePointsPatch({}, { games: { steal: { enabled: true, feePercent: 10, hookPrice: 800 } } });

@@ -211,6 +211,12 @@ export const POINTS_DEFAULTS: Readonly<PointsConfig> = defaultPointsConfig();
 /** The effective settings plus the file-only staging switch. */
 export interface InternalPointsConfig extends PointsConfig {
   debugForceLive: boolean;
+  /**
+   * Staging only, set by editing the file: lowercase names who can test stealing
+   * where it's off or the stream is offline, target the bot's account, and skip the
+   * cooldown and the once-per-target limits. Never exposed by the API.
+   */
+  debugStealTesters: string[];
 }
 
 /**
@@ -362,13 +368,14 @@ export function internalPointsConfig(raw: unknown): InternalPointsConfig {
     games,
     modMaxAdjust: num(r.modMaxAdjust, d.modMaxAdjust, 1, 1_000_000_000, true),
     publicLeaderboard: bool(r.publicLeaderboard, d.publicLeaderboard),
-    debugForceLive: r.debugForceLive === true
+    debugForceLive: r.debugForceLive === true,
+    debugStealTesters: Array.isArray(r.debugStealTesters) ? r.debugStealTesters.filter((n): n is string => typeof n === 'string').map(n => n.toLowerCase()) : []
   };
 }
 
 /** The effective settings as the API exposes them: defaults merged, the staging switch removed. */
 export function effectivePointsConfig(raw: unknown): PointsConfig {
-  const { debugForceLive: _staging, ...cfg } = internalPointsConfig(raw);
+  const { debugForceLive: _staging, debugStealTesters: _testers, ...cfg } = internalPointsConfig(raw);
   return cfg;
 }
 
