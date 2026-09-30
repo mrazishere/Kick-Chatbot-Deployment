@@ -1,7 +1,9 @@
 /**
  * Big bites: while the stream is live and a fishing overlay is showing, now and then
  * a random active chatter gets something big on their line. Chat says so; the
- * two-digit reel code appears only on the overlay, so a chat script can't copy it.
+ * reel code appears only on the overlay, so a chat script can't copy it. Codes get
+ * harder each pull: two digits, then three characters, then four; from the second
+ * pull on they flash for a few seconds and hide while the time runs.
  * The chatter answers with `$<cmd> fish reel <code>` (bot-commands/fish.ts); each
  * right answer brings a new code for the next pull, and the last pull lands a
  * Mythic trophy by its land chance. A wrong code or too slow, and it gets away.
@@ -24,8 +26,8 @@ import { overlayShowing, pushOverlay } from './fish-overlay';
 export interface Bite {
   username: string;
   userId: number;
-  /** The code for the current pull, and when it was shown and runs out. */
-  code: number;
+  /** The code for the current pull (upper case), and when it was shown and runs out. */
+  code: string;
   startedAt: number;
   until: number;
   /** The pull this code is for, 1-based, of `pulls`. */
@@ -96,12 +98,25 @@ export function getAway(ctx: BiteContext, name: string, why: string): void {
   void ctx.sendMessage(`@${name} ${text}`).catch(() => {});
 }
 
+/** Characters that can't be mistaken for another on a blurry stream: no 0/O, 1/I/L, 5/S, 8/B, 6/G, Z/2, Q. */
+const CLEAR = 'ACDEFHJKMNPRTUVWXY3479';
+
+/** The code for a pull: two digits first, then a character longer each pull (up to 6), from CLEAR. */
+export function pullCode(pull: number): string {
+  if (pull <= 1) return String(crypto.randomInt(10, 100));
+  const len = Math.min(6, pull + 1);
+  return Array.from({ length: len }, () => CLEAR[crypto.randomInt(0, CLEAR.length)]).join('');
+}
+
+/** Whether an answer matches a code: case and surrounding spaces don't matter. */
+export const codeMatches = (answer: string | undefined, code: string): boolean => (answer ?? '').trim().toUpperCase() === code;
+
 /** A fresh code for this pull: armed to get away if it isn't answered in time, and shown only on the overlay. */
 function arm(ctx: BiteContext, bite: Bite, windowMs: number, text: string, now: number): void {
   const k = key(ctx.channel, bite.username);
   clearTimeout(bite.timer);
-  let code = crypto.randomInt(10, 100);
-  if (code === bite.code) code = code === 99 ? 10 : code + 1; // a new pull always has a new code
+  let code = pullCode(bite.pull);
+  while (code === bite.code) code = pullCode(bite.pull); // a new pull always has a new code
   bite.code = code;
   bite.startedAt = now;
   bite.until = now + windowMs;
@@ -111,13 +126,15 @@ function arm(ctx: BiteContext, bite: Bite, windowMs: number, text: string, now: 
     getAway(ctx, bite.username, bite.pull > 1 ? 'It pulled too hard and swam off!' : 'It was too strong and swam off!');
   }, windowMs + STREAM_GRACE_MS + 500);
   bite.timer.unref?.();
-  pushOverlay(ctx.db, { username: bite.username, kind: 'bite', text, code, until: bite.until, pull: bite.pull, pulls: bite.pulls }, now);
+  // From the second pull the code flashes: the overlay hides it after flashSeconds, the clock keeps running.
+  const flash = bite.pull > 1 && ctx.bigBite.flashSeconds > 0 ? { flashUntil: now + ctx.bigBite.flashSeconds * 1000 } : {};
+  pushOverlay(ctx.db, { username: bite.username, kind: 'bite', text, code, until: bite.until, pull: bite.pull, pulls: bite.pulls, ...flash }, now);
 }
 
 /** Put a big bite on this chatter's line: chat says so, and only the overlay gets the code. */
 export function startBite(ctx: BiteContext, name: string, userId: number): Bite {
   const now = ctx.now ?? Date.now();
-  const bite: Bite = { username: name, userId, code: -1, startedAt: now, until: now, pull: 1, pulls: ctx.bigBite.pulls, timer: setTimeout(() => {}, 0) };
+  const bite: Bite = { username: name, userId, code: '', startedAt: now, until: now, pull: 1, pulls: ctx.bigBite.pulls, timer: setTimeout(() => {}, 0) };
   bites.set(key(ctx.channel, name), bite);
   lastBiteAt.set(ctx.channel, now);
   lastChatter.set(ctx.channel, name.toLowerCase());
@@ -135,7 +152,7 @@ export function nextPull(ctx: BiteContext, bite: Bite): void {
   const now = ctx.now ?? Date.now();
   bite.pull++;
   arm(ctx, bite, ctx.bigBite.pullSeconds * 1000,
-    `💪 Got it! It's pulling back hard! New code on stream: reel again within ${ctx.bigBite.pullSeconds}s! (pull ${bite.pull}/${bite.pulls})`, now);
+    `💪 Got it! It's pulling back hard! Quick, the new code flashes on stream: reel again within ${ctx.bigBite.pullSeconds}s! (pull ${bite.pull}/${bite.pulls})`, now);
 }
 
 export interface TickContext extends BiteContext {

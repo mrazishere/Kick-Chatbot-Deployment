@@ -724,7 +724,7 @@ async function main(): Promise<void> {
       const got = await fire();
       const ev1 = lastBite();
       check('a big bite goes to an active chatter, never the streamer, a bot or someone quiet', got === 'biter' && ev1?.username === 'biter');
-      check('chat names the chatter but never the code; the overlay has it', !!ev1 && typeof ev1.code === 'number' && sent.some(m => m.startsWith('@biter') && m.includes('Something BIG'))
+      check('chat names the chatter but never the code; the overlay has it', !!ev1 && typeof ev1.code === 'string' && /^\d{2}$/.test(ev1.code) && ev1.flashUntil === undefined && sent.some(m => m.startsWith('@biter') && m.includes('Something BIG'))
         && !sent.some(m => m.includes(String(ev1.code))), { sent, ev1 });
       check('one big bite at a time', (await bsvc.bigBiteTick(() => 0)) === null);
       const fast = await run(`$don fish reel ${ev1!.code}`, ['biter', 41], 500);
@@ -734,29 +734,35 @@ async function main(): Promise<void> {
 
       await fire();
       const ev2 = lastBite()!;
-      await run(`$don fish reel ${ev2.code === 99 ? 10 : ev2.code! + 1}`, ['biter', 41]);
+      await run(`$don fish reel ${ev2.code === '10' ? '11' : '10'}`, ['biter', 41]);
       check('a wrong code loses it', !!lastShown()?.text.includes('Wrong move'));
 
       /** Answer every pull of the waiting bite with the code the overlay shows; what the overlay showed after each. */
-      const reelAll = async (): Promise<{ replies: string[]; shown: string[]; codes: number[] }> => {
+      const reelAll = async (): Promise<{ replies: string[]; shown: string[]; codes: string[]; flashes: Array<number | undefined> }> => {
         const replies: string[] = [];
         const shown: string[] = [];
-        const codes: number[] = [];
+        const codes: string[] = [];
+        const flashes: Array<number | undefined> = [];
         for (let i = 0; i < 5; i++) {
           const ev = lastBite()!;
           codes.push(ev.code!);
-          replies.push(await run(`$don fish reel ${ev.code}`, ['biter', 41], 3_000));
+          flashes.push(ev.flashUntil === undefined ? undefined : ev.flashUntil - ev.ts);
+          // Any case counts: answer the later codes in lower case.
+          replies.push(await run(`$don fish reel ${i ? ev.code!.toLowerCase() : ev.code}`, ['biter', 41], 3_000));
           const next = lastShown()!;
           shown.push(next.text);
           if (next.kind !== 'bite') break;
         }
-        return { replies, shown, codes };
+        return { replies, shown, codes, flashes };
       };
       const chatBefore = sent.length;
       await fire();
       const first = await reelAll();
       check('reeling in takes three pulls, each with a new code, all on the overlay', first.shown.length === 3 && first.shown[0].includes('pull 2/3')
         && first.shown[1].includes('pull 3/3') && new Set(first.codes).size === 3, first);
+      check('codes get harder each pull: 2 digits, then 3 and 4 clear characters, answered in any case', /^\d{2}$/.test(first.codes[0])
+        && /^[ACDEFHJKMNPRTUVWXY3479]{3}$/.test(first.codes[1]) && /^[ACDEFHJKMNPRTUVWXY3479]{4}$/.test(first.codes[2]), first.codes);
+      check('from the second pull codes flash for 3s; the first stays shown', first.flashes[0] === undefined && first.flashes[1] === 3_000 && first.flashes[2] === 3_000, first.flashes);
       check('a whole big bite is two chat lines: the opening mention and the result', sent.length - chatBefore === 1 && first.replies.slice(0, -1).every(r => r === '')
         && /MYTHIC|So close/.test(first.replies[first.replies.length - 1]), { chat: sent.slice(chatBefore), replies: first.replies });
       // The last pull lands the trophy by its land chance: try until one lands, and until one snaps.

@@ -47,7 +47,7 @@ import { gameInvocation } from '../community/stakes';
 import { addReminder, cancelSelfRemindersStartingWith, openCommunityDb } from '../community/store';
 import { bestEmote, broadcasterIdFor, emoteImages } from '../community/emotes';
 import { OverlayKind, overlayShowing, pushOverlay } from '../community/fish-overlay';
-import { BITE_TOO_FAST_MS, STREAM_GRACE_MS, biteFor, getAway, nextPull, startBite, takeBite, type BiteContext } from '../community/big-bite';
+import { BITE_TOO_FAST_MS, STREAM_GRACE_MS, biteFor, codeMatches, getAway, nextPull, startBite, takeBite, type BiteContext } from '../community/big-bite';
 import {
   addItem, baitPrice, baitRoll, currentReel, heldFishValue, landsFish, moveFish, pickHeld, stealableFish, stealChance, stealCharges, worstStealCharges, parseSellList, CatchItem, CatchType, FAILURE_EMOTES, FishData, findBait, hasFishedBefore, initialData, rarityOf, recordCatch,
   ITEMS, JUNK_MESSAGES, loadFish, MISS_DELAY_MS, pick, randomInt, rollCatch, saveFish, sellPrice, STORY_STYLES, SUCCESS_EMOTES,
@@ -178,7 +178,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
    * the overlay. Only cast results and trap hauls skip chat where the channel turned
    * chat replies off; every other reply, steals included, always goes to chat.
    */
-  const say = (text: string, meta: { kind?: OverlayKind; item?: string; code?: number; until?: number } = {}) => {
+  const say = (text: string, meta: { kind?: OverlayKind; item?: string; code?: string; until?: number } = {}) => {
     if (meta.kind) {
       const emotes = emoteImages(chan, text);
       const rarity = meta.item ? rarityOf(g, meta.item) : null;
@@ -276,7 +276,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     const fail = (why: string) => { takeBite(chan, meLc); getAway(biteCtx(), me, why); };
     if (at > bite.until + STREAM_GRACE_MS) return fail('Too slow! It shook the hook and swam off.');
     if (at - bite.startedAt < BITE_TOO_FAST_MS) return fail('You yanked too early and snapped the line!');
-    if (!/^\d+$/.test(codeRaw ?? '') || Number(codeRaw) !== bite.code) return fail('Wrong move! The line snapped.');
+    if (!codeMatches(codeRaw, bite.code)) return fail('Wrong move! The line snapped.');
     if (bite.pull < bite.pulls) return nextPull(biteCtx(), bite);
     takeBite(chan, meLc);
     const item = weightedCatch('trophy', g);

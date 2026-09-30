@@ -317,6 +317,8 @@ export interface FishBigBiteSetting {
   windowSeconds: number;
   pulls: number;
   pullSeconds: number;
+  /** From the second pull, the overlay shows the code this long, then hides it; 0 keeps it shown. */
+  flashSeconds: number;
 }
 
 /**
