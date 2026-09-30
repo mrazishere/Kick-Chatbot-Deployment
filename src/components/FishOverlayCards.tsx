@@ -28,7 +28,12 @@ interface Card {
   outAt: number;
 }
 
+/** A big bite stays up for its whole window. */
+const biteMs = (ev: FishOverlayEvent) => Math.max(5_000, Math.min(120_000, (ev.until ?? ev.ts + 30_000) - ev.ts));
+
 function holdMs(ev: FishOverlayEvent): number {
+  if (ev.kind === "bite") return biteMs(ev);
+  if (ev.rarity === "Mythic") return 16_000;
   if (ev.rarity === "Legendary") return 14_000;
   if (ev.rarity === "Epic") return 11_000;
   if (ev.kind === "miss") return 4_500;
@@ -38,6 +43,8 @@ function holdMs(ev: FishOverlayEvent): number {
 
 /** The least time on screen, however long the queue. */
 function floorMs(ev: FishOverlayEvent): number {
+  if (ev.kind === "bite") return biteMs(ev);
+  if (ev.rarity === "Mythic") return 8_000;
   if (ev.rarity === "Legendary") return 6_000;
   if (ev.rarity === "Epic") return 4_000;
   if (ev.kind === "miss") return 1_400;
@@ -52,7 +59,12 @@ function trimQueue(queue: FishOverlayEvent[]): void {
       queue.splice(i, 1);
     }
   }
-  while (queue.length > QUEUE_CAP) queue.shift();
+  // Never a big bite: its reel code has to show.
+  while (queue.length > QUEUE_CAP) {
+    const i = queue.findIndex((e) => e.kind !== "bite");
+    if (i < 0) break;
+    queue.splice(i, 1);
+  }
 }
 
 function nameColor(name: string): string {
@@ -84,7 +96,7 @@ function Words({ text, emotes }: { text: string; emotes?: Record<string, string>
   );
 }
 
-const ICON: Record<FishOverlayEvent["kind"], string> = { catch: "🐟", trap: "🪤", miss: "🎣", steal: "🪝", caught: "🚨", info: "🎣" };
+const ICON: Record<FishOverlayEvent["kind"], string> = { catch: "🐟", trap: "🪤", miss: "🎣", steal: "🪝", caught: "🚨", bite: "🎣", info: "🎣" };
 
 function CardView({ card, side }: { card: Card; side: "left" | "right" }) {
   const { ev } = card;
@@ -96,7 +108,7 @@ function CardView({ card, side }: { card: Card; side: "left" | "right" }) {
   return (
     <div ref={measure} className={`fo-wrap ${card.phase === "in" ? "fo-in" : "fo-out"} ${side === "right" ? "fo-right" : ""}`}>
       <div className={`fo-card fo-${ev.kind} ${rarity ? `fo-${rarity.toLowerCase()}` : ""}`}>
-        {rarity === "Legendary" ? <span className="fo-shine" /> : null}
+        {rarity === "Legendary" || rarity === "Mythic" ? <span className="fo-shine" /> : null}
         <div className="fo-icon">
           <span className={ev.kind === "catch" ? "fo-pop" : ""}>{ev.kind === "catch" && ev.item ? ev.item : ICON[ev.kind]}</span>
         </div>
@@ -110,6 +122,11 @@ function CardView({ card, side }: { card: Card; side: "left" | "right" }) {
           <div className="fo-text">
             <Words text={main} emotes={ev.emotes} />
           </div>
+          {ev.kind === "bite" && typeof ev.code === "number" ? (
+            <div className="fo-bigcode">
+              Reel code <b>{ev.code}</b>
+            </div>
+          ) : null}
           {note ? <div className="fo-note">{note}</div> : null}
         </div>
       </div>
@@ -159,7 +176,9 @@ export default function FishOverlayCards({
         const fresh = data.events.filter((e) => e.id > (after as number));
         if (fresh.length) {
           after = Math.max(...fresh.map((e) => e.id));
-          queue.current.push(...fresh);
+          // A reel code can't wait its turn: big bites go to the front.
+          queue.current.unshift(...fresh.filter((e) => e.kind === "bite"));
+          queue.current.push(...fresh.filter((e) => e.kind !== "bite"));
           trimQueue(queue.current);
         }
       } catch {
@@ -220,6 +239,15 @@ export default function FishOverlayCards({
       const stagger = waiting > 4 ? 160 : 340;
       if (queue.current.length > 0 && live().length < max && now - lastRelease.current >= stagger) {
         const ev = queue.current.shift()!;
+        // The angler's answer ends their big bite card.
+        if (ev.kind !== "bite") {
+          for (const c of live()) {
+            if (c.ev.kind === "bite" && c.ev.username === ev.username) {
+              c.phase = "out";
+              c.outAt = now;
+            }
+          }
+        }
         cards.current.push({ ev, shownAt: now, phase: "in", outAt: 0 });
         lastRelease.current = now;
         changed = true;
@@ -291,4 +319,12 @@ const CSS = `
 .fo-shine{position:absolute;inset:0;pointer-events:none;background:linear-gradient(110deg,transparent 30%,rgba(255,235,160,.35) 50%,transparent 70%);
   transform:translateX(-100%);animation:fo-shine 2.2s ease-in-out .5s infinite}
 @keyframes fo-shine{60%,100%{transform:translateX(100%)}}
+.fo-bite{border:1.5px solid rgba(253,224,71,.9);animation:fo-legend 1s ease-in-out infinite}
+.fo-bigcode{margin-top:.3em;font-size:.8em;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:#fde047}
+.fo-bigcode b{margin-left:.3em;font-size:2em;letter-spacing:.04em;color:#fff;vertical-align:middle;text-shadow:0 0 .3em rgba(253,224,71,.8)}
+.fo-mythic{border:1.5px solid rgba(244,114,182,.9);background:linear-gradient(135deg,rgba(60,14,48,.92),rgba(14,20,50,.9))}
+.fo-in>.fo-mythic{animation:fo-slide .6s cubic-bezier(.2,1.35,.4,1) both,fo-mythic 1.2s ease-in-out .6s infinite}
+.fo-mythic .fo-rarity{color:#f9a8d4}
+.fo-mythic .fo-icon{background:conic-gradient(rgba(244,114,182,.6),rgba(96,165,250,.6),rgba(52,211,153,.6),rgba(250,204,21,.6),rgba(244,114,182,.6));font-size:1.5em}
+@keyframes fo-mythic{50%{box-shadow:0 0 2.4em rgba(244,114,182,.7),0 .3em 1.2em rgba(0,0,0,.45)}}
 `;

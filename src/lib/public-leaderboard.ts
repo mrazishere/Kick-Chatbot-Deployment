@@ -38,7 +38,7 @@ function publicEntries(rows: unknown): PointsLeaderboardEntry[] {
   });
 }
 
-const RARITIES = new Set(["Common", "Uncommon", "Rare", "Epic", "Legendary", "Never"]);
+const RARITIES = new Set(["Common", "Uncommon", "Rare", "Epic", "Legendary", "Mythic", "Never"]);
 
 /** The Fishing tab's catch table, keeping only well-formed rows. */
 function publicCatches(rows: unknown): PublicCatch[] {
@@ -47,7 +47,7 @@ function publicCatches(rows: unknown): PublicCatch[] {
     const r = row as Partial<PublicCatch> | null;
     if (!r || typeof r.emoji !== "string" || r.emoji.length > 8 || typeof r.chance !== "number" || typeof r.price !== "number") return [];
     if (typeof r.rarity !== "string" || !RARITIES.has(r.rarity)) return [];
-    return [{ emoji: r.emoji, chance: r.chance, rarity: r.rarity, price: r.price }];
+    return [{ emoji: r.emoji, chance: r.chance, rarity: r.rarity, price: r.price, ...(r.trophy === true ? { trophy: true } : {}) }];
   });
 }
 
@@ -65,6 +65,7 @@ function publicRarest(rows: unknown): PublicRareCatch[] {
     return [{
       emoji: r.emoji, chance: r.chance, rarity: r.rarity, times: r.times,
       firstBy: r.firstBy, firstAt: r.firstAt.slice(0, 40), lastBy: r.lastBy, lastAt: r.lastAt.slice(0, 40),
+      ...(r.trophy === true ? { trophy: true } : {}),
     }];
   });
 }
@@ -105,7 +106,9 @@ function publicFishing(raw: unknown): PublicFishing | null {
   const f = raw as Partial<PublicFishing> | null | undefined;
   if (!f || typeof f.catchOdds !== "number") return null;
   const fish = publicCatches(f.fish);
-  return fish.length ? { catchOdds: f.catchOdds, fish, junk: publicCatches(f.junk), rarest: publicRarest(f.rarest), steal: f.steal === true, heists: publicHeists(f.heists) } : null;
+  return fish.length ? { catchOdds: f.catchOdds, fish, junk: publicCatches(f.junk), rarest: publicRarest(f.rarest), steal: f.steal === true, heists: publicHeists(f.heists),
+    trophies: publicCatches(f.trophies),
+    bigBite: f.bigBite && typeof f.bigBite.oneIn === "number" ? { oneIn: f.bigBite.oneIn } : null } : null;
 }
 
 function publicShape(raw: PointsLeaderboard, channel: string): PointsLeaderboard {

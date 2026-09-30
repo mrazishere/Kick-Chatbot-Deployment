@@ -316,7 +316,9 @@ export interface PublicCatch {
   emoji: string;
   /** Share of fish (or junk) catches, in percent. */
   chance: number;
-  rarity: "Common" | "Uncommon" | "Rare" | "Epic" | "Legendary" | "Never";
+  rarity: "Common" | "Uncommon" | "Rare" | "Epic" | "Legendary" | "Mythic" | "Never";
+  /** A big bite trophy: its chance is a share of big bites. */
+  trophy?: boolean;
   price: number;
 }
 
@@ -330,6 +332,7 @@ export interface PublicRareCatch {
   firstAt: string;
   lastBy: string;
   lastAt: string;
+  trophy?: boolean;
 }
 
 export interface PublicFishing {
@@ -343,6 +346,10 @@ export interface PublicFishing {
   steal?: boolean;
   /** Every steal ranked; null before the first one. Absent from a bot service older than it. */
   heists?: PublicHeists | null;
+  /** Big bite trophies, chances as shares of big bites. Absent from a bot service older than them. */
+  trophies?: PublicCatch[];
+  /** 1 live cast in this many is a big bite; null where they're off. */
+  bigBite?: { oneIn: number } | null;
 }
 
 /** The Fishing tab's heists. Names only, as everywhere on the public page. */
@@ -755,11 +762,15 @@ export interface FishOverlayEvent {
   id: number;
   ts: number;
   username: string;
-  kind: "catch" | "trap" | "miss" | "steal" | "caught" | "info";
+  kind: "catch" | "trap" | "miss" | "steal" | "caught" | "bite" | "info";
   text: string;
   item?: string;
   rarity?: string;
   emotes?: Record<string, string>;
+  /** A big bite's reel code, shown only on the overlay. */
+  code?: number;
+  /** When a big bite gets away (ms since epoch, the bot's clock). */
+  until?: number;
 }
 
 export interface FishOverlayFeed {

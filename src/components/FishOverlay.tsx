@@ -23,6 +23,7 @@ type Scene =
   | { v: "catch"; item: string; rarity: string | null; cm: number | null }
   | { v: "miss"; junk: string | null }
   | { v: "trap"; haul: string[] }
+  | { v: "bite"; code: number; windowSec: number }
   | { v: "steal"; item: string; victim: string | null; cm: number | null }
   | { v: "caught"; item: string; victim: string | null; fine: string | null }
   | { v: "lay" }
@@ -59,6 +60,11 @@ function sceneOf(ev: FishOverlayEvent): Scene | null {
   if (ev.kind === "catch" && ev.item) {
     const cm = /It is (\d+) cm/.exec(t);
     return { v: "catch", item: ev.item, rarity: ev.rarity ?? null, cm: cm ? Number(cm[1]) : null };
+  }
+  if (ev.kind === "bite" && typeof ev.code === "number") {
+    // The window, measured on the bot's clock, so a skewed viewer clock doesn't matter.
+    const windowSec = Math.max(5, Math.min(120, ((ev.until ?? ev.ts + 30_000) - ev.ts) / 1000));
+    return { v: "bite", code: ev.code, windowSec };
   }
   if (ev.kind === "steal" && ev.item) {
     const cm = /\((\d+) cm\)/.exec(t);
@@ -116,7 +122,7 @@ function sceneOf(ev: FishOverlayEvent): Scene | null {
 
 function holdOf(s: Scene): number {
   if (s.v !== "catch") return 0;
-  return s.rarity === "Legendary" ? 4.5 : s.rarity === "Epic" ? 2.8 : s.rarity === "Rare" ? 2 : 1.4;
+  return s.rarity === "Mythic" ? 5.5 : s.rarity === "Legendary" ? 4.5 : s.rarity === "Epic" ? 2.8 : s.rarity === "Rare" ? 2 : 1.4;
 }
 
 /** Seconds a scene lasts at speed 1. */
@@ -130,6 +136,8 @@ function lengthOf(s: Scene): number {
       return 0.7 + s.haul.length * 0.12 + 2 + 0.6;
     case "steal":
       return 4.7;
+    case "bite":
+      return s.windowSec + 0.5;
     case "caught":
       return 4;
     case "lay":
@@ -186,7 +194,9 @@ function nameColor(name: string): string {
 
 function LaneView({ lane }: { lane: Lane }) {
   const { scene, ev, s } = lane;
-  const style = { "--s": s, "--hold": `${holdOf(scene)}s`, "--len": `${lengthOf(scene)}s` } as CSSProperties;
+  const style = {
+    "--s": s, "--hold": `${holdOf(scene)}s`, "--len": `${lengthOf(scene)}s`, ...(scene.v === "bite" ? { "--win": `${scene.windowSec}s` } : {}),
+  } as CSSProperties;
   const rarity = scene.v === "catch" && scene.rarity && scene.rarity !== "Common" ? scene.rarity.toLowerCase() : "";
   return (
     <div className={`fo-lane v-${scene.v} ${rarity ? `r-${rarity}` : ""}`} style={style}>
@@ -209,7 +219,7 @@ function LaneView({ lane }: { lane: Lane }) {
             <div key={i} className="fo-drop" style={{ "--dx": `${dx}em`, "--dy": `${-2.6 + Math.abs(dx) * 0.3}em` } as CSSProperties} />
           ))}
           {rarity ? <div className="fo-aura" /> : null}
-          {rarity === "legendary" ? <div className="fo-rays" /> : null}
+          {rarity === "legendary" || rarity === "mythic" ? <div className="fo-rays" /> : null}
           <div className="fo-fish">
             <span>{scene.item}</span>
           </div>
@@ -344,6 +354,20 @@ function LaneView({ lane }: { lane: Lane }) {
           })
         : null}
 
+      {scene.v === "bite" ? (
+        <>
+          <div className="fo-line" />
+          <div className="fo-bobber" />
+          <div className="fo-ripple r1" />
+          <div className="fo-ripple r2" />
+          <div className="fo-codebox">
+            <span className="fo-codelabel">Reel code</span>
+            <b>{scene.code}</b>
+          </div>
+          <div className="fo-timer" />
+        </>
+      ) : null}
+
       {scene.v === "steal" || scene.v === "caught" ? (
         <>
           <div className="fo-ripple r1" />
@@ -412,7 +436,17 @@ export default function FishOverlay({
   const enqueue = (events: FishOverlayEvent[]) => {
     for (const ev of events) {
       const scene = sceneOf(ev);
-      if (scene) queue.current.push({ ev, scene });
+      if (!scene) continue;
+      if (scene.v === "bite") {
+        // A reel code can't wait its turn: to the front of the queue.
+        queue.current.unshift({ ev, scene });
+        continue;
+      }
+      // The angler's answer ends their big bite, playing or still waiting.
+      const now = performance.now();
+      for (const l of lanes.current) if (l && l.scene.v === "bite" && l.ev.username === ev.username) l.endsAt = Math.min(l.endsAt, now + 250);
+      queue.current = queue.current.filter((w) => !(w.scene.v === "bite" && w.ev.username === ev.username));
+      queue.current.push({ ev, scene });
     }
     trimQueue(queue.current);
   };
@@ -484,13 +518,25 @@ export default function FishOverlay({
         return l;
       });
       const waiting = queue.current.length;
+      // A big bite with every lane busy takes the lane closest to finishing.
+      if (queue.current[0]?.scene.v === "bite" && !lanes.current.some((l) => !l)) {
+        let soonest = -1;
+        lanes.current.forEach((l, i) => {
+          if (l && l.scene.v !== "bite" && (soonest < 0 || l.endsAt < lanes.current[soonest]!.endsAt)) soonest = i;
+        });
+        if (soonest >= 0) {
+          lanes.current[soonest] = null;
+          changed = true;
+        }
+      }
       const free = lanes.current.flatMap((l, i) => (l ? [] : [i]));
-      const stagger = waiting > 3 ? 180 : 400;
+      const stagger = queue.current[0]?.scene.v === "bite" ? 0 : waiting > 3 ? 180 : 400;
       if (waiting && free.length && now - lastRelease.current >= stagger) {
         const next = queue.current.shift()!;
-        // Speed up while others wait; a rare catch keeps most of its moment.
+        // Speed up while others wait; a rare catch keeps most of its moment, and a big bite all of it.
         let s = waiting > 6 ? 0.55 : waiting > 1 ? 0.75 : 1;
-        if (next.scene.v === "catch" && (next.scene.rarity === "Legendary" || next.scene.rarity === "Epic")) s = Math.max(s, 0.85);
+        if (next.scene.v === "catch" && (next.scene.rarity === "Mythic" || next.scene.rarity === "Legendary" || next.scene.rarity === "Epic")) s = Math.max(s, 0.85);
+        if (next.scene.v === "bite") s = 1;
         const slot = free[Math.floor(Math.random() * free.length)];
         lanes.current[slot] = { ...next, s, endsAt: now + lengthOf(next.scene) * s * 1000 + 150 };
         lastRelease.current = now;
@@ -698,6 +744,30 @@ const CSS = `
   animation:fo-stamp ${T(0.35)} cubic-bezier(.2,1.6,.4,1) ${T(1.55)} both,fo-out .4s ease-in ${T(3.35)} forwards}
 @keyframes fo-stamp{from{transform:translateX(-50%) rotate(-7deg) scale(2.8);opacity:0}to{transform:translateX(-50%) rotate(-7deg) scale(1);opacity:1}}
 .fo-lane.v-steal .fo-tag-heist{bottom:calc(var(--surf) + .3em)}
+
+/* A big bite: the line tugs, the bobber thrashes, and the reel code waits over a draining timer. */
+.v-bite .fo-line{animation:fo-line-drop ${T(0.5)} ease-out both,fo-line-tug .3s ease-in-out .5s infinite}
+@keyframes fo-line-tug{50%{transform:rotate(4deg)}}
+.v-bite .fo-bobber{animation:fo-bob-drop ${T(0.5)} cubic-bezier(.5,0,.8,.6) both,fo-thrash .32s ease-in-out .5s infinite}
+@keyframes fo-thrash{0%,100%{transform:translate(0,.1em)}25%{transform:translate(-.28em,.55em)}75%{transform:translate(.28em,.35em)}}
+.v-bite .fo-ripple.r1{animation:fo-ripple .9s ease-out .5s infinite}
+.v-bite .fo-ripple.r2{animation:fo-ripple .9s ease-out .95s infinite}
+.fo-codebox{bottom:calc(var(--surf) + 3.3em);transform:translateX(-50%);text-align:center;white-space:nowrap;padding:.12em .55em .08em;border-radius:.4em;
+  background:rgba(8,16,32,.9);border:.1em solid #fde047;box-shadow:0 0 .8em rgba(253,224,71,.55);
+  animation:fo-big-in .45s cubic-bezier(.3,1.6,.5,1) .3s both,fo-code-pulse 1s ease-in-out .8s infinite,fo-out .4s ease-in calc(var(--len) - .5s) forwards}
+.fo-codebox b{display:block;font-size:2.3em;line-height:1;font-weight:900;letter-spacing:.06em;color:#fff;text-shadow:0 0 .3em rgba(253,224,71,.8)}
+.fo-codelabel{display:block;font-size:.5em;font-weight:800;letter-spacing:.14em;text-transform:uppercase;color:#fde047}
+@keyframes fo-code-pulse{50%{box-shadow:0 0 1.5em rgba(253,224,71,.95)}}
+.fo-timer{bottom:calc(var(--surf) + 2.55em);width:5em;height:.28em;margin-left:-2.5em;border-radius:.2em;background:#fde047;transform-origin:left center;
+  animation:fo-timer var(--win) linear .3s forwards}
+@keyframes fo-timer{from{transform:scaleX(1)}60%{background:#fbbf24}to{transform:scaleX(0);background:#ef4444}}
+
+/* Mythic: a big bite trophy, above Legendary. */
+.r-mythic .fo-aura{width:8em;height:8em;margin-left:-4em;bottom:calc(var(--surf) + 2.6em);
+  background:conic-gradient(rgba(244,114,182,.75),rgba(96,165,250,.75),rgba(52,211,153,.75),rgba(250,204,21,.75),rgba(244,114,182,.75));
+  -webkit-mask:radial-gradient(circle,#000 22%,transparent 68%);mask:radial-gradient(circle,#000 22%,transparent 68%);
+  animation:fo-in .5s ease-out calc(var(--s) * 2.2s) both,fo-spin 3s linear infinite,fo-out .5s ease-in calc(var(--s) * 2.65s + var(--hold)) forwards}
+.r-mythic .fo-tag b{color:#f9a8d4}
 .v-caught .fo-hook{animation:fo-hook-drop ${T(0.6)} cubic-bezier(.5,0,.8,.6) both,fo-hook-fall ${T(0.8)} ease-in ${T(1.45)} forwards}
 .v-caught .fo-loot{animation:fo-loot-up ${T(0.5)} ease-out ${T(0.65)} both,fo-loot-dive ${T(0.6)} ease-in ${T(1.45)} forwards}
 .v-caught .fo-hook::before{animation:fo-out ${T(0.15)} ease-in ${T(1.45)} forwards}

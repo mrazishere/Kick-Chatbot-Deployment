@@ -91,6 +91,8 @@ export interface PointsGames {
   reels?: FishReel[];
   /** `fish steal`. Absent from a bot service older than stealing. */
   steal?: FishSteal;
+  /** Big bites. Absent from a bot service older than them. */
+  bigBite?: FishBigBite;
 }
 
 /** `fish steal`: a hook to try, rarity odds, a burned fine when caught, and guards. Mirrors the bot's FishStealSetting. */
@@ -153,6 +155,15 @@ export interface FishCatch {
   price: number;
   defaultWeight: number;
   defaultPrice: number;
+  /** A big bite trophy: its odds are a share of big bites. */
+  trophy?: boolean;
+}
+
+/** Big bites: live casts that land a trophy if the angler types the code shown on stream. Mirrors the bot's FishBigBiteSetting. */
+export interface FishBigBite {
+  enabled: boolean;
+  oneIn: number;
+  windowSeconds: number;
 }
 
 /** The bot's defaults, for a bot service that doesn't report game settings yet. */
@@ -364,7 +375,9 @@ interface SettingsForm {
   fishBaitPct: string;
   fishStories: boolean;
   fishChatReplies: boolean;
-  fishCatches: { name: string; type: "fish" | "junk"; weight: string; price: string; defaultWeight: number; defaultPrice: number }[];
+  fishCatches: { name: string; type: "fish" | "junk"; weight: string; price: string; defaultWeight: number; defaultPrice: number; trophy?: boolean }[];
+  /** null when the bot service doesn't report big bites. */
+  fishBigBite: { enabled: boolean; oneIn: string; windowSeconds: string } | null;
   /** null when the bot service doesn't report reels. */
   fishReels: { name: string; price: string; odds: string; rarity: string; value: string }[] | null;
   /** null when the bot service doesn't report stealing. */
@@ -430,6 +443,9 @@ function formFromConfig(c: PointsConfig): SettingsForm {
     fishStories: (c.games ?? GAMES_DEFAULTS).stories,
     fishChatReplies: (c.games ?? GAMES_DEFAULTS).chatReplies !== false,
     fishCatches: (c.games?.catches ?? []).map((x) => ({ ...x, weight: String(x.weight), price: String(x.price) })),
+    fishBigBite: c.games?.bigBite
+      ? { enabled: c.games.bigBite.enabled, oneIn: String(c.games.bigBite.oneIn), windowSeconds: String(c.games.bigBite.windowSeconds) }
+      : null,
     fishReels: c.games?.reels
       ? c.games.reels.map((r) => ({
           name: r.name,
@@ -602,10 +618,13 @@ function buildPatch(f: SettingsForm): { patch: PointsSettingsPatch } | { error: 
       const price = whole(c.price, `${c.name} price`, 0, 1_000_000_000);
       if (weight !== c.defaultWeight || price !== c.defaultPrice) catches[c.name] = { weight, price };
     }
-    for (const type of ["fish", "junk"] as const) {
-      if (f.fishCatches.filter((c) => c.type === type).every((c) => Number(c.weight) === 0)) {
-        errors.push(`At least one ${type === "fish" ? "fish" : "junk item"} needs odds above 0`);
-      }
+    const pools: Array<[string, typeof f.fishCatches]> = [
+      ["fish", f.fishCatches.filter((c) => c.type === "fish" && !c.trophy)],
+      ["junk item", f.fishCatches.filter((c) => c.type === "junk")],
+      ["big bite trophy", f.fishCatches.filter((c) => c.trophy)],
+    ];
+    for (const [label, pool] of pools) {
+      if (pool.length && pool.every((c) => Number(c.weight) === 0)) errors.push(`At least one ${label} needs odds above 0`);
     }
     patch.games.catches = catches;
   }
@@ -627,6 +646,13 @@ function buildPatch(f: SettingsForm): { patch: PointsSettingsPatch } | { error: 
       };
     });
     if (f.fishReels.length > 10) errors.push("There can be at most 10 reels");
+  }
+  if (f.fishBigBite) {
+    patch.games.bigBite = {
+      enabled: f.fishBigBite.enabled,
+      oneIn: whole(f.fishBigBite.oneIn, "Big bite odds", 2, 1000),
+      windowSeconds: whole(f.fishBigBite.windowSeconds, "Big bite reel time", 10, 120),
+    };
   }
   if (f.fishSteal) {
     const steal = { enabled: f.fishSteal.enabled } as FishSteal;
@@ -742,6 +768,41 @@ const CELL_INPUT =
   "w-full rounded-md border border-neutral-700 bg-neutral-900 px-2 py-1 text-right text-sm tabular-nums text-neutral-200 outline-none transition focus:border-neutral-500 disabled:opacity-40";
 
 type CatchRow = SettingsForm["fishCatches"][number];
+type BigBiteForm = NonNullable<SettingsForm["fishBigBite"]>;
+
+/** Big bites: on by default, but only ever while live with a fishing overlay showing. */
+function BigBiteSettings({ value, command, disabled, onChange }: {
+  value: BigBiteForm;
+  command: string;
+  disabled: boolean;
+  onChange: (v: BigBiteForm) => void;
+}) {
+  return (
+    <div className="mt-4 rounded-md border border-neutral-800 p-3">
+      <Checkbox
+        label={`Big bites: live casts that land a trophy if reeled in ($${command} fish reel <code>)`}
+        checked={value.enabled}
+        disabled={disabled}
+        onChange={(enabled) => onChange({ ...value, enabled })}
+      />
+      {value.enabled ? (
+        <>
+          <div className="mt-3 grid gap-4 sm:grid-cols-4">
+            <Field label="Big bite odds (1 in …)" hint="live casts, default 40">
+              <input value={value.oneIn} inputMode="numeric" disabled={disabled} onChange={(e) => onChange({ ...value, oneIn: e.target.value })} className={INPUT} />
+            </Field>
+            <Field label="Time to reel in (s)" hint="10–120, default 30">
+              <input value={value.windowSeconds} inputMode="numeric" disabled={disabled} onChange={(e) => onChange({ ...value, windowSeconds: e.target.value })} className={INPUT} />
+            </Field>
+          </div>
+          <p className="mt-3 text-xs text-neutral-500">
+            {`While the stream is live and a fishing overlay is showing, some casts hook something big instead. Chat says so, but the reel code appears only on the overlay, so chat scripts can't answer it; the angler types $${command} fish reel <code> in time to land a Mythic trophy (see the trophies in the catch table), or it gets away. An answer faster than the stream could show the code snaps the line. With no overlay showing, there are no big bites.`}
+          </p>
+        </>
+      ) : null}
+    </div>
+  );
+}
 type StealForm = NonNullable<SettingsForm["fishSteal"]>;
 
 /** `fish steal`, off until a channel turns it on; the numbers only show once it's on. */
@@ -895,14 +956,15 @@ function CatchTable({ rows, currency, disabled, onChange }: {
   const reset = () =>
     onChange(rows.map((r) => ({ ...r, weight: String(r.defaultWeight), price: String(r.defaultPrice) })));
 
-  const table = (type: "fish" | "junk") => {
-    const ofType = rows.filter((r) => r.type === type);
+  const table = (type: "fish" | "junk" | "trophy") => {
+    const ofType = rows.filter((r) => (type === "trophy" ? r.trophy : r.type === type && !r.trophy));
+    if (!ofType.length) return null;
     const total = ofType.reduce((sum, r) => sum + (Number(r.weight) > 0 ? Number(r.weight) : 0), 0);
     return (
       <table className="w-full text-sm">
         <thead>
           <tr className="text-xs text-neutral-500">
-            <th className="pb-1 text-left font-normal">{type === "fish" ? "Fish" : "Junk"}</th>
+            <th className="pb-1 text-left font-normal">{type === "fish" ? "Fish" : type === "junk" ? "Junk" : "Big bite trophies"}</th>
             <th className="w-20 pb-1 text-right font-normal">Odds</th>
             <th className="w-16 pb-1 text-right font-normal">Chance</th>
             <th className="w-28 pb-1 text-right font-normal">Sells for</th>
@@ -955,10 +1017,11 @@ function CatchTable({ rows, currency, disabled, onChange }: {
         <div className="grid items-start gap-6 lg:grid-cols-2">
           {table("fish")}
           {table("junk")}
+          {table("trophy")}
         </div>
         <div className="mt-3 flex flex-wrap items-start justify-between gap-3">
           <p className="max-w-xl text-xs text-neutral-500">
-            {`Lower odds make an item rarer: 0.5 is half as likely as 1, and 0 is never caught. Chance is that item's share of fish (or junk) catches; how often a cast lands anything at all is the catch odds above. Prices are in ${currency}, and a fish's length and a record still scale its price.`}
+            {`Lower odds make an item rarer: 0.5 is half as likely as 1, and 0 is never caught. Chance is that item's share of fish (or junk) catches; how often a cast lands anything at all is the catch odds above. Trophies only come from big bites, and their chance is a share of big bites. Prices are in ${currency}, and a fish's length and a record still scale its price; the sell-price % above doesn't change trophies.`}
           </p>
           <button
             type="button"
@@ -1656,6 +1719,14 @@ export default function PointsCard({
                     command={commandPreview || "…"}
                     disabled={readOnly || !!busy}
                     onChange={(rows) => set("fishReels", rows)}
+                  />
+                ) : null}
+                {form.fishBigBite ? (
+                  <BigBiteSettings
+                    value={form.fishBigBite}
+                    command={commandPreview || "…"}
+                    disabled={readOnly || !!busy}
+                    onChange={(v) => set("fishBigBite", v)}
                   />
                 ) : null}
                 {form.fishSteal ? (

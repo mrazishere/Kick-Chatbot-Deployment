@@ -53,6 +53,7 @@ const RARITY_CLASS: Record<PublicCatch["rarity"], string> = {
   Rare: "border-sky-900/70 bg-sky-950/30 text-sky-300",
   Epic: "border-fuchsia-900/70 bg-fuchsia-950/30 text-fuchsia-300",
   Legendary: "border-amber-800/70 bg-amber-950/30 text-amber-300",
+  Mythic: "border-pink-800/70 bg-pink-950/30 text-pink-300",
   Never: "border-neutral-800 text-neutral-600",
 };
 
@@ -110,7 +111,7 @@ function RarestCatches({ rows, channel }: { rows: PublicRareCatch[]; channel: st
             <span className="min-w-0 flex-1">
               <span className="flex flex-wrap items-center gap-2">
                 <span className={`rounded-md border px-1.5 py-0.5 text-xs ${RARITY_CLASS[r.rarity]}`}>{r.rarity}</span>
-                <span className="text-xs tabular-nums text-neutral-500">{formatChance(r.chance)}</span>
+                <span className="text-xs tabular-nums text-neutral-500">{r.trophy ? "big bite" : formatChance(r.chance)}</span>
               </span>
               <span className="mt-1 block text-xs text-neutral-500">
                 First by {who(r.firstBy)} on {formatDay(r.firstAt)}
@@ -135,6 +136,14 @@ function FishingTab({ fishing, currency, channel }: { fishing: PublicFishing; cu
       {fishing.rarest.length ? <RarestCatches rows={fishing.rarest} channel={channel} /> : null}
       {fishing.steal || fishing.heists ? <Heists heists={fishing.heists ?? null} currency={currency} channel={channel} /> : null}
       <CatchTable title="Fish" rows={fishing.fish} currency={currency} />
+      {fishing.bigBite && fishing.trophies?.length ? (
+        <>
+          <p className="text-xs text-neutral-500">
+            {`🎣 Big bites: while the stream is live, about 1 cast in ${fishing.bigBite.oneIn} hooks something big. The reel code shows only on stream; type it in time to land a trophy. Chance here is a share of big bites.`}
+          </p>
+          <CatchTable title="Trophies" rows={fishing.trophies} currency={currency} />
+        </>
+      ) : null}
       {fishing.junk.length ? <CatchTable title="Junk" rows={fishing.junk} currency={currency} /> : null}
     </div>
   );

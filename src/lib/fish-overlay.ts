@@ -58,7 +58,7 @@ const TTL_MS = 1_000;
 const cache = new Map<string, { at: number; data: FishOverlayFeed }>();
 const inFlight = new Map<string, Promise<FishOverlayFeed>>();
 
-const KINDS = new Set(["catch", "trap", "miss", "steal", "caught", "info"]);
+const KINDS = new Set(["catch", "trap", "miss", "steal", "caught", "bite", "info"]);
 
 function shape(raw: FishOverlayFeed): FishOverlayFeed {
   const events = (Array.isArray(raw.events) ? raw.events : []).slice(-50).flatMap((e): FishOverlayEvent[] => {
@@ -76,6 +76,8 @@ function shape(raw: FishOverlayFeed): FishOverlayFeed {
       text: e.text.slice(0, 500),
       ...(typeof e.item === "string" && e.item.length <= 8 ? { item: e.item } : {}),
       ...(typeof e.rarity === "string" && e.rarity.length <= 12 ? { rarity: e.rarity } : {}),
+      ...(e.kind === "bite" && Number.isInteger(e.code) && e.code! >= 0 && e.code! <= 999 ? { code: e.code } : {}),
+      ...(e.kind === "bite" && typeof e.until === "number" ? { until: e.until } : {}),
       ...(Object.keys(emotes).length ? { emotes } : {}),
     }];
   });
