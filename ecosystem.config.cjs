@@ -18,6 +18,8 @@ module.exports = {
       error_file: "./logs/err.log",
       out_file: "./logs/out.log",
       log_file: "./logs/combined.log",
+      // Cluster mode would otherwise add the instance id to each log file name.
+      merge_logs: true,
       time: true,
     },
   ],
