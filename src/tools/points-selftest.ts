@@ -787,7 +787,11 @@ async function main(): Promise<void> {
       await fire();
       const ev4 = lastBite()!;
       shift += 31_000;
-      await run(`$don fish reel ${ev4.code}`, ['biter', 41]);
+      // Past the countdown but inside the stream-delay grace: still counts.
+      check('an answer just after the countdown still counts, for stream delay', (await run(`$don fish reel ${ev4.code}`, ['biter', 41], 0), lastShown()?.kind === 'bite' && lastShown()!.pull === 2));
+      const ev5 = lastBite()!;
+      shift += 20_000;
+      await run(`$don fish reel ${ev5.code}`, ['biter', 41]);
       check('too slow loses it', !!lastShown()?.text.includes('Too slow'));
       check('reel with nothing on the line', (await run('$don fish reel 42', ['biter', 41])).includes('nothing big on your line'));
 
@@ -805,7 +809,7 @@ async function main(): Promise<void> {
       Date.now = realNow;
       resetBites(ch);
     }
-    check('big bite settings are validated', validatePointsPatch({}, { games: { bigBite: { everyMinutes: 5, activeMinutes: 0, windowSeconds: 5, pulls: 9, pullSeconds: 5 } } }).errors.length === 5);
+    check('big bite settings are validated', validatePointsPatch({}, { games: { bigBite: { everyMinutes: 5, activeMinutes: 0, windowSeconds: 5, pulls: 9, pullSeconds: 4 } } }).errors.length === 5);
     check('a trophy pool can\'t be switched off entirely', validatePointsPatch({}, { games: { catches: Object.fromEntries(ITEMS.filter(i => i.trophy).map(i => [i.name, { weight: 0 }])) } })
       .errors.some(e => e.includes('big bite trophy')));
   }

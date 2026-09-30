@@ -90,7 +90,7 @@ export function defaultPointsConfig(): PointsConfig {
 }
 
 /** On by default: it only happens while live with an overlay showing, to someone chatting. */
-export const DEFAULT_BIG_BITE: Readonly<FishBigBiteSetting> = { enabled: true, everyMinutes: 30, activeMinutes: 10, windowSeconds: 30, pulls: 3, pullSeconds: 15 };
+export const DEFAULT_BIG_BITE: Readonly<FishBigBiteSetting> = { enabled: true, everyMinutes: 30, activeMinutes: 10, windowSeconds: 30, pulls: 3, pullSeconds: 8 };
 
 const BIG_BITE_NUMBERS: Record<Exclude<keyof FishBigBiteSetting, 'enabled'>, Rule> = {
   // At least 10 minutes pass between two bites whatever the average says.
@@ -99,7 +99,8 @@ const BIG_BITE_NUMBERS: Record<Exclude<keyof FishBigBiteSetting, 'enabled'>, Rul
   // The stream runs a few seconds behind chat; under 10s nobody could answer.
   windowSeconds: { min: 10, max: 120, integer: true },
   pulls: { min: 1, max: 5, integer: true },
-  pullSeconds: { min: 10, max: 60, integer: true }
+  // Later pulls are meant to be quick; STREAM_GRACE_MS covers the stream's delay on top.
+  pullSeconds: { min: 5, max: 60, integer: true }
 };
 
 /** The stored big bite settings with values clamped; anything not stored keeps its default. */

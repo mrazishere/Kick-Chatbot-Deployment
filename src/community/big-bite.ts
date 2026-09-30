@@ -46,6 +46,11 @@ const lastChatter = new Map<string, string>();
 
 /** The stream runs a few seconds behind chat: an answer this soon can't have come from watching it. */
 export const BITE_TOO_FAST_MS = 2_000;
+/**
+ * The same delay the other way: a viewer sees the overlay's countdown a few seconds
+ * late, so an answer still counts this long after a code's time runs out.
+ */
+export const STREAM_GRACE_MS = 4_000;
 /** However the average is set, at least this long between two big bites in a channel. */
 const MIN_GAP_MS = 10 * 60_000;
 /** How often the points service calls tick(). */
@@ -104,7 +109,7 @@ function arm(ctx: BiteContext, bite: Bite, windowMs: number, text: string, now: 
     if (bites.get(k) !== bite || bite.code !== code) return;
     bites.delete(k);
     getAway(ctx, bite.username, bite.pull > 1 ? 'It pulled too hard and swam off!' : 'It was too strong and swam off!');
-  }, windowMs + 500);
+  }, windowMs + STREAM_GRACE_MS + 500);
   bite.timer.unref?.();
   pushOverlay(ctx.db, { username: bite.username, kind: 'bite', text, code, until: bite.until, pull: bite.pull, pulls: bite.pulls }, now);
 }

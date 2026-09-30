@@ -2831,7 +2831,8 @@ app.get('/internal/bot/:channel/overlay/fishing', internalGuard(false), (req, re
   if (!db) return res.json({ lastId: 0, events: [] });
   try {
     markOverlaySeen(db);
-    return res.json(readOverlay(db));
+    // The bot's clock, so the overlay counts a big bite down to the real deadline.
+    return res.json({ ...readOverlay(db), now: Date.now() });
   } catch (e) {
     return pointsUnavailable(res, channel, e);
   }

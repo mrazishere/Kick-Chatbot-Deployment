@@ -47,7 +47,7 @@ import { gameInvocation } from '../community/stakes';
 import { addReminder, cancelSelfRemindersStartingWith, openCommunityDb } from '../community/store';
 import { bestEmote, broadcasterIdFor, emoteImages } from '../community/emotes';
 import { OverlayKind, overlayShowing, pushOverlay } from '../community/fish-overlay';
-import { BITE_TOO_FAST_MS, biteFor, getAway, nextPull, startBite, takeBite, type BiteContext } from '../community/big-bite';
+import { BITE_TOO_FAST_MS, STREAM_GRACE_MS, biteFor, getAway, nextPull, startBite, takeBite, type BiteContext } from '../community/big-bite';
 import {
   addItem, baitPrice, baitRoll, currentReel, heldFishValue, landsFish, moveFish, pickHeld, stealableFish, stealChance, stealCharges, worstStealCharges, parseSellList, CatchItem, CatchType, FAILURE_EMOTES, FishData, findBait, hasFishedBefore, initialData, rarityOf, recordCatch,
   ITEMS, JUNK_MESSAGES, loadFish, MISS_DELAY_MS, pick, randomInt, rollCatch, saveFish, sellPrice, STORY_STYLES, SUCCESS_EMOTES,
@@ -274,7 +274,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     if (!bite) return void say("There's nothing big on your line right now.");
     const at = Date.now();
     const fail = (why: string) => { takeBite(chan, meLc); getAway(biteCtx(), me, why); };
-    if (at > bite.until) return fail('Too slow! It shook the hook and swam off.');
+    if (at > bite.until + STREAM_GRACE_MS) return fail('Too slow! It shook the hook and swam off.');
     if (at - bite.startedAt < BITE_TOO_FAST_MS) return fail('You yanked too early and snapped the line!');
     if (!/^\d+$/.test(codeRaw ?? '') || Number(codeRaw) !== bite.code) return fail('Wrong move! The line snapped.');
     if (bite.pull < bite.pulls) return nextPull(biteCtx(), bite);
