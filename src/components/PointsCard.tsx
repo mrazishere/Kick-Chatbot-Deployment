@@ -818,7 +818,7 @@ function BigBiteSettings({ value, command, disabled, onChange }: {
             </Field>
           </div>
           <p className="mt-3 text-xs text-neutral-500">
-            {`While the stream is live and a fishing overlay is showing, a random viewer who chatted recently gets something big on their line, about as often as set (never twice within 10 minutes, and never the same viewer twice in a row). Chat names them, but the reel code appears only on the overlay, so chat scripts can't answer it. They type $${command} fish reel <code>, and each right answer brings a new code for the next pull; after the last pull the trophy lands by its own chance (🦭 90% down to 🐉 40%) or snaps the line. A wrong code or too slow and it gets away. It isn't a cast: it doesn't touch their fishing cooldown. With no overlay showing, there are no big bites.`}
+            {`While the stream is live and a fishing overlay is showing, a random viewer who chatted recently gets something big on their line, about as often as set (never twice within 10 minutes, and never the same viewer twice in a row). Chat gets one line naming them; the reel codes, every pull and the result play on the overlay only, which keeps chat quiet and means chat scripts can't answer. They type $${command} fish reel <code>, and each right answer brings a new code for the next pull; after the last pull the trophy lands by its own chance (🦭 90% down to 🐉 40%) or snaps the line. A wrong code or too slow and it gets away. It isn't a cast: it doesn't touch their fishing cooldown. With no overlay showing, there are no big bites.`}
           </p>
         </>
       ) : null}
