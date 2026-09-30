@@ -13,5 +13,6 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ chan
   const headers = { "Cache-Control": "no-store" };
   if (r.kind === "not-found") return NextResponse.json({ error: "Fishing is off in this channel" }, { status: 404, headers });
   if (r.kind === "unavailable") return NextResponse.json({ error: "Unavailable" }, { status: 503, headers });
-  return NextResponse.json(r.data, { headers });
+  // build: which dashboard build answered, so an overlay running older page code reloads.
+  return NextResponse.json({ ...r.data, build: process.env.DASH_BUILD_ID }, { headers });
 }

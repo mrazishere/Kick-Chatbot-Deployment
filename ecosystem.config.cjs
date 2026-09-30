@@ -6,7 +6,11 @@ module.exports = {
       script: "./node_modules/next/dist/bin/next",
       args: "start -p 3008 -H 127.0.0.1",
       instances: 1,
-      exec_mode: "fork",
+      // Cluster mode so `pm2 reload` (scripts/deploy.sh) starts the new server and
+      // waits for it to listen before stopping the old one: no gap between builds.
+      exec_mode: "cluster",
+      listen_timeout: 30000,
+      kill_timeout: 5000,
       autorestart: true,
       watch: false,
       max_memory_restart: "512M",

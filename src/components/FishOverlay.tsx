@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import type { FishOverlayEvent } from "@/lib/bot-api";
+import { isStale, reloadInto, takeCursor } from "@/lib/overlay-build";
 import { syncClock, useCodeHidden, useCountdown } from "@/lib/overlay-clock";
 import { demoGenerator, type DemoOdds } from "@/lib/fish-demo";
 
@@ -485,13 +486,14 @@ export default function FishOverlay({
   // Poll the feed. The first answer only sets where to start, so opening the
   // source doesn't replay the last few minutes.
   useEffect(() => {
-    let after: number | null = null;
     const url = `${BASE_PATH}/api/overlay/${encodeURIComponent(channel)}/fishing?key=${encodeURIComponent(overlayKey)}`;
+    // After reloading into a new build, carry on from where the old page was.
+    let after: number | null = takeCursor(url);
     const poll = async () => {
       try {
         const res = await fetch(url, { cache: "no-store" });
         if (!res.ok) return;
-        const data = (await res.json()) as { lastId: number; events: FishOverlayEvent[]; now?: number };
+        const data = (await res.json()) as { lastId: number; events: FishOverlayEvent[]; now?: number; build?: string };
         syncClock(data.now);
         if (after === null || data.lastId < after) {
           after = data.lastId; // first load, or the feed restarted
@@ -502,6 +504,8 @@ export default function FishOverlay({
           after = Math.max(...fresh.map((e) => e.id));
           enqueue(fresh);
         }
+        // A newer dashboard build is live: reload into it once nothing is on screen.
+        if (isStale(data.build) && !lanes.current.some(Boolean) && queue.current.length === 0) reloadInto(data.build!, url, after);
       } catch {
         // offline for a moment; the next poll catches up
       }
