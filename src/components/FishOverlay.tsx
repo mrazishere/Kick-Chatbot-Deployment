@@ -456,6 +456,8 @@ export default function FishOverlay({
         const i = lanes.current.findIndex((l) => l && l.scene.v === "bite" && l.ev.username === ev.username);
         if (i >= 0) {
           lanes.current[i] = { ev, scene, s: 1, endsAt: now + lengthOf(scene) * 1000 + 150 };
+          // Lanes live in a ref: redraw now, or the old code stays up until something else changes.
+          setVersion((v) => v + 1);
           continue;
         }
         // A reel code can't wait its turn: to the front of the queue.
