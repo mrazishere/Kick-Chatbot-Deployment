@@ -167,6 +167,7 @@ export interface FishBigBite {
   windowSeconds: number;
   pulls: number;
   pullSeconds: number;
+  flashSeconds: number;
 }
 
 /** The bot's defaults, for a bot service that doesn't report game settings yet. */
@@ -380,7 +381,7 @@ interface SettingsForm {
   fishChatReplies: boolean;
   fishCatches: { name: string; type: "fish" | "junk"; weight: string; price: string; defaultWeight: number; defaultPrice: number; trophy?: boolean }[];
   /** null when the bot service doesn't report big bites. */
-  fishBigBite: { enabled: boolean; everyMinutes: string; activeMinutes: string; windowSeconds: string; pulls: string; pullSeconds: string } | null;
+  fishBigBite: { enabled: boolean; everyMinutes: string; activeMinutes: string; windowSeconds: string; pulls: string; pullSeconds: string; flashSeconds: string } | null;
   /** null when the bot service doesn't report reels. */
   fishReels: { name: string; price: string; odds: string; rarity: string; value: string }[] | null;
   /** null when the bot service doesn't report stealing. */
@@ -454,6 +455,7 @@ function formFromConfig(c: PointsConfig): SettingsForm {
           windowSeconds: String(c.games.bigBite.windowSeconds),
           pulls: String(c.games.bigBite.pulls ?? 3),
           pullSeconds: String(c.games.bigBite.pullSeconds ?? 8),
+          flashSeconds: String(c.games.bigBite.flashSeconds ?? 3),
         }
       : null,
     fishReels: c.games?.reels
@@ -665,6 +667,7 @@ function buildPatch(f: SettingsForm): { patch: PointsSettingsPatch } | { error: 
       windowSeconds: whole(f.fishBigBite.windowSeconds, "Big bite first code time", 10, 120),
       pulls: whole(f.fishBigBite.pulls, "Big bite pulls", 1, 5),
       pullSeconds: whole(f.fishBigBite.pullSeconds, "Big bite time per pull", 5, 60),
+      flashSeconds: whole(f.fishBigBite.flashSeconds, "Big bite code flash", 0, 60),
     };
   }
   if (f.fishSteal) {
@@ -816,9 +819,12 @@ function BigBiteSettings({ value, command, disabled, onChange }: {
             <Field label="Each later pull (s)" hint="quick on purpose, 5–60, default 8">
               <input value={value.pullSeconds} inputMode="numeric" disabled={disabled} onChange={(e) => onChange({ ...value, pullSeconds: e.target.value })} className={INPUT} />
             </Field>
+            <Field label="Later codes flash for (s)" hint="then hide; 0 keeps them shown, default 3">
+              <input value={value.flashSeconds} inputMode="numeric" disabled={disabled} onChange={(e) => onChange({ ...value, flashSeconds: e.target.value })} className={INPUT} />
+            </Field>
           </div>
           <p className="mt-3 text-xs text-neutral-500">
-            {`While the stream is live and a fishing overlay is showing, a random viewer who chatted recently gets something big on their line, about as often as set (never twice within 10 minutes, and never the same viewer twice in a row). Chat gets two lines, one naming them and one with the result; the reel codes and every pull play on the overlay only, which keeps chat quiet and means chat scripts can't answer. They type $${command} fish reel <code>, and each right answer brings a new code for the next pull, with less time; the overlay counts each one down, and an answer still counts a few seconds after zero for the stream's delay; after the last pull the trophy lands by its own chance (🦭 90% down to 🐉 40%) or snaps the line. A wrong code or too slow and it gets away. It isn't a cast: it doesn't touch their fishing cooldown. With no overlay showing, there are no big bites.`}
+            {`While the stream is live and a fishing overlay is showing, a random viewer who chatted recently gets something big on their line, about as often as set (never twice within 10 minutes, and never the same viewer twice in a row). Chat gets two lines, one naming them and one with the result; the reel codes and every pull play on the overlay only, which keeps chat quiet and means chat scripts can't answer. They type $${command} fish reel <code>, and each right answer brings a harder code for the next pull (two digits, then three and four letters and numbers, any case) with less time, shown only for a flash before it hides; the overlay counts each one down, and an answer still counts a few seconds after zero for the stream's delay; after the last pull the trophy lands by its own chance (🦭 90% down to 🐉 40%) or snaps the line. A wrong code or too slow and it gets away. It isn't a cast: it doesn't touch their fishing cooldown. With no overlay showing, there are no big bites.`}
           </p>
         </>
       ) : null}

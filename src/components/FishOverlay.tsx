@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import type { FishOverlayEvent } from "@/lib/bot-api";
-import { syncClock, useCountdown } from "@/lib/overlay-clock";
+import { codeHidden, syncClock, useCountdown } from "@/lib/overlay-clock";
 import { demoGenerator, type DemoOdds } from "@/lib/fish-demo";
 
 const BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
@@ -24,7 +24,7 @@ type Scene =
   | { v: "catch"; item: string; rarity: string | null; cm: number | null }
   | { v: "miss"; junk: string | null }
   | { v: "trap"; haul: string[] }
-  | { v: "bite"; code: number; windowSec: number; pull: number; pulls: number; until?: number }
+  | { v: "bite"; code: string; windowSec: number; pull: number; pulls: number; until?: number; flashUntil?: number }
   | { v: "steal"; item: string; victim: string | null; cm: number | null }
   | { v: "caught"; item: string; victim: string | null; fine: string | null }
   | { v: "lay" }
@@ -62,10 +62,13 @@ function sceneOf(ev: FishOverlayEvent): Scene | null {
     const cm = /It is (\d+) cm/.exec(t);
     return { v: "catch", item: ev.item, rarity: ev.rarity ?? null, cm: cm ? Number(cm[1]) : null };
   }
-  if (ev.kind === "bite" && typeof ev.code === "number") {
+  if (ev.kind === "bite" && typeof ev.code === "string") {
     // The window, measured on the bot's clock, so a skewed viewer clock doesn't matter.
     const windowSec = Math.max(5, Math.min(120, ((ev.until ?? ev.ts + 30_000) - ev.ts) / 1000));
-    return { v: "bite", code: ev.code, windowSec, pull: ev.pull ?? 1, pulls: ev.pulls ?? 1, ...(ev.until ? { until: ev.until } : {}) };
+    return {
+      v: "bite", code: ev.code, windowSec, pull: ev.pull ?? 1, pulls: ev.pulls ?? 1,
+      ...(ev.until ? { until: ev.until } : {}), ...(ev.flashUntil ? { flashUntil: ev.flashUntil } : {}),
+    };
   }
   if (ev.kind === "steal" && ev.item) {
     const cm = /\((\d+) cm\)/.exec(t);
@@ -203,7 +206,7 @@ function BiteView({ scene }: { scene: Extract<Scene, { v: "bite" }> }) {
       <div className="fo-ripple r2" />
       <div className="fo-codebox">
         <span className="fo-codelabel">{scene.pulls > 1 ? `Pull ${scene.pull}/${scene.pulls}` : "Reel code"}</span>
-        <b>{scene.code}</b>
+        {codeHidden(scene.flashUntil) ? <b className="fo-codegone">• • •</b> : <b className={scene.code.length > 2 ? "fo-codelong" : ""}>{scene.code}</b>}
         <span className="fo-codesecs" style={{ color }}>{secs > 0 ? `${secs}s left` : "time's up!"}</span>
       </div>
       <div className="fo-timer" style={{ transform: `scaleX(${frac})`, background: color }} />
@@ -779,6 +782,8 @@ const CSS = `
 .fo-timer{bottom:calc(var(--surf) + 2.55em);width:5em;height:.28em;margin-left:-2.5em;border-radius:.2em;transform-origin:left center;
   transition:transform .25s linear,background .4s}
 .fo-codesecs{display:block;font-size:.55em;font-weight:800;letter-spacing:.04em;margin-top:.1em}
+.fo-codebox b.fo-codelong{font-size:1.9em;letter-spacing:.1em}
+.fo-codebox b.fo-codegone{color:rgba(255,255,255,.35);text-shadow:none;letter-spacing:.02em}
 
 /* Mythic: a big bite trophy, above Legendary. */
 .r-mythic .fo-aura{width:8em;height:8em;margin-left:-4em;bottom:calc(var(--surf) + 2.6em);

@@ -15,6 +15,9 @@ export function syncClock(botNow: unknown): void {
 /** The bot's time now, as best known. */
 export const botNow = (): number => Date.now() + offset;
 
+/** Whether a flashing code has gone dark yet. Re-evaluated on each countdown tick. */
+export const codeHidden = (flashUntil: number | undefined): boolean => flashUntil !== undefined && botNow() >= flashUntil;
+
 /** Time left to a big bite's deadline, ticking a few times a second. `total` is the whole window. */
 export function useCountdown(until: number | undefined, total: number): { left: number; frac: number; secs: number } {
   const [, tick] = useState(0);
