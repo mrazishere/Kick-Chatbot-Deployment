@@ -2,8 +2,9 @@
  * Big bites: while the stream is live and a fishing overlay is showing, now and then
  * a random active chatter gets something big on their line. Chat says so; the
  * two-digit reel code appears only on the overlay, so a chat script can't copy it.
- * The chatter answers with `$<cmd> fish reel <code>` (bot-commands/fish.ts) within
- * the window to land a Mythic trophy, or it gets away.
+ * The chatter answers with `$<cmd> fish reel <code>` (bot-commands/fish.ts); each
+ * right answer brings a new code for the next pull, and the last pull lands a
+ * Mythic trophy by its land chance. A wrong code or too slow, and it gets away.
  *
  * The points service calls tick() every half minute. Bites don't touch anyone's
  * casting or cooldowns: they aren't a cast.
@@ -20,9 +21,13 @@ import { overlayShowing, pushOverlay } from './fish-overlay';
 export interface Bite {
   username: string;
   userId: number;
+  /** The code for the current pull, and when it was shown and runs out. */
   code: number;
   startedAt: number;
   until: number;
+  /** The pull this code is for, 1-based, of `pulls`. */
+  pull: number;
+  pulls: number;
   timer: NodeJS.Timeout;
 }
 
@@ -83,27 +88,45 @@ export function getAway(ctx: BiteContext, name: string, why: string): void {
   void ctx.sendMessage(`@${name} ${text}`).catch(() => {});
 }
 
+/** A fresh code for this pull: armed to get away if it isn't answered in time, and shown only on the overlay. */
+function arm(ctx: BiteContext, bite: Bite, windowMs: number, text: string, now: number): void {
+  const k = key(ctx.channel, bite.username);
+  clearTimeout(bite.timer);
+  let code = crypto.randomInt(10, 100);
+  if (code === bite.code) code = code === 99 ? 10 : code + 1; // a new pull always has a new code
+  bite.code = code;
+  bite.startedAt = now;
+  bite.until = now + windowMs;
+  bite.timer = setTimeout(() => {
+    if (bites.get(k) !== bite || bite.code !== code) return;
+    bites.delete(k);
+    getAway(ctx, bite.username, bite.pull > 1 ? 'It pulled too hard and swam off!' : 'It was too strong and swam off!');
+  }, windowMs + 500);
+  bite.timer.unref?.();
+  pushOverlay(ctx.db, { username: bite.username, kind: 'bite', text, code, until: bite.until, pull: bite.pull, pulls: bite.pulls }, now);
+  void ctx.sendMessage(`@${bite.username} ${text}`).catch(() => {});
+}
+
 /** Put a big bite on this chatter's line: chat says so, and only the overlay gets the code. */
 export function startBite(ctx: BiteContext, name: string, userId: number): Bite {
   const now = ctx.now ?? Date.now();
-  const code = crypto.randomInt(10, 100);
-  const windowMs = ctx.bigBite.windowSeconds * 1000;
-  const k = key(ctx.channel, name);
-  const timer = setTimeout(() => {
-    if (bites.get(k)?.code !== code) return;
-    bites.delete(k);
-    getAway(ctx, name, 'It was too strong and swam off!');
-  }, windowMs + 500);
-  timer.unref?.();
-  const bite: Bite = { username: name, userId, code, startedAt: now, until: now + windowMs, timer };
-  bites.set(k, bite);
+  const bite: Bite = { username: name, userId, code: -1, startedAt: now, until: now, pull: 1, pulls: ctx.bigBite.pulls, timer: setTimeout(() => {}, 0) };
+  bites.set(key(ctx.channel, name), bite);
   lastBiteAt.set(ctx.channel, now);
   lastChatter.set(ctx.channel, name.toLowerCase());
   console.log(`[FISH] big bite for ${name} in ${ctx.channel}`);
-  const text = `🎣 Something BIG is tugging at your line! Watch the stream for your reel code and type $${ctx.command} fish reel <code> within ${ctx.bigBite.windowSeconds}s!`;
-  pushOverlay(ctx.db, { username: name, kind: 'bite', text, code, until: bite.until }, now);
-  void ctx.sendMessage(`@${name} ${text}`).catch(() => {});
+  const pulls = bite.pulls > 1 ? ` It'll take ${bite.pulls} pulls to land.` : '';
+  arm(ctx, bite, ctx.bigBite.windowSeconds * 1000,
+    `🎣 Something BIG is tugging at your line! Watch the stream for your reel code and type $${ctx.command} fish reel <code> within ${ctx.bigBite.windowSeconds}s!${pulls}`, now);
   return bite;
+}
+
+/** A right answer before the last pull: the fish fights back, and a new code shows. */
+export function nextPull(ctx: BiteContext, bite: Bite): void {
+  const now = ctx.now ?? Date.now();
+  bite.pull++;
+  arm(ctx, bite, ctx.bigBite.pullSeconds * 1000,
+    `💪 Got it! It's pulling back hard! New code on stream: reel again within ${ctx.bigBite.pullSeconds}s! (pull ${bite.pull}/${bite.pulls})`, now);
 }
 
 export interface TickContext extends BiteContext {

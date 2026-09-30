@@ -28,6 +28,8 @@ export interface CatchItem {
    * Mythic rarity; casts and traps never roll them.
    */
   trophy?: boolean;
+  /** A trophy's chance (%) that the last pull lands it rather than snapping the line: rarer, lower. */
+  landPercent?: number;
 }
 
 export const ITEMS: readonly CatchItem[] = [
@@ -45,12 +47,12 @@ export const ITEMS: readonly CatchItem[] = [
   ...fishTier(['🐳', '🐋'], 0.1, 1500),
   // Big bite trophies. Weights are shares of big bites; prices are listed, not scaled
   // like supibot's fish, so a channel that triples fish prices sets these itself.
-  { name: '🦭', type: 'fish', price: 5_000, weight: 30, size: true, trophy: true },
-  { name: '🦦', type: 'fish', price: 7_500, weight: 25, size: true, trophy: true },
-  { name: '🦕', type: 'fish', price: 10_000, weight: 20, size: true, trophy: true },
-  { name: '💎', type: 'fish', price: 15_000, weight: 10, size: false, trophy: true },
-  { name: '👑', type: 'fish', price: 25_000, weight: 10, size: false, trophy: true },
-  { name: '🐉', type: 'fish', price: 100_000, weight: 5, size: true, trophy: true }
+  { name: '🦭', type: 'fish', price: 1_000, weight: 30, size: true, trophy: true, landPercent: 90 },
+  { name: '🦦', type: 'fish', price: 1_500, weight: 25, size: true, trophy: true, landPercent: 80 },
+  { name: '🦕', type: 'fish', price: 2_500, weight: 20, size: true, trophy: true, landPercent: 70 },
+  { name: '💎', type: 'fish', price: 4_000, weight: 10, size: false, trophy: true, landPercent: 60 },
+  { name: '👑', type: 'fish', price: 6_000, weight: 10, size: false, trophy: true, landPercent: 50 },
+  { name: '🐉', type: 'fish', price: 25_000, weight: 5, size: true, trophy: true, landPercent: 40 }
 ];
 
 /** Casts and traps roll from these; trophies come only from big bites. */

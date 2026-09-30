@@ -682,7 +682,7 @@ async function main(): Promise<void> {
     const trophyRolls = Array.from({ length: 500 }, () => weightedCatch('trophy', g0));
     check('casts never roll a trophy, big bites only roll trophies', !fishRolls.some(n => isTrophy(n)) && trophyRolls.every(t => t.trophy));
     check('trophies are Mythic and their prices aren\'t scaled by the channel', rarityOf(g0, '🐉') === 'Mythic' && rarityOf(g0, '🐋') !== 'Mythic'
-      && sellPrice(ITEMS.find(i => i.name === '🐉')!, g0) === 100_000 && g0.catches.find(c => c.name === '🐉')?.trophy === true, rarityOf(g0, '🐉'));
+      && sellPrice(ITEMS.find(i => i.name === '🐉')!, g0) === 25_000 && g0.catches.find(c => c.name === '🐉')?.trophy === true, rarityOf(g0, '🐉'));
 
     const ch = 'fishbite';
     writeConfig(root, ch, { enabled: true, currencyName: '$DON', debugFishTesters: ['tester'], games: { enabled: true, onlyWhileLive: false, stories: false } });
@@ -733,15 +733,47 @@ async function main(): Promise<void> {
       const ev2 = lastBite()!;
       check('a wrong code loses it', (await run(`$don fish reel ${ev2.code === 99 ? 10 : ev2.code! + 1}`, ['biter', 41])).includes('Wrong move'));
 
+      /** Answer every pull of the waiting bite with the code the overlay shows; the last reply. */
+      const reelAll = async (): Promise<{ replies: string[]; codes: number[] }> => {
+        const replies: string[] = [];
+        const codes: number[] = [];
+        for (let i = 0; i < 5; i++) {
+          const ev = lastBite()!;
+          codes.push(ev.code!);
+          const r = await run(`$don fish reel ${ev.code}`, ['biter', 41], 3_000);
+          replies.push(r);
+          if (!r.includes('Got it')) break;
+        }
+        return { replies, codes };
+      };
       await fire();
-      const ev3 = lastBite()!;
-      const before = loadFish(bdb, 41) ?? initialData();
-      const won = await run(`$don fish reel ${ev3.code}`, ['biter', 41]);
-      const after = loadFish(bdb, 41)!;
-      const landed = Object.keys(after.catch.types).find(n => isTrophy(n) && (after.catch.types[n] ?? 0) > (before.catch.types[n] ?? 0));
-      check('the right code in time lands a Mythic trophy, and leaves casting alone', won.includes('MYTHIC') && !!landed && after.readyTimestamp === before.readyTimestamp
-        && readOverlay(bdb).events.some(e => e.kind === 'catch' && e.item === landed && e.rarity === 'Mythic')
-        && (bdb.prepare('SELECT COUNT(*) AS n FROM catches WHERE user_id = 41 AND name = ?').get(landed) as { n: number }).n === 1, { won, landed });
+      const first = await reelAll();
+      check('reeling in takes three pulls, each with a new code on the overlay only', first.replies.length === 3 && first.replies[0].includes('pull 2/3')
+        && first.replies[1].includes('pull 3/3') && new Set(first.codes).size === 3 && !first.replies.some(r => first.codes.some(c => r.includes(` ${c}`))), first);
+      // The last pull lands the trophy by its land chance: try until one lands, and until one snaps.
+      let won: string | null = null;
+      let landed: string | undefined;
+      let snapped: string | null = null;
+      let beforeSnap = 0;
+      for (let i = 0; i < 40 && (!won || !snapped); i++) {
+        await fire();
+        const before = loadFish(bdb, 41) ?? initialData();
+        const last = (await reelAll()).replies.pop()!;
+        const after = loadFish(bdb, 41)!;
+        if (last.includes('MYTHIC') && !won) {
+          won = last;
+          landed = Object.keys(after.catch.types).find(n => isTrophy(n) && (after.catch.types[n] ?? 0) > (before.catch.types[n] ?? 0));
+          check('a landed trophy leaves casting alone and plays as Mythic on the overlay', after.readyTimestamp === before.readyTimestamp
+            && readOverlay(bdb).events.some(e => e.kind === 'catch' && e.item === landed && e.rarity === 'Mythic'));
+        }
+        if (last.includes('So close') && !snapped) {
+          snapped = last;
+          beforeSnap = before.catch.fish - after.catch.fish;
+        }
+      }
+      check('the last pull can land a Mythic trophy', !!won && !!landed
+        && (bdb.prepare('SELECT COUNT(*) AS n FROM catches WHERE user_id = 41 AND name = ?').get(landed) as { n: number }).n >= 1, { won, landed });
+      check('or snap the line, naming what got away and adding nothing', !!snapped && /It was a ✨.+✨/.test(snapped) && beforeSnap === 0, snapped);
 
       await fire();
       const ev4 = lastBite()!;
@@ -763,7 +795,7 @@ async function main(): Promise<void> {
       Date.now = realNow;
       resetBites(ch);
     }
-    check('big bite settings are validated', validatePointsPatch({}, { games: { bigBite: { everyMinutes: 5, activeMinutes: 0, windowSeconds: 5 } } }).errors.length === 3);
+    check('big bite settings are validated', validatePointsPatch({}, { games: { bigBite: { everyMinutes: 5, activeMinutes: 0, windowSeconds: 5, pulls: 9, pullSeconds: 5 } } }).errors.length === 5);
     check('a trophy pool can\'t be switched off entirely', validatePointsPatch({}, { games: { catches: Object.fromEntries(ITEMS.filter(i => i.trophy).map(i => [i.name, { weight: 0 }])) } })
       .errors.some(e => e.includes('big bite trophy')));
   }

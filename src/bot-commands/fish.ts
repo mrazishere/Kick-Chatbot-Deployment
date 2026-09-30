@@ -47,7 +47,7 @@ import { gameInvocation } from '../community/stakes';
 import { addReminder, cancelSelfRemindersStartingWith, openCommunityDb } from '../community/store';
 import { bestEmote, broadcasterIdFor, emoteImages } from '../community/emotes';
 import { OverlayKind, overlayShowing, pushOverlay } from '../community/fish-overlay';
-import { BITE_TOO_FAST_MS, biteFor, getAway, startBite, takeBite, type BiteContext } from '../community/big-bite';
+import { BITE_TOO_FAST_MS, biteFor, getAway, nextPull, startBite, takeBite, type BiteContext } from '../community/big-bite';
 import {
   addItem, baitPrice, baitRoll, currentReel, heldFishValue, landsFish, moveFish, pickHeld, stealableFish, stealChance, stealCharges, worstStealCharges, parseSellList, CatchItem, CatchType, FAILURE_EMOTES, FishData, findBait, hasFishedBefore, initialData, rarityOf, recordCatch,
   ITEMS, JUNK_MESSAGES, loadFish, MISS_DELAY_MS, pick, randomInt, rollCatch, saveFish, sellPrice, STORY_STYLES, SUCCESS_EMOTES,
@@ -264,18 +264,30 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     sendMessage: (m: string) => client.say(channel, m)
   });
 
-  /** `fish reel <code>`: one answer per big bite, from its chatter, after the stream could show it. */
+  /**
+   * `fish reel <code>`: one answer per pull, from the bite's chatter, after the stream
+   * could show the code. A right answer before the last pull brings the next code; on
+   * the last, the trophy is rolled and lands by its land chance or snaps the line.
+   */
   function reelIn(codeRaw: string | undefined, uid: number): void {
-    const bite = takeBite(chan, meLc);
+    const bite = biteFor(chan, meLc);
     if (!bite) return void say("There's nothing big on your line right now.");
     const at = Date.now();
-    if (at > bite.until) return getAway(biteCtx(), me, 'Too slow! It shook the hook and swam off.');
-    if (at - bite.startedAt < BITE_TOO_FAST_MS) return getAway(biteCtx(), me, 'You yanked too early and snapped the line!');
-    if (!/^\d+$/.test(codeRaw ?? '') || Number(codeRaw) !== bite.code) return getAway(biteCtx(), me, 'Wrong move! The line snapped.');
+    const fail = (why: string) => { takeBite(chan, meLc); getAway(biteCtx(), me, why); };
+    if (at > bite.until) return fail('Too slow! It shook the hook and swam off.');
+    if (at - bite.startedAt < BITE_TOO_FAST_MS) return fail('You yanked too early and snapped the line!');
+    if (!/^\d+$/.test(codeRaw ?? '') || Number(codeRaw) !== bite.code) return fail('Wrong move! The line snapped.');
+    if (bite.pull < bite.pulls) return nextPull(biteCtx(), bite);
+    takeBite(chan, meLc);
+    const item = weightedCatch('trophy', g);
+    if (randomInt(1, 100) > (item.landPercent ?? 100)) {
+      console.log(`[FISH] ${me}'s trophy ${item.name} snapped free in ${chan}`);
+      pushOverlay(db!, { username: me, kind: 'miss', text: `It was a ✨${item.name}✨! It thrashed free on the last pull and snapped the line!`, item: item.name, rarity: 'Mythic' });
+      return void client.say(channel, `@${me} So close! It was a ✨${item.name}✨! It thrashed free on the last pull and snapped the line! 😱`);
+    }
     const out = once(now => {
       ensureUserTx(db!, uid, me, now);
       const d = loadFish(db!, uid) ?? initialData();
-      const item = weightedCatch('trophy', g);
       const sizeString = land(d, uid, item, currentReel(d, g), now, false);
       saveFish(db!, uid, d, now);
       return { item, sizeString };

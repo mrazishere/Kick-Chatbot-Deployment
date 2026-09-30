@@ -306,14 +306,17 @@ export interface PointsGamesConfig {
  * Our addition. While the stream is live and a fishing overlay is showing, a random
  * chatter from the last `activeMinutes` gets a big bite about every `everyMinutes`
  * (never within 10 minutes of the last): chat says something big is on their line,
- * the overlay alone shows a two-digit reel code, and they have `windowSeconds` to
- * type `fish reel <code>`. Landed, it's a trophy (Mythic) from its own pool.
+ * and the overlay alone shows a two-digit reel code. Reeling it in takes `pulls`
+ * codes in a row: `windowSeconds` for the first, `pullSeconds` for each after. The
+ * last pull lands a trophy (Mythic) by that trophy's land chance, or it snaps free.
  */
 export interface FishBigBiteSetting {
   enabled: boolean;
   everyMinutes: number;
   activeMinutes: number;
   windowSeconds: number;
+  pulls: number;
+  pullSeconds: number;
 }
 
 /**

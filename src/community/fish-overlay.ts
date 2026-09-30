@@ -38,6 +38,9 @@ export interface OverlayEvent {
   code?: number;
   /** When a big bite gets away (ms). */
   until?: number;
+  /** Which pull of a big bite this code is for, of how many. */
+  pull?: number;
+  pulls?: number;
 }
 
 let writes = 0;
