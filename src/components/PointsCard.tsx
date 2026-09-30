@@ -162,7 +162,8 @@ export interface FishCatch {
 /** Big bites: live casts that land a trophy if the angler types the code shown on stream. Mirrors the bot's FishBigBiteSetting. */
 export interface FishBigBite {
   enabled: boolean;
-  oneIn: number;
+  everyMinutes: number;
+  activeMinutes: number;
   windowSeconds: number;
 }
 
@@ -377,7 +378,7 @@ interface SettingsForm {
   fishChatReplies: boolean;
   fishCatches: { name: string; type: "fish" | "junk"; weight: string; price: string; defaultWeight: number; defaultPrice: number; trophy?: boolean }[];
   /** null when the bot service doesn't report big bites. */
-  fishBigBite: { enabled: boolean; oneIn: string; windowSeconds: string } | null;
+  fishBigBite: { enabled: boolean; everyMinutes: string; activeMinutes: string; windowSeconds: string } | null;
   /** null when the bot service doesn't report reels. */
   fishReels: { name: string; price: string; odds: string; rarity: string; value: string }[] | null;
   /** null when the bot service doesn't report stealing. */
@@ -444,7 +445,12 @@ function formFromConfig(c: PointsConfig): SettingsForm {
     fishChatReplies: (c.games ?? GAMES_DEFAULTS).chatReplies !== false,
     fishCatches: (c.games?.catches ?? []).map((x) => ({ ...x, weight: String(x.weight), price: String(x.price) })),
     fishBigBite: c.games?.bigBite
-      ? { enabled: c.games.bigBite.enabled, oneIn: String(c.games.bigBite.oneIn), windowSeconds: String(c.games.bigBite.windowSeconds) }
+      ? {
+          enabled: c.games.bigBite.enabled,
+          everyMinutes: String(c.games.bigBite.everyMinutes),
+          activeMinutes: String(c.games.bigBite.activeMinutes),
+          windowSeconds: String(c.games.bigBite.windowSeconds),
+        }
       : null,
     fishReels: c.games?.reels
       ? c.games.reels.map((r) => ({
@@ -650,7 +656,8 @@ function buildPatch(f: SettingsForm): { patch: PointsSettingsPatch } | { error: 
   if (f.fishBigBite) {
     patch.games.bigBite = {
       enabled: f.fishBigBite.enabled,
-      oneIn: whole(f.fishBigBite.oneIn, "Big bite odds", 2, 1000),
+      everyMinutes: whole(f.fishBigBite.everyMinutes, "Big bite every (min)", 10, 600),
+      activeMinutes: whole(f.fishBigBite.activeMinutes, "Big bite chatters active within (min)", 1, 120),
       windowSeconds: whole(f.fishBigBite.windowSeconds, "Big bite reel time", 10, 120),
     };
   }
@@ -780,7 +787,7 @@ function BigBiteSettings({ value, command, disabled, onChange }: {
   return (
     <div className="mt-4 rounded-md border border-neutral-800 p-3">
       <Checkbox
-        label={`Big bites: live casts that land a trophy if reeled in ($${command} fish reel <code>)`}
+        label={`Big bites: now and then while live, a chatter can reel in a trophy ($${command} fish reel <code>)`}
         checked={value.enabled}
         disabled={disabled}
         onChange={(enabled) => onChange({ ...value, enabled })}
@@ -788,15 +795,18 @@ function BigBiteSettings({ value, command, disabled, onChange }: {
       {value.enabled ? (
         <>
           <div className="mt-3 grid gap-4 sm:grid-cols-4">
-            <Field label="Big bite odds (1 in …)" hint="live casts, default 40">
-              <input value={value.oneIn} inputMode="numeric" disabled={disabled} onChange={(e) => onChange({ ...value, oneIn: e.target.value })} className={INPUT} />
+            <Field label="About every (min)" hint="of live stream, 10–600, default 30">
+              <input value={value.everyMinutes} inputMode="numeric" disabled={disabled} onChange={(e) => onChange({ ...value, everyMinutes: e.target.value })} className={INPUT} />
+            </Field>
+            <Field label="Chatters active within (min)" hint="who can get one, default 10">
+              <input value={value.activeMinutes} inputMode="numeric" disabled={disabled} onChange={(e) => onChange({ ...value, activeMinutes: e.target.value })} className={INPUT} />
             </Field>
             <Field label="Time to reel in (s)" hint="10–120, default 30">
               <input value={value.windowSeconds} inputMode="numeric" disabled={disabled} onChange={(e) => onChange({ ...value, windowSeconds: e.target.value })} className={INPUT} />
             </Field>
           </div>
           <p className="mt-3 text-xs text-neutral-500">
-            {`While the stream is live and a fishing overlay is showing, some casts hook something big instead. Chat says so, but the reel code appears only on the overlay, so chat scripts can't answer it; the angler types $${command} fish reel <code> in time to land a Mythic trophy (see the trophies in the catch table), or it gets away. An answer faster than the stream could show the code snaps the line. With no overlay showing, there are no big bites.`}
+            {`While the stream is live and a fishing overlay is showing, a random viewer who chatted recently gets something big on their line, about as often as set (never twice within 10 minutes, and never the same viewer twice in a row). Chat names them, but the reel code appears only on the overlay, so chat scripts can't answer it; they type $${command} fish reel <code> in time to land a Mythic trophy (see the trophies in the catch table), or it gets away. It isn't a cast: it doesn't touch their fishing cooldown. With no overlay showing, there are no big bites.`}
           </p>
         </>
       ) : null}

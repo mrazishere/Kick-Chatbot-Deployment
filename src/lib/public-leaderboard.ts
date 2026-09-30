@@ -108,7 +108,7 @@ function publicFishing(raw: unknown): PublicFishing | null {
   const fish = publicCatches(f.fish);
   return fish.length ? { catchOdds: f.catchOdds, fish, junk: publicCatches(f.junk), rarest: publicRarest(f.rarest), steal: f.steal === true, heists: publicHeists(f.heists),
     trophies: publicCatches(f.trophies),
-    bigBite: f.bigBite && typeof f.bigBite.oneIn === "number" ? { oneIn: f.bigBite.oneIn } : null } : null;
+    bigBite: f.bigBite && typeof f.bigBite.everyMinutes === "number" ? { everyMinutes: f.bigBite.everyMinutes } : null } : null;
 }
 
 function publicShape(raw: PointsLeaderboard, channel: string): PointsLeaderboard {

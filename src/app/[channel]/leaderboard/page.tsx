@@ -139,7 +139,7 @@ function FishingTab({ fishing, currency, channel }: { fishing: PublicFishing; cu
       {fishing.bigBite && fishing.trophies?.length ? (
         <>
           <p className="text-xs text-neutral-500">
-            {`🎣 Big bites: while the stream is live, about 1 cast in ${fishing.bigBite.oneIn} hooks something big. The reel code shows only on stream; type it in time to land a trophy. Chance here is a share of big bites.`}
+            {`🎣 Big bites: while the stream is live, about every ${fishing.bigBite.everyMinutes} minutes someone chatting gets something big on their line. The reel code shows only on stream; type it in time to land a trophy. Chance here is a share of big bites.`}
           </p>
           <CatchTable title="Trophies" rows={fishing.trophies} currency={currency} />
         </>

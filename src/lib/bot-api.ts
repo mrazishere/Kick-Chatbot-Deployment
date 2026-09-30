@@ -348,8 +348,8 @@ export interface PublicFishing {
   heists?: PublicHeists | null;
   /** Big bite trophies, chances as shares of big bites. Absent from a bot service older than them. */
   trophies?: PublicCatch[];
-  /** 1 live cast in this many is a big bite; null where they're off. */
-  bigBite?: { oneIn: number } | null;
+  /** About one big bite every this many live minutes; null where they're off. */
+  bigBite?: { everyMinutes: number } | null;
 }
 
 /** The Fishing tab's heists. Names only, as everywhere on the public page. */
