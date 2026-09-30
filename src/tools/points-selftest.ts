@@ -728,7 +728,7 @@ async function main(): Promise<void> {
         && !sent.some(m => m.includes(String(ev1.code))), { sent, ev1 });
       check('one big bite at a time', (await bsvc.bigBiteTick(() => 0)) === null);
       const fast = await run(`$don fish reel ${ev1!.code}`, ['biter', 41], 500);
-      check('an answer faster than the stream could show it snaps the line, on the overlay only', fast === '' && lastShown()?.kind === 'miss'
+      check('an answer faster than the stream could show it snaps the line: the overlay and a chat result', fast.includes('yanked too early') && lastShown()?.kind === 'miss'
         && !!lastShown()?.text.includes('yanked too early'), { fast, shown: lastShown() });
       check('not again within 10 minutes', (shift += 5 * 60_000, markOverlaySeen(bdb, Date.now()), await bsvc.bigBiteTick(() => 0)) === null);
 
@@ -757,7 +757,8 @@ async function main(): Promise<void> {
       const first = await reelAll();
       check('reeling in takes three pulls, each with a new code, all on the overlay', first.shown.length === 3 && first.shown[0].includes('pull 2/3')
         && first.shown[1].includes('pull 3/3') && new Set(first.codes).size === 3, first);
-      check('a whole big bite is one chat line: the opening mention', sent.length - chatBefore === 1 && first.replies.every(r => r === ''), { chat: sent.slice(chatBefore), replies: first.replies });
+      check('a whole big bite is two chat lines: the opening mention and the result', sent.length - chatBefore === 1 && first.replies.slice(0, -1).every(r => r === '')
+        && /MYTHIC|So close/.test(first.replies[first.replies.length - 1]), { chat: sent.slice(chatBefore), replies: first.replies });
       // The last pull lands the trophy by its land chance: try until one lands, and until one snaps.
       let won: string | null = null;
       let landed: string | undefined;

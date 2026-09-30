@@ -6,8 +6,8 @@
  * right answer brings a new code for the next pull, and the last pull lands a
  * Mythic trophy by its land chance. A wrong code or too slow, and it gets away.
  *
- * Chat gets one line, the opening mention, so the chatter knows to look; every pull,
- * miss and landing after that plays on the overlay only, to keep chat quiet.
+ * Chat gets two lines: the opening mention, so the chatter knows to look, and the
+ * result. The pulls in between play on the overlay only, to keep chat quiet.
  *
  * The points service calls tick() every half minute. Bites don't touch anyone's
  * casting or cooldowns: they aren't a cast.
@@ -83,10 +83,12 @@ export interface BiteContext {
   now?: number;
 }
 
-/** A big bite lost: the overlay says so. Nothing else changes. */
+/** A big bite lost: the overlay and chat say so (chat's result line). Nothing else changes. */
 export function getAway(ctx: BiteContext, name: string, why: string): void {
   console.log(`[FISH] ${name}'s big bite got away in ${ctx.channel}: ${why}`);
-  pushOverlay(ctx.db, { username: name, kind: 'miss', text: `The big one got away... ${why}` });
+  const text = `The big one got away... ${why}`;
+  pushOverlay(ctx.db, { username: name, kind: 'miss', text });
+  void ctx.sendMessage(`@${name} ${text}`).catch(() => {});
 }
 
 /** A fresh code for this pull: armed to get away if it isn't answered in time, and shown only on the overlay. */
