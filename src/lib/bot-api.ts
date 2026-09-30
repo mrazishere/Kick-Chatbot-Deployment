@@ -771,6 +771,9 @@ export interface FishOverlayEvent {
   code?: number;
   /** When a big bite gets away (ms since epoch, the bot's clock). */
   until?: number;
+  /** Which pull of a big bite this code is for, of how many. */
+  pull?: number;
+  pulls?: number;
 }
 
 export interface FishOverlayFeed {

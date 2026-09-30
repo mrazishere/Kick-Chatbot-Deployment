@@ -165,6 +165,8 @@ export interface FishBigBite {
   everyMinutes: number;
   activeMinutes: number;
   windowSeconds: number;
+  pulls: number;
+  pullSeconds: number;
 }
 
 /** The bot's defaults, for a bot service that doesn't report game settings yet. */
@@ -378,7 +380,7 @@ interface SettingsForm {
   fishChatReplies: boolean;
   fishCatches: { name: string; type: "fish" | "junk"; weight: string; price: string; defaultWeight: number; defaultPrice: number; trophy?: boolean }[];
   /** null when the bot service doesn't report big bites. */
-  fishBigBite: { enabled: boolean; everyMinutes: string; activeMinutes: string; windowSeconds: string } | null;
+  fishBigBite: { enabled: boolean; everyMinutes: string; activeMinutes: string; windowSeconds: string; pulls: string; pullSeconds: string } | null;
   /** null when the bot service doesn't report reels. */
   fishReels: { name: string; price: string; odds: string; rarity: string; value: string }[] | null;
   /** null when the bot service doesn't report stealing. */
@@ -450,6 +452,8 @@ function formFromConfig(c: PointsConfig): SettingsForm {
           everyMinutes: String(c.games.bigBite.everyMinutes),
           activeMinutes: String(c.games.bigBite.activeMinutes),
           windowSeconds: String(c.games.bigBite.windowSeconds),
+          pulls: String(c.games.bigBite.pulls ?? 3),
+          pullSeconds: String(c.games.bigBite.pullSeconds ?? 15),
         }
       : null,
     fishReels: c.games?.reels
@@ -658,7 +662,9 @@ function buildPatch(f: SettingsForm): { patch: PointsSettingsPatch } | { error: 
       enabled: f.fishBigBite.enabled,
       everyMinutes: whole(f.fishBigBite.everyMinutes, "Big bite every (min)", 10, 600),
       activeMinutes: whole(f.fishBigBite.activeMinutes, "Big bite chatters active within (min)", 1, 120),
-      windowSeconds: whole(f.fishBigBite.windowSeconds, "Big bite reel time", 10, 120),
+      windowSeconds: whole(f.fishBigBite.windowSeconds, "Big bite first code time", 10, 120),
+      pulls: whole(f.fishBigBite.pulls, "Big bite pulls", 1, 5),
+      pullSeconds: whole(f.fishBigBite.pullSeconds, "Big bite time per pull", 10, 60),
     };
   }
   if (f.fishSteal) {
@@ -801,12 +807,18 @@ function BigBiteSettings({ value, command, disabled, onChange }: {
             <Field label="Chatters active within (min)" hint="who can get one, default 10">
               <input value={value.activeMinutes} inputMode="numeric" disabled={disabled} onChange={(e) => onChange({ ...value, activeMinutes: e.target.value })} className={INPUT} />
             </Field>
-            <Field label="Time to reel in (s)" hint="10–120, default 30">
+            <Field label="First code (s)" hint="to notice and answer, default 30">
               <input value={value.windowSeconds} inputMode="numeric" disabled={disabled} onChange={(e) => onChange({ ...value, windowSeconds: e.target.value })} className={INPUT} />
+            </Field>
+            <Field label="Pulls to land" hint="codes in a row, 1–5, default 3">
+              <input value={value.pulls} inputMode="numeric" disabled={disabled} onChange={(e) => onChange({ ...value, pulls: e.target.value })} className={INPUT} />
+            </Field>
+            <Field label="Each later pull (s)" hint="10–60, default 15">
+              <input value={value.pullSeconds} inputMode="numeric" disabled={disabled} onChange={(e) => onChange({ ...value, pullSeconds: e.target.value })} className={INPUT} />
             </Field>
           </div>
           <p className="mt-3 text-xs text-neutral-500">
-            {`While the stream is live and a fishing overlay is showing, a random viewer who chatted recently gets something big on their line, about as often as set (never twice within 10 minutes, and never the same viewer twice in a row). Chat names them, but the reel code appears only on the overlay, so chat scripts can't answer it; they type $${command} fish reel <code> in time to land a Mythic trophy (see the trophies in the catch table), or it gets away. It isn't a cast: it doesn't touch their fishing cooldown. With no overlay showing, there are no big bites.`}
+            {`While the stream is live and a fishing overlay is showing, a random viewer who chatted recently gets something big on their line, about as often as set (never twice within 10 minutes, and never the same viewer twice in a row). Chat names them, but the reel code appears only on the overlay, so chat scripts can't answer it. They type $${command} fish reel <code>, and each right answer brings a new code for the next pull; after the last pull the trophy lands by its own chance (🦭 90% down to 🐉 40%) or snaps the line. A wrong code or too slow and it gets away. It isn't a cast: it doesn't touch their fishing cooldown. With no overlay showing, there are no big bites.`}
           </p>
         </>
       ) : null}

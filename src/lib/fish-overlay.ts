@@ -78,6 +78,7 @@ function shape(raw: FishOverlayFeed): FishOverlayFeed {
       ...(typeof e.rarity === "string" && e.rarity.length <= 12 ? { rarity: e.rarity } : {}),
       ...(e.kind === "bite" && Number.isInteger(e.code) && e.code! >= 0 && e.code! <= 999 ? { code: e.code } : {}),
       ...(e.kind === "bite" && typeof e.until === "number" ? { until: e.until } : {}),
+      ...(e.kind === "bite" && Number.isInteger(e.pull) && Number.isInteger(e.pulls) && e.pulls! <= 9 ? { pull: e.pull, pulls: e.pulls } : {}),
       ...(Object.keys(emotes).length ? { emotes } : {}),
     }];
   });

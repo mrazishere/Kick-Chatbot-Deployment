@@ -23,7 +23,7 @@ type Scene =
   | { v: "catch"; item: string; rarity: string | null; cm: number | null }
   | { v: "miss"; junk: string | null }
   | { v: "trap"; haul: string[] }
-  | { v: "bite"; code: number; windowSec: number }
+  | { v: "bite"; code: number; windowSec: number; pull: number; pulls: number }
   | { v: "steal"; item: string; victim: string | null; cm: number | null }
   | { v: "caught"; item: string; victim: string | null; fine: string | null }
   | { v: "lay" }
@@ -64,7 +64,7 @@ function sceneOf(ev: FishOverlayEvent): Scene | null {
   if (ev.kind === "bite" && typeof ev.code === "number") {
     // The window, measured on the bot's clock, so a skewed viewer clock doesn't matter.
     const windowSec = Math.max(5, Math.min(120, ((ev.until ?? ev.ts + 30_000) - ev.ts) / 1000));
-    return { v: "bite", code: ev.code, windowSec };
+    return { v: "bite", code: ev.code, windowSec, pull: ev.pull ?? 1, pulls: ev.pulls ?? 1 };
   }
   if (ev.kind === "steal" && ev.item) {
     const cm = /\((\d+) cm\)/.exec(t);
@@ -361,7 +361,7 @@ function LaneView({ lane }: { lane: Lane }) {
           <div className="fo-ripple r1" />
           <div className="fo-ripple r2" />
           <div className="fo-codebox">
-            <span className="fo-codelabel">Reel code</span>
+            <span className="fo-codelabel">{scene.pulls > 1 ? `Pull ${scene.pull}/${scene.pulls}` : "Reel code"}</span>
             <b>{scene.code}</b>
           </div>
           <div className="fo-timer" />
@@ -438,7 +438,15 @@ export default function FishOverlay({
       const scene = sceneOf(ev);
       if (!scene) continue;
       if (scene.v === "bite") {
+        // The next pull's code replaces the last one in the same lane, timer restarted.
+        const now = performance.now();
+        const i = lanes.current.findIndex((l) => l && l.scene.v === "bite" && l.ev.username === ev.username);
+        if (i >= 0) {
+          lanes.current[i] = { ev, scene, s: 1, endsAt: now + lengthOf(scene) * 1000 + 150 };
+          continue;
+        }
         // A reel code can't wait its turn: to the front of the queue.
+        queue.current = queue.current.filter((w) => !(w.scene.v === "bite" && w.ev.username === ev.username));
         queue.current.unshift({ ev, scene });
         continue;
       }

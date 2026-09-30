@@ -124,7 +124,7 @@ function CardView({ card, side }: { card: Card; side: "left" | "right" }) {
           </div>
           {ev.kind === "bite" && typeof ev.code === "number" ? (
             <div className="fo-bigcode">
-              Reel code <b>{ev.code}</b>
+              {ev.pulls && ev.pulls > 1 ? `Pull ${ev.pull}/${ev.pulls}` : "Reel code"} <b>{ev.code}</b>
             </div>
           ) : null}
           {note ? <div className="fo-note">{note}</div> : null}
@@ -239,13 +239,11 @@ export default function FishOverlayCards({
       const stagger = waiting > 4 ? 160 : 340;
       if (queue.current.length > 0 && live().length < max && now - lastRelease.current >= stagger) {
         const ev = queue.current.shift()!;
-        // The angler's answer ends their big bite card.
-        if (ev.kind !== "bite") {
-          for (const c of live()) {
-            if (c.ev.kind === "bite" && c.ev.username === ev.username) {
-              c.phase = "out";
-              c.outAt = now;
-            }
+        // The angler's answer, or their next pull's code, ends their big bite card.
+        for (const c of live()) {
+          if (c.ev.kind === "bite" && c.ev.username === ev.username) {
+            c.phase = "out";
+            c.outAt = now;
           }
         }
         cards.current.push({ ev, shownAt: now, phase: "in", outAt: 0 });
