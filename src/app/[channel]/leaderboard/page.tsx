@@ -191,11 +191,20 @@ export default async function LeaderboardPage({ params, searchParams }: Props) {
       <SiteHeader channel={slug} username={username} isAdmin={false} current="leaderboard" variant="public" />
 
       <main className="mx-auto max-w-3xl space-y-5 px-4 py-8 sm:px-6">
-        <div>
-          <h1 className="text-2xl font-semibold text-neutral-100">{currency} leaderboard</h1>
-          <p className="mt-1 text-sm text-neutral-500">
-            Earned by chatting while {slug} is live, and from follows, subs and Kicks.
-          </p>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="min-w-0">
+            <h1 className="text-2xl font-semibold text-neutral-100">{currency} leaderboard</h1>
+            <p className="mt-1 text-sm text-neutral-500">
+              Earned by chatting while {slug} is live, and from follows, subs and Kicks.
+            </p>
+          </div>
+          {/* The channel's earnings page is public too: a way over from here. */}
+          <a
+            href={`${BASE_PATH}/${slug}`}
+            className="shrink-0 rounded-lg border border-neutral-700 px-3 py-1.5 text-sm text-neutral-400 transition hover:border-neutral-500 hover:text-neutral-200"
+          >
+            Stream earnings →
+          </a>
         </div>
 
         {!data ? (
