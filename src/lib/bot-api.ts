@@ -769,8 +769,8 @@ export interface FishOverlayEvent {
   emotes?: Record<string, string>;
   /** A big bite's reel code, shown only on the overlay. */
   code?: string;
-  /** When the overlay hides a flashing code (ms, the bot's clock); absent, it stays shown. */
-  flashUntil?: number;
+  /** How long the overlay shows a flashing code after first drawing it (ms); absent, it stays shown. */
+  flashMs?: number;
   /** When a big bite gets away (ms since epoch, the bot's clock). */
   until?: number;
   /** Which pull of a big bite this code is for, of how many. */

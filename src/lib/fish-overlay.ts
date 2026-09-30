@@ -77,7 +77,7 @@ function shape(raw: FishOverlayFeed): FishOverlayFeed {
       ...(typeof e.item === "string" && e.item.length <= 8 ? { item: e.item } : {}),
       ...(typeof e.rarity === "string" && e.rarity.length <= 12 ? { rarity: e.rarity } : {}),
       ...(e.kind === "bite" && (typeof e.code === "string" || typeof e.code === "number") && /^[A-Z0-9]{1,8}$/.test(String(e.code)) ? { code: String(e.code) } : {}),
-      ...(e.kind === "bite" && typeof e.flashUntil === "number" ? { flashUntil: e.flashUntil } : {}),
+      ...(e.kind === "bite" && typeof e.flashMs === "number" && e.flashMs > 0 ? { flashMs: Math.min(60_000, e.flashMs) } : {}),
       ...(e.kind === "bite" && typeof e.until === "number" ? { until: e.until } : {}),
       ...(e.kind === "bite" && Number.isInteger(e.pull) && Number.isInteger(e.pulls) && e.pulls! <= 9 ? { pull: e.pull, pulls: e.pulls } : {}),
       ...(Object.keys(emotes).length ? { emotes } : {}),

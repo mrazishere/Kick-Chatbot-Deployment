@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { FishOverlayEvent } from "@/lib/bot-api";
-import { codeHidden, syncClock, useCountdown } from "@/lib/overlay-clock";
+import { syncClock, useCodeHidden, useCountdown } from "@/lib/overlay-clock";
 import { demoGenerator, type DemoOdds } from "@/lib/fish-demo";
 
 // The first overlay design: each fish reply as a text card. Kept beside the
@@ -134,9 +134,10 @@ function CardView({ card, side }: { card: Card; side: "left" | "right" }) {
 /** A big bite card's code, which pull it is, and the time left on the bot's clock. */
 function BiteCode({ ev }: { ev: FishOverlayEvent }) {
   const { secs } = useCountdown(ev.until, biteMs(ev));
+  const hidden = useCodeHidden(ev.flashMs);
   return (
     <div className="fo-bigcode">
-      {ev.pulls && ev.pulls > 1 ? `Pull ${ev.pull}/${ev.pulls}` : "Reel code"} <b>{codeHidden(ev.flashUntil) ? "• • •" : ev.code}</b>
+      {ev.pulls && ev.pulls > 1 ? `Pull ${ev.pull}/${ev.pulls}` : "Reel code"} <b>{hidden ? "• • •" : ev.code}</b>
       <span className="fo-bigsecs">{secs > 0 ? `${secs}s left` : "time's up!"}</span>
     </div>
   );

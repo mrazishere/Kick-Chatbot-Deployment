@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import type { FishOverlayEvent } from "@/lib/bot-api";
-import { codeHidden, syncClock, useCountdown } from "@/lib/overlay-clock";
+import { syncClock, useCodeHidden, useCountdown } from "@/lib/overlay-clock";
 import { demoGenerator, type DemoOdds } from "@/lib/fish-demo";
 
 const BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
@@ -24,7 +24,7 @@ type Scene =
   | { v: "catch"; item: string; rarity: string | null; cm: number | null }
   | { v: "miss"; junk: string | null }
   | { v: "trap"; haul: string[] }
-  | { v: "bite"; code: string; windowSec: number; pull: number; pulls: number; until?: number; flashUntil?: number }
+  | { v: "bite"; code: string; windowSec: number; pull: number; pulls: number; until?: number; flashMs?: number }
   | { v: "steal"; item: string; victim: string | null; cm: number | null }
   | { v: "caught"; item: string; victim: string | null; fine: string | null }
   | { v: "lay" }
@@ -67,7 +67,7 @@ function sceneOf(ev: FishOverlayEvent): Scene | null {
     const windowSec = Math.max(5, Math.min(120, ((ev.until ?? ev.ts + 30_000) - ev.ts) / 1000));
     return {
       v: "bite", code: ev.code, windowSec, pull: ev.pull ?? 1, pulls: ev.pulls ?? 1,
-      ...(ev.until ? { until: ev.until } : {}), ...(ev.flashUntil ? { flashUntil: ev.flashUntil } : {}),
+      ...(ev.until ? { until: ev.until } : {}), ...(ev.flashMs ? { flashMs: ev.flashMs } : {}),
     };
   }
   if (ev.kind === "steal" && ev.item) {
@@ -197,6 +197,7 @@ function nameColor(name: string): string {
 /** A big bite's lane: the code, which pull it is, and the time left on the bot's clock. */
 function BiteView({ scene }: { scene: Extract<Scene, { v: "bite" }> }) {
   const { frac, secs } = useCountdown(scene.until, scene.windowSec * 1000);
+  const hidden = useCodeHidden(scene.flashMs);
   const color = frac > 0.6 ? "#fde047" : frac > 0.3 ? "#fbbf24" : "#ef4444";
   return (
     <>
@@ -206,7 +207,7 @@ function BiteView({ scene }: { scene: Extract<Scene, { v: "bite" }> }) {
       <div className="fo-ripple r2" />
       <div className="fo-codebox">
         <span className="fo-codelabel">{scene.pulls > 1 ? `Pull ${scene.pull}/${scene.pulls}` : "Reel code"}</span>
-        {codeHidden(scene.flashUntil) ? <b className="fo-codegone">• • •</b> : <b className={scene.code.length > 2 ? "fo-codelong" : ""}>{scene.code}</b>}
+        {hidden ? <b className="fo-codegone">• • •</b> : <b className={scene.code.length > 2 ? "fo-codelong" : ""}>{scene.code}</b>}
         <span className="fo-codesecs" style={{ color }}>{secs > 0 ? `${secs}s left` : "time's up!"}</span>
       </div>
       <div className="fo-timer" style={{ transform: `scaleX(${frac})`, background: color }} />
