@@ -2910,7 +2910,7 @@ function publicFishing(channel: string, cfg: ReturnType<typeof effectivePointsCo
     .slice(0, 5);
   return {
     catchOdds: g.catchOdds, fish, junk: list(c => c.type === 'junk'), rarest, steal: g.steal.enabled, heists: heistBoard(channel, cfg, broadcasterUserId),
-    trophies, bigBite: g.bigBite.enabled ? { oneIn: g.bigBite.oneIn } : null
+    trophies, bigBite: g.bigBite.enabled ? { everyMinutes: g.bigBite.everyMinutes } : null
   };
 }
 

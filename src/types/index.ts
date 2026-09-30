@@ -298,19 +298,21 @@ export interface PointsGamesConfig {
   reels: FishReelSetting[];
   /** `fish steal`: taking a fish from another viewer, and guards against it. */
   steal: FishStealSetting;
-  /** Big bites: live-only casts that become a trophy if the angler reels in the code shown on the overlay. */
+  /** Big bites: now and then while live, a random active chatter can reel in a trophy with the code shown on the overlay. */
   bigBite: FishBigBiteSetting;
 }
 
 /**
- * Our addition. While the stream is live and a fishing overlay is showing, 1 cast in
- * `oneIn` becomes a big bite: chat says something big is on the line, the overlay
- * alone shows a two-digit reel code, and the angler has `windowSeconds` to type
- * `fish reel <code>`. Landed, it's a trophy (Mythic) from its own pool.
+ * Our addition. While the stream is live and a fishing overlay is showing, a random
+ * chatter from the last `activeMinutes` gets a big bite about every `everyMinutes`
+ * (never within 10 minutes of the last): chat says something big is on their line,
+ * the overlay alone shows a two-digit reel code, and they have `windowSeconds` to
+ * type `fish reel <code>`. Landed, it's a trophy (Mythic) from its own pool.
  */
 export interface FishBigBiteSetting {
   enabled: boolean;
-  oneIn: number;
+  everyMinutes: number;
+  activeMinutes: number;
   windowSeconds: number;
 }
 

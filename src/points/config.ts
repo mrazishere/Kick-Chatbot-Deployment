@@ -89,11 +89,13 @@ export function defaultPointsConfig(): PointsConfig {
   };
 }
 
-/** On by default: it only happens while live with an overlay showing. */
-export const DEFAULT_BIG_BITE: Readonly<FishBigBiteSetting> = { enabled: true, oneIn: 40, windowSeconds: 30 };
+/** On by default: it only happens while live with an overlay showing, to someone chatting. */
+export const DEFAULT_BIG_BITE: Readonly<FishBigBiteSetting> = { enabled: true, everyMinutes: 30, activeMinutes: 10, windowSeconds: 30 };
 
 const BIG_BITE_NUMBERS: Record<Exclude<keyof FishBigBiteSetting, 'enabled'>, Rule> = {
-  oneIn: { min: 2, max: 1000, integer: true },
+  // At least 10 minutes pass between two bites whatever the average says.
+  everyMinutes: { min: 10, max: 600, integer: true },
+  activeMinutes: { min: 1, max: 120, integer: true },
   // The stream runs a few seconds behind chat; under 10s nobody could answer.
   windowSeconds: { min: 10, max: 120, integer: true }
 };
@@ -101,11 +103,11 @@ const BIG_BITE_NUMBERS: Record<Exclude<keyof FishBigBiteSetting, 'enabled'>, Rul
 /** The stored big bite settings with values clamped; anything not stored keeps its default. */
 export function effectiveBigBite(stored: unknown): FishBigBiteSetting {
   const b = obj(stored);
-  return {
-    enabled: bool(b.enabled, DEFAULT_BIG_BITE.enabled),
-    oneIn: num(b.oneIn, DEFAULT_BIG_BITE.oneIn, BIG_BITE_NUMBERS.oneIn.min, BIG_BITE_NUMBERS.oneIn.max, true),
-    windowSeconds: num(b.windowSeconds, DEFAULT_BIG_BITE.windowSeconds, BIG_BITE_NUMBERS.windowSeconds.min, BIG_BITE_NUMBERS.windowSeconds.max, true)
-  };
+  const out: FishBigBiteSetting = { ...DEFAULT_BIG_BITE, enabled: bool(b.enabled, DEFAULT_BIG_BITE.enabled) };
+  for (const [k, rule] of Object.entries(BIG_BITE_NUMBERS) as Array<[keyof typeof BIG_BITE_NUMBERS, Rule]>) {
+    out[k] = num(b[k], DEFAULT_BIG_BITE[k], rule.min, rule.max, rule.integer ?? false);
+  }
+  return out;
 }
 
 /** Off until a channel turns it on. Prices sit against a common fish's 75 and a whale's 50,000. */

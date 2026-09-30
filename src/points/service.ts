@@ -18,6 +18,7 @@ import { Earner } from './earner';
 import * as bonuses from './events';
 import * as penalties from './penalties';
 import { LiveState, checkLive } from './live';
+import * as bigBite from '../community/big-bite';
 import { PresenceTracker } from './presence';
 import { LastMessages, presenceVerdict } from './presence-rules';
 import { Exclusions, applyOnce, creditTx, isApplied, drawRaffle, dueRaffles, exclusionsFor, expiredDuels, findUserByName, getMeta, getUser, isExcluded, openRaffle, pruneApplied, raffleEntries, RaffleRow, refundDuel, setMetaTx } from './store';
@@ -72,6 +73,7 @@ export class PointsService {
   private duelTimer: NodeJS.Timeout | null = null;
   private raffleTimer: NodeJS.Timeout | null = null;
   private pruneTimer: NodeJS.Timeout | null = null;
+  private biteTimer: NodeJS.Timeout | null = null;
   private startRetry: NodeJS.Timeout | null = null;
   private exclusionCache: { source: LivePointsConfig; broadcasterUserId: number | null; value: Exclusions } | null = null;
 
@@ -256,6 +258,29 @@ export class PointsService {
         .finally(() => { this.liveProbeInFlight = null; });
     }
     return this.liveProbeInFlight;
+  }
+
+  /**
+   * Maybe give a random active chatter a big bite (community/big-bite.ts). Only with
+   * points and fishing on; the module checks live, the overlay and the timing.
+   */
+  async bigBiteTick(random?: () => number): Promise<string | null> {
+    try {
+      const cfg = this.config();
+      if (!cfg.enabled || !cfg.games.enabled || !cfg.games.bigBite.enabled) return null;
+      const db = this.db();
+      if (!db) return null;
+      const live = (await this.isLiveNow()) === true;
+      const ex = this.exclusions();
+      return bigBite.tick({
+        channel: this.channel, db, bigBite: cfg.games.bigBite, command: effectiveCommand(cfg), live, now: this.now(), random,
+        excluded: (id, name) => isExcluded(ex, id, name),
+        sendMessage: m => this.deps.sendMessage(m)
+      });
+    } catch (err) {
+      console.error(`[FISH] Big bite check failed for ${this.channel}: ${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    }
   }
 
   /** A duel's coin flip: true when the challenger wins. Always 50/50. */
@@ -491,6 +516,10 @@ export class PointsService {
         this.duelTimer = setInterval(() => { this.sweepDuels(); this.sweepRaffles(); }, 15_000);
         this.duelTimer.unref();
       }
+      if (!this.biteTimer) {
+        this.biteTimer = setInterval(() => { void this.bigBiteTick(); }, bigBite.TICK_MS);
+        this.biteTimer.unref();
+      }
       // A raffle still open from before a restart draws at its own time, not up to a sweep late.
       this.armRaffleTimer();
       this.started = true;
@@ -515,6 +544,10 @@ export class PointsService {
     if (this.pruneTimer) {
       clearInterval(this.pruneTimer);
       this.pruneTimer = null;
+    }
+    if (this.biteTimer) {
+      clearInterval(this.biteTimer);
+      this.biteTimer = null;
     }
     if (this.raffleTimer) {
       clearTimeout(this.raffleTimer);

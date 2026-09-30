@@ -28,6 +28,7 @@ import { points as pointsCommand } from '../bot-commands/points';
 import { addItem, FishData, initialData, isTrophy, rarityOf, stealCharges, ITEMS, landsFish, loadFish, parseSellList, recordCatch, saveFish, sellPrice, weightedCatch } from '../community/fishing';
 import { openCommunityDb } from '../community/store';
 import { markOverlaySeen, readOverlay } from '../community/fish-overlay';
+import { resetBites, takeBite as takeBiteForTest } from '../community/big-bite';
 import { fish as fishCommand } from '../bot-commands/fish';
 
 const MIN = 60_000;
@@ -684,66 +685,85 @@ async function main(): Promise<void> {
       && sellPrice(ITEMS.find(i => i.name === '🐉')!, g0) === 100_000 && g0.catches.find(c => c.name === '🐉')?.trophy === true, rarityOf(g0, '🐉'));
 
     const ch = 'fishbite';
-    writeConfig(root, ch, { enabled: true, currencyName: '$DON', games: { enabled: true, onlyWhileLive: false, stories: false, bigBite: { oneIn: 2 } } });
-    makeService(ch, { broadcaster: 999 });
+    writeConfig(root, ch, { enabled: true, currencyName: '$DON', debugFishTesters: ['tester'], games: { enabled: true, onlyWhileLive: false, stories: false } });
+    const sent: string[] = [];
+    const bsvc = makeService(ch, { broadcaster: 999, sent });
     const bdb = openPointsDb(ch, { create: true })!;
     const realNow = Date.now;
     let shift = 0;
     Date.now = () => realNow() + shift;
     try {
-      const run = async (msg: string, step = 6_000) => {
+      const chat = (id: number, name: string, minutesAgo: number) => runWrite(bdb, () => {
+        ensureUserTx(bdb, id, name, 1);
+        bdb.prepare('UPDATE users SET last_chat_at = ? WHERE user_id = ?').run(Date.now() - minutesAgo * 60_000, id);
+      });
+      chat(41, 'biter', 1);
+      chat(42, 'lurker', 20);
+      chat(999, ch, 1);
+      chat(43, 'botrix', 1);
+      const run = async (msg: string, who: [string, number], step = 6_000) => {
         shift += step;
         const out: string[] = [];
-        const t: KickTags = { username: 'biter', 'display-name': 'biter', badges: {}, isBroadcaster: false, isModUp: false, isVIPUp: false, rawBadges: [], senderId: 41 };
+        const t: KickTags = { username: who[0], 'display-name': who[0], badges: {}, isBroadcaster: false, isModUp: false, isVIPUp: false, rawBadges: [], senderId: who[1] };
         await fishCommand({ say: async (_c, m) => { out.push(m); } }, msg, `#${ch}`, t, { channelName: ch } as ChannelConfig);
         return out[0] ?? '';
       };
-      /** Cast until a big bite, past each cooldown; null if none in 40 casts. */
-      const castForBite = async (overlay: boolean): Promise<string | null> => {
-        for (let i = 0; i < 40; i++) {
-          shift += 31 * 60_000;
-          if (overlay) markOverlaySeen(bdb, Date.now());
-          const r = await run('$don fish');
-          if (r.includes('Something BIG')) return r;
-        }
-        return null;
+      const lastBite = () => readOverlay(bdb).events.filter(e => e.kind === 'bite').pop();
+      /** A tick that always fires if it can: 30 minutes on, overlay showing. */
+      const fire = async (overlay = true) => {
+        shift += 31 * 60_000;
+        chat(41, 'biter', 1);
+        if (overlay) markOverlaySeen(bdb, Date.now());
+        return bsvc.bigBiteTick(() => 0);
       };
-      check('no big bite without an overlay showing', (await castForBite(false)) === null);
-      const bite1 = await castForBite(true);
-      const ev1 = readOverlay(bdb).events.filter(e => e.kind === 'bite').pop();
-      check('a big bite: chat never shows the code, the overlay does', !!bite1 && !!ev1 && typeof ev1.code === 'number' && !bite1.includes(String(ev1.code))
-        && ev1.code! >= 10 && ev1.code! <= 99, { bite1, ev1 });
-      // Half a second after the cast: faster than the stream could have shown the code, and inside the 5s cooldown a reel skips.
-      const fast = await run(`$don fish reel ${ev1!.code}`, 500);
+
+      check('no big bite without an overlay showing', (await fire(false)) === null);
+      check('no big bite when the dice say no', (shift += 31 * 60_000, markOverlaySeen(bdb, Date.now()), await bsvc.bigBiteTick(() => 0.99)) === null);
+      const got = await fire();
+      const ev1 = lastBite();
+      check('a big bite goes to an active chatter, never the streamer, a bot or someone quiet', got === 'biter' && ev1?.username === 'biter');
+      check('chat names the chatter but never the code; the overlay has it', !!ev1 && typeof ev1.code === 'number' && sent.some(m => m.startsWith('@biter') && m.includes('Something BIG'))
+        && !sent.some(m => m.includes(String(ev1.code))), { sent, ev1 });
+      check('one big bite at a time', (await bsvc.bigBiteTick(() => 0)) === null);
+      const fast = await run(`$don fish reel ${ev1!.code}`, ['biter', 41], 500);
       check('an answer faster than the stream could show it snaps the line', fast.includes('yanked too early'), fast);
-      await castForBite(true);
-      check('no casting while fighting a big one', (await run('$don fish')).includes("You're fighting a big one"));
-      shift += 25_000;
-      check('a bite left past its window is settled by the next cast', (await run('$don fish')).includes('got away'));
+      check('not again within 10 minutes', (shift += 5 * 60_000, markOverlaySeen(bdb, Date.now()), await bsvc.bigBiteTick(() => 0)) === null);
 
-      const bite2 = await castForBite(true);
-      const ev2 = readOverlay(bdb).events.filter(e => e.kind === 'bite').pop()!;
-      check('a wrong code loses it', !!bite2 && (await run(`$don fish reel ${ev2.code === 99 ? 10 : ev2.code! + 1}`)).includes('Wrong move'));
+      await fire();
+      const ev2 = lastBite()!;
+      check('a wrong code loses it', (await run(`$don fish reel ${ev2.code === 99 ? 10 : ev2.code! + 1}`, ['biter', 41])).includes('Wrong move'));
 
-      await castForBite(true);
-      const ev3 = readOverlay(bdb).events.filter(e => e.kind === 'bite').pop()!;
-      const before = loadFish(bdb, 41)!;
-      const won = await run(`$don fish reel ${ev3.code}`);
+      await fire();
+      const ev3 = lastBite()!;
+      const before = loadFish(bdb, 41) ?? initialData();
+      const won = await run(`$don fish reel ${ev3.code}`, ['biter', 41]);
       const after = loadFish(bdb, 41)!;
       const landed = Object.keys(after.catch.types).find(n => isTrophy(n) && (after.catch.types[n] ?? 0) > (before.catch.types[n] ?? 0));
-      check('the right code in time lands a Mythic trophy, counted as a catch', won.includes('MYTHIC') && !!landed && after.lifetime.fish === before.lifetime.fish + 1
+      check('the right code in time lands a Mythic trophy, and leaves casting alone', won.includes('MYTHIC') && !!landed && after.readyTimestamp === before.readyTimestamp
         && readOverlay(bdb).events.some(e => e.kind === 'catch' && e.item === landed && e.rarity === 'Mythic')
         && (bdb.prepare('SELECT COUNT(*) AS n FROM catches WHERE user_id = 41 AND name = ?').get(landed) as { n: number }).n === 1, { won, landed });
 
-      await castForBite(true);
-      const ev4 = readOverlay(bdb).events.filter(e => e.kind === 'bite').pop()!;
+      await fire();
+      const ev4 = lastBite()!;
       shift += 31_000;
-      check('too slow loses it', (await run(`$don fish reel ${ev4.code}`)).includes('Too slow'));
-      check('reel with nothing on the line', (await run('$don fish reel 42')).includes('nothing big on your line'));
+      check('too slow loses it', (await run(`$don fish reel ${ev4.code}`, ['biter', 41])).includes('Too slow'));
+      check('reel with nothing on the line', (await run('$don fish reel 42', ['biter', 41])).includes('nothing big on your line'));
+
+      shift += 31 * 60_000;
+      chat(41, 'biter', 1);
+      chat(44, 'other', 1);
+      markOverlaySeen(bdb, Date.now());
+      const next = await bsvc.bigBiteTick(() => 0);
+      check('with others chatting, not the same chatter twice in a row', next === 'other', { next, bite: lastBite()?.username });
+      takeBiteForTest(ch, 'other');
+      check('testers can put a big bite on themselves', (chat(45, 'tester', 1), shift += 11 * 60_000, markOverlaySeen(bdb, Date.now()), await run('$don fish bigbite', ['tester', 45], 6_000)).includes('Something BIG')
+        && lastBite()?.username === 'tester');
+      check('nobody else can', (await run('$don fish bigbite', ['other', 44])) === '' && lastBite()?.username === 'tester');
     } finally {
       Date.now = realNow;
+      resetBites(ch);
     }
-    check('big bite settings are validated', validatePointsPatch({}, { games: { bigBite: { oneIn: 1, windowSeconds: 5 } } }).errors.length === 2);
+    check('big bite settings are validated', validatePointsPatch({}, { games: { bigBite: { everyMinutes: 5, activeMinutes: 0, windowSeconds: 5 } } }).errors.length === 3);
     check('a trophy pool can\'t be switched off entirely', validatePointsPatch({}, { games: { catches: Object.fromEntries(ITEMS.filter(i => i.trophy).map(i => [i.name, { weight: 0 }])) } })
       .errors.some(e => e.includes('big bite trophy')));
   }
