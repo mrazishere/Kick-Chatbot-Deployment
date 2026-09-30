@@ -453,7 +453,7 @@ function formFromConfig(c: PointsConfig): SettingsForm {
           activeMinutes: String(c.games.bigBite.activeMinutes),
           windowSeconds: String(c.games.bigBite.windowSeconds),
           pulls: String(c.games.bigBite.pulls ?? 3),
-          pullSeconds: String(c.games.bigBite.pullSeconds ?? 15),
+          pullSeconds: String(c.games.bigBite.pullSeconds ?? 8),
         }
       : null,
     fishReels: c.games?.reels
@@ -664,7 +664,7 @@ function buildPatch(f: SettingsForm): { patch: PointsSettingsPatch } | { error: 
       activeMinutes: whole(f.fishBigBite.activeMinutes, "Big bite chatters active within (min)", 1, 120),
       windowSeconds: whole(f.fishBigBite.windowSeconds, "Big bite first code time", 10, 120),
       pulls: whole(f.fishBigBite.pulls, "Big bite pulls", 1, 5),
-      pullSeconds: whole(f.fishBigBite.pullSeconds, "Big bite time per pull", 10, 60),
+      pullSeconds: whole(f.fishBigBite.pullSeconds, "Big bite time per pull", 5, 60),
     };
   }
   if (f.fishSteal) {
@@ -813,12 +813,12 @@ function BigBiteSettings({ value, command, disabled, onChange }: {
             <Field label="Pulls to land" hint="codes in a row, 1–5, default 3">
               <input value={value.pulls} inputMode="numeric" disabled={disabled} onChange={(e) => onChange({ ...value, pulls: e.target.value })} className={INPUT} />
             </Field>
-            <Field label="Each later pull (s)" hint="10–60, default 15">
+            <Field label="Each later pull (s)" hint="quick on purpose, 5–60, default 8">
               <input value={value.pullSeconds} inputMode="numeric" disabled={disabled} onChange={(e) => onChange({ ...value, pullSeconds: e.target.value })} className={INPUT} />
             </Field>
           </div>
           <p className="mt-3 text-xs text-neutral-500">
-            {`While the stream is live and a fishing overlay is showing, a random viewer who chatted recently gets something big on their line, about as often as set (never twice within 10 minutes, and never the same viewer twice in a row). Chat gets two lines, one naming them and one with the result; the reel codes and every pull play on the overlay only, which keeps chat quiet and means chat scripts can't answer. They type $${command} fish reel <code>, and each right answer brings a new code for the next pull; after the last pull the trophy lands by its own chance (🦭 90% down to 🐉 40%) or snaps the line. A wrong code or too slow and it gets away. It isn't a cast: it doesn't touch their fishing cooldown. With no overlay showing, there are no big bites.`}
+            {`While the stream is live and a fishing overlay is showing, a random viewer who chatted recently gets something big on their line, about as often as set (never twice within 10 minutes, and never the same viewer twice in a row). Chat gets two lines, one naming them and one with the result; the reel codes and every pull play on the overlay only, which keeps chat quiet and means chat scripts can't answer. They type $${command} fish reel <code>, and each right answer brings a new code for the next pull, with less time; the overlay counts each one down, and an answer still counts a few seconds after zero for the stream's delay; after the last pull the trophy lands by its own chance (🦭 90% down to 🐉 40%) or snaps the line. A wrong code or too slow and it gets away. It isn't a cast: it doesn't touch their fishing cooldown. With no overlay showing, there are no big bites.`}
           </p>
         </>
       ) : null}

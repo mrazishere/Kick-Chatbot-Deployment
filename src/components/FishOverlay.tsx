@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import type { FishOverlayEvent } from "@/lib/bot-api";
+import { syncClock, useCountdown } from "@/lib/overlay-clock";
 import { demoGenerator, type DemoOdds } from "@/lib/fish-demo";
 
 const BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
@@ -23,7 +24,7 @@ type Scene =
   | { v: "catch"; item: string; rarity: string | null; cm: number | null }
   | { v: "miss"; junk: string | null }
   | { v: "trap"; haul: string[] }
-  | { v: "bite"; code: number; windowSec: number; pull: number; pulls: number }
+  | { v: "bite"; code: number; windowSec: number; pull: number; pulls: number; until?: number }
   | { v: "steal"; item: string; victim: string | null; cm: number | null }
   | { v: "caught"; item: string; victim: string | null; fine: string | null }
   | { v: "lay" }
@@ -64,7 +65,7 @@ function sceneOf(ev: FishOverlayEvent): Scene | null {
   if (ev.kind === "bite" && typeof ev.code === "number") {
     // The window, measured on the bot's clock, so a skewed viewer clock doesn't matter.
     const windowSec = Math.max(5, Math.min(120, ((ev.until ?? ev.ts + 30_000) - ev.ts) / 1000));
-    return { v: "bite", code: ev.code, windowSec, pull: ev.pull ?? 1, pulls: ev.pulls ?? 1 };
+    return { v: "bite", code: ev.code, windowSec, pull: ev.pull ?? 1, pulls: ev.pulls ?? 1, ...(ev.until ? { until: ev.until } : {}) };
   }
   if (ev.kind === "steal" && ev.item) {
     const cm = /\((\d+) cm\)/.exec(t);
@@ -188,6 +189,26 @@ function nameColor(name: string): string {
   let h = 0;
   for (const ch of name.toLowerCase()) h = (h * 31 + ch.charCodeAt(0)) % 360;
   return `hsl(${h} 85% 72%)`;
+}
+
+/** A big bite's lane: the code, which pull it is, and the time left on the bot's clock. */
+function BiteView({ scene }: { scene: Extract<Scene, { v: "bite" }> }) {
+  const { frac, secs } = useCountdown(scene.until, scene.windowSec * 1000);
+  const color = frac > 0.6 ? "#fde047" : frac > 0.3 ? "#fbbf24" : "#ef4444";
+  return (
+    <>
+      <div className="fo-line" />
+      <div className="fo-bobber" />
+      <div className="fo-ripple r1" />
+      <div className="fo-ripple r2" />
+      <div className="fo-codebox">
+        <span className="fo-codelabel">{scene.pulls > 1 ? `Pull ${scene.pull}/${scene.pulls}` : "Reel code"}</span>
+        <b>{scene.code}</b>
+        <span className="fo-codesecs" style={{ color }}>{secs > 0 ? `${secs}s left` : "time's up!"}</span>
+      </div>
+      <div className="fo-timer" style={{ transform: `scaleX(${frac})`, background: color }} />
+    </>
+  );
 }
 
 // ─── One lane's scene ────────────────────────────────────────────────────────
@@ -354,19 +375,7 @@ function LaneView({ lane }: { lane: Lane }) {
           })
         : null}
 
-      {scene.v === "bite" ? (
-        <>
-          <div className="fo-line" />
-          <div className="fo-bobber" />
-          <div className="fo-ripple r1" />
-          <div className="fo-ripple r2" />
-          <div className="fo-codebox">
-            <span className="fo-codelabel">{scene.pulls > 1 ? `Pull ${scene.pull}/${scene.pulls}` : "Reel code"}</span>
-            <b>{scene.code}</b>
-          </div>
-          <div className="fo-timer" />
-        </>
-      ) : null}
+      {scene.v === "bite" ? <BiteView scene={scene} /> : null}
 
       {scene.v === "steal" || scene.v === "caught" ? (
         <>
@@ -476,7 +485,8 @@ export default function FishOverlay({
       try {
         const res = await fetch(url, { cache: "no-store" });
         if (!res.ok) return;
-        const data = (await res.json()) as { lastId: number; events: FishOverlayEvent[] };
+        const data = (await res.json()) as { lastId: number; events: FishOverlayEvent[]; now?: number };
+        syncClock(data.now);
         if (after === null || data.lastId < after) {
           after = data.lastId; // first load, or the feed restarted
           return;
@@ -766,9 +776,9 @@ const CSS = `
 .fo-codebox b{display:block;font-size:2.3em;line-height:1;font-weight:900;letter-spacing:.06em;color:#fff;text-shadow:0 0 .3em rgba(253,224,71,.8)}
 .fo-codelabel{display:block;font-size:.5em;font-weight:800;letter-spacing:.14em;text-transform:uppercase;color:#fde047}
 @keyframes fo-code-pulse{50%{box-shadow:0 0 1.5em rgba(253,224,71,.95)}}
-.fo-timer{bottom:calc(var(--surf) + 2.55em);width:5em;height:.28em;margin-left:-2.5em;border-radius:.2em;background:#fde047;transform-origin:left center;
-  animation:fo-timer var(--win) linear .3s forwards}
-@keyframes fo-timer{from{transform:scaleX(1)}60%{background:#fbbf24}to{transform:scaleX(0);background:#ef4444}}
+.fo-timer{bottom:calc(var(--surf) + 2.55em);width:5em;height:.28em;margin-left:-2.5em;border-radius:.2em;transform-origin:left center;
+  transition:transform .25s linear,background .4s}
+.fo-codesecs{display:block;font-size:.55em;font-weight:800;letter-spacing:.04em;margin-top:.1em}
 
 /* Mythic: a big bite trophy, above Legendary. */
 .r-mythic .fo-aura{width:8em;height:8em;margin-left:-4em;bottom:calc(var(--surf) + 2.6em);

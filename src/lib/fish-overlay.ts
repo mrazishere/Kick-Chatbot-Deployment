@@ -82,14 +82,17 @@ function shape(raw: FishOverlayFeed): FishOverlayFeed {
       ...(Object.keys(emotes).length ? { emotes } : {}),
     }];
   });
-  return { lastId: typeof raw.lastId === "number" ? raw.lastId : 0, events };
+  return { lastId: typeof raw.lastId === "number" ? raw.lastId : 0, events, ...(typeof raw.now === "number" ? { now: raw.now } : {}) };
 }
 
 export type OverlayResult = { kind: "ok"; data: FishOverlayFeed } | { kind: "not-found" } | { kind: "unavailable" };
 
 export async function loadFishOverlay(channel: string): Promise<OverlayResult> {
   const hit = cache.get(channel);
-  if (hit && Date.now() - hit.at < TTL_MS) return { kind: "ok", data: hit.data };
+  // A cached answer's clock moves on with the time it sat in the cache.
+  const aged = (h: { at: number; data: FishOverlayFeed }): FishOverlayFeed =>
+    h.data.now === undefined ? h.data : { ...h.data, now: h.data.now + (Date.now() - h.at) };
+  if (hit && Date.now() - hit.at < TTL_MS) return { kind: "ok", data: aged(hit) };
   let pending = inFlight.get(channel);
   if (!pending) {
     pending = getFishOverlay(channel).then(shape).finally(() => inFlight.delete(channel));

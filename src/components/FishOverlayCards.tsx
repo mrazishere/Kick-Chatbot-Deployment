@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { FishOverlayEvent } from "@/lib/bot-api";
+import { syncClock, useCountdown } from "@/lib/overlay-clock";
 import { demoGenerator, type DemoOdds } from "@/lib/fish-demo";
 
 // The first overlay design: each fish reply as a text card. Kept beside the
@@ -122,14 +123,21 @@ function CardView({ card, side }: { card: Card; side: "left" | "right" }) {
           <div className="fo-text">
             <Words text={main} emotes={ev.emotes} />
           </div>
-          {ev.kind === "bite" && typeof ev.code === "number" ? (
-            <div className="fo-bigcode">
-              {ev.pulls && ev.pulls > 1 ? `Pull ${ev.pull}/${ev.pulls}` : "Reel code"} <b>{ev.code}</b>
-            </div>
-          ) : null}
+          {ev.kind === "bite" && typeof ev.code === "number" ? <BiteCode ev={ev} /> : null}
           {note ? <div className="fo-note">{note}</div> : null}
         </div>
       </div>
+    </div>
+  );
+}
+
+/** A big bite card's code, which pull it is, and the time left on the bot's clock. */
+function BiteCode({ ev }: { ev: FishOverlayEvent }) {
+  const { secs } = useCountdown(ev.until, biteMs(ev));
+  return (
+    <div className="fo-bigcode">
+      {ev.pulls && ev.pulls > 1 ? `Pull ${ev.pull}/${ev.pulls}` : "Reel code"} <b>{ev.code}</b>
+      <span className="fo-bigsecs">{secs > 0 ? `${secs}s left` : "time's up!"}</span>
     </div>
   );
 }
@@ -168,7 +176,8 @@ export default function FishOverlayCards({
       try {
         const res = await fetch(url, { cache: "no-store" });
         if (!res.ok) return;
-        const data = (await res.json()) as { lastId: number; events: FishOverlayEvent[] };
+        const data = (await res.json()) as { lastId: number; events: FishOverlayEvent[]; now?: number };
+        syncClock(data.now);
         if (after === null || data.lastId < after) {
           after = data.lastId; // first load, or the feed restarted
           return;
@@ -320,6 +329,7 @@ const CSS = `
 .fo-bite{border:1.5px solid rgba(253,224,71,.9);animation:fo-legend 1s ease-in-out infinite}
 .fo-bigcode{margin-top:.3em;font-size:.8em;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:#fde047}
 .fo-bigcode b{margin-left:.3em;font-size:2em;letter-spacing:.04em;color:#fff;vertical-align:middle;text-shadow:0 0 .3em rgba(253,224,71,.8)}
+.fo-bigsecs{margin-left:.6em;font-size:1em;color:#fbbf24}
 .fo-mythic{border:1.5px solid rgba(244,114,182,.9);background:linear-gradient(135deg,rgba(60,14,48,.92),rgba(14,20,50,.9))}
 .fo-in>.fo-mythic{animation:fo-slide .6s cubic-bezier(.2,1.35,.4,1) both,fo-mythic 1.2s ease-in-out .6s infinite}
 .fo-mythic .fo-rarity{color:#f9a8d4}

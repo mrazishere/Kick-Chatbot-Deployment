@@ -779,6 +779,8 @@ export interface FishOverlayEvent {
 export interface FishOverlayFeed {
   lastId: number;
   events: FishOverlayEvent[];
+  /** The bot's clock when it answered (ms), so a big bite's countdown runs on the bot's time. */
+  now?: number;
 }
 
 export function getFishOverlay(channel: string): Promise<FishOverlayFeed> {
