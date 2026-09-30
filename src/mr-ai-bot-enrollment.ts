@@ -16,7 +16,7 @@ import { resolveBotIdentity } from './bot-identity';
 import { SYSTEM_BOTS } from './system-bots';
 import { commandWordCollides, effectiveCommand, effectivePointsConfig, readSubscriptionStatus, validatePointsPatch } from './points/config';
 import { closePointsDb, openPointsDb } from './points/db';
-import { readOverlay } from './community/fish-overlay';
+import { markOverlaySeen, readOverlay } from './community/fish-overlay';
 import { publicUserHistory, publicViewerSearch } from './points/store';
 import { rarityName } from './community/fishing';
 import { adjustPoints, backupPoints, caughtFish, heistBoard, getPointsUserDetail, pointsLeaderboard, pointsSummary, resetAllPoints, searchPointsUsers } from './points/store';
@@ -2830,6 +2830,7 @@ app.get('/internal/bot/:channel/overlay/fishing', internalGuard(false), (req, re
   const db = openPointsDb(channel, { create: false });
   if (!db) return res.json({ lastId: 0, events: [] });
   try {
+    markOverlaySeen(db);
     return res.json(readOverlay(db));
   } catch (e) {
     return pointsUnavailable(res, channel, e);
@@ -2877,34 +2878,40 @@ app.get('/internal/bot/:channel/points/public-history', internalGuard(false), (r
 
 /**
  * What the public leaderboard's Fishing tab shows: every catch with its share of
- * catches, a rarity name and its sell price as the channel has them set, and the
- * rarest fish anyone has landed. Null where fishing is off.
+ * catches, a rarity name and its sell price as the channel has them set, the big
+ * bite trophies, and the rarest fish anyone has landed. Null where fishing is off.
  */
 function publicFishing(channel: string, cfg: ReturnType<typeof effectivePointsConfig>, broadcasterUserId: number | null): Record<string, unknown> | null {
   const g = cfg.games;
   if (!g.enabled) return null;
-  const list = (type: 'fish' | 'junk') => {
-    const items = g.catches.filter(c => c.type === type);
+  // Each pool's chances are shares of that pool: fish of fish catches, junk of junk,
+  // trophies of big bites.
+  const list = (pool: (c: (typeof g.catches)[number]) => boolean, trophy = false) => {
+    const items = g.catches.filter(pool);
     const total = items.reduce((sum, c) => sum + c.weight, 0);
     return items
       .map(c => {
         const chance = total > 0 ? (c.weight / total) * 100 : 0;
-        return { emoji: c.name, chance: Math.round(chance * 100) / 100, rarity: rarityName(chance), price: c.price };
+        return { emoji: c.name, chance: Math.round(chance * 100) / 100, rarity: trophy ? 'Mythic' : rarityName(chance), price: c.price, ...(trophy ? { trophy: true } : {}) };
       })
       .sort((a, b) => b.chance - a.chance || a.price - b.price);
   };
-  const fish = list('fish');
-  // Rarest first by today's odds; a fish since removed from the channel's list is left out.
-  const odds = new Map(fish.map(f => [f.emoji, f]));
+  const fish = list(c => c.type === 'fish' && !c.trophy);
+  const trophies = list(c => !!c.trophy, true);
+  // Rarest first: trophies ahead of every fish, then by today's odds. A catch since
+  // removed from the channel's list is left out.
+  const odds = new Map([...fish, ...trophies].map(f => [f.emoji, f]));
   const rarest = caughtFish(channel, cfg, broadcasterUserId)
     .flatMap(c => {
       const f = odds.get(c.name);
-      return f ? [{ emoji: c.name, chance: f.chance, rarity: f.rarity, times: c.times, firstBy: c.firstBy, firstAt: c.firstAt, lastBy: c.lastBy, lastAt: c.lastAt }] : [];
+      return f ? [{ emoji: c.name, chance: f.chance, rarity: f.rarity, times: c.times, firstBy: c.firstBy, firstAt: c.firstAt, lastBy: c.lastBy, lastAt: c.lastAt, ...('trophy' in f ? { trophy: true } : {}) }] : [];
     })
-    .sort((a, b) => a.chance - b.chance || a.firstAt.localeCompare(b.firstAt))
+    .sort((a, b) => Number('trophy' in b) - Number('trophy' in a) || a.chance - b.chance || a.firstAt.localeCompare(b.firstAt))
     .slice(0, 5);
-  // Null until the first steal; the page shows an empty heists section while stealing is on.
-  return { catchOdds: g.catchOdds, fish, junk: list('junk'), rarest, steal: g.steal.enabled, heists: heistBoard(channel, cfg, broadcasterUserId) };
+  return {
+    catchOdds: g.catchOdds, fish, junk: list(c => c.type === 'junk'), rarest, steal: g.steal.enabled, heists: heistBoard(channel, cfg, broadcasterUserId),
+    trophies, bigBite: g.bigBite.enabled ? { oneIn: g.bigBite.oneIn } : null
+  };
 }
 
 /**

@@ -298,6 +298,20 @@ export interface PointsGamesConfig {
   reels: FishReelSetting[];
   /** `fish steal`: taking a fish from another viewer, and guards against it. */
   steal: FishStealSetting;
+  /** Big bites: live-only casts that become a trophy if the angler reels in the code shown on the overlay. */
+  bigBite: FishBigBiteSetting;
+}
+
+/**
+ * Our addition. While the stream is live and a fishing overlay is showing, 1 cast in
+ * `oneIn` becomes a big bite: chat says something big is on the line, the overlay
+ * alone shows a two-digit reel code, and the angler has `windowSeconds` to type
+ * `fish reel <code>`. Landed, it's a trophy (Mythic) from its own pool.
+ */
+export interface FishBigBiteSetting {
+  enabled: boolean;
+  oneIn: number;
+  windowSeconds: number;
 }
 
 /**
@@ -363,6 +377,8 @@ export interface FishCatchSetting {
   price: number;
   defaultWeight: number;
   defaultPrice: number;
+  /** A big bite trophy: its weight is a share of big bites, not of casts. */
+  trophy?: boolean;
 }
 
 /** Per-item overrides by emoji. */
@@ -401,11 +417,11 @@ export type StoredPointsConfig = Partial<Omit<PointsConfig, 'bonuses' | 'give' |
   gamble?: Partial<PointsGambleConfig>;
   duel?: Partial<PointsDuelConfig>;
   raffle?: Partial<PointsRaffleConfig>;
-  games?: Partial<Omit<PointsGamesConfig, 'catches' | 'steal'>> & { catches?: StoredFishCatches; steal?: Partial<FishStealSetting> };
+  games?: Partial<Omit<PointsGamesConfig, 'catches' | 'steal' | 'bigBite'>> & { catches?: StoredFishCatches; steal?: Partial<FishStealSetting>; bigBite?: Partial<FishBigBiteSetting> };
   /** Staging only, set by editing the file: treat the channel as live. Never exposed by the API. */
   debugForceLive?: boolean;
-  /** Staging only, set by editing the file: who can test stealing (see InternalPointsConfig). */
-  debugStealTesters?: string[];
+  /** Staging only, set by editing the file: who can test stealing and big bites (see InternalPointsConfig). */
+  debugFishTesters?: string[];
 };
 
 /** A Kick user as it appears in webhook payloads. */

@@ -19,6 +19,7 @@
  *          $don fish top [fish|coins|junk|lucky|unlucky|traps|attempts|thieves|caught|robbed|total-…|emoji]   (also leaderboard)
  *          $don fish trap [cancel|reset]                (also net, trawl)
  *          $don fish buy [reel|hook|guard]              (shows the shop; "buy reel" buys the next reel)
+ *          $don fish reel <code>                        (answer a big bite with the code shown on the overlay)
  *          $don fish steal @user                        (also rob; needs a hook, see games.steal)
  *              Reaches for one random fish the target has held a while; succeeds by
  *              its rarity. Every try uses one hook try and a fee on that fish's value;
@@ -44,7 +45,7 @@ import { makeCooldown, parseUsername, span } from '../community/format';
 import { gameInvocation } from '../community/stakes';
 import { addReminder, cancelSelfRemindersStartingWith, openCommunityDb } from '../community/store';
 import { bestEmote, broadcasterIdFor, emoteImages } from '../community/emotes';
-import { OverlayKind, pushOverlay } from '../community/fish-overlay';
+import { OverlayKind, overlayShowing, pushOverlay } from '../community/fish-overlay';
 import {
   addItem, baitPrice, baitRoll, currentReel, heldFishValue, landsFish, moveFish, pickHeld, stealableFish, stealChance, stealCharges, worstStealCharges, parseSellList, CatchItem, CatchType, FAILURE_EMOTES, FishData, findBait, hasFishedBefore, initialData, rarityOf, recordCatch,
   ITEMS, JUNK_MESSAGES, loadFish, MISS_DELAY_MS, pick, randomInt, rollCatch, saveFish, sellPrice, STORY_STYLES, SUCCESS_EMOTES,
@@ -54,13 +55,23 @@ import {
 const cooldown = makeCooldown(5000);
 const pointer = makeCooldown(60_000);
 
-const SUBCOMMANDS: Record<string, 'buy' | 'sell' | 'show' | 'stats' | 'top' | 'trap' | 'steal'> = {
+const SUBCOMMANDS: Record<string, 'buy' | 'sell' | 'show' | 'stats' | 'top' | 'trap' | 'steal' | 'reel'> = {
   buy: 'buy', sell: 'sell',
   show: 'show', count: 'show', display: 'show', collection: 'show',
   stats: 'stats', top: 'top', leaderboard: 'top',
   trap: 'trap', net: 'trap', trawl: 'trap',
-  steal: 'steal', rob: 'steal'
+  steal: 'steal', rob: 'steal',
+  reel: 'reel'
 };
+
+/**
+ * Big bites waiting for their reel code, by channel and lowercase name. Kept in
+ * memory: a restart lets any that are waiting get away.
+ */
+interface Bite { code: number; startedAt: number; until: number; timer: NodeJS.Timeout }
+const bites = new Map<string, Bite>();
+/** The stream runs a few seconds behind chat: an answer this soon can't have come from watching it. */
+const BITE_TOO_FAST_MS = 2_000;
 
 const STORY_MODEL = 'claude-haiku-4-5-20251001';
 /** supibot asks for 150 characters; allow some overrun before trimming. */
@@ -152,9 +163,12 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
   const meLc = me.toLowerCase();
   if (call.form === 'redirect') return void (pointer(meLc) || client.say(channel, `@${me} it's ${call.usage} here`));
   if (SYSTEM_BOTS.has(meLc) || isBotSender(me, tags.senderId)) return;
-  if (cooldown(meLc)) return;
-
   const chan = channel.replace(/^#/, '').toLowerCase();
+  // A reel answering a waiting big bite skips the 5s cooldown: there's one answer per
+  // bite, so nothing to spam, and the cast that started it was seconds ago.
+  const answering = SUBCOMMANDS[String(call.args.find(a => !/^skipstory:/i.test(a)) ?? '').toLowerCase()] === 'reel' && bites.has(`${chan}|${meLc}`);
+  if (!answering && cooldown(meLc)) return;
+
   const svc = getPointsService(chan);
   const db = svc?.db();
   if (!svc || !db) return;
@@ -168,13 +182,14 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
    * the overlay. Only cast results and trap hauls skip chat where the channel turned
    * chat replies off; every other reply, steals included, always goes to chat.
    */
-  const say = (text: string, meta: { kind?: OverlayKind; item?: string } = {}) => {
+  const say = (text: string, meta: { kind?: OverlayKind; item?: string; code?: number; until?: number } = {}) => {
     if (meta.kind) {
       const emotes = emoteImages(chan, text);
       const rarity = meta.item ? rarityOf(g, meta.item) : null;
       pushOverlay(db, {
         username: me, kind: meta.kind, text,
-        ...(meta.item ? { item: meta.item } : {}), ...(rarity ? { rarity } : {}), ...(Object.keys(emotes).length ? { emotes } : {})
+        ...(meta.item ? { item: meta.item } : {}), ...(rarity ? { rarity } : {}), ...(Object.keys(emotes).length ? { emotes } : {}),
+        ...(meta.code !== undefined ? { code: meta.code, until: meta.until } : {})
       });
       if (!g.chatReplies && (meta.kind === 'catch' || meta.kind === 'miss' || meta.kind === 'trap')) return;
     }
@@ -192,8 +207,9 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
 
   const senderId = Number(tags.senderId);
   const userId = Number.isInteger(senderId) && senderId > 0 ? senderId : findUserByName(db, meLc)?.user_id ?? null;
-  // Staging: named testers can try stealing anywhere, any time (debugStealTesters).
-  const tester = cfg.debugStealTesters.includes(meLc);
+  // Staging: named testers can try stealing and big bites anywhere, any time (debugFishTesters).
+  const tester = cfg.debugFishTesters.includes(meLc);
+  const liveNow = async () => (await svc.isLiveNow()) === true;
   const offLimits = (id: number | null, name: string) => isExcluded(svc.exclusions(), id, name);
   const excluded = offLimits(userId, meLc);
   const ignore = (why: string) => void console.log(`[FISH] ${me} ignored in ${chan}: ${why}`);
@@ -214,13 +230,120 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
   };
   const emotesFor = (list: readonly string[], fallback: string) => bestEmote(chan, broadcasterIdFor(config as ChannelConfig), list, fallback);
 
+  /**
+   * Land one fish, from a cast or a reeled-in big bite: into the collection with its
+   * length and record, the catch cooldown, and a catches row. Inside a write
+   * transaction; the caller saves `d`. Returns the size and worth line.
+   */
+  function land(d: FishData, uid: number, item: CatchItem, reel: FishReelSetting | null, now: number): string {
+    addItem(d, item);
+    d.catch.dryStreak = 0;
+    d.catch.luckyStreak++;
+    if (d.catch.luckyStreak > d.lifetime.luckyStreak) d.lifetime.luckyStreak = d.catch.luckyStreak;
+    d.readyTimestamp = now + g.catchCooldownMinutes * 60_000;
+    if (!item.size) {
+      recordCatch(db!, uid, item.name, 'cast', null, now);
+      return item.trophy ? `Worth ${groupDigits(sellPrice(item, g, undefined, reel?.valueMultiplier ?? 1))} ${cur}.` : '';
+    }
+    const size = randomInt(1, 100);
+    let sizeString = `It is ${size} cm in length.`;
+    // A first catch always sets a record; only beating an earlier one earns the bonus.
+    const beatRecord = d.lifetime.maxFishSize > 0 && size > d.lifetime.maxFishSize;
+    if (size > d.lifetime.maxFishSize) {
+      sizeString += ' This is a new record!';
+      d.lifetime.maxFishSize = size;
+      d.lifetime.maxFishType = item.name;
+    }
+    const held = { cm: size, record: beatRecord };
+    d.catch.sizes ??= {};
+    (d.catch.sizes[item.name] ??= []).push(held);
+    sizeString += ` Worth ${sellPrice(item, g, held, reel?.valueMultiplier ?? 1)} ${cur}.`;
+    recordCatch(db!, uid, item.name, 'cast', size, now);
+    return sizeString;
+  }
+
+  // ── big bite ──
+  /** Something big is on the line: chat says so, and only the overlay shows the reel code. */
+  function startBite(uid: number, appendix: string): void {
+    const key = `${chan}|${meLc}`;
+    const now = Date.now();
+    const code = randomInt(10, 99);
+    const windowMs = g.bigBite.windowSeconds * 1000;
+    const timer = setTimeout(() => {
+      if (bites.get(key)?.code !== code) return;
+      bites.delete(key);
+      getAway(uid, 'It was too strong and swam off with your bait!');
+    }, windowMs + 500);
+    timer.unref?.();
+    bites.set(key, { code, startedAt: now, until: now + windowMs, timer });
+    console.log(`[FISH] ${me} got a big bite in ${chan}`);
+    const used = appendix ? ` (${appendix.replace(/^, /, '')})` : '';
+    say(`🎣 Something BIG is on your line! Watch the stream for your reel code and type ${cmd} fish reel <code> within ${g.bigBite.windowSeconds}s!${used}`,
+      { kind: 'bite', code, until: now + windowMs });
+  }
+
+  /** A big bite lost: a miss, with a miss's short cooldown. */
+  function getAway(uid: number, why: string): void {
+    const now = Date.now();
+    const delay = Math.round(randomInt(MISS_DELAY_MS[0], MISS_DELAY_MS[1]) / 1000) * 1000;
+    try {
+      runWrite(db!, () => {
+        const d = loadFish(db!, uid) ?? initialData();
+        d.catch.dryStreak++;
+        d.catch.luckyStreak = 0;
+        if (d.catch.dryStreak > d.lifetime.dryStreak) d.lifetime.dryStreak = d.catch.dryStreak;
+        d.readyTimestamp = now + delay + 1000;
+        saveFish(db!, uid, d, now);
+      });
+    } catch (err) {
+      console.error(`[FISH] Big bite for ${me} in ${chan} failed to settle: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    console.log(`[FISH] ${me}'s big bite got away in ${chan}`);
+    say(`The big one got away... ${why} (${span(delay)} cooldown)`, { kind: 'miss' });
+  }
+
+  /** `fish reel <code>`: one answer per big bite, from the angler, after the stream could show it. */
+  function reelIn(codeRaw: string | undefined, uid: number): void {
+    const key = `${chan}|${meLc}`;
+    const bite = bites.get(key);
+    if (!bite) return void say("There's nothing big on your line right now.");
+    bites.delete(key);
+    clearTimeout(bite.timer);
+    const at = Date.now();
+    if (at > bite.until) return getAway(uid, 'Too slow! It shook the hook and swam off.');
+    if (at - bite.startedAt < BITE_TOO_FAST_MS) return getAway(uid, 'You yanked too early and snapped the line!');
+    if (!/^\d+$/.test(codeRaw ?? '') || Number(codeRaw) !== bite.code) return getAway(uid, 'Wrong move! The line snapped.');
+    const out = once(now => {
+      ensureUserTx(db!, uid, me, now);
+      const d = loadFish(db!, uid) ?? initialData();
+      const item = weightedCatch('trophy', g);
+      const sizeString = land(d, uid, item, currentReel(d, g), now);
+      saveFish(db!, uid, d, now);
+      return { item, sizeString };
+    });
+    if (!out) return;
+    console.log(`[FISH] ${me} reeled in a trophy ${out.item.name} in ${chan}`);
+    say(`🏆 You reeled it in! A MYTHIC ✨${out.item.name}✨! ${out.sizeString} (${g.catchCooldownMinutes} minute fishing cooldown)`, { kind: 'catch', item: out.item.name });
+  }
+
   // ── cast ──
   async function cast(baitWord: string | undefined, uid: number): Promise<void> {
-    if (!(await liveOk())) return;
+    const waiting = bites.get(`${chan}|${meLc}`);
+    if (waiting && Date.now() <= waiting.until) return void say(`You're fighting a big one! Watch the stream for your reel code: ${cmd} fish reel <code>`);
+    if (waiting) {
+      // Its timer should have settled it; settle it now rather than block casting.
+      bites.delete(`${chan}|${meLc}`);
+      clearTimeout(waiting.timer);
+      return getAway(uid, 'It was too strong and swam off with your bait!');
+    }
+    if (!tester && !(await liveOk())) return;
+    // A big bite needs the stream live and an overlay showing, or nobody could see the code.
+    const biteOn = g.bigBite.enabled && overlayShowing(db!) && (tester || await liveNow());
     const bait = findBait(baitWord);
     type Outcome =
       | { kind: 'reply'; text: string }
       | { kind: 'miss'; text: string; delay: number; appendix: string; streak: string }
+      | { kind: 'bite'; appendix: string }
       | { kind: 'catch'; item: CatchItem; sizeString: string; appendix: string };
 
     const out = once<Outcome>(now => {
@@ -255,6 +378,13 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       d.lifetime.attempts++;
       const reel = currentReel(d, g);
 
+      if (biteOn && randomInt(1, g.bigBite.oneIn) === 1) {
+        // No fish roll: the reel code decides it. No casting until it's settled.
+        d.readyTimestamp = now + g.bigBite.windowSeconds * 1000;
+        saveFish(db!, uid, d, now);
+        return { kind: 'bite', appendix };
+      }
+
       if (!landsFish(rollMaximum, reel)) {
         const delay = Math.round(randomInt(MISS_DELAY_MS[0], MISS_DELAY_MS[1]) / 1000) * 1000;
         d.catch.dryStreak++;
@@ -277,35 +407,13 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       }
 
       const item = weightedCatch('fish', g, reel?.rarityMultiplier ?? 1);
-      addItem(d, item);
-      d.catch.dryStreak = 0;
-      d.catch.luckyStreak++;
-      if (d.catch.luckyStreak > d.lifetime.luckyStreak) d.lifetime.luckyStreak = d.catch.luckyStreak;
-      d.readyTimestamp = now + g.catchCooldownMinutes * 60_000;
-      let sizeString = '';
-      if (item.size) {
-        const size = randomInt(1, 100);
-        sizeString = `It is ${size} cm in length.`;
-        // A first catch always sets a record; only beating an earlier one earns the bonus.
-        const beatRecord = d.lifetime.maxFishSize > 0 && size > d.lifetime.maxFishSize;
-        if (size > d.lifetime.maxFishSize) {
-          sizeString += ' This is a new record!';
-          d.lifetime.maxFishSize = size;
-          d.lifetime.maxFishType = item.name;
-        }
-        const held = { cm: size, record: beatRecord };
-        d.catch.sizes ??= {};
-        (d.catch.sizes[item.name] ??= []).push(held);
-        sizeString += ` Worth ${sellPrice(item, g, held, reel?.valueMultiplier ?? 1)} ${cur}.`;
-        recordCatch(db!, uid, item.name, 'cast', size, now);
-      } else {
-        recordCatch(db!, uid, item.name, 'cast', null, now);
-      }
+      const sizeString = land(d, uid, item, reel, now);
       saveFish(db!, uid, d, now);
       return { kind: 'catch', item, sizeString, appendix };
     });
     if (!out) return;
     if (out.kind === 'reply') return void say(out.text);
+    if (out.kind === 'bite') return startBite(uid, out.appendix);
 
     if (out.kind === 'miss') {
       const emote = await emotesFor(FAILURE_EMOTES, '😔');
@@ -855,6 +963,9 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       case 'steal':
         if (userId === null || excluded) return ignore('no account or excluded');
         return await steal(rest[0], userId);
+      case 'reel':
+        if (userId === null || excluded) return ignore('no account or excluded');
+        return reelIn(rest[0], userId);
       default:
         if (userId === null || excluded) return ignore('no account or excluded');
         return await cast(rest[0], userId);

@@ -22,6 +22,12 @@ export interface CatchItem {
   weight: number;
   /** Whether a catch gets a length in cm. */
   size: boolean;
+  /**
+   * Our addition: a trophy, landed only by reeling in a big bite while live. Trophies
+   * are fish (sold, shown, stolen like fish) with their own pool and weights, and the
+   * Mythic rarity; casts and traps never roll them.
+   */
+  trophy?: boolean;
 }
 
 export const ITEMS: readonly CatchItem[] = [
@@ -36,8 +42,19 @@ export const ITEMS: readonly CatchItem[] = [
   ...fishTier(['🐠', '🐡', '🦞', '🐢'], 4, 60),
   ...fishTier(['🦑', '🐙', '🦂', '🐬'], 1.5, 150),
   ...fishTier(['🐊', '🦈'], 0.5, 400),
-  ...fishTier(['🐳', '🐋'], 0.1, 1500)
+  ...fishTier(['🐳', '🐋'], 0.1, 1500),
+  // Big bite trophies. Weights are shares of big bites; prices are listed, not scaled
+  // like supibot's fish, so a channel that triples fish prices sets these itself.
+  { name: '🦭', type: 'fish', price: 5_000, weight: 30, size: true, trophy: true },
+  { name: '🦦', type: 'fish', price: 7_500, weight: 25, size: true, trophy: true },
+  { name: '🦕', type: 'fish', price: 10_000, weight: 20, size: true, trophy: true },
+  { name: '💎', type: 'fish', price: 15_000, weight: 10, size: false, trophy: true },
+  { name: '👑', type: 'fish', price: 25_000, weight: 10, size: false, trophy: true },
+  { name: '🐉', type: 'fish', price: 100_000, weight: 5, size: true, trophy: true }
 ];
+
+/** Casts and traps roll from these; trophies come only from big bites. */
+export const isTrophy = (name: string): boolean => ITEMS.some(i => i.name === name && i.trophy);
 
 /**
  * Rarity tiers, where supibot has every fish at weight 1 and price 50: common
@@ -182,8 +199,8 @@ export function landsFish(rollMaximum: number, reel: FishReelSetting | null): bo
  * of every fish rarer than the commonest, so a reel's rarity ×2 makes each of them
  * twice as likely against the common ones.
  */
-export function weightedCatch(type: CatchType, g: PointsGamesConfig, rarity = 1): CatchItem {
-  const items = ITEMS.filter(i => i.type === type);
+export function weightedCatch(type: CatchType | 'trophy', g: PointsGamesConfig, rarity = 1): CatchItem {
+  const items = type === 'trophy' ? ITEMS.filter(i => i.trophy) : ITEMS.filter(i => i.type === type && !i.trophy);
   const base = items.map(i => weightOf(i, g));
   const commonest = Math.max(...base);
   const weights = type === 'fish' && rarity !== 1 ? base.map(w => (w < commonest ? w * rarity : w)) : base;
@@ -213,7 +230,8 @@ export function rarityName(chancePercent: number): string {
 export function rarityOf(g: PointsGamesConfig, name: string): string | null {
   const item = g.catches.find(c => c.name === name);
   if (!item) return null;
-  const total = g.catches.filter(c => c.type === item.type).reduce((sum, c) => sum + c.weight, 0);
+  if (item.trophy) return 'Mythic';
+  const total = g.catches.filter(c => c.type === item.type && !c.trophy).reduce((sum, c) => sum + c.weight, 0);
   return rarityName(total > 0 ? (item.weight / total) * 100 : 0);
 }
 
@@ -242,6 +260,7 @@ export function sizeMultiplier(cm: number): number {
 
 /** supibot's price scaled by the channel's sellPricePercent: an item's price with no override. */
 export function defaultSellPrice(item: CatchItem, sellPricePercent: number): number {
+  if (item.trophy) return item.price;
   return Math.round(item.price * sellPricePercent / 100);
 }
 
@@ -400,7 +419,9 @@ export function heldFishValue(d: FishData, g: PointsGamesConfig): number {
 export function stealChance(g: PointsGamesConfig, name: string): number {
   const st = g.steal;
   const byRarity: Record<string, number> = {
-    Common: st.oddsCommon, Uncommon: st.oddsUncommon, Rare: st.oddsRare, Epic: st.oddsEpic, Legendary: st.oddsLegendary
+    Common: st.oddsCommon, Uncommon: st.oddsUncommon, Rare: st.oddsRare, Epic: st.oddsEpic, Legendary: st.oddsLegendary,
+    // Trophies are as hard to take as the rarest fish.
+    Mythic: st.oddsLegendary
   };
   return byRarity[rarityOf(g, name) ?? 'Common'] ?? 0;
 }

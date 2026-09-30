@@ -15,11 +15,12 @@ const READ_LIMIT = 50;
 
 /**
  * catch: a fish landed by a cast. trap: traps collected. miss: a cast that came
- * back empty or with junk. steal: a fish taken from another viewer. caught: a
+ * back empty or with junk. bite: a big bite, carrying the reel code the chat reply
+ * never shows. steal: a fish taken from another viewer. caught: a
  * thief caught red-handed. info: any other reply, only in feeds from before replies
  * were split between chat and the overlay.
  */
-export type OverlayKind = 'catch' | 'trap' | 'miss' | 'steal' | 'caught' | 'info';
+export type OverlayKind = 'catch' | 'trap' | 'miss' | 'steal' | 'caught' | 'bite' | 'info';
 
 export interface OverlayEvent {
   id: number;
@@ -33,6 +34,10 @@ export interface OverlayEvent {
   rarity?: string;
   /** Emote name to image URL, for emotes in the text. */
   emotes?: Record<string, string>;
+  /** A big bite's reel code: only the overlay shows it, never chat. */
+  code?: number;
+  /** When a big bite gets away (ms). */
+  until?: number;
 }
 
 let writes = 0;
@@ -47,6 +52,39 @@ export function pushOverlay(db: PointsDb, event: Omit<OverlayEvent, 'id' | 'ts'>
     });
   } catch (err) {
     console.error(`[FISH] Overlay write failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+// ─── Is an overlay showing? ──────────────────────────────────────────────────
+
+const SEEN_KEY = 'overlay_seen_at';
+/** An overlay polls every 1.5s; this long without one and it's taken as closed. */
+const SEEN_FRESH_MS = 15_000;
+let lastMarked = 0;
+
+/**
+ * The enrollment service calls this on every overlay poll, so the bot knows a code it
+ * shows will be seen. Written at most every 5 seconds; never throws.
+ */
+export function markOverlaySeen(db: PointsDb, now = Date.now()): void {
+  if (now - lastMarked < 5_000) return;
+  lastMarked = now;
+  try {
+    runWrite(db, () => {
+      db.prepare('INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(SEEN_KEY, String(now));
+    });
+  } catch (err) {
+    console.error(`[FISH] Overlay seen write failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+/** Whether a fishing overlay polled in the last few seconds. */
+export function overlayShowing(db: PointsDb, now = Date.now()): boolean {
+  try {
+    const row = db.prepare('SELECT value FROM meta WHERE key = ?').get(SEEN_KEY) as { value: string } | undefined;
+    return !!row && now - Number(row.value) < SEEN_FRESH_MS;
+  } catch {
+    return false;
   }
 }
 

@@ -710,6 +710,7 @@ $don fish top [type]          → top 10: fish, coins, junk, lucky, unlucky, tra
 $don fish trap [cancel|reset] → lay traps (also net, trawl); no casting meanwhile; pings you when full if !remind is on
 $don fish buy [reel|hook|guard] → the shop: plain "buy" shows the next reel's price; "buy reel" buys it
 $don fish steal @user         → steal one of their fish (also rob); needs a hook, see Stealing
+$don fish reel <code>         → answer a big bite with the code shown on the stream overlay
 ```
 
 - A miss waits 30–90 seconds, a catch `catchCooldownMinutes` (30). Fish have a size (1–100 cm) and your record is kept. On 1 catch in 3, Claude Haiku writes a short story (`stories`).
@@ -723,6 +724,14 @@ $don fish steal @user         → steal one of their fish (also rob); needs a ho
 **Fishing overlay.** Cast results (a catch, or no luck/junk), trap hauls and steals go to an overlay feed (`overlay_feed`, schema v7, kept 5 minutes; `community/fish-overlay.ts`) that the dashboard serves as an OBS browser source: an animated fishing scene or text cards, each behind its own per-channel key (the bot page shows both links; add `&demo=1` for a demo rolled at the channel's real odds, `&steals=1` to include steals). `games.chatReplies` off sends cast results and trap hauls to the overlay only; every other reply, steals included, always goes to chat.
 
 **Rarest catches.** The public leaderboard's Fishing tab lists every catch with its chance, rarity and price, and the five rarest fish ever landed with who landed them first and last. `src/tools/backfill-catches.ts` filled `catches` once from the bot log for fish landed before it existed.
+
+#### Big bites and trophies (`games.bigBite`, on by default)
+
+While the stream is live **and** a fishing overlay is showing (it checks in with the bot as it polls; `overlay_seen_at` in the points `meta` table), about 1 cast in `oneIn` (40) hooks something big instead of rolling a fish. Chat says so, but the two-digit reel code appears **only on the overlay**, so a chat script can't copy it; the angler types `$don fish reel <code>` within `windowSeconds` (30).
+
+- The right code lands a **trophy** from its own pool, the **Mythic** tier above Legendary: 🦭 5,000, 🦦 7,500, 🦕 10,000, 💎 15,000, 👑 25,000, 🐉 100,000 (shares of big bites 30 / 25 / 20 / 10 / 10 / 5%). Trophies are fish in every other way (length and records, sell, show, steal, rarest catches), but casts and traps never roll them, and their prices aren't scaled by `sellPricePercent`. Weights and prices are editable per channel like any catch.
+- A wrong code, no answer in time, or an answer within 2 seconds (faster than the stream could show the code) and it gets away: a miss with the short cooldown. One answer per bite; `reel` skips the 5-second command cooldown only while a bite waits for that viewer. No casting while a bite waits.
+- Waiting bites live in memory, so a restart lets them get away. The overlay's scene shows the code in the angler's lane over a draining timer; the text cards show it on the card.
 
 #### Stealing (`games.steal`, off by default)
 
@@ -738,9 +747,9 @@ $don fish buy guard           → protect your fish for 12 hours; priced on what
 - **Guards:** a guarded target turns every try away for one hook try and nothing else; the thief is told, the owner is pinged. A guard's time left is never shown in chat, not even to its owner, since chat is public.
 - **Limits:** after a try that went ahead, the target is left alone for `protectMinutes` (60); one try per thief and target a day; the streamer, bots and excluded accounts are off limits; a thief must have fished at least once.
 - **Heists:** each try is a row in `steals` (schema v8, with value, fee and fine since v9). The public leaderboard's Fishing tab shows the totals, master thieves, the hall of shame, the biggest heists, easy pickings, Fort Knox and a police blotter (`heistBoard` in `points/store.ts`). In chat, `top thieves`, `top caught` and `top robbed`.
-- **Testing:** `points.debugStealTesters` (a list of lowercase names, set by editing the channel config; never shown or set by the dashboard) lets those viewers steal where stealing is off or the stream is offline, target the bot's account, and skip the cooldown and once-per-target limits.
+- **Testing:** `points.debugFishTesters` (a list of lowercase names, set by editing the channel config; never shown or set by the dashboard; `debugStealTesters`, its old name, still works) lets those viewers cast, steal and get big bites where they're off or the stream is offline, target the bot's account, and skip the steal cooldown and once-per-target limits. Big bites still need an overlay showing.
 
-Settings (`points.games`): `enabled`, `onlyWhileLive`, `catchOdds` (20; bait odds scale with it), `catchCooldownMinutes` (30), `trapMinutes` (60, at least 31), `sellPricePercent` and `baitPricePercent` (100), `stories` (on), `chatReplies` (on), `catches`, `reels`, and `steal`: `enabled`, `hookPrice` (150), `hookUses` (3), `feePercent` (3), `feeMinimum` (10), `edgePercent` (20), `fineMinimum` (25), `oddsCommon`…`oddsLegendary` (40/30/20/10/5), `graceMinutes` (30), `protectMinutes` (60), `guardPercent` (5), `guardMinimum` (200), `guardHours` (12).
+Settings (`points.games`): `enabled`, `onlyWhileLive`, `catchOdds` (20; bait odds scale with it), `catchCooldownMinutes` (30), `trapMinutes` (60, at least 31), `sellPricePercent` and `baitPricePercent` (100), `stories` (on), `chatReplies` (on), `catches`, `reels`, `bigBite`: `enabled` (on), `oneIn` (40), `windowSeconds` (30), and `steal`: `enabled`, `hookPrice` (150), `hookUses` (3), `feePercent` (3), `feeMinimum` (10), `edgePercent` (20), `fineMinimum` (25), `oddsCommon`…`oddsLegendary` (40/30/20/10/5), `graceMinutes` (30), `protectMinutes` (60), `guardPercent` (5), `guardMinimum` (200), `guardHours` (12).
 
 ### `!cookie` — fortune cookie (`cookie.ts`)
 

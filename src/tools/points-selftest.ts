@@ -25,9 +25,9 @@ import {
 } from '../points/store';
 import { WebhookPoller } from '../channels/webhook-poller';
 import { points as pointsCommand } from '../bot-commands/points';
-import { addItem, FishData, initialData, stealCharges, ITEMS, landsFish, loadFish, parseSellList, recordCatch, saveFish, sellPrice, weightedCatch } from '../community/fishing';
+import { addItem, FishData, initialData, isTrophy, rarityOf, stealCharges, ITEMS, landsFish, loadFish, parseSellList, recordCatch, saveFish, sellPrice, weightedCatch } from '../community/fishing';
 import { openCommunityDb } from '../community/store';
-import { readOverlay } from '../community/fish-overlay';
+import { markOverlaySeen, readOverlay } from '../community/fish-overlay';
 import { fish as fishCommand } from '../bot-commands/fish';
 
 const MIN = 60_000;
@@ -147,8 +147,8 @@ async function main(): Promise<void> {
     const common = ['🐟', '🦐', '🦀', '🐸', '🐚'].reduce((sum, n) => sum + (tally[n] ?? 0), 0) / 50_000;
     const legendary = ((tally['🐳'] ?? 0) + (tally['🐋'] ?? 0)) / 50_000;
     check('default tiers catch as documented', Math.abs(common - 0.683) < 0.015 && legendary > 0.0012 && legendary < 0.0045, { common, legendary });
-    const avg = gd.catches.filter(c => c.type === 'fish').reduce((sum, c) => sum + c.weight * c.defaultPrice, 0)
-      / gd.catches.filter(c => c.type === 'fish').reduce((sum, c) => sum + c.weight, 0);
+    const avg = gd.catches.filter(c => c.type === 'fish' && !c.trophy).reduce((sum, c) => sum + c.weight * c.defaultPrice, 0)
+      / gd.catches.filter(c => c.type === 'fish' && !c.trophy).reduce((sum, c) => sum + c.weight, 0);
     check('average fish price stays near supibot 50', avg > 48 && avg < 56, avg);
     const item = ITEMS.find(i => i.name === '🐟')!;
     check('override price is the base a size scales', sellPrice(item, g) === 999 && sellPrice(item, g, { cm: 100, record: false }) === 1998);
@@ -156,7 +156,7 @@ async function main(): Promise<void> {
     let boots = 0;
     for (let i = 0; i < 2000; i++) if (weightedCatch('junk', g).name === '🥾') boots++;
     check('weight 0 is never caught', boots === 0, boots);
-    const onlyShark = Object.fromEntries(ITEMS.filter(i => i.type === 'fish').map(i => [i.name, { weight: i.name === '🦈' ? 1 : 0 }]));
+    const onlyShark = Object.fromEntries(ITEMS.filter(i => i.type === 'fish' && !i.trophy).map(i => [i.name, { weight: i.name === '🦈' ? 1 : 0 }]));
     const gs = effectivePointsConfig(validatePointsPatch({}, { games: { catches: onlyShark } }).next).games;
     check('one fish with odds is the only catch', Array.from({ length: 200 }, () => weightedCatch('fish', gs).name).every(n => n === '🦈'));
     const none = validatePointsPatch({}, { games: { catches: Object.fromEntries(ITEMS.filter(i => i.type === 'fish').map(i => [i.name, { weight: 0 }])) } });
@@ -666,12 +666,86 @@ async function main(): Promise<void> {
     const ch20 = stealCharges(bal, 3000, 20);
     check('the fine is set from the odds so thieves lose the edge on average', ch20.fee === 90 && ch20.fine === 788
       && Math.abs((0.2 * 3000 - ch20.fee - 0.8 * ch20.fine) / (0.2 * 3000) + 0.2) < 0.01, ch20);
-    check('effective config strips debugStealTesters', !('debugStealTesters' in effectivePointsConfig({ debugStealTesters: ['x'] })));
-    check('debugStealTesters survives a dashboard save', validatePointsPatch({ debugStealTesters: ['x'] }, { enabled: true }).next?.debugStealTesters?.[0] === 'x');
+    check('effective config strips debugFishTesters', !('debugFishTesters' in effectivePointsConfig({ debugFishTesters: ['x'] })));
+    check('debugFishTesters survives a dashboard save', validatePointsPatch({ debugFishTesters: ['x'] }, { enabled: true }).next?.debugFishTesters?.[0] === 'x');
     const bad = validatePointsPatch({}, { games: { steal: { oddsCommon: 101, hookUses: 0, enabled: 'yes' } } });
     check('steal settings are validated', bad.errors.length === 3, bad.errors);
     const kept = validatePointsPatch({}, { games: { steal: { enabled: true, feePercent: 3, hookPrice: 800 } } });
     check('only steal settings that differ from the defaults are stored', kept.next?.games?.steal?.enabled === true && kept.next?.games?.steal?.hookPrice === 800 && Object.keys(kept.next?.games?.steal ?? {}).length === 2, kept);
+  }
+
+  // Big bites: live with an overlay showing, the code only on the overlay, one answer, trophies
+  {
+    const g0 = effectivePointsConfig({ games: { enabled: true, sellPricePercent: 300 } }).games;
+    const fishRolls = Array.from({ length: 3000 }, () => weightedCatch('fish', g0).name);
+    const trophyRolls = Array.from({ length: 500 }, () => weightedCatch('trophy', g0));
+    check('casts never roll a trophy, big bites only roll trophies', !fishRolls.some(n => isTrophy(n)) && trophyRolls.every(t => t.trophy));
+    check('trophies are Mythic and their prices aren\'t scaled by the channel', rarityOf(g0, '🐉') === 'Mythic' && rarityOf(g0, '🐋') !== 'Mythic'
+      && sellPrice(ITEMS.find(i => i.name === '🐉')!, g0) === 100_000 && g0.catches.find(c => c.name === '🐉')?.trophy === true, rarityOf(g0, '🐉'));
+
+    const ch = 'fishbite';
+    writeConfig(root, ch, { enabled: true, currencyName: '$DON', games: { enabled: true, onlyWhileLive: false, stories: false, bigBite: { oneIn: 2 } } });
+    makeService(ch, { broadcaster: 999 });
+    const bdb = openPointsDb(ch, { create: true })!;
+    const realNow = Date.now;
+    let shift = 0;
+    Date.now = () => realNow() + shift;
+    try {
+      const run = async (msg: string, step = 6_000) => {
+        shift += step;
+        const out: string[] = [];
+        const t: KickTags = { username: 'biter', 'display-name': 'biter', badges: {}, isBroadcaster: false, isModUp: false, isVIPUp: false, rawBadges: [], senderId: 41 };
+        await fishCommand({ say: async (_c, m) => { out.push(m); } }, msg, `#${ch}`, t, { channelName: ch } as ChannelConfig);
+        return out[0] ?? '';
+      };
+      /** Cast until a big bite, past each cooldown; null if none in 40 casts. */
+      const castForBite = async (overlay: boolean): Promise<string | null> => {
+        for (let i = 0; i < 40; i++) {
+          shift += 31 * 60_000;
+          if (overlay) markOverlaySeen(bdb, Date.now());
+          const r = await run('$don fish');
+          if (r.includes('Something BIG')) return r;
+        }
+        return null;
+      };
+      check('no big bite without an overlay showing', (await castForBite(false)) === null);
+      const bite1 = await castForBite(true);
+      const ev1 = readOverlay(bdb).events.filter(e => e.kind === 'bite').pop();
+      check('a big bite: chat never shows the code, the overlay does', !!bite1 && !!ev1 && typeof ev1.code === 'number' && !bite1.includes(String(ev1.code))
+        && ev1.code! >= 10 && ev1.code! <= 99, { bite1, ev1 });
+      // Half a second after the cast: faster than the stream could have shown the code, and inside the 5s cooldown a reel skips.
+      const fast = await run(`$don fish reel ${ev1!.code}`, 500);
+      check('an answer faster than the stream could show it snaps the line', fast.includes('yanked too early'), fast);
+      await castForBite(true);
+      check('no casting while fighting a big one', (await run('$don fish')).includes("You're fighting a big one"));
+      shift += 25_000;
+      check('a bite left past its window is settled by the next cast', (await run('$don fish')).includes('got away'));
+
+      const bite2 = await castForBite(true);
+      const ev2 = readOverlay(bdb).events.filter(e => e.kind === 'bite').pop()!;
+      check('a wrong code loses it', !!bite2 && (await run(`$don fish reel ${ev2.code === 99 ? 10 : ev2.code! + 1}`)).includes('Wrong move'));
+
+      await castForBite(true);
+      const ev3 = readOverlay(bdb).events.filter(e => e.kind === 'bite').pop()!;
+      const before = loadFish(bdb, 41)!;
+      const won = await run(`$don fish reel ${ev3.code}`);
+      const after = loadFish(bdb, 41)!;
+      const landed = Object.keys(after.catch.types).find(n => isTrophy(n) && (after.catch.types[n] ?? 0) > (before.catch.types[n] ?? 0));
+      check('the right code in time lands a Mythic trophy, counted as a catch', won.includes('MYTHIC') && !!landed && after.lifetime.fish === before.lifetime.fish + 1
+        && readOverlay(bdb).events.some(e => e.kind === 'catch' && e.item === landed && e.rarity === 'Mythic')
+        && (bdb.prepare('SELECT COUNT(*) AS n FROM catches WHERE user_id = 41 AND name = ?').get(landed) as { n: number }).n === 1, { won, landed });
+
+      await castForBite(true);
+      const ev4 = readOverlay(bdb).events.filter(e => e.kind === 'bite').pop()!;
+      shift += 31_000;
+      check('too slow loses it', (await run(`$don fish reel ${ev4.code}`)).includes('Too slow'));
+      check('reel with nothing on the line', (await run('$don fish reel 42')).includes('nothing big on your line'));
+    } finally {
+      Date.now = realNow;
+    }
+    check('big bite settings are validated', validatePointsPatch({}, { games: { bigBite: { oneIn: 1, windowSeconds: 5 } } }).errors.length === 2);
+    check('a trophy pool can\'t be switched off entirely', validatePointsPatch({}, { games: { catches: Object.fromEntries(ITEMS.filter(i => i.trophy).map(i => [i.name, { weight: 0 }])) } })
+      .errors.some(e => e.includes('big bite trophy')));
   }
 
   // Fishing traps set a reminder for when they're full

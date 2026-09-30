@@ -9,7 +9,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { FishCatchSetting, FishReelSetting, FishStealSetting, PointsBonusesConfig, PointsConfig, PointsDuelConfig, PointsGambleConfig, PointsGamesConfig, PointsGiveConfig, PointsRaffleConfig, StoredFishCatches, StoredPointsConfig, PointsTimeoutPenaltyConfig } from '../types';
+import { FishBigBiteSetting, FishCatchSetting, FishReelSetting, FishStealSetting, PointsBonusesConfig, PointsConfig, PointsDuelConfig, PointsGambleConfig, PointsGamesConfig, PointsGiveConfig, PointsRaffleConfig, StoredFishCatches, StoredPointsConfig, PointsTimeoutPenaltyConfig } from '../types';
 import { defaultSellPrice, ITEMS } from '../community/fishing';
 
 export function defaultPointsConfig(): PointsConfig {
@@ -83,8 +83,28 @@ export function defaultPointsConfig(): PointsConfig {
       chatReplies: true,
       catches: effectiveCatches(undefined, 100),
       reels: DEFAULT_REELS.map(r => ({ ...r })),
-      steal: { ...DEFAULT_STEAL }
+      steal: { ...DEFAULT_STEAL },
+      bigBite: { ...DEFAULT_BIG_BITE }
     }
+  };
+}
+
+/** On by default: it only happens while live with an overlay showing. */
+export const DEFAULT_BIG_BITE: Readonly<FishBigBiteSetting> = { enabled: true, oneIn: 40, windowSeconds: 30 };
+
+const BIG_BITE_NUMBERS: Record<Exclude<keyof FishBigBiteSetting, 'enabled'>, Rule> = {
+  oneIn: { min: 2, max: 1000, integer: true },
+  // The stream runs a few seconds behind chat; under 10s nobody could answer.
+  windowSeconds: { min: 10, max: 120, integer: true }
+};
+
+/** The stored big bite settings with values clamped; anything not stored keeps its default. */
+export function effectiveBigBite(stored: unknown): FishBigBiteSetting {
+  const b = obj(stored);
+  return {
+    enabled: bool(b.enabled, DEFAULT_BIG_BITE.enabled),
+    oneIn: num(b.oneIn, DEFAULT_BIG_BITE.oneIn, BIG_BITE_NUMBERS.oneIn.min, BIG_BITE_NUMBERS.oneIn.max, true),
+    windowSeconds: num(b.windowSeconds, DEFAULT_BIG_BITE.windowSeconds, BIG_BITE_NUMBERS.windowSeconds.min, BIG_BITE_NUMBERS.windowSeconds.max, true)
   };
 }
 
@@ -195,12 +215,14 @@ export function effectiveCatches(stored: unknown, sellPricePercent: number): Fis
       weight: roundWeight(num(ov.weight, item.weight, 0, CATCH_WEIGHT_MAX, false)),
       price: num(ov.price, defaultPrice, 0, CATCH_PRICE_MAX, true),
       defaultWeight: item.weight,
-      defaultPrice
+      defaultPrice,
+      ...(item.trophy ? { trophy: true } : {})
     };
   });
-  for (const type of ['fish', 'junk'] as const) {
-    const ofType = list.filter(c => c.type === type);
-    if (ofType.every(c => c.weight === 0)) for (const c of ofType) c.weight = c.defaultWeight;
+  // Each pool keeps at least one catch it can roll: fish, junk, and big bite trophies.
+  const pools = [list.filter(c => c.type === 'fish' && !c.trophy), list.filter(c => c.type === 'junk'), list.filter(c => c.trophy)];
+  for (const pool of pools) {
+    if (pool.every(c => c.weight === 0)) for (const c of pool) c.weight = c.defaultWeight;
   }
   return list;
 }
@@ -212,11 +234,12 @@ export const POINTS_DEFAULTS: Readonly<PointsConfig> = defaultPointsConfig();
 export interface InternalPointsConfig extends PointsConfig {
   debugForceLive: boolean;
   /**
-   * Staging only, set by editing the file: lowercase names who can test stealing
-   * where it's off or the stream is offline, target the bot's account, and skip the
-   * cooldown and the once-per-target limits. Never exposed by the API.
+   * Staging only, set by editing the file: lowercase names who can test stealing and
+   * big bites where they're off or the stream is offline, target the bot's account,
+   * and skip the steal cooldown and once-per-target limits. Never exposed by the API.
+   * The file's key is debugFishTesters (debugStealTesters, its old name, still works).
    */
-  debugStealTesters: string[];
+  debugFishTesters: string[];
 }
 
 /**
@@ -345,7 +368,8 @@ export function internalPointsConfig(raw: unknown): InternalPointsConfig {
     chatReplies: bool(ga.chatReplies, d.games.chatReplies),
     catches: [],
     reels: effectiveReels(ga.reels),
-    steal: effectiveSteal(ga.steal)
+    steal: effectiveSteal(ga.steal),
+    bigBite: effectiveBigBite(ga.bigBite)
   };
   games.catches = effectiveCatches(ga.catches, games.sellPricePercent);
 
@@ -369,13 +393,14 @@ export function internalPointsConfig(raw: unknown): InternalPointsConfig {
     modMaxAdjust: num(r.modMaxAdjust, d.modMaxAdjust, 1, 1_000_000_000, true),
     publicLeaderboard: bool(r.publicLeaderboard, d.publicLeaderboard),
     debugForceLive: r.debugForceLive === true,
-    debugStealTesters: Array.isArray(r.debugStealTesters) ? r.debugStealTesters.filter((n): n is string => typeof n === 'string').map(n => n.toLowerCase()) : []
+    debugFishTesters: [r.debugFishTesters, r.debugStealTesters].flatMap(v => Array.isArray(v) ? v : [])
+      .filter((n): n is string => typeof n === 'string').map(n => n.toLowerCase())
   };
 }
 
 /** The effective settings as the API exposes them: defaults merged, the staging switch removed. */
 export function effectivePointsConfig(raw: unknown): PointsConfig {
-  const { debugForceLive: _staging, debugStealTesters: _testers, ...cfg } = internalPointsConfig(raw);
+  const { debugForceLive: _staging, debugFishTesters: _testers, ...cfg } = internalPointsConfig(raw);
   return cfg;
 }
 
@@ -493,9 +518,9 @@ function validateCatches(raw: unknown, sellPricePercent: number, errors: string[
     }
     if (Object.keys(entry).length) out[name] = entry;
   }
-  for (const type of ['fish', 'junk'] as const) {
-    if (ITEMS.filter(i => i.type === type).every(i => (weights.get(i.name) ?? i.weight) === 0)) {
-      errors.push(`At least one ${type === 'fish' ? 'fish' : 'junk item'} needs odds above 0`);
+  for (const [label, pool] of [['fish', ITEMS.filter(i => i.type === 'fish' && !i.trophy)], ['junk item', ITEMS.filter(i => i.type === 'junk')], ['big bite trophy', ITEMS.filter(i => i.trophy)]] as const) {
+    if (pool.every(i => (weights.get(i.name) ?? i.weight) === 0)) {
+      errors.push(`At least one ${label} needs odds above 0`);
     }
   }
   return out;
@@ -743,6 +768,26 @@ export function validatePointsPatch(current: unknown, patch: unknown): { next?: 
         if (reels) {
           if (JSON.stringify(reels) === JSON.stringify(DEFAULT_REELS)) delete next.games!.reels;
           else next.games!.reels = reels;
+        }
+      }
+      if (ga.bigBite === null) delete next.games!.bigBite;
+      else if (ga.bigBite !== undefined) {
+        if (!ga.bigBite || typeof ga.bigBite !== 'object' || Array.isArray(ga.bigBite)) errors.push('games.bigBite must be an object');
+        else {
+          const bb = ga.bigBite as Record<string, unknown>;
+          const out: Partial<FishBigBiteSetting> = { ...(next.games!.bigBite ?? {}) };
+          for (const [key, rule] of Object.entries(BIG_BITE_NUMBERS)) {
+            if (bb[key] === undefined) continue;
+            const v = checkNumber(`games.bigBite.${key}`, bb[key], rule, errors);
+            if (v !== undefined) (out as Record<string, unknown>)[key] = v;
+          }
+          if (bb.enabled !== undefined) {
+            if (typeof bb.enabled !== 'boolean') errors.push('games.bigBite.enabled must be true or false');
+            else out.enabled = bb.enabled;
+          }
+          for (const key of Object.keys(out) as Array<keyof FishBigBiteSetting>) if (out[key] === DEFAULT_BIG_BITE[key]) delete out[key];
+          if (Object.keys(out).length) next.games!.bigBite = out;
+          else delete next.games!.bigBite;
         }
       }
       if (ga.steal === null) delete next.games!.steal;
