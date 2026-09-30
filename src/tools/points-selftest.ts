@@ -724,7 +724,7 @@ async function main(): Promise<void> {
       const got = await fire();
       const ev1 = lastBite();
       check('a big bite goes to an active chatter, never the streamer, a bot or someone quiet', got === 'biter' && ev1?.username === 'biter');
-      check('chat names the chatter but never the code; the overlay has it', !!ev1 && typeof ev1.code === 'string' && /^\d{2}$/.test(ev1.code) && ev1.flashUntil === undefined && sent.some(m => m.startsWith('@biter') && m.includes('Something BIG'))
+      check('chat names the chatter but never the code; the overlay has it', !!ev1 && typeof ev1.code === 'string' && /^\d{2}$/.test(ev1.code) && ev1.flashMs === undefined && sent.some(m => m.startsWith('@biter') && m.includes('Something BIG'))
         && !sent.some(m => m.includes(String(ev1.code))), { sent, ev1 });
       check('one big bite at a time', (await bsvc.bigBiteTick(() => 0)) === null);
       const fast = await run(`$don fish reel ${ev1!.code}`, ['biter', 41], 500);
@@ -746,7 +746,7 @@ async function main(): Promise<void> {
         for (let i = 0; i < 5; i++) {
           const ev = lastBite()!;
           codes.push(ev.code!);
-          flashes.push(ev.flashUntil === undefined ? undefined : ev.flashUntil - ev.ts);
+          flashes.push(ev.flashMs);
           // Any case counts: answer the later codes in lower case.
           replies.push(await run(`$don fish reel ${i ? ev.code!.toLowerCase() : ev.code}`, ['biter', 41], 3_000));
           const next = lastShown()!;

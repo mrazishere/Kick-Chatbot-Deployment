@@ -126,8 +126,9 @@ function arm(ctx: BiteContext, bite: Bite, windowMs: number, text: string, now: 
     getAway(ctx, bite.username, bite.pull > 1 ? 'It pulled too hard and swam off!' : 'It was too strong and swam off!');
   }, windowMs + STREAM_GRACE_MS + 500);
   bite.timer.unref?.();
-  // From the second pull the code flashes: the overlay hides it after flashSeconds, the clock keeps running.
-  const flash = bite.pull > 1 && ctx.bigBite.flashSeconds > 0 ? { flashUntil: now + ctx.bigBite.flashSeconds * 1000 } : {};
+  // From the second pull the code flashes: the overlay hides it flashSeconds after it first
+  // draws it (not after now: the overlay only sees it on its next poll), the clock keeps running.
+  const flash = bite.pull > 1 && ctx.bigBite.flashSeconds > 0 ? { flashMs: ctx.bigBite.flashSeconds * 1000 } : {};
   pushOverlay(ctx.db, { username: bite.username, kind: 'bite', text, code, until: bite.until, pull: bite.pull, pulls: bite.pulls, ...flash }, now);
 }
 

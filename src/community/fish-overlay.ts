@@ -36,8 +36,8 @@ export interface OverlayEvent {
   emotes?: Record<string, string>;
   /** A big bite's reel code: only the overlay shows it, never chat. */
   code?: string;
-  /** When the overlay hides a flashing code (ms); absent, it stays shown. */
-  flashUntil?: number;
+  /** How long the overlay shows a flashing code after it first draws it (ms); absent, it stays shown. */
+  flashMs?: number;
   /** When a big bite gets away (ms). */
   until?: number;
   /** Which pull of a big bite this code is for, of how many. */
