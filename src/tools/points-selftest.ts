@@ -709,6 +709,8 @@ async function main(): Promise<void> {
         return out[0] ?? '';
       };
       const lastBite = () => readOverlay(bdb).events.filter(e => e.kind === 'bite').pop();
+      /** The newest overlay event: after the opening mention, a bite plays out there only. */
+      const lastShown = () => readOverlay(bdb).events.pop();
       /** A tick that always fires if it can: 30 minutes on, overlay showing. */
       const fire = async (overlay = true) => {
         shift += 31 * 60_000;
@@ -726,30 +728,36 @@ async function main(): Promise<void> {
         && !sent.some(m => m.includes(String(ev1.code))), { sent, ev1 });
       check('one big bite at a time', (await bsvc.bigBiteTick(() => 0)) === null);
       const fast = await run(`$don fish reel ${ev1!.code}`, ['biter', 41], 500);
-      check('an answer faster than the stream could show it snaps the line', fast.includes('yanked too early'), fast);
+      check('an answer faster than the stream could show it snaps the line, on the overlay only', fast === '' && lastShown()?.kind === 'miss'
+        && !!lastShown()?.text.includes('yanked too early'), { fast, shown: lastShown() });
       check('not again within 10 minutes', (shift += 5 * 60_000, markOverlaySeen(bdb, Date.now()), await bsvc.bigBiteTick(() => 0)) === null);
 
       await fire();
       const ev2 = lastBite()!;
-      check('a wrong code loses it', (await run(`$don fish reel ${ev2.code === 99 ? 10 : ev2.code! + 1}`, ['biter', 41])).includes('Wrong move'));
+      await run(`$don fish reel ${ev2.code === 99 ? 10 : ev2.code! + 1}`, ['biter', 41]);
+      check('a wrong code loses it', !!lastShown()?.text.includes('Wrong move'));
 
-      /** Answer every pull of the waiting bite with the code the overlay shows; the last reply. */
-      const reelAll = async (): Promise<{ replies: string[]; codes: number[] }> => {
+      /** Answer every pull of the waiting bite with the code the overlay shows; what the overlay showed after each. */
+      const reelAll = async (): Promise<{ replies: string[]; shown: string[]; codes: number[] }> => {
         const replies: string[] = [];
+        const shown: string[] = [];
         const codes: number[] = [];
         for (let i = 0; i < 5; i++) {
           const ev = lastBite()!;
           codes.push(ev.code!);
-          const r = await run(`$don fish reel ${ev.code}`, ['biter', 41], 3_000);
-          replies.push(r);
-          if (!r.includes('Got it')) break;
+          replies.push(await run(`$don fish reel ${ev.code}`, ['biter', 41], 3_000));
+          const next = lastShown()!;
+          shown.push(next.text);
+          if (next.kind !== 'bite') break;
         }
-        return { replies, codes };
+        return { replies, shown, codes };
       };
+      const chatBefore = sent.length;
       await fire();
       const first = await reelAll();
-      check('reeling in takes three pulls, each with a new code on the overlay only', first.replies.length === 3 && first.replies[0].includes('pull 2/3')
-        && first.replies[1].includes('pull 3/3') && new Set(first.codes).size === 3 && !first.replies.some(r => first.codes.some(c => r.includes(` ${c}`))), first);
+      check('reeling in takes three pulls, each with a new code, all on the overlay', first.shown.length === 3 && first.shown[0].includes('pull 2/3')
+        && first.shown[1].includes('pull 3/3') && new Set(first.codes).size === 3, first);
+      check('a whole big bite is one chat line: the opening mention', sent.length - chatBefore === 1 && first.replies.every(r => r === ''), { chat: sent.slice(chatBefore), replies: first.replies });
       // The last pull lands the trophy by its land chance: try until one lands, and until one snaps.
       let won: string | null = null;
       let landed: string | undefined;
@@ -758,7 +766,7 @@ async function main(): Promise<void> {
       for (let i = 0; i < 40 && (!won || !snapped); i++) {
         await fire();
         const before = loadFish(bdb, 41) ?? initialData();
-        const last = (await reelAll()).replies.pop()!;
+        const last = (await reelAll()).shown.pop()!;
         const after = loadFish(bdb, 41)!;
         if (last.includes('MYTHIC') && !won) {
           won = last;
@@ -778,7 +786,8 @@ async function main(): Promise<void> {
       await fire();
       const ev4 = lastBite()!;
       shift += 31_000;
-      check('too slow loses it', (await run(`$don fish reel ${ev4.code}`, ['biter', 41])).includes('Too slow'));
+      await run(`$don fish reel ${ev4.code}`, ['biter', 41]);
+      check('too slow loses it', !!lastShown()?.text.includes('Too slow'));
       check('reel with nothing on the line', (await run('$don fish reel 42', ['biter', 41])).includes('nothing big on your line'));
 
       shift += 31 * 60_000;

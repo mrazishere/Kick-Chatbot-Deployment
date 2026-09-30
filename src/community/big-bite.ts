@@ -6,6 +6,9 @@
  * right answer brings a new code for the next pull, and the last pull lands a
  * Mythic trophy by its land chance. A wrong code or too slow, and it gets away.
  *
+ * Chat gets one line, the opening mention, so the chatter knows to look; every pull,
+ * miss and landing after that plays on the overlay only, to keep chat quiet.
+ *
  * The points service calls tick() every half minute. Bites don't touch anyone's
  * casting or cooldowns: they aren't a cast.
  */
@@ -80,12 +83,10 @@ export interface BiteContext {
   now?: number;
 }
 
-/** A big bite lost: chat and the overlay say so. Nothing else changes. */
+/** A big bite lost: the overlay says so. Nothing else changes. */
 export function getAway(ctx: BiteContext, name: string, why: string): void {
-  console.log(`[FISH] ${name}'s big bite got away in ${ctx.channel}`);
-  const text = `The big one got away... ${why}`;
-  pushOverlay(ctx.db, { username: name, kind: 'miss', text });
-  void ctx.sendMessage(`@${name} ${text}`).catch(() => {});
+  console.log(`[FISH] ${name}'s big bite got away in ${ctx.channel}: ${why}`);
+  pushOverlay(ctx.db, { username: name, kind: 'miss', text: `The big one got away... ${why}` });
 }
 
 /** A fresh code for this pull: armed to get away if it isn't answered in time, and shown only on the overlay. */
@@ -104,7 +105,6 @@ function arm(ctx: BiteContext, bite: Bite, windowMs: number, text: string, now: 
   }, windowMs + 500);
   bite.timer.unref?.();
   pushOverlay(ctx.db, { username: bite.username, kind: 'bite', text, code, until: bite.until, pull: bite.pull, pulls: bite.pulls }, now);
-  void ctx.sendMessage(`@${bite.username} ${text}`).catch(() => {});
 }
 
 /** Put a big bite on this chatter's line: chat says so, and only the overlay gets the code. */
@@ -115,9 +115,11 @@ export function startBite(ctx: BiteContext, name: string, userId: number): Bite 
   lastBiteAt.set(ctx.channel, now);
   lastChatter.set(ctx.channel, name.toLowerCase());
   console.log(`[FISH] big bite for ${name} in ${ctx.channel}`);
-  const pulls = bite.pulls > 1 ? ` It'll take ${bite.pulls} pulls to land.` : '';
+  const pulls = bite.pulls > 1 ? ` (${bite.pulls} pulls)` : '';
   arm(ctx, bite, ctx.bigBite.windowSeconds * 1000,
-    `🎣 Something BIG is tugging at your line! Watch the stream for your reel code and type $${ctx.command} fish reel <code> within ${ctx.bigBite.windowSeconds}s!${pulls}`, now);
+    `🎣 Something BIG is tugging at your line! Reel it in with $${ctx.command} fish reel <code> within ${ctx.bigBite.windowSeconds}s!${pulls}`, now);
+  // The one chat line: who, and where to look. The code and everything after are on stream.
+  void ctx.sendMessage(`@${name} 🎣 Something BIG is on your line! Watch the stream for your reel codes: $${ctx.command} fish reel <code>`).catch(() => {});
   return bite;
 }
 

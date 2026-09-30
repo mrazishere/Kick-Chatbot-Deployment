@@ -282,8 +282,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     const item = weightedCatch('trophy', g);
     if (randomInt(1, 100) > (item.landPercent ?? 100)) {
       console.log(`[FISH] ${me}'s trophy ${item.name} snapped free in ${chan}`);
-      pushOverlay(db!, { username: me, kind: 'miss', text: `It was a ✨${item.name}✨! It thrashed free on the last pull and snapped the line!`, item: item.name, rarity: 'Mythic' });
-      return void client.say(channel, `@${me} So close! It was a ✨${item.name}✨! It thrashed free on the last pull and snapped the line! 😱`);
+      return void pushOverlay(db!, { username: me, kind: 'miss', text: `So close! It was a ✨${item.name}✨! It thrashed free on the last pull and snapped the line! 😱`, item: item.name, rarity: 'Mythic' });
     }
     const out = once(now => {
       ensureUserTx(db!, uid, me, now);
@@ -294,7 +293,8 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     });
     if (!out) return;
     console.log(`[FISH] ${me} reeled in a trophy ${out.item.name} in ${chan}`);
-    say(`🏆 You reeled it in! A MYTHIC ✨${out.item.name}✨! ${out.sizeString}`, { kind: 'catch', item: out.item.name });
+    // On stream only, like the rest of the bite; show and the leaderboard have it after.
+    pushOverlay(db!, { username: me, kind: 'catch', text: `🏆 You reeled it in! A MYTHIC ✨${out.item.name}✨! ${out.sizeString}`, item: out.item.name, rarity: 'Mythic' });
   }
 
   /** Testers only: a big bite on yourself now, live or not (an overlay still has to be showing). */
