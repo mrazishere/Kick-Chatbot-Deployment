@@ -553,6 +553,35 @@ async function main(): Promise<void> {
       lay[0]?.includes('laid your fishing traps') && stats.length === 1 && readOverlay(qdb).events.length === 1, { lay, stats, f: readOverlay(qdb) });
   }
 
+  // onlyWhileOffline: casting and trapping are shut while live, open offline; never on with onlyWhileLive
+  {
+    const ch = 'fishoffline';
+    writeConfig(root, ch, { enabled: true, currencyName: '$DON', games: { enabled: true, onlyWhileLive: false, onlyWhileOffline: true } });
+    makeService(ch, { broadcaster: 999, live: async () => ({ isLive: true, startedAt: null }) });
+    const run = async (msg: string, name: string, senderId: number) => {
+      const out: string[] = [];
+      const t: KickTags = { username: name, 'display-name': name, badges: {}, isBroadcaster: false, isModUp: false, isVIPUp: false, rawBadges: [], senderId };
+      await fishCommand({ say: async (_c, m) => { out.push(m); } }, msg, `#${ch}`, t, { channelName: ch } as ChannelConfig);
+      return out;
+    };
+    const liveCast = await run('$don fish', 'night', 31);
+    const liveTrap = await run('$don fish trap', 'dusk', 33);
+    const liveStats = await run('$don fish stats', 'dawn', 34);
+    check('onlyWhileOffline: casting and trapping stay silent while live, lookups still answer',
+      liveCast.length === 0 && liveTrap.length === 0 && liveStats.length === 1, { liveCast, liveTrap, liveStats });
+    const ch2 = 'fishoffline2';
+    writeConfig(root, ch2, { enabled: true, currencyName: '$DON', games: { enabled: true, onlyWhileLive: false, onlyWhileOffline: true } });
+    makeService(ch2, { broadcaster: 999, live: async () => ({ isLive: false, startedAt: null }) });
+    const out: string[] = [];
+    const t: KickTags = { username: 'owl', 'display-name': 'owl', badges: {}, isBroadcaster: false, isModUp: false, isVIPUp: false, rawBadges: [], senderId: 32 };
+    await fishCommand({ say: async (_c, m) => { out.push(m); } }, '$don fish trap', `#${ch2}`, t, { channelName: ch2 } as ChannelConfig);
+    check('onlyWhileOffline: traps can be laid offline', out[0]?.includes('laid your fishing traps') === true, out);
+    const both = validatePointsPatch({}, { games: { onlyWhileOffline: true } });
+    const swap = validatePointsPatch({}, { games: { onlyWhileLive: false, onlyWhileOffline: true } });
+    check('onlyWhileOffline can\'t be on together with onlyWhileLive',
+      both.errors.length === 1 && swap.errors.length === 0 && effectivePointsConfig(swap.next).games.onlyWhileOffline, { both: both.errors, swap: swap.errors });
+  }
+
   // Stealing: a hook to try, rarity odds, a burned fine, guards, grace and protection
   {
     const ch = 'fishsteal';

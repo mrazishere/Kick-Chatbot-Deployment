@@ -270,6 +270,8 @@ export interface PointsGamesConfig {
   enabled: boolean;
   /** Casting and laying traps only while live. Selling, show, stats and top work any time. */
   onlyWhileLive: boolean;
+  /** The reverse: casting and laying traps only while offline. Can't be on together with onlyWhileLive. */
+  onlyWhileOffline: boolean;
   /** 1 in this many casts without bait lands a fish (supibot: 20). Bait lowers it. */
   catchOdds: number;
   /** The wait after a catch (supibot: 30). A miss waits 30–90 seconds. */

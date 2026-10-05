@@ -30,7 +30,7 @@
  *              hook use and nothing else.
  *
  * Casting, laying traps and stealing follow games.onlyWhileLive and stay silent offline,
- * like $<cmd> gamble. Everything that changes a balance or a catch runs in one
+ * like $<cmd> gamble; games.onlyWhileOffline is the reverse, silent while live. Everything that changes a balance or a catch runs in one
  * points-database transaction keyed on the Kick message id.
  */
 
@@ -218,10 +218,12 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     return run.applied ? run.result : undefined;
   };
   const liveOk = async (): Promise<boolean> => {
-    if (!g.onlyWhileLive) return true;
+    if (!g.onlyWhileLive && !g.onlyWhileOffline) return true;
     const live = await svc.isLiveNow();
-    if (live !== true) ignore(live === null ? 'live state unknown' : 'offline');
-    return live === true;
+    // Both on can't be saved; a hand-edited file with both keeps the live rule.
+    const want = g.onlyWhileLive;
+    if (live !== want) ignore(live === null ? 'live state unknown' : want ? 'offline' : 'live');
+    return live === want;
   };
   const emotesFor = (list: readonly string[], fallback: string) => bestEmote(chan, broadcasterIdFor(config as ChannelConfig), list, fallback);
 

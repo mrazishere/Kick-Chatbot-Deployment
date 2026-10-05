@@ -74,6 +74,7 @@ export function defaultPointsConfig(): PointsConfig {
     games: {
       enabled: false,
       onlyWhileLive: true,
+      onlyWhileOffline: false,
       catchOdds: 20,
       catchCooldownMinutes: 30,
       trapMinutes: 60,
@@ -365,6 +366,7 @@ export function internalPointsConfig(raw: unknown): InternalPointsConfig {
   const games: PointsGamesConfig = {
     enabled: bool(ga.enabled, d.games.enabled),
     onlyWhileLive: bool(ga.onlyWhileLive, d.games.onlyWhileLive),
+    onlyWhileOffline: bool(ga.onlyWhileOffline, d.games.onlyWhileOffline),
     catchOdds: num(ga.catchOdds, d.games.catchOdds, 1, 1000, true),
     catchCooldownMinutes: num(ga.catchCooldownMinutes, d.games.catchCooldownMinutes, 1, 1440, true),
     trapMinutes: num(ga.trapMinutes, d.games.trapMinutes, 31, 1440, true),
@@ -763,7 +765,7 @@ export function validatePointsPatch(current: unknown, patch: unknown): { next?: 
         const v = checkNumber(`games.${key}`, ga[key], rule, errors);
         if (v !== undefined) (next.games as Record<string, unknown>)[key] = v;
       }
-      for (const key of ['enabled', 'onlyWhileLive', 'stories', 'chatReplies'] as const) {
+      for (const key of ['enabled', 'onlyWhileLive', 'onlyWhileOffline', 'stories', 'chatReplies'] as const) {
         if (ga[key] === undefined) continue;
         if (typeof ga[key] !== 'boolean') errors.push(`games.${key} must be true or false`);
         else next.games![key] = ga[key] as boolean;
@@ -858,6 +860,9 @@ export function validatePointsPatch(current: unknown, patch: unknown): { next?: 
     errors.push(`raffle.defaultDurationSeconds (${eff.raffle.defaultDurationSeconds}) can't be above raffle.maxDurationSeconds (${eff.raffle.maxDurationSeconds})`);
   }
   if (!Object.keys(next.raffle ?? {}).length) delete next.raffle;
+  if (eff.games.onlyWhileLive && eff.games.onlyWhileOffline) {
+    errors.push("games.onlyWhileLive and games.onlyWhileOffline can't both be on");
+  }
   if (!Object.keys(next.games ?? {}).length) delete next.games;
   return errors.length ? { errors } : { next, errors };
 }
