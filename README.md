@@ -85,7 +85,7 @@ Everything is per channel and can be edited from the dashboard or in `data/chann
 
 - **Commands:** `excludedCommands` switches modules off. In chat, the broadcaster can run `!config exclude add fish`.
 - **Command format:** anything that spends or pays loyalty points is `$<currency> <subcommand>` (`$don gamble 100`, `$don fish`) and exists only where points are on. `!` commands never touch points.
-- **Points:** `points` holds the currency name and command, earn rate, bonuses, give, gamble, duel, raffle, timeout penalty, and `games`: whether fishing is on, live-only, catch odds, cooldown, trap time, sell and bait prices, per-catch odds and prices, reels, AI stories, chat replies (versus the overlay only), big bites and stealing. `debugForceLive` and `debugFishTesters` are staging-only, set by editing the file.
+- **Points:** `points` holds the currency name and command, earn rate, bonuses, give, gamble, duel, raffle, timeout penalty, and `games`: whether fishing is on, live-only or offline-only, catch odds, cooldown, trap time, sell and bait prices, per-catch odds and prices, reels, AI stories, chat replies (versus the overlay only), big bites and stealing. `debugForceLive` and `debugFishTesters` are staging-only, set by editing the file.
 - **Claude:** the system prompt, and vision on the live stream.
 - **Auto-translate:** on or off, with an optional list of source languages.
 - **Rewards:** `rewardActions` maps channel-point rewards to timeouts and similar actions.
