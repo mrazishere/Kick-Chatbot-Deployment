@@ -125,6 +125,8 @@ export interface PointsGames {
   enabled: boolean;
   /** Casting and laying traps only while live; selling and stats work any time. */
   onlyWhileLive: boolean;
+  /** The reverse: only while offline. Never on together with onlyWhileLive. Absent from an older bot service. */
+  onlyWhileOffline?: boolean;
   /** 1 in this many unbaited casts lands a fish. */
   catchOdds: number;
   catchCooldownMinutes: number;

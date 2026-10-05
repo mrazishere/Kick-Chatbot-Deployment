@@ -73,6 +73,8 @@ export interface PointsGames {
   enabled: boolean;
   /** Casting and laying traps only while live; selling and stats work any time. */
   onlyWhileLive: boolean;
+  /** The reverse: only while offline. Never on together with onlyWhileLive. Absent from an older bot service. */
+  onlyWhileOffline?: boolean;
   /** 1 in this many unbaited casts lands a fish. */
   catchOdds: number;
   catchCooldownMinutes: number;
@@ -372,6 +374,7 @@ interface SettingsForm {
   raffleLiveOnly: boolean;
   gamesEnabled: boolean;
   gamesLiveOnly: boolean;
+  gamesOfflineOnly: boolean;
   fishOdds: string;
   fishCatchCooldown: string;
   fishTrapMinutes: string;
@@ -439,6 +442,7 @@ function formFromConfig(c: PointsConfig): SettingsForm {
     raffleLiveOnly: (c.raffle ?? RAFFLE_DEFAULTS).onlyWhileLive,
     gamesEnabled: (c.games ?? GAMES_DEFAULTS).enabled,
     gamesLiveOnly: (c.games ?? GAMES_DEFAULTS).onlyWhileLive,
+    gamesOfflineOnly: (c.games ?? GAMES_DEFAULTS).onlyWhileOffline ?? false,
     fishOdds: String((c.games ?? GAMES_DEFAULTS).catchOdds),
     fishCatchCooldown: String((c.games ?? GAMES_DEFAULTS).catchCooldownMinutes),
     fishTrapMinutes: String((c.games ?? GAMES_DEFAULTS).trapMinutes),
@@ -614,6 +618,7 @@ function buildPatch(f: SettingsForm): { patch: PointsSettingsPatch } | { error: 
   patch.games = {
     enabled: f.gamesEnabled,
     onlyWhileLive: f.gamesLiveOnly,
+    onlyWhileOffline: f.gamesOfflineOnly,
     catchOdds: whole(f.fishOdds, "Catch odds", 1, 1000),
     catchCooldownMinutes: whole(f.fishCatchCooldown, "Cooldown after a catch", 1, 1440),
     trapMinutes: whole(f.fishTrapMinutes, "Trap time", 31, 1440),
@@ -1779,8 +1784,19 @@ export default function PointsCard({
                     label="Only fish and lay traps while the stream is live"
                     checked={form.gamesLiveOnly}
                     disabled={readOnly || !!busy}
-                    onChange={(v) => set("gamesLiveOnly", v)}
+                    onChange={(v) => setForm((f) => (f ? { ...f, gamesLiveOnly: v, gamesOfflineOnly: v ? false : f.gamesOfflineOnly } : f))}
                   />
+                  <Checkbox
+                    label="Only fish and lay traps while the stream is offline"
+                    checked={form.gamesOfflineOnly}
+                    disabled={readOnly || !!busy}
+                    onChange={(v) => setForm((f) => (f ? { ...f, gamesOfflineOnly: v, gamesLiveOnly: v ? false : f.gamesLiveOnly } : f))}
+                  />
+                  {form.gamesOfflineOnly && form.fishBigBite?.enabled ? (
+                    <p className="pl-6 text-xs text-amber-300/80">
+                      Big bites only come while the stream is live, so none will arrive with this on.
+                    </p>
+                  ) : null}
                   <Checkbox
                     label="AI story on 1 in 3 catches"
                     checked={form.fishStories}
