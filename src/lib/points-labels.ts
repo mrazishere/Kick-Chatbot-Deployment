@@ -21,6 +21,7 @@ export const REASON_LABEL: Record<string, string> = {
   kicks: "Kicks",
   give_out: "Gave",
   give_in: "Received",
+  spam_penalty: "Spam penalty",
   mod_add: "Added by mod",
   mod_remove: "Removed by mod",
   mod_set: "Set by mod",

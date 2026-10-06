@@ -83,7 +83,7 @@ function shape(raw: FishOverlayFeed): FishOverlayFeed {
       ...(Object.keys(emotes).length ? { emotes } : {}),
     }];
   });
-  return { lastId: typeof raw.lastId === "number" ? raw.lastId : 0, events, ...(typeof raw.now === "number" ? { now: raw.now } : {}) };
+  return { lastId: typeof raw.lastId === "number" ? raw.lastId : 0, events, ...(typeof raw.now === "number" ? { now: raw.now } : {}), ...(raw.demo === false ? { demo: false } : {}) };
 }
 
 export type OverlayResult = { kind: "ok"; data: FishOverlayFeed } | { kind: "not-found" } | { kind: "unavailable" };

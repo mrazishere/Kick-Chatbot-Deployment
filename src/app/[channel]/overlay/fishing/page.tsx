@@ -20,7 +20,7 @@ const one = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v);
 
 // A browser source for OBS: fishing plays out as a small animated scene over a transparent page.
 // ?key= is required, and picks the look: the scene, or the earlier text cards.
-// Optional: max=lanes (scene) or cards, scale=0.5–3, demo=1 (with steals=1, 3 in 10 demo replies are steals); side=left|right for cards.
+// Optional: max=lanes (scene) or cards, scale=0.5–3, demo=1 (with steals=1, 3 in 10 demo replies are steals; the channel can shut the demo out, which the feed tells the overlay); side=left|right for cards.
 export default async function FishOverlayPage({ params, searchParams }: Props) {
   const { channel } = await params;
   const slug = channel.toLowerCase();

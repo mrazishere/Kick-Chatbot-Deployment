@@ -168,6 +168,8 @@ export default function FishOverlayCards({
   const cards = useRef<Card[]>([]);
   const lastRelease = useRef(0);
   const [, setVersion] = useState(0);
+  // Whether the channel lets the demo play, from the feed; null until the feed has answered.
+  const [demoAllowed, setDemoAllowed] = useState<boolean | null>(null);
 
   // Poll the feed. The first answer only sets where to start, so opening the
   // source doesn't replay the last few minutes.
@@ -178,9 +180,13 @@ export default function FishOverlayCards({
     const poll = async () => {
       try {
         const res = await fetch(url, { cache: "no-store" });
-        if (!res.ok) return;
-        const data = (await res.json()) as { lastId: number; events: FishOverlayEvent[]; now?: number; build?: string };
+        if (!res.ok) {
+          setDemoAllowed((a) => a ?? true); // no feed (fishing off, say): the demo still previews
+          return;
+        }
+        const data = (await res.json()) as { lastId: number; events: FishOverlayEvent[]; now?: number; build?: string; demo?: boolean };
         syncClock(data.now);
+        setDemoAllowed(data.demo !== false);
         if (after === null || data.lastId < after) {
           after = data.lastId; // first load, or the feed restarted
           return;
@@ -197,6 +203,7 @@ export default function FishOverlayCards({
         if (isStale(data.build) && cards.current.length === 0 && queue.current.length === 0) reloadInto(data.build!, url, after);
       } catch {
         // offline for a moment; the next poll catches up
+        setDemoAllowed((a) => a ?? true);
       }
     };
     void poll();
@@ -205,7 +212,7 @@ export default function FishOverlayCards({
   }, [channel, overlayKey]);
 
   useEffect(() => {
-    if (!demo) return;
+    if (!demo || !demoAllowed) return;
     // Ten anglers at once, repeated, rolled at the channel's odds, to see how a burst plays.
     const demoBurst = demoGenerator(demoOdds);
     let id = -1;
@@ -216,8 +223,12 @@ export default function FishOverlayCards({
     };
     fire();
     const t = setInterval(fire, 25_000);
-    return () => clearInterval(t);
-  }, [demo, demoOdds]);
+    return () => {
+      clearInterval(t);
+      // Turned off mid-burst: the demo anglers still waiting go too.
+      queue.current = queue.current.filter((e) => e.id >= 0);
+    };
+  }, [demo, demoAllowed, demoOdds]);
 
   // The scheduler: expire, make room, release.
   useEffect(() => {

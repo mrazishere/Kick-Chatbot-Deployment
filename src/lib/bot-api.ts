@@ -107,6 +107,8 @@ export interface PointsConfig {
   modMaxAdjust: number;
   publicLeaderboard: boolean;
   timeoutPenalty: PointsTimeoutPenalty;
+  /** Absent from a bot service older than anti-spam. */
+  antiSpam?: PointsAntiSpam;
   /** Absent from a bot service older than the gamble game. */
   gamble?: PointsGamble;
   /** Absent from a bot service older than duels. */
@@ -139,6 +141,8 @@ export interface PointsGames {
   stories: boolean;
   /** Cast results and trap hauls go to chat. They always go to the fishing overlay; other fishing replies always go to chat. Absent from an older bot service. */
   chatReplies?: boolean;
+  /** The fishing overlay's &demo=1 may play; off, overlays ignore it. Absent from an older bot service. */
+  overlayDemo?: boolean;
 }
 
 /**
@@ -211,11 +215,23 @@ export interface PointsTimeoutPenalty {
   announce: boolean;
 }
 
+/** What spamming a keyword costs: each keyword message past `threshold` inside `windowMinutes` costs `cost`. */
+export interface PointsAntiSpam {
+  enabled: boolean;
+  /** Lowercase words or phrases, matched whole; an emote's name works too. */
+  keywords: string[];
+  threshold: number;
+  windowMinutes: number;
+  cost: number;
+  announce: boolean;
+}
+
 /** Omitted keys are left alone; nested blocks merge rather than replace. */
-export type PointsSettingsPatch = Partial<Omit<PointsConfig, "effectiveCommand" | "bonuses" | "give" | "timeoutPenalty" | "gamble" | "duel" | "raffle" | "games">> & {
+export type PointsSettingsPatch = Partial<Omit<PointsConfig, "effectiveCommand" | "bonuses" | "give" | "timeoutPenalty" | "antiSpam" | "gamble" | "duel" | "raffle" | "games">> & {
   bonuses?: Partial<PointsBonuses>;
   give?: Partial<PointsGive>;
   timeoutPenalty?: Partial<PointsTimeoutPenalty>;
+  antiSpam?: Partial<PointsAntiSpam>;
   gamble?: Partial<PointsGamble>;
   duel?: Partial<PointsDuel>;
   raffle?: Partial<PointsRaffle>;
@@ -785,6 +801,8 @@ export interface FishOverlayFeed {
   events: FishOverlayEvent[];
   /** The bot's clock when it answered (ms), so a big bite's countdown runs on the bot's time. */
   now?: number;
+  /** False when the channel has shut the overlay's demo out (games.overlayDemo). */
+  demo?: boolean;
 }
 
 export function getFishOverlay(channel: string): Promise<FishOverlayFeed> {

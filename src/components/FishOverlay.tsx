@@ -445,6 +445,8 @@ export default function FishOverlay({
   const idleSince = useRef(0);
   const [laneCount, setLaneCount] = useState(max);
   const [, setVersion] = useState(0);
+  // Whether the channel lets the demo play, from the feed; null until the feed has answered.
+  const [demoAllowed, setDemoAllowed] = useState<boolean | null>(null);
   const fontPx = 18 * scale;
 
   const enqueue = (events: FishOverlayEvent[]) => {
@@ -492,9 +494,13 @@ export default function FishOverlay({
     const poll = async () => {
       try {
         const res = await fetch(url, { cache: "no-store" });
-        if (!res.ok) return;
-        const data = (await res.json()) as { lastId: number; events: FishOverlayEvent[]; now?: number; build?: string };
+        if (!res.ok) {
+          setDemoAllowed((a) => a ?? true); // no feed (fishing off, say): the demo still previews
+          return;
+        }
+        const data = (await res.json()) as { lastId: number; events: FishOverlayEvent[]; now?: number; build?: string; demo?: boolean };
         syncClock(data.now);
+        setDemoAllowed(data.demo !== false);
         if (after === null || data.lastId < after) {
           after = data.lastId; // first load, or the feed restarted
           return;
@@ -508,6 +514,7 @@ export default function FishOverlay({
         if (isStale(data.build) && !lanes.current.some(Boolean) && queue.current.length === 0) reloadInto(data.build!, url, after);
       } catch {
         // offline for a moment; the next poll catches up
+        setDemoAllowed((a) => a ?? true);
       }
     };
     void poll();
@@ -516,7 +523,7 @@ export default function FishOverlay({
   }, [channel, overlayKey]);
 
   useEffect(() => {
-    if (!demo) return;
+    if (!demo || !demoAllowed) return;
     // Ten anglers at once, repeated, rolled at the channel's odds, to see how a burst plays.
     const demoBurst = demoGenerator(demoOdds);
     let id = -1;
@@ -526,8 +533,12 @@ export default function FishOverlay({
     };
     fire();
     const t = setInterval(fire, 15_000);
-    return () => clearInterval(t);
-  }, [demo, demoOdds]);
+    return () => {
+      clearInterval(t);
+      // Turned off mid-burst: the demo anglers still waiting go too.
+      queue.current = queue.current.filter((w) => w.ev.id >= 0);
+    };
+  }, [demo, demoAllowed, demoOdds]);
 
   // The scheduler: free finished lanes, then start the next scene in a random free lane.
   useEffect(() => {

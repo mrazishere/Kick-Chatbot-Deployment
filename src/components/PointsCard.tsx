@@ -39,6 +39,19 @@ export interface PointsTimeoutPenalty {
   announce: boolean;
 }
 
+/** What spamming a keyword costs: each keyword message past `threshold` inside `windowMinutes` costs `cost`. */
+export interface PointsAntiSpam {
+  enabled: boolean;
+  /** Lowercase words or phrases, matched whole; an emote's name works too. */
+  keywords: string[];
+  threshold: number;
+  windowMinutes: number;
+  cost: number;
+  announce: boolean;
+}
+
+const ANTI_SPAM_DEFAULTS: PointsAntiSpam = { enabled: false, keywords: [], threshold: 3, windowMinutes: 10, cost: 10, announce: true };
+
 export interface PointsConfig {
   enabled: boolean;
   currencyName: string;
@@ -55,6 +68,8 @@ export interface PointsConfig {
   modMaxAdjust: number;
   publicLeaderboard: boolean;
   timeoutPenalty: PointsTimeoutPenalty;
+  /** Absent from a bot service older than anti-spam. */
+  antiSpam?: PointsAntiSpam;
   /** Absent from a bot service older than the gamble game. */
   gamble?: PointsGamble;
   /** Absent from a bot service older than duels. */
@@ -87,6 +102,8 @@ export interface PointsGames {
   stories: boolean;
   /** Cast results and trap hauls go to chat. They always go to the fishing overlay; other fishing replies always go to chat. Absent from an older bot service. */
   chatReplies?: boolean;
+  /** The fishing overlay's &demo=1 may play; off, overlays ignore it. Absent from an older bot service. */
+  overlayDemo?: boolean;
   /** Every fish and junk item's odds and price. Absent from a bot service older than per-item settings. */
   catches?: FishCatch[];
   /** Reels in buying order. Absent from a bot service older than reels. */
@@ -183,6 +200,7 @@ const GAMES_DEFAULTS: PointsGames = {
   baitPricePercent: 100,
   stories: true,
   chatReplies: true,
+  overlayDemo: true,
 };
 
 /** `$<cmd> duel @user <amount>`: viewer against viewer, 50/50, winner takes both stakes. */
@@ -266,10 +284,11 @@ interface PointsGambleStats {
   net: number;
 }
 
-type PointsSettingsPatch = Partial<Omit<PointsConfig, "effectiveCommand" | "bonuses" | "give" | "timeoutPenalty" | "gamble" | "games">> & {
+type PointsSettingsPatch = Partial<Omit<PointsConfig, "effectiveCommand" | "bonuses" | "give" | "timeoutPenalty" | "antiSpam" | "gamble" | "games">> & {
   bonuses?: Partial<PointsBonuses>;
   give?: Partial<PointsGive>;
   timeoutPenalty?: Partial<PointsTimeoutPenalty>;
+  antiSpam?: Partial<PointsAntiSpam>;
   gamble?: Partial<PointsGamble>;
   games?: Partial<Omit<PointsGames, "catches">> & { catches?: Record<string, { weight: number; price: number }> };
 };
@@ -352,6 +371,12 @@ interface SettingsForm {
   penaltyMax: string;
   penaltyPermanentBan: string;
   penaltyAnnounce: boolean;
+  spamEnabled: boolean;
+  spamKeywords: string;
+  spamThreshold: string;
+  spamWindow: string;
+  spamCost: string;
+  spamAnnounce: boolean;
   gambleEnabled: boolean;
   gambleChance: string;
   gambleMin: string;
@@ -382,6 +407,7 @@ interface SettingsForm {
   fishBaitPct: string;
   fishStories: boolean;
   fishChatReplies: boolean;
+  fishOverlayDemo: boolean;
   fishCatches: { name: string; type: "fish" | "junk"; weight: string; price: string; defaultWeight: number; defaultPrice: number; trophy?: boolean }[];
   /** null when the bot service doesn't report big bites. */
   fishBigBite: { enabled: boolean; everyMinutes: string; activeMinutes: string; windowSeconds: string; pulls: string; pullSeconds: string; flashSeconds: string } | null;
@@ -420,6 +446,12 @@ function formFromConfig(c: PointsConfig): SettingsForm {
     penaltyMax: String(c.timeoutPenalty.maxDeduction),
     penaltyPermanentBan: String(c.timeoutPenalty.permanentBanCost),
     penaltyAnnounce: c.timeoutPenalty.announce,
+    spamEnabled: (c.antiSpam ?? ANTI_SPAM_DEFAULTS).enabled,
+    spamKeywords: (c.antiSpam ?? ANTI_SPAM_DEFAULTS).keywords.join(", "),
+    spamThreshold: String((c.antiSpam ?? ANTI_SPAM_DEFAULTS).threshold),
+    spamWindow: String((c.antiSpam ?? ANTI_SPAM_DEFAULTS).windowMinutes),
+    spamCost: String((c.antiSpam ?? ANTI_SPAM_DEFAULTS).cost),
+    spamAnnounce: (c.antiSpam ?? ANTI_SPAM_DEFAULTS).announce,
     gambleEnabled: (c.gamble ?? GAMBLE_DEFAULTS).enabled,
     gambleChance: String((c.gamble ?? GAMBLE_DEFAULTS).winChancePercent),
     gambleMin: String((c.gamble ?? GAMBLE_DEFAULTS).minAmount),
@@ -450,6 +482,7 @@ function formFromConfig(c: PointsConfig): SettingsForm {
     fishBaitPct: String((c.games ?? GAMES_DEFAULTS).baitPricePercent),
     fishStories: (c.games ?? GAMES_DEFAULTS).stories,
     fishChatReplies: (c.games ?? GAMES_DEFAULTS).chatReplies !== false,
+    fishOverlayDemo: (c.games ?? GAMES_DEFAULTS).overlayDemo !== false,
     fishCatches: (c.games?.catches ?? []).map((x) => ({ ...x, weight: String(x.weight), price: String(x.price) })),
     fishBigBite: c.games?.bigBite
       ? {
@@ -488,6 +521,11 @@ function formFromConfig(c: PointsConfig): SettingsForm {
 function deriveCommand(name: string): string {
   const derived = name.toLowerCase().replace(/[^a-z0-9_]/g, "").slice(0, 20);
   return derived.length >= 2 ? derived : "points";
+}
+
+/** Spam keywords as typed: split on commas, lowercased, inner spaces collapsed, no repeats. */
+function parseSpamKeywords(raw: string): string[] {
+  return Array.from(new Set(raw.split(/[,\n]+/).map((s) => s.trim().toLowerCase().replace(/\s+/g, " ")).filter(Boolean)));
 }
 
 function parseIgnoreList(raw: string): string[] {
@@ -540,6 +578,11 @@ function buildPatch(f: SettingsForm): { patch: PointsSettingsPatch } | { error: 
   const badNames = ignoreUsers.filter((u) => !/^[a-z0-9_]{2,25}$/.test(u));
   if (badNames.length > 0) errors.push(`Not valid usernames: ${badNames.slice(0, 5).join(", ")}`);
 
+  const spamKeywords = parseSpamKeywords(f.spamKeywords);
+  if (spamKeywords.length > 20) errors.push("Spam keywords are limited to 20");
+  if (spamKeywords.some((k) => k.length > 50)) errors.push("A spam keyword can be up to 50 characters");
+  if (f.spamEnabled && spamKeywords.length === 0) errors.push("Add at least one spam keyword, or turn the spam penalty off");
+
   const intervalMinutes = whole(f.intervalMinutes, "Interval", 5, 60);
   const patch: PointsSettingsPatch = {
     currencyName,
@@ -572,6 +615,14 @@ function buildPatch(f: SettingsForm): { patch: PointsSettingsPatch } | { error: 
       maxDeduction: whole(f.penaltyMax, "Maximum deduction", 0, 1_000_000_000),
       permanentBanCost: whole(f.penaltyPermanentBan, "Permanent ban cost", 0, 1_000_000_000),
       announce: f.penaltyAnnounce,
+    },
+    antiSpam: {
+      enabled: f.spamEnabled,
+      keywords: spamKeywords,
+      threshold: whole(f.spamThreshold, "Free spam messages", 1, 1000),
+      windowMinutes: whole(f.spamWindow, "Spam window", 1, 1440),
+      cost: whole(f.spamCost, "Spam cost", 1, 1_000_000_000),
+      announce: f.spamAnnounce,
     },
     gamble: {
       enabled: f.gambleEnabled,
@@ -626,6 +677,7 @@ function buildPatch(f: SettingsForm): { patch: PointsSettingsPatch } | { error: 
     baitPricePercent: whole(f.fishBaitPct, "Bait prices", 0, 1000),
     stories: f.fishStories,
     chatReplies: f.fishChatReplies,
+    overlayDemo: f.fishOverlayDemo,
   };
   if (f.fishCatches.length > 0) {
     // Only items that differ from their default are sent; the rest keep following it.
@@ -685,6 +737,12 @@ function buildPatch(f: SettingsForm): { patch: PointsSettingsPatch } | { error: 
 }
 
 /** Turn the rate into something concrete, since "per second" is easy to misjudge. */
+function spamExample(free: string, minutes: string, cost: string, currency: string): string {
+  const [f, m, c] = [Number(free), Number(minutes), Number(cost)];
+  if (![f, m, c].every((n) => Number.isInteger(n) && n > 0)) return "";
+  return `Message ${f + 1} within ${m} min costs ${c.toLocaleString()} ${currency.trim() || "points"}, and so does each one after.`;
+}
+
 function costExample(perSecond: string, max: string, currency: string): string {
   const rate = Number(perSecond);
   if (!Number.isFinite(rate) || rate <= 0) return "Free at 0.";
@@ -829,7 +887,7 @@ function BigBiteSettings({ value, command, disabled, onChange }: {
             </Field>
           </div>
           <p className="mt-3 text-xs text-neutral-500">
-            {`While the stream is live and a fishing overlay is showing, a random viewer who chatted recently gets something big on their line, about as often as set (never twice within 10 minutes, and never the same viewer twice in a row). Chat gets two lines, one naming them and one with the result; the reel codes and every pull play on the overlay only, which keeps chat quiet and means chat scripts can't answer. They type $${command} fish reel <code>, and each right answer brings a harder code for the next pull (two digits, then three and four letters and numbers, any case) with less time, shown only for a flash before it hides; the overlay counts each one down, and an answer still counts a few seconds after zero for the stream's delay; after the last pull the trophy lands by its own chance (🦭 90% down to 🐉 40%) or snaps the line. A wrong code or too slow and it gets away. It isn't a cast: it doesn't touch their fishing cooldown. With no overlay showing, there are no big bites.`}
+            {`While the stream is live and a fishing overlay is showing, a random viewer who chatted recently gets something big on their line, as often as set, give or take two minutes, so 15 means 13 to 17 minutes after the last one (never the same viewer twice in a row). Chat gets two lines, one naming them and one with the result; the reel codes and every pull play on the overlay only, which keeps chat quiet and means chat scripts can't answer. They type $${command} fish reel <code>, and each right answer brings a harder code for the next pull (two digits, then three and four letters and numbers, any case) with less time, shown only for a flash before it hides; the overlay counts each one down, and an answer still counts a few seconds after zero for the stream's delay; after the last pull the trophy lands by its own chance (🦭 90% down to 🐉 40%) or snaps the line. A wrong code or too slow and it gets away. It isn't a cast: it doesn't touch their fishing cooldown. With no overlay showing, there are no big bites.`}
           </p>
         </>
       ) : null}
@@ -1091,7 +1149,7 @@ function FishOverlayLinks({ links }: { links: OverlayLink[] }) {
       <p className="text-sm text-neutral-200">Fishing overlay</p>
       <p className="mt-0.5 text-xs text-neutral-500">
         Add one as a Browser Source in OBS. It shows fishing on stream whether or not replies also go to chat. Keep the links
-        private: anyone with one can show this channel&apos;s fishing. Add &amp;demo=1 to preview a burst.
+        private: anyone with one can show this channel&apos;s fishing. Add &amp;demo=1 to preview a burst, unless the demo is turned off above.
       </p>
       <div className="mt-3 space-y-3">
         {links.map((l) => (
@@ -1794,7 +1852,7 @@ export default function PointsCard({
                   />
                   {form.gamesOfflineOnly && form.fishBigBite?.enabled ? (
                     <p className="pl-6 text-xs text-amber-300/80">
-                      Big bites only come while the stream is live, so none will arrive with this on.
+                      Big bites still come while the stream is live; only casting, traps and stealing wait for it to end.
                     </p>
                   ) : null}
                   <Checkbox
@@ -1812,6 +1870,17 @@ export default function PointsCard({
                   {!form.fishChatReplies ? (
                     <p className="pl-6 text-xs text-amber-300/80">
                       Cast results and trap hauls only show on the fishing overlay, so make sure it&apos;s on stream. Every other fishing reply still goes to chat.
+                    </p>
+                  ) : null}
+                  <Checkbox
+                    label="Let the fishing overlay play its demo (&demo=1)"
+                    checked={form.fishOverlayDemo}
+                    disabled={readOnly || !!busy}
+                    onChange={(v) => set("fishOverlayDemo", v)}
+                  />
+                  {!form.fishOverlayDemo ? (
+                    <p className="pl-6 text-xs text-neutral-500">
+                      Overlays ignore &amp;demo=1, including one already open in OBS with it left on its link.
                     </p>
                   ) : null}
                 </div>
@@ -1860,6 +1929,44 @@ export default function PointsCard({
                   Every timeout counts, whether a moderator, the streamer or a reward gave it.
                   A viewer never goes below zero — someone with less than the penalty loses what
                   they have. Anyone excluded from earning is excluded from being charged.
+                </p>
+              </div>
+
+              <div>
+                <h4 className={LABEL}>Spam penalty</h4>
+                <Checkbox
+                  label={`Deduct ${form.currencyName.trim() || "points"} when a viewer spams a keyword`}
+                  checked={form.spamEnabled}
+                  disabled={readOnly || !!busy}
+                  onChange={(v) => set("spamEnabled", v)}
+                />
+                <div className="mt-3">
+                  <Field label="Keywords" hint="Words, phrases or emote names, separated by commas. Whole words only, any case.">
+                    {text("spamKeywords", { placeholder: "kekw, free money" })}
+                  </Field>
+                </div>
+                <div className="mt-3 grid gap-4 sm:grid-cols-3">
+                  <Field label="Free messages" hint="How many a viewer may send before it costs.">
+                    {text("spamThreshold", { inputMode: "numeric" })}
+                  </Field>
+                  <Field label="Counted over (minutes)" hint="Older messages stop counting.">
+                    {text("spamWindow", { inputMode: "numeric" })}
+                  </Field>
+                  <Field label="Cost per message after that" hint={spamExample(form.spamThreshold, form.spamWindow, form.spamCost, form.currencyName)}>
+                    {text("spamCost", { inputMode: "numeric" })}
+                  </Field>
+                </div>
+                <div className="mt-3 space-y-2">
+                  <Checkbox
+                    label="Announce the top 5 spam deductions of the last 10 minutes in chat, every 10 minutes"
+                    checked={form.spamAnnounce}
+                    disabled={readOnly || !!busy}
+                    onChange={(v) => set("spamAnnounce", v)}
+                  />
+                </div>
+                <p className="mt-3 text-xs text-neutral-500">
+                  Counted per viewer, one per message however often it repeats the keyword. The streamer and moderators
+                  are never charged, nor is anyone excluded from earning. A viewer never goes below zero.
                 </p>
               </div>
 
