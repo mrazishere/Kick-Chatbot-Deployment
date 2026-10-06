@@ -533,25 +533,53 @@ async function main(): Promise<void> {
     check('replayed .proc batch pays the follow once', calls.follow === 3 && balance(ch, 50) === 50, { calls, bal: balance(ch, 50) });
   }
 
-  // chatReplies off: a cast's result goes to the overlay only; other replies still go to chat
+  // chatReplies off: while live with an overlay showing every reply goes to the overlay only; otherwise chat still gets it
   {
     const ch = 'fishquiet';
     writeConfig(root, ch, { enabled: true, currencyName: '$DON', games: { enabled: true, onlyWhileLive: false, chatReplies: false } });
-    makeService(ch, { broadcaster: 999 });
+    let live = true;
+    makeService(ch, { broadcaster: 999, live: async () => ({ isLive: live, startedAt: null }) });
     const qdb = openPointsDb(ch, { create: true })!;
+    const seen = (at: number) => runWrite(qdb, () => qdb.prepare("INSERT INTO meta (key, value) VALUES ('overlay_seen_at', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(String(at)));
     const run = async (msg: string, name: string, senderId: number) => {
       const out: string[] = [];
       const t: KickTags = { username: name, 'display-name': name, badges: {}, isBroadcaster: false, isModUp: false, isVIPUp: false, rawBadges: [], senderId };
       await fishCommand({ say: async (_c, m) => { out.push(m); } }, msg, `#${ch}`, t, { channelName: ch } as ChannelConfig);
+      await new Promise(r => setTimeout(r, 20));   // the reply is sent after the command returns
       return out;
     };
+    seen(Date.now());
     const cast = await run('$don fish', 'quiet', 21);
     const f = readOverlay(qdb);
     check('chatReplies off: a cast goes to the overlay only', cast.length === 0 && f.events.length === 1 && ['catch', 'miss'].includes(f.events[0].kind), { cast, f });
+    seen(Date.now());
     const lay = await run('$don fish trap', 'layer', 22);
     const stats = await run('$don fish stats', 'asker', 23);
-    check('chatReplies off: laying traps and lookups still go to chat, not the overlay',
-      lay[0]?.includes('laid your fishing traps') && stats.length === 1 && readOverlay(qdb).events.length === 1, { lay, stats, f: readOverlay(qdb) });
+    const all = readOverlay(qdb).events;
+    check('chatReplies off: so does every other reply, laying traps and lookups included',
+      lay.length === 0 && stats.length === 0 && all.length === 3 && all[1].kind === 'info' && all[1].text.includes('laid your fishing traps') && all[2].kind === 'info', { lay, stats, all });
+    seen(0);
+    const noOverlay = await run('$don fish stats', 'asker2', 24);
+    seen(Date.now());
+    live = false;
+    writeConfig(root, 'fishquiet2', { enabled: true, currencyName: '$DON', games: { enabled: true, onlyWhileLive: false, chatReplies: false } });
+    makeService('fishquiet2', { broadcaster: 999, live: async () => ({ isLive: false, startedAt: null }) });
+    const odb = openPointsDb('fishquiet2', { create: true })!;
+    runWrite(odb, () => odb.prepare("INSERT INTO meta (key, value) VALUES ('overlay_seen_at', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(String(Date.now())));
+    const offOut: string[] = [];
+    await fishCommand({ say: async (_c, m) => { offOut.push(m); } }, '$don fish stats', '#fishquiet2',
+      { username: 'night', 'display-name': 'night', badges: {}, isBroadcaster: false, isModUp: false, isVIPUp: false, rawBadges: [], senderId: 25 }, { channelName: 'fishquiet2' } as ChannelConfig);
+    await new Promise(r => setTimeout(r, 20));
+    writeConfig(root, 'fishquiet3', { enabled: true, currencyName: '$DON', games: { enabled: true, onlyWhileLive: false, onlyWhileOffline: true } });
+    makeService('fishquiet3', { broadcaster: 999, live: async () => ({ isLive: true, startedAt: null }) });
+    const ldb = openPointsDb('fishquiet3', { create: true })!;
+    runWrite(ldb, () => ldb.prepare("INSERT INTO meta (key, value) VALUES ('overlay_seen_at', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(String(Date.now())));
+    const liveOut: string[] = [];
+    await fishCommand({ say: async (_c, m) => { liveOut.push(m); } }, '$don fish stats', '#fishquiet3',
+      { username: 'day', 'display-name': 'day', badges: {}, isBroadcaster: false, isModUp: false, isVIPUp: false, rawBadges: [], senderId: 26 }, { channelName: 'fishquiet3' } as ChannelConfig);
+    await new Promise(r => setTimeout(r, 20));
+    check('offline-only fishing keeps replies out of live chat too: they show on the overlay', liveOut.length === 0 && readOverlay(ldb).events.length === 1 && readOverlay(ldb).events[0].kind === 'info', { liveOut, e: readOverlay(ldb).events });
+    check('chatReplies off: with no overlay showing, or offline, chat still gets the reply', noOverlay.length === 1 && offOut.length === 1 && readOverlay(qdb).events.length === 4, { noOverlay, offOut });
     const demoOff = validatePointsPatch({}, { games: { overlayDemo: false } });
     check('overlayDemo is on unless turned off',
       effectivePointsConfig({}).games.overlayDemo && demoOff.errors.length === 0 && !effectivePointsConfig(demoOff.next).games.overlayDemo, demoOff);
@@ -975,6 +1003,16 @@ async function main(): Promise<void> {
       check('or on a random active chatter, never themselves, a bot or the last one', anyone.includes('Something BIG') && !!lastBite() && !['other', ch, 'botrix'].includes(lastBite()!.username.toLowerCase()), { anyone, b: lastBite() });
       takeBiteForTest(ch, lastBite()!.username);
       markOverlaySeen(bdb, Date.now());
+      const ownerBefore = process.env.KICK_OWNER;
+      process.env.KICK_OWNER = 'bossman';
+      chat(46, 'bossman', 1);
+      chat(44, 'other', 1);
+      markOverlaySeen(bdb, Date.now());
+      const byOwner = await run('$don f bb @other', ['bossman', 46]);
+      process.env.KICK_OWNER = ownerBefore;
+      check('the bot owner can start one like the streamer', byOwner.startsWith('@other') && byOwner.includes('Something BIG') && lastBite()?.username === 'other', { byOwner, b: lastBite() });
+      takeBiteForTest(ch, 'other');
+      markOverlaySeen(bdb, Date.now());
       const self = await asStreamer('$don fish bigbite me');
       check('the streamer can put one on themselves to try it', self.startsWith(`@${ch}`) && self.includes('Something BIG') && lastBite()?.username === ch, { self, b: lastBite() });
       takeBiteForTest(ch, ch);
@@ -1026,8 +1064,7 @@ async function main(): Promise<void> {
       const recorded = (pdb0.prepare("SELECT COUNT(*) AS n FROM catches WHERE user_id = 11 AND source = 'trap'").get() as { n: number }).n;
       check('every trapped fish is recorded', recorded === loadFish(pdb0, 11)!.lifetime.fish, { recorded, lifetime: loadFish(pdb0, 11)!.lifetime.fish });
       const feed = readOverlay(pdb0);
-      check('a trap haul reaches the overlay feed, laying traps doesn\'t', feed.events.some(e => e.kind === 'trap' && e.username === 'angler' && e.text.includes('drag the traps'))
-        && !feed.events.some(e => e.text.includes('laid your fishing traps'))
+      check('a trap haul reaches the overlay feed as a haul', feed.events.some(e => e.kind === 'trap' && e.username === 'angler' && e.text.includes('drag the traps'))
         && feed.lastId === feed.events[feed.events.length - 1].id, feed.events.map(e => [e.kind, e.text.slice(0, 30)]));
       const off = { channelName: ch, excludedCommands: ['remind'] } as unknown as ChannelConfig;
       const quiet = await run('$don fish trap', off);

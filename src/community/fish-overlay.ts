@@ -2,8 +2,8 @@
  * The fishing overlay's feed: each cast's result, trap haul and steal, kept a few minutes
  * in the channel's points database (overlay_feed, schema v7). The bot writes it;
  * the enrollment service reads it for the dashboard's browser-source page, which
- * polls. They go here whether or not they also go to chat (games.chatReplies);
- * every other fish reply only goes to chat.
+ * polls. Every fish reply goes here, whether or not it also goes to chat
+ * (games.chatReplies).
  */
 
 import { PointsDb, runWrite } from '../points/db';

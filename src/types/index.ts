@@ -288,7 +288,7 @@ export interface PointsGamesConfig {
   enabled: boolean;
   /** Casting and laying traps only while live. Selling, show, stats and top work any time. */
   onlyWhileLive: boolean;
-  /** The reverse: casting and laying traps only while offline. Can't be on together with onlyWhileLive. */
+  /** The reverse: casting and laying traps only while offline, and fishing replies stay out of live chat (see chatReplies). Can't be on together with onlyWhileLive. */
   onlyWhileOffline: boolean;
   /** 1 in this many casts without bait lands a fish (supibot: 20). Bait lowers it. */
   catchOdds: number;
@@ -303,9 +303,11 @@ export interface PointsGamesConfig {
   /** A short AI story on 1 in 3 catches. */
   stories: boolean;
   /**
-   * Post cast results and trap hauls in chat. They always go to the fishing
-   * overlay (a browser source), so a channel can turn this off and show them on
-   * stream only. Every other fishing reply always goes to chat.
+   * Post fishing replies in chat. Every one always goes to the fishing overlay (a
+   * browser source), so a channel can turn this off and show them on stream only:
+   * off, chat gets a reply only while the stream is offline or no overlay is
+   * showing. onlyWhileOffline does the same whatever this says. A big bite's
+   * opening mention and result always go to chat.
    */
   chatReplies: boolean;
   /** Let the fishing overlay's &demo=1 play. Off, an overlay ignores the flag, even one already open on stream. */

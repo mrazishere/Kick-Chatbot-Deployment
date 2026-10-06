@@ -36,7 +36,7 @@
 
 import fetch from 'node-fetch';
 import { ChannelConfig, CommandFn, FishReelSetting } from '../types';
-import { isBotSender } from '../bot-identity';
+import { isBotOwner, isBotSender } from '../bot-identity';
 import { SYSTEM_BOTS } from '../system-bots';
 import { getPointsService } from '../points/service';
 import { runWrite } from '../points/db';
@@ -64,7 +64,7 @@ const SUBCOMMANDS: Record<string, 'buy' | 'sell' | 'show' | 'stats' | 'top' | 't
   trap: 'trap', t: 'trap', net: 'trap', trawl: 'trap',
   steal: 'steal', sl: 'steal', rob: 'steal',
   reel: 'reel', r: 'reel',
-  // The streamer: a big bite now, on a random active chatter, the one named, or "me".
+  // The streamer or the bot owner: a big bite now, on a random active chatter, the one named, or "me".
   // Testers (debugFishTesters): one on yourself.
   bigbite: 'bigbite', bb: 'bigbite'
 };
@@ -190,22 +190,26 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
   const cmd = call.usage.replace(/ fish$/, '');
 
   /**
-   * Reply in chat. A cast's result, a trap haul or a steal (meta.kind) also goes to
-   * the overlay. Only cast results and trap hauls skip chat where the channel turned
-   * chat replies off; every other reply, steals included, always goes to chat.
+   * Reply. Every fishing reply goes to the overlay. Chat gets it too, unless the
+   * channel keeps fishing out of live chat (chat replies off, or fishing set to
+   * offline only) and the overlay can stand in: the stream is live with one showing.
+   * Offline, or with no overlay open, chat still gets it, so nobody is left without
+   * an answer.
    */
-  const say = (text: string, meta: { kind?: OverlayKind; item?: string; code?: string; until?: number } = {}) => {
-    if (meta.kind) {
-      const emotes = emoteImages(chan, text);
-      const rarity = meta.item ? rarityOf(g, meta.item) : null;
-      pushOverlay(db, {
-        username: me, kind: meta.kind, text,
-        ...(meta.item ? { item: meta.item } : {}), ...(rarity ? { rarity } : {}), ...(Object.keys(emotes).length ? { emotes } : {}),
-        ...(meta.code !== undefined ? { code: meta.code, until: meta.until } : {})
-      });
-      if (!g.chatReplies && (meta.kind === 'catch' || meta.kind === 'miss' || meta.kind === 'trap')) return;
+  const say = async (text: string, meta: { kind?: OverlayKind; item?: string; code?: string; until?: number } = {}) => {
+    const emotes = emoteImages(chan, text);
+    const rarity = meta.item ? rarityOf(g, meta.item) : null;
+    pushOverlay(db, {
+      username: me, kind: meta.kind ?? 'info', text,
+      ...(meta.item ? { item: meta.item } : {}), ...(rarity ? { rarity } : {}), ...(Object.keys(emotes).length ? { emotes } : {}),
+      ...(meta.code !== undefined ? { code: meta.code, until: meta.until } : {})
+    });
+    try {
+      if ((!g.chatReplies || g.onlyWhileOffline) && overlayShowing(db) && (await svc.isLiveNow()) === true) return;
+      await client.say(channel, `@${me} ${text}`);
+    } catch (err) {
+      console.error(`[FISH] Reply to ${me} in ${chan} failed: ${err instanceof Error ? err.message : String(err)}`);
     }
-    return client.say(channel, `@${me} ${text}`);
   };
 
   let skipStory = false;
@@ -418,7 +422,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
   }
 
   /**
-   * The streamer's: a big bite now, on `target` or else a random active chatter, without
+   * The streamer's and the bot owner's: a big bite now, on `target` or else a random active chatter, without
    * the dice or the gap since the last. Everything else holds: big bites on, one at
    * a time, an overlay showing, and never a bot or anyone left out of points.
    */
@@ -977,7 +981,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
         if (userId === null || excluded) return ignore('no account or excluded');
         return reelIn(rest[0], userId);
       case 'bigbite':
-        if (tags.isBroadcaster) return streamerBite(rest[0]);
+        if (tags.isBroadcaster || isBotOwner(me)) return streamerBite(rest[0]);
         if (userId === null) return ignore('no account');
         return testBite(userId);
       default:
