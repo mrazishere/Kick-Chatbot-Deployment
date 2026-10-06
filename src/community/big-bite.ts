@@ -41,8 +41,8 @@ export interface Bite {
  * memory: a restart lets one that's waiting get away.
  */
 const bites = new Map<string, Bite>();
-/** When each channel last had a big bite, so they don't come back to back. */
-const lastBiteAt = new Map<string, number>();
+/** When each channel's next big bite is due, and the everyMinutes that wait was drawn for. */
+const dueAt = new Map<string, { at: number; every: number }>();
 /** Who got the last one per channel, so the same chatter doesn't get two in a row. */
 const lastChatter = new Map<string, string>();
 
@@ -53,8 +53,8 @@ export const BITE_TOO_FAST_MS = 2_000;
  * late, so an answer still counts this long after a code's time runs out.
  */
 export const STREAM_GRACE_MS = 4_000;
-/** However the average is set, at least this long between two big bites in a channel. */
-const MIN_GAP_MS = 10 * 60_000;
+/** A wait is `everyMinutes`, give or take up to this: close to the setting, but not to the second. */
+export const BITE_JITTER_MS = 2 * 60_000;
 /** How often the points service calls tick(). */
 export const TICK_MS = 30_000;
 
@@ -75,7 +75,7 @@ export function takeBite(channel: string, name: string): Bite | undefined {
   return bite;
 }
 
-function channelHasBite(channel: string): boolean {
+export function channelHasBite(channel: string): boolean {
   for (const k of bites.keys()) if (k.startsWith(`${channel}|`)) return true;
   return false;
 }
@@ -137,14 +137,15 @@ export function startBite(ctx: BiteContext, name: string, userId: number): Bite 
   const now = ctx.now ?? Date.now();
   const bite: Bite = { username: name, userId, code: '', startedAt: now, until: now, pull: 1, pulls: ctx.bigBite.pulls, timer: setTimeout(() => {}, 0) };
   bites.set(key(ctx.channel, name), bite);
-  lastBiteAt.set(ctx.channel, now);
+  // Whoever started it, the wait for the next one begins again.
+  dueAt.delete(ctx.channel);
   lastChatter.set(ctx.channel, name.toLowerCase());
   console.log(`[FISH] big bite for ${name} in ${ctx.channel}`);
   const pulls = bite.pulls > 1 ? ` (${bite.pulls} pulls)` : '';
   arm(ctx, bite, ctx.bigBite.windowSeconds * 1000,
     `🎣 Something BIG is tugging at your line! Reel it in with $${ctx.command} fish reel <code> within ${ctx.bigBite.windowSeconds}s!${pulls}`, now);
   // The one chat line: who, and where to look. The code and everything after are on stream.
-  void ctx.sendMessage(`@${name} 🎣 Something BIG is on your line! Watch the stream for your reel codes: $${ctx.command} fish reel <code>`).catch(() => {});
+  void ctx.sendMessage(`@${name} 🎣 Something BIG is on your line! A code is showing on stream now: type $${ctx.command} fish reel and that code within ${ctx.bigBite.windowSeconds}s to reel it in!`).catch(() => {});
   return bite;
 }
 
@@ -165,34 +166,59 @@ export interface TickContext extends BiteContext {
 }
 
 /**
- * Maybe start a big bite. Called every TICK_MS: while live, with an overlay showing
- * and nothing already on a line, it fires at random so they average one every
- * `everyMinutes`, never within MIN_GAP_MS of the last. The chatter is picked from
- * those who chatted in the last `activeMinutes`. Returns who got it, or null.
+ * Maybe start a big bite. Called every TICK_MS. While the stream is live each wait is
+ * `everyMinutes`, give or take up to two minutes (BITE_JITTER_MS), counted from the
+ * last bite (or from going live, a restart, or the setting changing). One that comes due with no overlay
+ * showing, nobody chatting or another still on a line is held until it can go out.
+ * The chatter is picked from those who chatted in the last `activeMinutes`.
+ * Returns who got it, or null.
  */
 export function tick(ctx: TickContext): string | null {
   const now = ctx.now ?? Date.now();
   const b = ctx.bigBite;
-  if (!b.enabled || !ctx.live || channelHasBite(ctx.channel)) return null;
-  if (now - (lastBiteAt.get(ctx.channel) ?? 0) < MIN_GAP_MS) return null;
-  if (!overlayShowing(ctx.db, now)) return null;
-  const random = ctx.random ?? Math.random;
-  if (random() >= TICK_MS / (b.everyMinutes * 60_000)) return null;
+  if (!b.enabled || !ctx.live) {
+    dueAt.delete(ctx.channel);
+    return null;
+  }
+  if (channelHasBite(ctx.channel)) return null;
+  let due = dueAt.get(ctx.channel);
+  if (!due || due.every !== b.everyMinutes) {
+    due = { at: now + b.everyMinutes * 60_000 + ((ctx.random ?? Math.random)() * 2 - 1) * BITE_JITTER_MS, every: b.everyMinutes };
+    dueAt.set(ctx.channel, due);
+  }
+  if (now < due.at || !overlayShowing(ctx.db, now)) return null;
 
+  const pick = pickChatter(ctx);
+  if (!pick) return null;
+  startBite(ctx, pick.username, pick.userId);
+  return pick.username;
+}
+
+/** Whether this account can get a big bite: not the streamer, a bot, or anyone left out of points. */
+export function canBite(ctx: Pick<TickContext, 'channel' | 'excluded'>, userId: number, name: string): boolean {
+  const lc = name.toLowerCase();
+  return lc !== ctx.channel && !SYSTEM_BOTS.has(lc) && !isBotSender(name) && !ctx.excluded(userId, lc);
+}
+
+/**
+ * A random chatter from the last `activeMinutes` who can get a big bite, not the
+ * one who got the last when there's anyone else. Null when nobody qualifies.
+ */
+export function pickChatter(ctx: Pick<TickContext, 'channel' | 'db' | 'bigBite' | 'excluded' | 'random' | 'now'>): { username: string; userId: number } | null {
+  const now = ctx.now ?? Date.now();
+  const random = ctx.random ?? Math.random;
   const rows = ctx.db.prepare('SELECT user_id, username, username_lc FROM users WHERE last_chat_at > ?')
-    .all(now - b.activeMinutes * 60_000) as Array<{ user_id: number; username: string; username_lc: string }>;
-  let pool = rows.filter(r => r.username_lc !== ctx.channel && !SYSTEM_BOTS.has(r.username_lc)
-    && !isBotSender(r.username) && !ctx.excluded(r.user_id, r.username_lc));
+    .all(now - ctx.bigBite.activeMinutes * 60_000) as Array<{ user_id: number; username: string; username_lc: string }>;
+  let pool = rows.filter(r => canBite(ctx, r.user_id, r.username));
   if (pool.length > 1) pool = pool.filter(r => r.username_lc !== lastChatter.get(ctx.channel));
   if (!pool.length) return null;
   const pick = pool[Math.floor(random() * pool.length) % pool.length];
-  startBite(ctx, pick.username, pick.user_id);
-  return pick.username;
+  return { username: pick.username, userId: pick.user_id };
 }
 
 /** Forget a channel's bites and history; for tests. */
 export function resetBites(channel: string): void {
   for (const k of [...bites.keys()]) if (k.startsWith(`${channel}|`)) takeBite(channel, k.slice(channel.length + 1));
-  lastBiteAt.delete(channel);
+  dueAt.delete(channel);
   lastChatter.delete(channel);
 }

@@ -16,6 +16,7 @@ import { effectiveCommand, effectivePointsConfig, invalidateLivePointsConfig, va
 import { closeAllPointsDbs, closePointsDb, openPointsDb, PointsDb, reportDbError, runWrite } from '../points/db';
 import { LiveState } from '../points/live';
 import { PointsService } from '../points/service';
+import { spamKeyword } from '../points/antispam';
 import { normalizeChat, presenceVerdict } from '../points/presence-rules';
 import {
   acceptDuel, adjustPoints, backupPoints, createDuel, creditTx, debitTx, duelStats, gambleStats, getUser, grantTick, invariantViolations,
@@ -24,7 +25,7 @@ import {
   caughtFish, heistBoard, pointsLeaderboard, pointsSummary, searchPointsUsers, getPointsUserDetail, transfer
 } from '../points/store';
 import { WebhookPoller } from '../channels/webhook-poller';
-import { points as pointsCommand } from '../bot-commands/points';
+import { points as pointsCommand, SUBCOMMAND_ALIASES } from '../bot-commands/points';
 import { addItem, FishData, initialData, isTrophy, rarityOf, stealCharges, ITEMS, landsFish, loadFish, parseSellList, recordCatch, saveFish, sellPrice, weightedCatch } from '../community/fishing';
 import { openCommunityDb } from '../community/store';
 import { markOverlaySeen, readOverlay } from '../community/fish-overlay';
@@ -551,6 +552,9 @@ async function main(): Promise<void> {
     const stats = await run('$don fish stats', 'asker', 23);
     check('chatReplies off: laying traps and lookups still go to chat, not the overlay',
       lay[0]?.includes('laid your fishing traps') && stats.length === 1 && readOverlay(qdb).events.length === 1, { lay, stats, f: readOverlay(qdb) });
+    const demoOff = validatePointsPatch({}, { games: { overlayDemo: false } });
+    check('overlayDemo is on unless turned off',
+      effectivePointsConfig({}).games.overlayDemo && demoOff.errors.length === 0 && !effectivePointsConfig(demoOff.next).games.overlayDemo, demoOff);
   }
 
   // onlyWhileOffline: casting and trapping are shut while live, open offline; never on with onlyWhileLive
@@ -580,6 +584,101 @@ async function main(): Promise<void> {
     const swap = validatePointsPatch({}, { games: { onlyWhileLive: false, onlyWhileOffline: true } });
     check('onlyWhileOffline can\'t be on together with onlyWhileLive',
       both.errors.length === 1 && swap.errors.length === 0 && effectivePointsConfig(swap.next).games.onlyWhileOffline, { both: both.errors, swap: swap.errors });
+  }
+
+  // Short forms: every $don subcommand has one, and it does what the long form does
+  {
+    const ch = 'aliasch';
+    writeConfig(root, ch, { enabled: true, currencyName: '$DON', gamble: { enabled: true, cooldownSeconds: 0 }, give: { enabled: true, minAmount: 1, cooldownSeconds: 0 } });
+    makeService(ch, { broadcaster: 999, random: () => 0.1 });
+    const db = openPointsDb(ch, { create: true })!;
+    runWrite(db, () => {
+      creditTx(db, { userId: 1, username: 'alice', amount: 100, reason: 'mod_add', now: 1 });
+      creditTx(db, { userId: 2, username: 'bob', amount: 50, reason: 'mod_add', now: 1 });
+    });
+    const run = async (msg: string, username: string, id: number) => {
+      const out: string[] = [];
+      const t: KickTags = { username, 'display-name': username, badges: {}, isBroadcaster: false, isModUp: false, isVIPUp: false, rawBadges: [], senderId: id };
+      await pointsCommand({ say: async (_c, m) => { out.push(m); } }, msg, `#${ch}`, t, { channelName: ch } as ChannelConfig);
+      return out;
+    };
+    const won = await run('$don g 40', 'alice', 1);
+    check('$don g is $don gamble', won[0] === '@alice won 40 $DON and now has 140' && balance(ch, 1) === 140, won);
+    await run('$don GV @bob 10', 'alice', 1);
+    check('$don gv is $don give', balance(ch, 1) === 130 && balance(ch, 2) === 60, { a: balance(ch, 1), b: balance(ch, 2) });
+    const mod = async (msg: string) => {
+      const out: string[] = [];
+      const t: KickTags = { username: 'modder', 'display-name': 'modder', badges: {}, isBroadcaster: false, isModUp: true, isVIPUp: true, rawBadges: [], senderId: 7 };
+      await pointsCommand({ say: async (_c, m) => { out.push(m); } }, msg, `#${ch}`, t, { channelName: ch } as ChannelConfig);
+      return out;
+    };
+    const tg = await mod('$don t g');
+    const tat = await mod('$don t at');
+    check('$don t g is top gamble, $don t at is top activetime', tg.length === 1 && tg[0] === (await mod('$don top gamble'))[0] && tat.length === 1 && tat[0] === (await mod('$don top activetime'))[0]
+      && tg[0] !== tat[0], { tg, tat });
+    const gst = await run('$don g st', 'alice', 1);
+    check('$don g st is gamble stats', gst.length === 1 && gst[0] === '@alice 1 gambles 1 won 100.0% net 40 $DON', gst);
+    const allIn = await run('$don g a', 'bob', 2);
+    check('$don g a is gamble all', allIn[0] === '@bob went all in and won, now has 120 $DON' && balance(ch, 2) === 120, allIn);
+    const top = await run('$don t', 'bob', 2);
+    check('$don t is $don top', top.length === 1 && top[0].includes('alice'), top);
+    const longs = Object.values(SUBCOMMAND_ALIASES);
+    check('every $don subcommand has one short form', new Set(longs).size === longs.length
+      && ['activetime', 'top', 'leaderboard', 'give', 'gamble', 'duel', 'accept', 'deny', 'cancel', 'raffle', 'sraffle', 'join', 'add', 'remove', 'set', 'fish'].every(w => longs.includes(w)), longs);
+  }
+
+  // Anti-spam: keyword messages past the threshold cost points, per viewer, inside the window
+  {
+    check('spam keywords match whole words, any case, and emote names',
+      spamKeyword('LOL that was great', ['lol']) === 'lol' && spamKeyword('lollipop', ['lol']) === null
+      && spamKeyword('nice [emote:123:KEKW]', ['kekw']) === 'kekw' && spamKeyword('so free   money here', ['free money']) === 'free money' && spamKeyword('freemoney', ['free money']) === null
+      && spamKeyword('get free money here', ['free money']) === 'free money' && spamKeyword('what?? (c++)', ['c++']) === 'c++');
+    const ch = 'antispam';
+    const sent: string[] = [];
+    let now = 5_000_000;
+    writeConfig(root, ch, { enabled: true, currencyName: '$DON', antiSpam: { enabled: true, keywords: ['kekw'], threshold: 2, windowMinutes: 5, cost: 30 } });
+    const svc = makeService(ch, { now: () => now, sent });
+    const db = openPointsDb(ch, { create: true })!;
+    runWrite(db, () => {
+      creditTx(db, { userId: 1, username: 'spammer', amount: 100, reason: 'mod_add', now: 1 });
+      creditTx(db, { userId: 2, username: 'modguy', amount: 100, reason: 'mod_add', now: 1 });
+      creditTx(db, { userId: 3, username: 'bystander', amount: 100, reason: 'mod_add', now: 1 });
+    });
+    let n = 0;
+    const say = (id: number, name: string, text: string, b: RawBadge[] = badges(), mid = `m${++n}`) => { now += 1000; svc.noteChat(id, name, b, text, mid); };
+    say(1, 'spammer', 'KEKW');
+    say(1, 'spammer', 'kekw kekw kekw');
+    check('anti-spam: messages up to the threshold are free', balance(ch, 1) === 100 && sent.length === 0, { b: balance(ch, 1), sent });
+    say(1, 'spammer', 'hello chat');
+    say(3, 'bystander', 'kekw');
+    say(1, 'spammer', 'Kekw!', badges(), 'dup');
+    say(1, 'spammer', 'Kekw!', badges(), 'dup');
+    check('anti-spam: the next keyword message costs once, however often Kick delivers it', balance(ch, 1) === 70 && balance(ch, 3) === 100, { b: balance(ch, 1) });
+    say(1, 'spammer', 'kekw');
+    say(1, 'spammer', 'kekw');
+    say(1, 'spammer', 'kekw');
+    say(1, 'spammer', 'kekw');
+    check('anti-spam: every further one costs, never below zero, and no message is announced by itself', balance(ch, 1) === 0 && sent.length === 0, { b: balance(ch, 1), sent });
+    say(3, 'bystander', 'kekw');
+    say(3, 'bystander', 'kekw');
+    const board = svc.spamBoardTick();
+    check('anti-spam: the board lists the last ten minutes, biggest loss first',
+      board === 'Spam tax, last 10 min: 1. spammer -100 $DON, 2. bystander -30 $DON' && sent.length === 1 && sent[0] === board, { board, sent });
+    for (let i = 0; i < 5; i++) say(2, 'modguy', 'kekw', badges('moderator'));
+    check('anti-spam: moderators are never charged', balance(ch, 2) === 100);
+    now += 6 * 60_000;
+    runWrite(db, () => creditTx(db, { userId: 1, username: 'spammer', amount: 50, reason: 'mod_add', now }));
+    say(1, 'spammer', 'kekw');
+    check('anti-spam: the count starts over once the window has passed', balance(ch, 1) === 50, balance(ch, 1));
+    now += 5 * 60_000;
+    check('anti-spam: no board when nobody was charged in the ten minutes', svc.spamBoardTick() === null && sent.length === 1, sent);
+    const noWords = validatePointsPatch({}, { antiSpam: { enabled: true } });
+    const ok = validatePointsPatch({}, { antiSpam: { enabled: true, keywords: [' KEKW ', 'kekw', 'Free  Money'], threshold: 5, cost: 25 } });
+    const bad = validatePointsPatch({}, { antiSpam: { keywords: [''], cost: 0 } });
+    check('anti-spam settings: needs a keyword to be on, keywords are tidied, bad values refused',
+      noWords.errors.length === 1 && ok.errors.length === 0 && JSON.stringify(effectivePointsConfig(ok.next).antiSpam.keywords) === '["kekw","free money"]'
+      && effectivePointsConfig(ok.next).antiSpam.threshold === 5 && bad.errors.length === 2 && effectivePointsConfig({}).antiSpam.enabled === false,
+      { noWords: noWords.errors, ok: ok.errors, bad: bad.errors });
   }
 
   // Stealing: a hook to try, rarity odds, a burned fine, guards, grace and protection
@@ -740,16 +839,27 @@ async function main(): Promise<void> {
       const lastBite = () => readOverlay(bdb).events.filter(e => e.kind === 'bite').pop();
       /** The newest overlay event: after the opening mention, a bite plays out there only. */
       const lastShown = () => readOverlay(bdb).events.pop();
-      /** A tick that always fires if it can: 30 minutes on, overlay showing. */
+      /** Ticks until a bite fires if it can: past any wait already running, or a fresh shortest one (28 minutes). */
       const fire = async (overlay = true) => {
+        const tickNow = () => { chat(41, 'biter', 1); if (overlay) markOverlaySeen(bdb, Date.now()); return bsvc.bigBiteTick(() => 0); };
         shift += 31 * 60_000;
-        chat(41, 'biter', 1);
-        if (overlay) markOverlaySeen(bdb, Date.now());
-        return bsvc.bigBiteTick(() => 0);
+        const early = await tickNow();
+        if (early) return early;
+        shift += 29 * 60_000;
+        return tickNow();
       };
 
       check('no big bite without an overlay showing', (await fire(false)) === null);
-      check('no big bite when the dice say no', (shift += 31 * 60_000, markOverlaySeen(bdb, Date.now()), await bsvc.bigBiteTick(() => 0.99)) === null);
+      resetBites(ch);
+      chat(41, 'biter', 1);
+      markOverlaySeen(bdb, Date.now());
+      check('the wait is the setting, give or take two minutes: none before it is up',
+        (await bsvc.bigBiteTick(() => 0.99)) === null && (shift += 31 * 60_000, chat(41, 'biter', 1), markOverlaySeen(bdb, Date.now()), await bsvc.bigBiteTick(() => 0)) === null, lastBite());
+      shift += 60_000;
+      chat(41, 'biter', 1);
+      markOverlaySeen(bdb, Date.now());
+      check('and one once it is', (await bsvc.bigBiteTick(() => 0)) === 'biter');
+      takeBiteForTest(ch, 'biter');
       const got = await fire();
       const ev1 = lastBite();
       check('a big bite goes to an active chatter, never the streamer, a bot or someone quiet', got === 'biter' && ev1?.username === 'biter');
@@ -759,7 +869,7 @@ async function main(): Promise<void> {
       const fast = await run(`$don fish reel ${ev1!.code}`, ['biter', 41], 500);
       check('an answer faster than the stream could show it snaps the line: the overlay and a chat result', fast.includes('yanked too early') && lastShown()?.kind === 'miss'
         && !!lastShown()?.text.includes('yanked too early'), { fast, shown: lastShown() });
-      check('not again within 10 minutes', (shift += 5 * 60_000, markOverlaySeen(bdb, Date.now()), await bsvc.bigBiteTick(() => 0)) === null);
+      check('not again until the next wait is up', (shift += 5 * 60_000, markOverlaySeen(bdb, Date.now()), await bsvc.bigBiteTick(() => 0)) === null);
 
       await fire();
       const ev2 = lastBite()!;
@@ -823,13 +933,15 @@ async function main(): Promise<void> {
       const ev4 = lastBite()!;
       shift += 31_000;
       // Past the countdown but inside the stream-delay grace: still counts.
-      check('an answer just after the countdown still counts, for stream delay', (await run(`$don fish reel ${ev4.code}`, ['biter', 41], 0), lastShown()?.kind === 'bite' && lastShown()!.pull === 2));
+      check('an answer just after the countdown still counts, for stream delay; $don f r is $don fish reel', (await run(`$don f r ${ev4.code}`, ['biter', 41], 0), lastShown()?.kind === 'bite' && lastShown()!.pull === 2));
       const ev5 = lastBite()!;
       shift += 20_000;
       await run(`$don fish reel ${ev5.code}`, ['biter', 41]);
       check('too slow loses it', !!lastShown()?.text.includes('Too slow'));
       check('reel with nothing on the line', (await run('$don fish reel 42', ['biter', 41])).includes('nothing big on your line'));
+      check('the short forms answer the same', (await run('$don f r 42', ['biter', 41])).includes('nothing big on your line') && (await run('$don F stats', ['biter', 41])) !== '');
 
+      await bsvc.bigBiteTick(() => 0);
       shift += 31 * 60_000;
       chat(41, 'biter', 1);
       chat(44, 'other', 1);
@@ -840,6 +952,34 @@ async function main(): Promise<void> {
       check('testers can put a big bite on themselves', (chat(45, 'tester', 1), shift += 11 * 60_000, markOverlaySeen(bdb, Date.now()), await run('$don fish bigbite', ['tester', 45], 6_000)).includes('Something BIG')
         && lastBite()?.username === 'tester');
       check('nobody else can', (await run('$don fish bigbite', ['other', 44])) === '' && lastBite()?.username === 'tester');
+      const asStreamer = async (msg: string) => {
+        shift += 6_000;
+        const out: string[] = [];
+        const t: KickTags = { username: ch, 'display-name': ch, badges: {}, isBroadcaster: true, isModUp: true, isVIPUp: true, rawBadges: [], senderId: 999 };
+        await fishCommand({ say: async (_c, m) => { out.push(m); } }, msg, `#${ch}`, t, { channelName: ch } as ChannelConfig);
+        return out[0] ?? '';
+      };
+      check('the streamer can\'t start one while another is waiting', (await asStreamer('$don fish bigbite')).includes('already has a big bite') && lastBite()?.username === 'tester');
+      takeBiteForTest(ch, 'tester');
+      chat(44, 'other', 1);
+      markOverlaySeen(bdb, Date.now());
+      const named = await asStreamer('$don fish bigbite @Other');
+      check('the streamer can put a big bite on a named chatter, right after the last one', named.startsWith('@other') && named.includes('Something BIG') && lastBite()?.username === 'other', { named, b: lastBite() });
+      takeBiteForTest(ch, 'other');
+      chat(41, 'biter', 1);
+      chat(44, 'other', 1);
+      chat(999, ch, 1);
+      chat(43, 'botrix', 1);
+      markOverlaySeen(bdb, Date.now());
+      const anyone = await asStreamer('$don fish bigbite');
+      check('or on a random active chatter, never themselves, a bot or the last one', anyone.includes('Something BIG') && !!lastBite() && !['other', ch, 'botrix'].includes(lastBite()!.username.toLowerCase()), { anyone, b: lastBite() });
+      takeBiteForTest(ch, lastBite()!.username);
+      markOverlaySeen(bdb, Date.now());
+      const self = await asStreamer('$don fish bigbite me');
+      check('the streamer can put one on themselves to try it', self.startsWith(`@${ch}`) && self.includes('Something BIG') && lastBite()?.username === ch, { self, b: lastBite() });
+      takeBiteForTest(ch, ch);
+      markOverlaySeen(bdb, Date.now());
+      check('never on a bot or an unknown name', (await asStreamer('$don fish bigbite botrix')).includes("can't get a big bite") && (await asStreamer('$don fish bigbite nobodyhere')).includes("don't know"));
     } finally {
       Date.now = realNow;
       resetBites(ch);
@@ -928,6 +1068,10 @@ async function main(): Promise<void> {
       check('show lists fish and junk', shown[0] === '@bulk You have 3 fish (🐟🐟🦐) and 3 pieces of junk (🥫🥫🧦) in your collection. You also have 0 $DON in your purse.', shown);
       const shownJunk = await bulk('$don fish show junk');
       check('show junk is junk only', shownJunk[0] === '@bulk You have 3 pieces of junk in your collection. Here they are: 🥫🥫🧦 You also have 0 $DON in your purse.', shownJunk);
+      const same = async (short: string, full: string) => { const a = await bulk(short); const b = await bulk(full); return a.length === 1 && a[0] === b[0]; };
+      check('fish short forms reach past the subcommand: show, stats, top, buy',
+        (await bulk('$don f sh j'))[0] === shownJunk[0] && await same('$don f st g', '$don fish stats global') && await same('$don f tp tf', '$don fish top total-fish')
+        && await same('$don f tp ca', '$don fish top caught') && await same('$don f b h', '$don fish buy hook') && await same('$don f b r', '$don fish buy reel'));
       const other = await run('$don fish show @bulk', on, ['seller', 12]);
       check('show another viewer lists both', other[0]?.startsWith('@seller They have 3 fish (🐟🐟🦐) and 3 pieces of junk'), other);
       const mixed = await bulk('$don fish sell 🦐 🥫');
@@ -936,8 +1080,8 @@ async function main(): Promise<void> {
       check('sell all still needs a type', noType[0]?.includes('you must provide a type') && noType[0].includes('fish junk') && balance(ch, 13) === 33, noType);
       const dup = await bulk('$don fish sell duplicate fish junk');
       check('duplicate across both types', dup[0] === '@bulk You sold 1 duplicate fish for a grand total of 25 $DON - now you have 58 $DON', dup);
-      const both = await bulk('$don fish sell all fish junk');
-      check('sell all fish junk sells both', both[0] === '@bulk You sold 1 fish and 2 pieces of junk for a grand total of 38 $DON - now you have 96 $DON', both);
+      const both = await bulk('$don f s a f j');
+      check('sell all fish junk sells both, typed short as $don f s a f j', both[0] === '@bulk You sold 1 fish and 2 pieces of junk for a grand total of 38 $DON - now you have 96 $DON', both);
       // Reels
       const defaults = effectivePointsConfig({}).games.reels;
       check('four default reels, cheapest first', defaults.map(r => `${r.name}:${r.price}`).join(',') === 'Bamboo:5000,Fiberglass:25000,Carbon:100000,Golden:500000', defaults);

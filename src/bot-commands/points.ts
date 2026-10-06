@@ -54,6 +54,23 @@ import {
 const SUBCOMMANDS = new Set(['activetime', 'top', 'leaderboard', 'give', 'gamble', 'duel', 'accept', 'deny', 'cancel', 'raffle', 'sraffle', 'join', 'add', 'remove', 'set', 'fish']);
 /** Played through the currency command but answered by their own modules (see community/stakes.ts). */
 const GAME_SUBCOMMANDS = new Set(['fish']);
+/**
+ * Short forms: `$<cmd> g 100` is `$<cmd> gamble 100`. One letter where it's free, two
+ * where a letter is shared. A two-letter one hides a viewer of that exact name
+ * from `$<cmd> <name>`; `$<cmd> @name` still finds them.
+ */
+export const SUBCOMMAND_ALIASES: Record<string, string> = {
+  g: 'gamble', gv: 'give', d: 'duel', a: 'accept', dn: 'deny', c: 'cancel',
+  rf: 'raffle', sr: 'sraffle', j: 'join', t: 'top', lb: 'leaderboard', at: 'activetime',
+  ad: 'add', rm: 'remove', st: 'set', f: 'fish'
+};
+/** The same for the word after a subcommand: `$<cmd> t g` is `top gamble`, `g st` is `gamble stats`, `rf c` is `raffle cancel`. An amount of `a` is `all`. */
+const ARGUMENT_ALIASES: Record<string, Record<string, string>> = {
+  top: { g: 'gamble', at: 'activetime' },
+  gamble: { st: 'stats' },
+  raffle: { c: 'cancel' },
+  sraffle: { c: 'cancel' }
+};
 const AMOUNT_RE = /^\d{1,9}$/;
 const NAME_RE = /^@?[A-Za-z0-9_]{2,25}$/;
 
@@ -74,7 +91,7 @@ function asciiSymbols(text: string): number {
  */
 export function parseBet(raw: string, balance: number): number | null {
   const t = raw.trim().toLowerCase();
-  if (t === 'all') return balance;
+  if (t === 'all' || t === 'a') return balance;
   const pct = /^(\d{1,3}(?:\.\d+)?)%$/.exec(t);
   if (pct) {
     const p = Number(pct[1]);
@@ -142,7 +159,11 @@ export const points: CommandFn = async function points(client, message, channel,
   const meLc = me.toLowerCase();
   const say = (text: string) => client.say(channel, text);
   const args = words.slice(1);
-  const sub = SUBCOMMANDS.has((args[0] ?? '').toLowerCase()) ? args[0].toLowerCase() : null;
+  const typed = (args[0] ?? '').toLowerCase();
+  const word = SUBCOMMAND_ALIASES[typed] ?? typed;
+  const sub = SUBCOMMANDS.has(word) ? word : null;
+  const longArg = sub !== null && args[1] !== undefined ? ARGUMENT_ALIASES[sub]?.[args[1].toLowerCase()] : undefined;
+  if (longArg) args[1] = longArg;
   const isOwner = !!process.env.KICK_OWNER && meLc === process.env.KICK_OWNER.toLowerCase();
   // Moderators skip the read cooldowns. Changing balances is only for the broadcaster
   // and the bot owner (user, 2026-09-12): a mod could otherwise mint up to modMaxAdjust at will.

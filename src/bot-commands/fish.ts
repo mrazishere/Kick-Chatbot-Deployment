@@ -47,7 +47,7 @@ import { gameInvocation } from '../community/stakes';
 import { addReminder, cancelSelfRemindersStartingWith, openCommunityDb } from '../community/store';
 import { bestEmote, broadcasterIdFor, emoteImages } from '../community/emotes';
 import { OverlayKind, overlayShowing, pushOverlay } from '../community/fish-overlay';
-import { BITE_TOO_FAST_MS, STREAM_GRACE_MS, biteFor, codeMatches, getAway, nextPull, startBite, takeBite, type BiteContext } from '../community/big-bite';
+import { BITE_TOO_FAST_MS, STREAM_GRACE_MS, biteFor, canBite, channelHasBite, codeMatches, getAway, nextPull, pickChatter, startBite, takeBite, type BiteContext } from '../community/big-bite';
 import {
   addItem, baitPrice, baitRoll, currentReel, heldFishValue, landsFish, moveFish, pickHeld, stealableFish, stealChance, stealCharges, worstStealCharges, parseSellList, CatchItem, CatchType, FAILURE_EMOTES, FishData, findBait, hasFishedBefore, initialData, rarityOf, recordCatch,
   ITEMS, JUNK_MESSAGES, loadFish, MISS_DELAY_MS, pick, randomInt, rollCatch, saveFish, sellPrice, STORY_STYLES, SUCCESS_EMOTES,
@@ -58,14 +58,15 @@ const cooldown = makeCooldown(5000);
 const pointer = makeCooldown(60_000);
 
 const SUBCOMMANDS: Record<string, 'buy' | 'sell' | 'show' | 'stats' | 'top' | 'trap' | 'steal' | 'reel' | 'bigbite'> = {
-  buy: 'buy', sell: 'sell',
-  show: 'show', count: 'show', display: 'show', collection: 'show',
-  stats: 'stats', top: 'top', leaderboard: 'top',
-  trap: 'trap', net: 'trap', trawl: 'trap',
-  steal: 'steal', rob: 'steal',
-  reel: 'reel',
-  // Testers only (debugFishTesters): a big bite on yourself, now.
-  bigbite: 'bigbite'
+  buy: 'buy', b: 'buy', sell: 'sell', s: 'sell',
+  show: 'show', sh: 'show', count: 'show', display: 'show', collection: 'show',
+  stats: 'stats', st: 'stats', top: 'top', tp: 'top', leaderboard: 'top',
+  trap: 'trap', t: 'trap', net: 'trap', trawl: 'trap',
+  steal: 'steal', sl: 'steal', rob: 'steal',
+  reel: 'reel', r: 'reel',
+  // The streamer: a big bite now, on a random active chatter, the one named, or "me".
+  // Testers (debugFishTesters): one on yourself.
+  bigbite: 'bigbite', bb: 'bigbite'
 };
 
 
@@ -77,6 +78,21 @@ const groupDigits = (n: number): string => Math.round(n).toLocaleString('en-US')
 // ─── Leaderboards ───────────────────────────────────────────────────────────
 
 interface Board { path: string | null; name: string; value: (d: FishData, balance: number) => number | null }
+
+/** Short forms for the words after a fish subcommand: `t c` is `trap cancel`, `b h` is `buy hook`, `tp tf` is `top total-fish`. */
+const TYPE_SHORT: Record<string, string> = { f: 'fish', j: 'junk' };
+const TRAP_SHORT: Record<string, string> = { c: 'cancel', r: 'reset' };
+const BUY_SHORT: Record<string, string> = { r: 'reel', h: 'hook', g: 'guard' };
+const BAIT_SHORT: Record<string, string> = { w: 'worm', f: 'fly', c: 'cricket' };
+const SELL_SHORT: Record<string, string> = { a: 'all', d: 'duplicate' };
+const STATS_SHORT: Record<string, string> = { g: 'global' };
+const BOARD_SHORT: Record<string, string> = {
+  f: 'fish', c: 'coins', j: 'junk', l: 'lucky', u: 'unlucky', t: 'traps', a: 'attempts', th: 'thieves', ca: 'caught', r: 'robbed',
+  tf: 'total-fish', tc: 'total-coins', tj: 'total-junk', tl: 'total-lucky', tu: 'total-unlucky'
+};
+/** `word` spelled out when it's one of `short`'s, else as typed. */
+const long = <T extends string | undefined>(word: T, short: Record<string, string>): T | string =>
+  (word !== undefined && short[word.toLowerCase()]) || word;
 
 const BOARDS = new Map<string, Board>([
   ['fish', { path: '$.catch.fish', name: 'anglers', value: d => d.catch.fish }],
@@ -402,6 +418,33 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
   }
 
   /**
+   * The streamer's: a big bite now, on `target` or else a random active chatter, without
+   * the dice or the gap since the last. Everything else holds: big bites on, one at
+   * a time, an overlay showing, and never a bot or anyone left out of points.
+   */
+  function streamerBite(target: string | undefined): void {
+    if (!g.bigBite.enabled) return void say('Big bites are off here.');
+    if (channelHasBite(chan)) return void say('Someone already has a big bite on their line.');
+    if (!overlayShowing(db!)) return void say('Open the fishing overlay first: a big bite needs somewhere to show its code.');
+    const who = { channel: chan, db: db!, bigBite: g.bigBite, excluded: (id: number, name: string) => offLimits(id, name) };
+    const nameLc = (target ?? '').replace(/^@+/, '').toLowerCase();
+    if (!nameLc) {
+      const pick = pickChatter(who);
+      if (!pick) return void say(`Nobody has chatted in the last ${g.bigBite.activeMinutes} minutes to get a big bite.`);
+      return void startBite(biteCtx(), pick.username, pick.userId);
+    }
+    // On themselves, to try it: the one bite the streamer can get.
+    if (nameLc === 'me' || nameLc === meLc) {
+      if (userId === null) return ignore('no account');
+      return void startBite(biteCtx(), me, userId);
+    }
+    const viewer = findUserByName(db!, nameLc);
+    if (!viewer) return void say(`I don't know ${nameLc} yet: they have to chat here first.`);
+    if (!canBite(who, viewer.user_id, viewer.username)) return void say(`${viewer.username} can't get a big bite.`);
+    startBite(biteCtx(), viewer.username, viewer.user_id);
+  }
+
+  /**
    * The reminder that pings a viewer when their traps are full, posted through
    * !remind's timer so it survives a restart. It needs !remind on to be delivered.
    * Collecting, cancelling or re-laying the traps first clears the old one.
@@ -506,7 +549,8 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
 
   // ── sell ──
   function sell(parts: string[], uid: number): void {
-    const [specifier] = parts;
+    // Short forms: "s a f j" is "sell all fish junk", "s d f" is "sell duplicate fish".
+    const specifier = long(parts[0], SELL_SHORT);
     const text = once(now => {
       const d = loadFish(db!, uid);
       if (!d || (d.catch.fish === 0 && d.catch.junk === 0)) return 'You have no items to sell!';
@@ -519,7 +563,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       if (specifier === 'all' || specifier === 'duplicate') {
         // Naming the type stays required, as in supibot, so nobody sells everything
         // by accident; naming both ("all fish junk") sells both.
-        const types = [...new Set(parts.slice(1).map(w => w.toLowerCase()))];
+        const types = [...new Set(parts.slice(1).map(w => w.toLowerCase()).map(w => long(w, TYPE_SHORT)))];
         if (types.length === 0 || !types.every(t => t === 'fish' || t === 'junk')) {
           return "When selling all, you must provide a type! You don't wanna sell all of your stuff by accident, right? Use fish, junk, or both: fish junk";
         }
@@ -913,19 +957,19 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       case 'buy':
         if (g.reels.length === 0 && !g.steal.enabled) return void say("There isn't anything you can buy at the fishing gear shop... yet.");
         if (userId === null || excluded) return ignore('no account or excluded');
-        return buy((rest[0] ?? '').toLowerCase(), userId);
+        return buy(long((rest[0] ?? '').toLowerCase(), BUY_SHORT), userId);
       case 'show':
-        return show(rest);
+        return show([long(rest[0], TYPE_SHORT), long(rest[1], TYPE_SHORT), ...rest.slice(2)].filter((w): w is string => w !== undefined));
       case 'stats':
-        return stats(rest[0]);
+        return stats(long(rest[0], STATS_SHORT));
       case 'top':
-        return top(rest[0]);
+        return top(long(rest[0], BOARD_SHORT));
       case 'sell':
         if (userId === null || excluded) return ignore('no account or excluded');
         return sell(rest, userId);
       case 'trap':
         if (userId === null || excluded) return ignore('no account or excluded');
-        return await trap((rest[0] ?? '').toLowerCase(), userId);
+        return await trap(long((rest[0] ?? '').toLowerCase(), TRAP_SHORT), userId);
       case 'steal':
         if (userId === null || excluded) return ignore('no account or excluded');
         return await steal(rest[0], userId);
@@ -933,11 +977,12 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
         if (userId === null || excluded) return ignore('no account or excluded');
         return reelIn(rest[0], userId);
       case 'bigbite':
+        if (tags.isBroadcaster) return streamerBite(rest[0]);
         if (userId === null) return ignore('no account');
         return testBite(userId);
       default:
         if (userId === null || excluded) return ignore('no account or excluded');
-        return await cast(rest[0], userId);
+        return await cast(long(rest[0], BAIT_SHORT), userId);
     }
   } catch (err) {
     console.error(`[FISH] ${me} in ${chan} failed: ${err instanceof Error ? err.message : String(err)}`);

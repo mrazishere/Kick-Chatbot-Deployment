@@ -699,7 +699,7 @@ class KickChatBot {
     this.kppTracker.recordChat(username);
     // Loyalty points presence: chatting recently is what counts as watching. The text
     // decides whether this message counts (repeats, emotes and $don don't).
-    this.points.noteChat(sender?.id, username, badges, message);
+    this.points.noteChat(sender?.id, username, badges, message, typeof data.id === 'string' ? data.id : undefined);
     // Kept so a !vanish can delete it later.
     this.moderator.noteMessage(username, typeof data.id === 'string' ? data.id : undefined);
 

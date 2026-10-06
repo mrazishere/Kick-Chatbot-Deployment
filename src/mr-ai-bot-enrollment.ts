@@ -2828,11 +2828,13 @@ app.get('/internal/bot/:channel/overlay/fishing', internalGuard(false), (req, re
   const cfg = effectivePointsConfig(config['points']);
   if (!cfg.enabled || !cfg.games.enabled) return res.status(404).json({ error: 'Fishing is off in this channel' });
   const db = openPointsDb(channel, { create: false });
-  if (!db) return res.json({ lastId: 0, events: [] });
+  // demo: whether the overlay's &demo=1 may play (games.overlayDemo).
+  const demo = cfg.games.overlayDemo;
+  if (!db) return res.json({ lastId: 0, events: [], demo });
   try {
     markOverlaySeen(db);
     // The bot's clock, so the overlay counts a big bite down to the real deadline.
-    return res.json({ ...readOverlay(db), now: Date.now() });
+    return res.json({ ...readOverlay(db), now: Date.now(), demo });
   } catch (e) {
     return pointsUnavailable(res, channel, e);
   }

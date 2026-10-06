@@ -194,6 +194,24 @@ export interface PointsTimeoutPenaltyConfig {
 }
 
 /**
+ * Charging for keyword spam. A viewer may send `threshold` messages containing
+ * a keyword within `windowMinutes`; each one past that costs `cost`.
+ */
+export interface PointsAntiSpamConfig {
+  enabled: boolean;
+  /** Lowercase words or phrases, matched whole and whatever their case; an emote's name works too. */
+  keywords: string[];
+  /** Keyword messages a viewer may send inside the window before they start to cost. */
+  threshold: number;
+  /** How far back a viewer's keyword messages are counted. */
+  windowMinutes: number;
+  /** Deducted for every keyword message past the threshold. */
+  cost: number;
+  /** Every ten minutes, tell chat the five viewers who lost the most to spam in that time. */
+  announce: boolean;
+}
+
+/**
  * `$<cmd> gamble <amount>`: an even-money bet. A win adds the amount, a loss takes
  * it. One win chance for the whole channel; every gamble is its own roll.
  */
@@ -290,6 +308,8 @@ export interface PointsGamesConfig {
    * stream only. Every other fishing reply always goes to chat.
    */
   chatReplies: boolean;
+  /** Let the fishing overlay's &demo=1 play. Off, an overlay ignores the flag, even one already open on stream. */
+  overlayDemo: boolean;
   /**
    * Every fish and junk item with its odds and price as they apply. Stored as
    * overrides only (StoredFishCatches); an item without one keeps supibot's weight
@@ -307,7 +327,7 @@ export interface PointsGamesConfig {
 /**
  * Our addition. While the stream is live and a fishing overlay is showing, a random
  * chatter from the last `activeMinutes` gets a big bite about every `everyMinutes`
- * (never within 10 minutes of the last): chat says something big is on their line,
+ * (give or take two minutes): chat says something big is on their line,
  * and the overlay alone shows a two-digit reel code. Reeling it in takes `pulls`
  * codes in a row: `windowSeconds` for the first, `pullSeconds` for each after. The
  * last pull lands a trophy (Mythic) by that trophy's land chance, or it snaps free.
@@ -412,6 +432,8 @@ export interface PointsConfig {
   publicLeaderboard: boolean;
   /** What a timeout costs the viewer who got it. */
   timeoutPenalty: PointsTimeoutPenaltyConfig;
+  /** What spamming a keyword costs. */
+  antiSpam: PointsAntiSpamConfig;
   gamble: PointsGambleConfig;
   duel: PointsDuelConfig;
   raffle: PointsRaffleConfig;
@@ -419,10 +441,11 @@ export interface PointsConfig {
 }
 
 /** The `points` block as stored in a channel config: any subset of the fields. */
-export type StoredPointsConfig = Partial<Omit<PointsConfig, 'bonuses' | 'give' | 'timeoutPenalty' | 'gamble' | 'duel' | 'raffle' | 'games'>> & {
+export type StoredPointsConfig = Partial<Omit<PointsConfig, 'bonuses' | 'give' | 'timeoutPenalty' | 'antiSpam' | 'gamble' | 'duel' | 'raffle' | 'games'>> & {
   bonuses?: Partial<PointsBonusesConfig>;
   give?: Partial<PointsGiveConfig>;
   timeoutPenalty?: Partial<PointsTimeoutPenaltyConfig>;
+  antiSpam?: Partial<PointsAntiSpamConfig>;
   gamble?: Partial<PointsGambleConfig>;
   duel?: Partial<PointsDuelConfig>;
   raffle?: Partial<PointsRaffleConfig>;

@@ -8,10 +8,13 @@
 import { effectiveCommand } from '../points/config';
 import { getPointsService } from '../points/service';
 
+/** Short words a game also answers to after the currency command: `$<cmd> f` is `$<cmd> fish`. */
+export const GAME_ALIASES: Record<string, readonly string[]> = { fish: ['f'] };
+
 /**
  * How a message invokes `game`, or null when it doesn't.
  *
- * - 'currency': `$<cmd> fish` where the channel has its points games on.
+ * - 'currency': `$<cmd> fish` (or a short word for it, GAME_ALIASES) where the channel has its points games on.
  * - 'redirect': `!fish` there; answer with a pointer to the `$` form.
  *
  * Where the games are off there is no form at all. `args` are the words after
@@ -26,7 +29,8 @@ export function gameInvocation(
   const cfg = svc?.config();
   const cmd = cfg && cfg.enabled && cfg.games.enabled ? effectiveCommand(cfg) : null;
   if (!cmd) return null;
-  if (first === `$${cmd}` && (words[1] ?? '').toLowerCase() === game) {
+  const second = (words[1] ?? '').toLowerCase();
+  if (first === `$${cmd}` && (second === game || (GAME_ALIASES[game] ?? []).includes(second))) {
     return { form: 'currency', args: words.slice(2), usage: `$${cmd} ${game}` };
   }
   return first === `!${game}` ? { form: 'redirect', args: words.slice(1), usage: `$${cmd} ${game}` } : null;

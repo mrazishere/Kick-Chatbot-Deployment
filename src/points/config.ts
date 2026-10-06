@@ -9,7 +9,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { FishBigBiteSetting, FishCatchSetting, FishReelSetting, FishStealSetting, PointsBonusesConfig, PointsConfig, PointsDuelConfig, PointsGambleConfig, PointsGamesConfig, PointsGiveConfig, PointsRaffleConfig, StoredFishCatches, StoredPointsConfig, PointsTimeoutPenaltyConfig } from '../types';
+import { FishBigBiteSetting, PointsAntiSpamConfig, FishCatchSetting, FishReelSetting, FishStealSetting, PointsBonusesConfig, PointsConfig, PointsDuelConfig, PointsGambleConfig, PointsGamesConfig, PointsGiveConfig, PointsRaffleConfig, StoredFishCatches, StoredPointsConfig, PointsTimeoutPenaltyConfig } from '../types';
 import { defaultSellPrice, ITEMS } from '../community/fishing';
 
 export function defaultPointsConfig(): PointsConfig {
@@ -43,6 +43,7 @@ export function defaultPointsConfig(): PointsConfig {
       permanentBanCost: 0,
       announce: true
     },
+    antiSpam: { enabled: false, keywords: [], threshold: 3, windowMinutes: 10, cost: 10, announce: true },
     gamble: {
       enabled: false,
       winChancePercent: 50,
@@ -82,6 +83,7 @@ export function defaultPointsConfig(): PointsConfig {
       baitPricePercent: 100,
       stories: true,
       chatReplies: true,
+      overlayDemo: true,
       catches: effectiveCatches(undefined, 100),
       reels: DEFAULT_REELS.map(r => ({ ...r })),
       steal: { ...DEFAULT_STEAL },
@@ -278,6 +280,21 @@ function bool(v: unknown, fallback: boolean): boolean {
 }
 
 /** Lowercase, `@` stripped, invalid and duplicate names dropped. */
+export const SPAM_KEYWORDS_MAX = 20;
+export const SPAM_KEYWORD_MAX_CHARS = 50;
+
+/** Spam keywords as stored: trimmed, lowercased, spaces collapsed, no repeats, at most 20 of up to 50 characters. */
+export function normalizeSpamKeywords(v: unknown): string[] {
+  if (!Array.isArray(v)) return [];
+  const out = new Set<string>();
+  for (const k of v) {
+    if (typeof k !== 'string') continue;
+    const word = k.trim().toLowerCase().replace(/\s+/g, ' ');
+    if (word && word.length <= SPAM_KEYWORD_MAX_CHARS) out.add(word);
+  }
+  return [...out].slice(0, SPAM_KEYWORDS_MAX);
+}
+
 export function normalizeIgnoreUsers(v: unknown): string[] {
   if (!Array.isArray(v)) return [];
   const out = new Set<string>();
@@ -329,6 +346,15 @@ export function internalPointsConfig(raw: unknown): InternalPointsConfig {
     permanentBanCost: num(tp.permanentBanCost, d.timeoutPenalty.permanentBanCost, 0, 1_000_000_000, true),
     announce: bool(tp.announce, d.timeoutPenalty.announce)
   };
+  const sp = obj(r.antiSpam);
+  const antiSpam: PointsAntiSpamConfig = {
+    enabled: bool(sp.enabled, d.antiSpam.enabled),
+    keywords: normalizeSpamKeywords(sp.keywords),
+    threshold: num(sp.threshold, d.antiSpam.threshold, 1, 1000, true),
+    windowMinutes: num(sp.windowMinutes, d.antiSpam.windowMinutes, 1, 1440, true),
+    cost: num(sp.cost, d.antiSpam.cost, 1, 1_000_000_000, true),
+    announce: bool(sp.announce, d.antiSpam.announce)
+  };
   const gm = obj(r.gamble);
   const gamble: PointsGambleConfig = {
     enabled: bool(gm.enabled, d.gamble.enabled),
@@ -374,6 +400,7 @@ export function internalPointsConfig(raw: unknown): InternalPointsConfig {
     baitPricePercent: num(ga.baitPricePercent, d.games.baitPricePercent, 0, 1000, true),
     stories: bool(ga.stories, d.games.stories),
     chatReplies: bool(ga.chatReplies, d.games.chatReplies),
+    overlayDemo: bool(ga.overlayDemo, d.games.overlayDemo),
     catches: [],
     reels: effectiveReels(ga.reels),
     steal: effectiveSteal(ga.steal),
@@ -394,6 +421,7 @@ export function internalPointsConfig(raw: unknown): InternalPointsConfig {
     bonuses,
     give,
     timeoutPenalty,
+    antiSpam,
     gamble,
     duel,
     raffle,
@@ -443,6 +471,11 @@ const PENALTY_NUMBERS: Record<string, Rule> = {
   pointsPerSecond: { min: 0, max: 10_000, integer: false },
   maxDeduction: { min: 0, max: 1_000_000_000, integer: true },
   permanentBanCost: { min: 0, max: 1_000_000_000, integer: true }
+};
+const SPAM_NUMBERS: Record<string, Rule> = {
+  threshold: { min: 1, max: 1000, integer: true },
+  windowMinutes: { min: 1, max: 1440, integer: true },
+  cost: { min: 1, max: 1_000_000_000, integer: true }
 };
 const BONUS_NUMBERS: Record<string, Rule> = {
   follow: { min: 0, max: 1_000_000, integer: true },
@@ -607,6 +640,7 @@ export function validatePointsPatch(current: unknown, patch: unknown): { next?: 
     bonuses: { ...(cur.bonuses ?? {}) },
     give: { ...(cur.give ?? {}) },
     timeoutPenalty: { ...(cur.timeoutPenalty ?? {}) },
+    antiSpam: { ...(cur.antiSpam ?? {}) },
     gamble: { ...(cur.gamble ?? {}) },
     duel: { ...(cur.duel ?? {}) },
     raffle: { ...(cur.raffle ?? {}) },
@@ -678,6 +712,30 @@ export function validatePointsPatch(current: unknown, patch: unknown): { next?: 
         if (t[key] === undefined) continue;
         if (typeof t[key] !== 'boolean') errors.push(`timeoutPenalty.${key} must be true or false`);
         else next.timeoutPenalty![key] = t[key] as boolean;
+      }
+    }
+  }
+
+  if (p.antiSpam !== undefined) {
+    if (!p.antiSpam || typeof p.antiSpam !== 'object' || Array.isArray(p.antiSpam)) {
+      errors.push('antiSpam must be an object');
+    } else {
+      const a = p.antiSpam as Record<string, unknown>;
+      for (const [key, rule] of Object.entries(SPAM_NUMBERS)) {
+        if (a[key] === undefined) continue;
+        const v = checkNumber(`antiSpam.${key}`, a[key], rule, errors);
+        if (v !== undefined) (next.antiSpam as Record<string, unknown>)[key] = v;
+      }
+      for (const key of ['enabled', 'announce'] as const) {
+        if (a[key] === undefined) continue;
+        if (typeof a[key] !== 'boolean') errors.push(`antiSpam.${key} must be true or false`);
+        else next.antiSpam![key] = a[key] as boolean;
+      }
+      if (a.keywords !== undefined) {
+        const list = Array.isArray(a.keywords) ? a.keywords : null;
+        if (!list || list.length > SPAM_KEYWORDS_MAX || list.some(k => typeof k !== 'string' || !k.trim() || k.trim().length > SPAM_KEYWORD_MAX_CHARS)) {
+          errors.push(`antiSpam.keywords must be a list of at most ${SPAM_KEYWORDS_MAX} words or phrases of up to ${SPAM_KEYWORD_MAX_CHARS} characters`);
+        } else next.antiSpam!.keywords = normalizeSpamKeywords(list);
       }
     }
   }
@@ -765,7 +823,7 @@ export function validatePointsPatch(current: unknown, patch: unknown): { next?: 
         const v = checkNumber(`games.${key}`, ga[key], rule, errors);
         if (v !== undefined) (next.games as Record<string, unknown>)[key] = v;
       }
-      for (const key of ['enabled', 'onlyWhileLive', 'onlyWhileOffline', 'stories', 'chatReplies'] as const) {
+      for (const key of ['enabled', 'onlyWhileLive', 'onlyWhileOffline', 'stories', 'chatReplies', 'overlayDemo'] as const) {
         if (ga[key] === undefined) continue;
         if (typeof ga[key] !== 'boolean') errors.push(`games.${key} must be true or false`);
         else next.games![key] = ga[key] as boolean;
@@ -860,6 +918,10 @@ export function validatePointsPatch(current: unknown, patch: unknown): { next?: 
     errors.push(`raffle.defaultDurationSeconds (${eff.raffle.defaultDurationSeconds}) can't be above raffle.maxDurationSeconds (${eff.raffle.maxDurationSeconds})`);
   }
   if (!Object.keys(next.raffle ?? {}).length) delete next.raffle;
+  if (eff.antiSpam.enabled && !eff.antiSpam.keywords.length) {
+    errors.push('antiSpam needs at least one keyword before it can be on');
+  }
+  if (!Object.keys(next.antiSpam ?? {}).length) delete next.antiSpam;
   if (eff.games.onlyWhileLive && eff.games.onlyWhileOffline) {
     errors.push("games.onlyWhileLive and games.onlyWhileOffline can't both be on");
   }

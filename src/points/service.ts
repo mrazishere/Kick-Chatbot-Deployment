@@ -17,6 +17,7 @@ import { PointsDb, closePointsDb, configurePointsDb, openPointsDb, reportDbError
 import { Earner } from './earner';
 import * as bonuses from './events';
 import * as penalties from './penalties';
+import * as antispam from './antispam';
 import { LiveState, checkLive } from './live';
 import * as bigBite from '../community/big-bite';
 import { PresenceTracker } from './presence';
@@ -63,6 +64,8 @@ export class PointsService {
   private presence: PresenceTracker;
   /** Each viewer's previous message, for the back-to-back repeat rule. */
   private lastMessages = new LastMessages();
+  /** Each viewer's recent spam-keyword messages (points.antiSpam). */
+  private spam = new antispam.SpamTracker();
   private earner: Earner;
   private started = false;
   private dbReady = false;
@@ -74,6 +77,7 @@ export class PointsService {
   private raffleTimer: NodeJS.Timeout | null = null;
   private pruneTimer: NodeJS.Timeout | null = null;
   private biteTimer: NodeJS.Timeout | null = null;
+  private spamBoardTimer: NodeJS.Timeout | null = null;
   private startRetry: NodeJS.Timeout | null = null;
   private exclusionCache: { source: LivePointsConfig; broadcasterUserId: number | null; value: Exclusions } | null = null;
 
@@ -177,14 +181,19 @@ export class PointsService {
    * `message` is the chat text. Commands, low-effort messages and back-to-back
    * repeats don't refresh presence (see presence-rules.ts); their sender stays
    * resolvable by name. Callers that pass no text (internal tests) always count.
+   * `messageId` is Kick's id for the message, so a spam charge lands once per message.
    */
-  noteChat(senderId: unknown, username: string, badges: RawBadge[], message?: string): void {
+  noteChat(senderId: unknown, username: string, badges: RawBadge[], message?: string, messageId?: string): void {
     try {
       const cfg = this.config();
       if (!cfg.enabled) return;
       const userId = Number(senderId);
       if (!Number.isInteger(userId) || userId <= 0 || !username) return;
       if (isBotSender(username, userId) || isExcluded(this.exclusions(), userId, username)) return;
+      // Keyword spam costs points; the broadcaster and mods are never counted.
+      if (message !== undefined && cfg.antiSpam.enabled && !badges.some(b => b.type === 'moderator' || b.type === 'broadcaster' || b.type === 'owner')) {
+        this.guard('spam check', () => antispam.onChat(this.bonusContext(), this.spam, { userId, username, message, messageId }));
+      }
       const now = this.now();
       if (message !== undefined) {
         const verdict = presenceVerdict(message, this.lastMessages.previous(userId, now), effectiveCommand(cfg));
@@ -520,6 +529,10 @@ export class PointsService {
         this.biteTimer = setInterval(() => { void this.bigBiteTick(); }, bigBite.TICK_MS);
         this.biteTimer.unref();
       }
+      if (!this.spamBoardTimer) {
+        this.spamBoardTimer = setInterval(() => { this.spamBoardTick(); }, antispam.BOARD_EVERY_MS);
+        this.spamBoardTimer.unref();
+      }
       // A raffle still open from before a restart draws at its own time, not up to a sweep late.
       this.armRaffleTimer();
       this.started = true;
@@ -531,6 +544,11 @@ export class PointsService {
         this.startRetry.unref();
       }
     }
+  }
+
+  /** Every ten minutes: the spam penalty's top five in chat. Returns the line sent, if any. */
+  spamBoardTick(): string | null {
+    return this.guard('spam board', () => antispam.announceBoard(this.bonusContext())) ?? null;
   }
 
   stop(): void {
@@ -548,6 +566,10 @@ export class PointsService {
     if (this.biteTimer) {
       clearInterval(this.biteTimer);
       this.biteTimer = null;
+    }
+    if (this.spamBoardTimer) {
+      clearInterval(this.spamBoardTimer);
+      this.spamBoardTimer = null;
     }
     if (this.raffleTimer) {
       clearTimeout(this.raffleTimer);
