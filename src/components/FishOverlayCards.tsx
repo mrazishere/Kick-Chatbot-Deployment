@@ -28,6 +28,9 @@ interface Card {
   shownAt: number;
   phase: "in" | "out";
   outAt: number;
+  /** A big bite card's spot in the source, each 0 to 1 across and down: a new one for every code. */
+  x?: number;
+  y?: number;
 }
 
 /** A big bite stays up for its whole window. */
@@ -108,7 +111,11 @@ function CardView({ card, side }: { card: Card; side: "left" | "right" }) {
     if (el && !el.style.getPropertyValue("--h")) el.style.setProperty("--h", `${el.scrollHeight}px`);
   };
   return (
-    <div ref={measure} className={`fo-wrap ${card.phase === "in" ? "fo-in" : "fo-out"} ${side === "right" ? "fo-right" : ""}`}>
+    <div
+      ref={measure}
+      className={`fo-wrap ${card.phase === "in" ? "fo-in" : "fo-out"} ${side === "right" ? "fo-right" : ""} ${card.x !== undefined ? "fo-roam" : ""}`}
+      style={card.x !== undefined ? ({ "--x": card.x, "--y": card.y ?? 0 } as React.CSSProperties) : undefined}
+    >
       <div className={`fo-card fo-${ev.kind} ${rarity ? `fo-${rarity.toLowerCase()}` : ""}`}>
         {rarity === "Legendary" || rarity === "Mythic" ? <span className="fo-shine" /> : null}
         <div className="fo-icon">
@@ -167,6 +174,7 @@ export default function FishOverlayCards({
   const queue = useRef<FishOverlayEvent[]>([]);
   const cards = useRef<Card[]>([]);
   const lastRelease = useRef(0);
+  const lastSpot = useRef({ x: -1, y: -1 });
   const [, setVersion] = useState(0);
   // Whether the channel lets the demo play, from the feed; null until the feed has answered.
   const [demoAllowed, setDemoAllowed] = useState<boolean | null>(null);
@@ -264,14 +272,27 @@ export default function FishOverlayCards({
       const stagger = waiting > 4 ? 160 : 340;
       if (queue.current.length > 0 && live().length < max && now - lastRelease.current >= stagger) {
         const ev = queue.current.shift()!;
-        // The angler's answer, or their next pull's code, ends their big bite card.
-        for (const c of live()) {
+        // The angler's answer, or their next pull's code, ends their big bite card; another
+        // reply to them (a lookup they typed meanwhile) leaves the code up.
+        for (const c of ev.kind === "info" ? [] : live()) {
           if (c.ev.kind === "bite" && c.ev.username === ev.username) {
             c.phase = "out";
             c.outAt = now;
           }
         }
-        cards.current.push({ ev, shownAt: now, phase: "in", outAt: 0 });
+        // A big bite's code turns up somewhere else each time, well away from where the last one was.
+        let spot = {};
+        if (ev.kind === "bite") {
+          let x = Math.random();
+          let y = Math.random();
+          for (let i = 0; i < 20 && Math.abs(x - lastSpot.current.x) < 0.35 && Math.abs(y - lastSpot.current.y) < 0.35; i++) {
+            x = Math.random();
+            y = Math.random();
+          }
+          lastSpot.current = { x, y };
+          spot = { x, y };
+        }
+        cards.current.push({ ev, shownAt: now, phase: "in", outAt: 0, ...spot });
         lastRelease.current = now;
         changed = true;
       }
@@ -298,6 +319,18 @@ const CSS = `
 .fo-root-right{align-items:flex-end}
 .fo-wrap{--dir:1;overflow:hidden;padding:.35em .6em;margin:-.1em -.6em;max-width:36em}
 .fo-wrap.fo-right{--dir:-1}
+/* A big bite's code is a small card that turns up anywhere in the source, off the stack, so it has to be looked for. */
+.fo-wrap.fo-roam{position:fixed;left:1.2em;top:1.2em;z-index:2;margin:0;max-width:15em;
+  transform:translate(calc(var(--x,0) * max(0px,100vw - 2.4em - 100%)),calc(var(--y,0) * max(0px,100vh - 2.4em - 100%)))}
+.fo-roam .fo-card{gap:.5em;padding:.45em .7em .5em .5em}
+.fo-roam .fo-icon{width:1.7em;height:1.7em;font-size:1em}
+.fo-roam .fo-text{font-size:.68em;-webkit-line-clamp:2}
+/* Narrow: the pull and the time left share a line, the code has the next to itself. */
+.fo-roam .fo-bigcode{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;column-gap:.6em;white-space:nowrap}
+.fo-roam .fo-bigcode b{order:2;flex-basis:100%;margin-left:0;line-height:1.15}
+.fo-roam .fo-bigsecs{margin-left:0}
+.fo-roam .fo-body{flex:1}
+.fo-roam .fo-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .fo-in{animation:fo-grow .28s ease-out both}
 .fo-in>.fo-card{animation:fo-slide .6s cubic-bezier(.2,1.35,.4,1) both}
 .fo-out{animation:fo-shrink .32s ease-in .2s both}

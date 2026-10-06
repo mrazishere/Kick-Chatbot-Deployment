@@ -100,7 +100,7 @@ export interface PointsGames {
   baitPricePercent: number;
   /** A short AI story on 1 in 3 catches. */
   stories: boolean;
-  /** Cast results and trap hauls go to chat. They always go to the fishing overlay; other fishing replies always go to chat. Absent from an older bot service. */
+  /** Fishing replies go to chat. They always go to the fishing overlay; off, chat only gets them offline or with no overlay showing. Absent from an older bot service. */
   chatReplies?: boolean;
   /** The fishing overlay's &demo=1 may play; off, overlays ignore it. Absent from an older bot service. */
   overlayDemo?: boolean;
@@ -1850,9 +1850,10 @@ export default function PointsCard({
                     disabled={readOnly || !!busy}
                     onChange={(v) => setForm((f) => (f ? { ...f, gamesOfflineOnly: v, gamesLiveOnly: v ? false : f.gamesLiveOnly } : f))}
                   />
-                  {form.gamesOfflineOnly && form.fishBigBite?.enabled ? (
+                  {form.gamesOfflineOnly ? (
                     <p className="pl-6 text-xs text-amber-300/80">
-                      Big bites still come while the stream is live; only casting, traps and stealing wait for it to end.
+                      {form.fishBigBite?.enabled ? "Big bites still come while the stream is live; only casting, traps and stealing wait for it to end. " : ""}
+                      While the stream is live with a fishing overlay open, fishing replies show on the overlay only; chat gets them once it&apos;s offline.
                     </p>
                   ) : null}
                   <Checkbox
@@ -1862,14 +1863,18 @@ export default function PointsCard({
                     onChange={(v) => set("fishStories", v)}
                   />
                   <Checkbox
-                    label="Post cast results and trap hauls in chat"
+                    label="Post fishing replies in chat"
                     checked={form.fishChatReplies}
-                    disabled={readOnly || !!busy}
+                    disabled={readOnly || !!busy || form.gamesOfflineOnly}
                     onChange={(v) => set("fishChatReplies", v)}
                   />
-                  {!form.fishChatReplies ? (
+                  {form.gamesOfflineOnly ? (
+                    <p className="pl-6 text-xs text-neutral-500">
+                      Decided by offline-only fishing above: the overlay while live, chat while offline.
+                    </p>
+                  ) : !form.fishChatReplies ? (
                     <p className="pl-6 text-xs text-amber-300/80">
-                      Cast results and trap hauls only show on the fishing overlay, so make sure it&apos;s on stream. Every other fishing reply still goes to chat.
+                      While the stream is live with a fishing overlay open, every fishing reply shows on the overlay only. Offline, or with no overlay open, replies still go to chat. A big bite&apos;s ping and result always go to chat.
                     </p>
                   ) : null}
                   <Checkbox

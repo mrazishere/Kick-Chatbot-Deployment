@@ -468,10 +468,13 @@ export default function FishOverlay({
         queue.current.unshift({ ev, scene });
         continue;
       }
-      // The angler's answer ends their big bite, playing or still waiting.
-      const now = performance.now();
-      for (const l of lanes.current) if (l && l.scene.v === "bite" && l.ev.username === ev.username) l.endsAt = Math.min(l.endsAt, now + 250);
-      queue.current = queue.current.filter((w) => !(w.scene.v === "bite" && w.ev.username === ev.username));
+      // The angler's answer ends their big bite, playing or still waiting; another reply
+      // to them (a lookup they typed meanwhile) leaves the code up.
+      if (ev.kind !== "info") {
+        const now = performance.now();
+        for (const l of lanes.current) if (l && l.scene.v === "bite" && l.ev.username === ev.username) l.endsAt = Math.min(l.endsAt, now + 250);
+        queue.current = queue.current.filter((w) => !(w.scene.v === "bite" && w.ev.username === ev.username));
+      }
       queue.current.push({ ev, scene });
     }
     trimQueue(queue.current);

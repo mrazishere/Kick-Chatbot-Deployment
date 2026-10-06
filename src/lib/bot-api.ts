@@ -139,7 +139,7 @@ export interface PointsGames {
   baitPricePercent: number;
   /** A short AI story on 1 in 3 catches. */
   stories: boolean;
-  /** Cast results and trap hauls go to chat. They always go to the fishing overlay; other fishing replies always go to chat. Absent from an older bot service. */
+  /** Fishing replies go to chat. They always go to the fishing overlay; off, chat only gets them offline or with no overlay showing. Absent from an older bot service. */
   chatReplies?: boolean;
   /** The fishing overlay's &demo=1 may play; off, overlays ignore it. Absent from an older bot service. */
   overlayDemo?: boolean;
