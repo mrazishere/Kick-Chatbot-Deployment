@@ -328,6 +328,30 @@ export interface PointsLeaderboard {
   watchtime: PointsLeaderboardEntry[];
   /** The Fishing tab. Null or absent where fishing is off, or from an older bot service. */
   fishing?: PublicFishing | null;
+  /** The Commands tab. Absent from an older bot service. */
+  commands?: PublicCommands | null;
+}
+
+/** The currency commands a channel's viewers can use, for the features it has on. */
+export interface PublicCommands {
+  /** The command word with its $, e.g. "$don". */
+  command: string;
+  sections: PublicCommandSection[];
+}
+
+export interface PublicCommandSection {
+  title: string;
+  note?: string;
+  rows: PublicCommandRow[];
+}
+
+export interface PublicCommandRow {
+  usage: string;
+  /** The same command typed short. */
+  short?: string;
+  does: string;
+  /** Who may use it when it isn't everyone. */
+  who?: "mods" | "streamer";
 }
 
 export interface PublicCatch {

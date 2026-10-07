@@ -6,7 +6,7 @@ import { getSession } from "@/lib/session";
 import { loadPublicLeaderboard, loadPublicViewers } from "@/lib/public-leaderboard";
 import PublicViewers from "@/components/PublicViewers";
 import Heists, { formatDay } from "@/components/Heists";
-import type { PublicCatch, PublicFishing, PublicRareCatch } from "@/lib/bot-api";
+import type { PublicCatch, PublicCommands, PublicFishing, PublicRareCatch } from "@/lib/bot-api";
 
 export const dynamic = "force-dynamic";
 
@@ -45,7 +45,7 @@ function formatUpdated(iso: string): string {
   return d.toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short", timeZone: process.env.TZ || "Asia/Singapore" });
 }
 
-type Tab = "points" | "watchtime" | "fishing";
+type Tab = "points" | "watchtime" | "fishing" | "commands";
 
 const RARITY_CLASS: Record<PublicCatch["rarity"], string> = {
   Common: "border-neutral-700 text-neutral-400",
@@ -149,6 +149,41 @@ function FishingTab({ fishing, currency, channel }: { fishing: PublicFishing; cu
   );
 }
 
+const WHO_LABEL = { mods: "Mods", streamer: "Streamer" } as const;
+
+/** Every currency command the channel has on, with its short form. */
+function CommandsTab({ commands }: { commands: PublicCommands }) {
+  return (
+    <div className="space-y-4">
+      <p className="text-xs text-neutral-500">
+        {`Type these in chat. Every command has a short form that does the same thing; words in [brackets] are optional.`}
+      </p>
+      {commands.sections.map((s) => (
+        <section key={s.title} className="overflow-hidden rounded-xl border border-neutral-800 bg-neutral-950/60">
+          <div className="border-b border-neutral-800 px-5 py-2.5">
+            <h2 className="text-sm font-medium text-neutral-200">{s.title}</h2>
+            {s.note ? <p className="mt-0.5 text-xs text-neutral-500">{s.note}</p> : null}
+          </div>
+          <ul className="divide-y divide-neutral-800">
+            {s.rows.map((r) => (
+              <li key={r.usage} className="px-5 py-2.5 text-sm">
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                  <code className="font-mono text-[13px] text-neutral-100">{r.usage}</code>
+                  {r.short ? <code className="rounded-md border border-neutral-800 bg-neutral-900 px-1.5 py-0.5 font-mono text-xs text-[#53FC18]">{r.short}</code> : null}
+                  {r.who ? (
+                    <span className="rounded-md border border-amber-900/60 bg-amber-950/40 px-1.5 py-0.5 text-xs text-amber-300">{WHO_LABEL[r.who]} only</span>
+                  ) : null}
+                </div>
+                <p className="mt-1 text-xs text-neutral-400">{r.does}</p>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ))}
+    </div>
+  );
+}
+
 export default async function LeaderboardPage({ params, searchParams }: Props) {
   const { channel } = await params;
   const slug = channel.toLowerCase();
@@ -159,7 +194,7 @@ export default async function LeaderboardPage({ params, searchParams }: Props) {
   const lookup = (Array.isArray(rawUser) ? rawUser[0] : rawUser)?.trim().replace(/^@+/, "");
   const openFirst = lookup && /^[A-Za-z0-9_]{2,25}$/.test(lookup) ? lookup : null;
   const wanted = Array.isArray(rawTab) ? rawTab[0] : rawTab;
-  const tab: Tab = wanted === "watchtime" ? "watchtime" : wanted === "fishing" ? "fishing" : "points";
+  const tab: Tab = wanted === "watchtime" ? "watchtime" : wanted === "fishing" ? "fishing" : wanted === "commands" ? "commands" : "points";
 
   const result = await loadPublicLeaderboard(slug);
   if (result.kind === "not-found") notFound();
@@ -176,6 +211,7 @@ export default async function LeaderboardPage({ params, searchParams }: Props) {
   // The $DON tab's list comes from the same source as its search, with active time and reels.
   const firstViewers = tab === "points" && data ? await loadPublicViewers(slug, "") : null;
   const fishing = data?.fishing ?? null;
+  const commands = data?.commands ?? null;
   const currency = data?.currencyName ?? "Points";
   const rows = data ? (tab === "watchtime" ? data.watchtime : data.points) : [];
   const tabLink = (t: Tab) => `${BASE_PATH}/${slug}/leaderboard${t === "points" ? "" : `?tab=${t}`}`;
@@ -225,6 +261,11 @@ export default async function LeaderboardPage({ params, searchParams }: Props) {
                   Fishing
                 </a>
               ) : null}
+              {commands ? (
+                <a href={tabLink("commands")} className={tabClass("commands")}>
+                  Commands
+                </a>
+              ) : null}
               <span className="ml-auto text-xs text-neutral-600">
                 {result.kind === "ok" && result.stale ? "Showing an earlier copy · " : ""}
                 Updated {formatUpdated(data.updatedAt)}
@@ -239,6 +280,14 @@ export default async function LeaderboardPage({ params, searchParams }: Props) {
 
             {tab === "points" && firstViewers?.kind === "ok" ? (
               <PublicViewers channel={slug} currency={currency} initial={firstViewers.viewers} openFirst={openFirst} />
+            ) : tab === "commands" ? (
+              commands ? (
+                <CommandsTab commands={commands} />
+              ) : (
+                <p className="rounded-xl border border-neutral-800 bg-neutral-950/60 px-5 py-8 text-center text-sm text-neutral-500">
+                  The command list is unavailable right now.
+                </p>
+              )
             ) : tab === "fishing" ? (
               fishing ? (
                 <FishingTab fishing={fishing} currency={currency} channel={slug} />
