@@ -499,6 +499,7 @@ $don @user                    → someone else's balance and rank
 $don activetime [@user]       → active time and rank
 $don top [activetime|gamble] → top 5 by balance, active time, or net gamble winnings (10+ gambles)
 $don leaderboard              → link to the public web leaderboard
+$don commands                 → link to the leaderboard's Commands tab (also cm, help)
 $don give @user 100           → send points to someone
 $don gamble 100               → even money at the channel's win chance
 $don gamble stats [@user]     → gambles, wins, win rate and net, all time

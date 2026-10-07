@@ -51,7 +51,7 @@ import {
   cancelRaffle, createRaffle, incomingDuels, isApplied, isExcluded, joinRaffle, openRaffle, outgoingDuel, rankBy, refundDuel, setTx, topBy, transfer
 } from '../points/store';
 
-const SUBCOMMANDS = new Set(['activetime', 'top', 'leaderboard', 'give', 'gamble', 'duel', 'accept', 'deny', 'cancel', 'raffle', 'sraffle', 'join', 'add', 'remove', 'set', 'fish']);
+const SUBCOMMANDS = new Set(['activetime', 'top', 'leaderboard', 'give', 'gamble', 'duel', 'accept', 'deny', 'cancel', 'raffle', 'sraffle', 'join', 'add', 'remove', 'set', 'fish', 'commands']);
 /** Played through the currency command but answered by their own modules (see community/stakes.ts). */
 const GAME_SUBCOMMANDS = new Set(['fish']);
 /**
@@ -62,7 +62,7 @@ const GAME_SUBCOMMANDS = new Set(['fish']);
 export const SUBCOMMAND_ALIASES: Record<string, string> = {
   g: 'gamble', gv: 'give', d: 'duel', a: 'accept', dn: 'deny', c: 'cancel',
   rf: 'raffle', sr: 'sraffle', j: 'join', t: 'top', lb: 'leaderboard', at: 'activetime',
-  ad: 'add', rm: 'remove', st: 'set', f: 'fish'
+  ad: 'add', rm: 'remove', st: 'set', f: 'fish', cm: 'commands', help: 'commands'
 };
 /** The same for the word after a subcommand: `$<cmd> t g` is `top gamble`, `g st` is `gamble stats`, `rf c` is `raffle cancel`. An amount of `a` is `all`. */
 const ARGUMENT_ALIASES: Record<string, Record<string, string>> = {
@@ -302,6 +302,16 @@ export const points: CommandFn = async function points(client, message, channel,
       const base = (process.env.BOT_DASHBOARD_URL || 'https://mr-ai.dev/kick').replace(/\/+$/, '');
       // No colon: the URL alone spends most of the 10-symbol allowance.
       return void say(`${cur} leaderboard ${base}/${channelName}/leaderboard`);
+    }
+
+    // ── commands ──
+    if (sub === 'commands') {
+      if (!cfg.publicLeaderboard) return;
+      if (!isModUp && cooldownLeft(`${channelName}:commands`, CHANNEL_COOLDOWN_MS, true)) return;
+      const base = (process.env.BOT_DASHBOARD_URL || 'https://mr-ai.dev/kick').replace(/\/+$/, '');
+      // The short address of the leaderboard's Commands tab: its real one has a ? and an =,
+      // which would take the message past the 10-symbol allowance and get the link cut.
+      return void say(`${cur} commands ${base}/${channelName}/commands`);
     }
 
     // ── give ──

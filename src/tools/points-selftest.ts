@@ -30,7 +30,8 @@ import { addItem, FishData, initialData, isTrophy, rarityOf, stealCharges, ITEMS
 import { openCommunityDb } from '../community/store';
 import { markOverlaySeen, readOverlay } from '../community/fish-overlay';
 import { resetBites, takeBite as takeBiteForTest } from '../community/big-bite';
-import { fish as fishCommand } from '../bot-commands/fish';
+import { fish as fishCommand, SUBCOMMANDS as FISH_SUBCOMMANDS } from '../bot-commands/fish';
+import { publicCommands } from '../points/public-commands';
 
 const MIN = 60_000;
 
@@ -651,8 +652,25 @@ async function main(): Promise<void> {
     const top = await run('$don t', 'bob', 2);
     check('$don t is $don top', top.length === 1 && top[0].includes('alice'), top);
     const longs = Object.values(SUBCOMMAND_ALIASES);
-    check('every $don subcommand has one short form', new Set(longs).size === longs.length
-      && ['activetime', 'top', 'leaderboard', 'give', 'gamble', 'duel', 'accept', 'deny', 'cancel', 'raffle', 'sraffle', 'join', 'add', 'remove', 'set', 'fish'].every(w => longs.includes(w)), longs);
+    check('every $don subcommand has a short form', ['activetime', 'top', 'leaderboard', 'give', 'gamble', 'duel', 'accept', 'deny', 'cancel', 'raffle', 'sraffle', 'join', 'add', 'remove', 'set', 'fish', 'commands'].every(w => longs.includes(w)), longs);
+    const link = await mod('$don cm');
+    check('$don commands links to the Commands tab within the symbol allowance', link.length === 1 && link[0] === (await mod('$don commands'))[0]
+      && link[0].endsWith('/aliasch/commands') && (link[0].match(/[\x21-\x2f\x3a-\x40\x5b-\x60\x7b-\x7e]/g) ?? []).length <= 10, link);
+    // The public Commands tab: every short form it shows is one the commands answer to.
+    const full = effectivePointsConfig({ enabled: true, give: { enabled: true }, gamble: { enabled: true }, duel: { enabled: true }, raffle: { enabled: true },
+      games: { enabled: true, onlyWhileLive: false, onlyWhileOffline: true, steal: { enabled: true } } });
+    const listed = publicCommands(full);
+    const wrong = listed.sections.flatMap(s => s.rows).filter(r => {
+      if (!r.short) return false;
+      const u = r.usage.split(' ');
+      const sh = r.short.split(' ');
+      if (u[1] !== undefined && sh[1] !== u[1] && SUBCOMMAND_ALIASES[sh[1]] !== u[1]) return true;
+      return u[1] === 'fish' && u[2] !== undefined && FISH_SUBCOMMANDS[u[2]] !== undefined && FISH_SUBCOMMANDS[sh[2]] !== FISH_SUBCOMMANDS[u[2]];
+    });
+    check('the public command list only shows short forms that work', listed.command === '$points' && wrong.length === 0
+      && listed.sections.map(s => s.title).join(',') === 'Points,Games,Fishing,Streamer' && listed.sections[2].note!.includes('offline'), { wrong, t: listed.sections.map(s => s.title) });
+    const bare = publicCommands(effectivePointsConfig({ enabled: true, currencyName: '$DON', raffle: { enabled: false } }));
+    check('and leaves out what the channel has off', bare.command === '$don' && bare.sections.map(s => s.title).join(',') === '$DON,Streamer' && !bare.sections[0].rows.some(r => /give|gamble/.test(r.usage)), bare.sections.map(s => s.title));
   }
 
   // Anti-spam: keyword messages past the threshold cost points, per viewer, inside the window

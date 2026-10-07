@@ -15,6 +15,7 @@ import { clipSessionStatus, installClipToken } from './channels/clip-session';
 import { resolveBotIdentity } from './bot-identity';
 import { SYSTEM_BOTS } from './system-bots';
 import { commandWordCollides, effectiveCommand, effectivePointsConfig, readSubscriptionStatus, validatePointsPatch } from './points/config';
+import { publicCommands } from './points/public-commands';
 import { closePointsDb, openPointsDb } from './points/db';
 import { markOverlaySeen, readOverlay } from './community/fish-overlay';
 import { publicUserHistory, publicViewerSearch } from './points/store';
@@ -2811,7 +2812,7 @@ app.get('/internal/bot/:channel/points/leaderboard', internalGuard(false), (req,
 
   try {
     const board = pointsLeaderboard(channel, cfg, limit, broadcasterIdOf(config));
-    return res.json({ channel, currencyName: cfg.currencyName, updatedAt: new Date().toISOString(), ...board, fishing: publicFishing(channel, cfg, broadcasterIdOf(config)) });
+    return res.json({ channel, currencyName: cfg.currencyName, updatedAt: new Date().toISOString(), ...board, fishing: publicFishing(channel, cfg, broadcasterIdOf(config)), commands: publicCommands(cfg) });
   } catch (e) {
     return pointsUnavailable(res, channel, e);
   }

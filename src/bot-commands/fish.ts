@@ -57,7 +57,7 @@ import {
 const cooldown = makeCooldown(5000);
 const pointer = makeCooldown(60_000);
 
-const SUBCOMMANDS: Record<string, 'buy' | 'sell' | 'show' | 'stats' | 'top' | 'trap' | 'steal' | 'reel' | 'bigbite'> = {
+export const SUBCOMMANDS: Record<string, 'buy' | 'sell' | 'show' | 'stats' | 'top' | 'trap' | 'steal' | 'reel' | 'bigbite'> = {
   buy: 'buy', b: 'buy', sell: 'sell', s: 'sell',
   show: 'show', sh: 'show', count: 'show', display: 'show', collection: 'show',
   stats: 'stats', st: 'stats', top: 'top', tp: 'top', leaderboard: 'top',
