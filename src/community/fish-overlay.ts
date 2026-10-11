@@ -40,6 +40,8 @@ export interface OverlayEvent {
   flashMs?: number;
   /** When a big bite gets away (ms). */
   until?: number;
+  /** When a big bite's first code opens to snipers (ms). */
+  snipeAt?: number;
   /** Which pull of a big bite this code is for, of how many. */
   pull?: number;
   pulls?: number;

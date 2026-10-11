@@ -12,14 +12,16 @@
  *   - A message counts once however many times it repeats the keyword, and once
  *     however many times Kick delivers it: the charge is claimed through
  *     store.applyOnce under the message id.
- *   - A balance is never driven negative, as with the timeout penalty.
+ *   - A balance is never driven negative, as with the timeout penalty. A viewer
+ *     who can't cover the cost loses what they have and is timed out for
+ *     `timeoutMinutes` (0 turns that off); chat is told why.
  *   - Chat hears about it as a board, not per message: every ten minutes, the
  *     five viewers who lost the most to spam in those ten minutes (announce).
  *   - The broadcaster and moderators are never counted; neither is anyone
  *     excluded from points (the caller's checks).
  */
 
-import { PointsAntiSpamConfig } from '../types';
+import { PointsAntiSpamConfig, TimeoutRequest, TimeoutResult } from '../types';
 import { PointsDb, reportDbError, runWrite } from './db';
 import { BonusContext } from './events';
 import { applyOnce, debitTx, ensureUserTx, getUser } from './store';
@@ -38,7 +40,14 @@ export interface SpamOutcome {
   count?: number;
   points?: number;
   balance?: number;
+  /** The viewer couldn't cover the whole cost. */
+  short?: boolean;
+  /** A timeout was asked for, for this many minutes. */
+  timeoutMinutes?: number;
 }
+
+/** Times a viewer out; the channel's moderator. Absent, nobody is timed out. */
+export type SpamTimeout = (request: TimeoutRequest) => Promise<TimeoutResult>;
 
 let compiled: { source: string; res: Array<{ keyword: string; re: RegExp }> } | null = null;
 
@@ -99,8 +108,11 @@ export interface SpamMessage {
   messageId?: string;
 }
 
-/** Count one chat message against the keywords and charge it when it is over the line. */
-export function onChat(ctx: BonusContext, tracker: SpamTracker, m: SpamMessage): SpamOutcome {
+/**
+ * Count one chat message against the keywords and charge it when it is over the line.
+ * A viewer without enough to pay is timed out through `timeout` instead (as well as losing what they had).
+ */
+export function onChat(ctx: BonusContext, tracker: SpamTracker, m: SpamMessage, timeout?: SpamTimeout): SpamOutcome {
   const { cfg } = ctx.config();
   const spam: PointsAntiSpamConfig = cfg.antiSpam;
   if (!cfg.enabled || !spam.enabled || !spam.keywords.length) return { status: 'clean' };
@@ -134,6 +146,18 @@ export function onChat(ctx: BonusContext, tracker: SpamTracker, m: SpamMessage):
   if (out.status === 'charged') {
     console.log(`[POINTS] -${out.points} ${cfg.currencyName} from ${m.username} (spam "${keyword}", ${count} in ${spam.windowMinutes}m)`);
   }
+  if (out.short && spam.timeoutMinutes > 0 && timeout) {
+    out.timeoutMinutes = spam.timeoutMinutes;
+    const minutes = spam.timeoutMinutes;
+    const cost = `${spam.cost.toLocaleString('en-US')} ${cfg.currencyName}`;
+    timeout({ target: m.username, seconds: minutes * 60, invoker: 'spam penalty', reason: `Spam "${keyword}" without ${cost} to pay for it` })
+      .then(res => {
+        if (!res.ok) return void console.log(`[POINTS] spam timeout of ${m.username} in ${ctx.channel} not issued: ${res.error}`);
+        console.log(`[POINTS] ${m.username} timed out ${minutes}m in ${ctx.channel} (spam "${keyword}", can't pay ${cost})`);
+        ctx.announce(`@${m.username} can't pay the ${cost} spam tax: timed out for ${minutes} min.`);
+      })
+      .catch(err => console.error(`[POINTS] spam timeout failed for ${ctx.channel}: ${err instanceof Error ? err.message : String(err)}`));
+  }
   return out;
 }
 
@@ -141,11 +165,11 @@ export function onChat(ctx: BonusContext, tracker: SpamTracker, m: SpamMessage):
 function chargeTx(db: PointsDb, now: number, key: string | null, m: SpamMessage, keyword: string, want: number): SpamOutcome {
   ensureUserTx(db, m.userId, m.username, now);
   const balance = getUser(db, m.userId)?.balance ?? 0;
-  if (balance <= 0) return { status: 'skipped', detail: 'nothing to take' };
+  if (balance <= 0) return { status: 'skipped', detail: 'nothing to take', short: true };
   const take = Math.min(want, balance);
   const done = debitTx(db, { userId: m.userId, amount: take, reason: 'spam_penalty', ref: key, actor: 'system', note: keyword, now });
   if (!done.ok) return { status: 'failed', detail: 'debit refused' };
-  return { status: 'charged', points: take, balance: done.balance };
+  return { status: 'charged', points: take, balance: done.balance, ...(take < want ? { short: true } : {}) };
 }
 
 /**

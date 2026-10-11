@@ -2831,11 +2831,13 @@ app.get('/internal/bot/:channel/overlay/fishing', internalGuard(false), (req, re
   const db = openPointsDb(channel, { create: false });
   // demo: whether the overlay's &demo=1 may play (games.overlayDemo).
   const demo = cfg.games.overlayDemo;
-  if (!db) return res.json({ lastId: 0, events: [], demo });
+  // size: how big the overlay draws, as a percentage (games.overlaySizePercent).
+  const size = cfg.games.overlaySizePercent;
+  if (!db) return res.json({ lastId: 0, events: [], demo, size });
   try {
     markOverlaySeen(db);
     // The bot's clock, so the overlay counts a big bite down to the real deadline.
-    return res.json({ ...readOverlay(db), now: Date.now(), demo });
+    return res.json({ ...readOverlay(db), now: Date.now(), demo, size });
   } catch (e) {
     return pointsUnavailable(res, channel, e);
   }

@@ -43,7 +43,7 @@ export function defaultPointsConfig(): PointsConfig {
       permanentBanCost: 0,
       announce: true
     },
-    antiSpam: { enabled: false, keywords: [], threshold: 3, windowMinutes: 10, cost: 10, announce: true },
+    antiSpam: { enabled: false, keywords: [], threshold: 3, windowMinutes: 10, cost: 10, timeoutMinutes: 1, announce: true },
     gamble: {
       enabled: false,
       winChancePercent: 50,
@@ -84,6 +84,7 @@ export function defaultPointsConfig(): PointsConfig {
       stories: true,
       chatReplies: true,
       overlayDemo: true,
+      overlaySizePercent: 100,
       catches: effectiveCatches(undefined, 100),
       reels: DEFAULT_REELS.map(r => ({ ...r })),
       steal: { ...DEFAULT_STEAL },
@@ -93,7 +94,7 @@ export function defaultPointsConfig(): PointsConfig {
 }
 
 /** On by default: it only happens while live with an overlay showing, to someone chatting. */
-export const DEFAULT_BIG_BITE: Readonly<FishBigBiteSetting> = { enabled: true, everyMinutes: 30, activeMinutes: 10, windowSeconds: 30, pulls: 3, pullSeconds: 8, flashSeconds: 3 };
+export const DEFAULT_BIG_BITE: Readonly<FishBigBiteSetting> = { enabled: true, everyMinutes: 30, activeMinutes: 10, windowSeconds: 30, pulls: 3, pullSeconds: 8, flashSeconds: 3, snipeSeconds: 20 };
 
 const BIG_BITE_NUMBERS: Record<Exclude<keyof FishBigBiteSetting, 'enabled'>, Rule> = {
   // At least 10 minutes pass between two bites whatever the average says.
@@ -104,7 +105,9 @@ const BIG_BITE_NUMBERS: Record<Exclude<keyof FishBigBiteSetting, 'enabled'>, Rul
   pulls: { min: 1, max: 5, integer: true },
   // Later pulls are meant to be quick; STREAM_GRACE_MS covers the stream's delay on top.
   pullSeconds: { min: 5, max: 60, integer: true },
-  flashSeconds: { min: 0, max: 60, integer: true }
+  flashSeconds: { min: 0, max: 60, integer: true },
+  // 0 is off. Capped at half the window when a bite starts (snipeWindowMs).
+  snipeSeconds: { min: 0, max: 60, integer: true }
 };
 
 /** The stored big bite settings with values clamped; anything not stored keeps its default. */
@@ -353,6 +356,7 @@ export function internalPointsConfig(raw: unknown): InternalPointsConfig {
     threshold: num(sp.threshold, d.antiSpam.threshold, 1, 1000, true),
     windowMinutes: num(sp.windowMinutes, d.antiSpam.windowMinutes, 1, 1440, true),
     cost: num(sp.cost, d.antiSpam.cost, 1, 1_000_000_000, true),
+    timeoutMinutes: num(sp.timeoutMinutes, d.antiSpam.timeoutMinutes, 0, 60, true),
     announce: bool(sp.announce, d.antiSpam.announce)
   };
   const gm = obj(r.gamble);
@@ -401,6 +405,7 @@ export function internalPointsConfig(raw: unknown): InternalPointsConfig {
     stories: bool(ga.stories, d.games.stories),
     chatReplies: bool(ga.chatReplies, d.games.chatReplies),
     overlayDemo: bool(ga.overlayDemo, d.games.overlayDemo),
+    overlaySizePercent: num(ga.overlaySizePercent, d.games.overlaySizePercent, 50, 300, true),
     catches: [],
     reels: effectiveReels(ga.reels),
     steal: effectiveSteal(ga.steal),
@@ -475,7 +480,8 @@ const PENALTY_NUMBERS: Record<string, Rule> = {
 const SPAM_NUMBERS: Record<string, Rule> = {
   threshold: { min: 1, max: 1000, integer: true },
   windowMinutes: { min: 1, max: 1440, integer: true },
-  cost: { min: 1, max: 1_000_000_000, integer: true }
+  cost: { min: 1, max: 1_000_000_000, integer: true },
+  timeoutMinutes: { min: 0, max: 60, integer: true }
 };
 const BONUS_NUMBERS: Record<string, Rule> = {
   follow: { min: 0, max: 1_000_000, integer: true },
@@ -523,7 +529,8 @@ const GAMES_NUMBERS: Record<string, Rule> = {
   // Traps skip 30 rolls after each fish, so anything shorter could never catch one.
   trapMinutes: { min: 31, max: 1440, integer: true },
   sellPricePercent: { min: 0, max: 1000, integer: true },
-  baitPricePercent: { min: 0, max: 1000, integer: true }
+  baitPricePercent: { min: 0, max: 1000, integer: true },
+  overlaySizePercent: { min: 50, max: 300, integer: true }
 };
 /**
  * The whole set of per-item overrides, replacing the stored one: each key an item's

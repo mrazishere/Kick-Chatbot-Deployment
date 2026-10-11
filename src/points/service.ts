@@ -38,6 +38,8 @@ export interface PointsServiceDeps {
   sendMessage: (message: string) => Promise<unknown>;
   /** Kick API lookup of a username's id, for give and mod commands. */
   lookupUser?: (username: string) => Promise<number | null>;
+  /** The channel's moderator, for timing out a spammer who can't pay (points.antiSpam.timeoutMinutes). */
+  timeout?: antispam.SpamTimeout;
   /** The bot's shared token file, for live checks. */
   tokenFile: string;
   /** Replaces the Kick live check (selftest). */
@@ -192,7 +194,7 @@ export class PointsService {
       if (isBotSender(username, userId) || isExcluded(this.exclusions(), userId, username)) return;
       // Keyword spam costs points; the broadcaster and mods are never counted.
       if (message !== undefined && cfg.antiSpam.enabled && !badges.some(b => b.type === 'moderator' || b.type === 'broadcaster' || b.type === 'owner')) {
-        this.guard('spam check', () => antispam.onChat(this.bonusContext(), this.spam, { userId, username, message, messageId }));
+        this.guard('spam check', () => antispam.onChat(this.bonusContext(), this.spam, { userId, username, message, messageId }, this.deps.timeout));
       }
       const now = this.now();
       if (message !== undefined) {

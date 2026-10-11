@@ -4,12 +4,17 @@
  * reel code appears only on the overlay, so a chat script can't copy it. Codes get
  * harder each pull: two digits, then three characters, then four; from the second
  * pull on they flash for a few seconds and hide while the time runs.
- * The chatter answers with `$<cmd> fish reel <code>` (bot-commands/fish.ts); each
+ * The chatter answers with `$<cmd> fish reel <code>` (bot-commands/fish.ts), and from
+ * the second pull the code by itself counts too (an exact match only); each
  * right answer brings a new code for the next pull, and the last pull lands a
  * Mythic trophy by its land chance. A wrong code or too slow, and it gets away.
  *
+ * Sniping: for the last `snipeSeconds` of the first code, anyone else chatting can
+ * answer it. The first right answer takes the bite off the chatter it was for and
+ * carries on from the next pull as theirs. Each sniper gets one try per bite.
+ *
  * Chat gets two lines: the opening mention, so the chatter knows to look, and the
- * result. The pulls in between play on the overlay only, to keep chat quiet.
+ * result; a snipe adds one between. The pulls play on the overlay only, to keep chat quiet.
  *
  * The points service calls tick() every half minute. Bites don't touch anyone's
  * casting or cooldowns: they aren't a cast.
@@ -33,6 +38,10 @@ export interface Bite {
   /** The pull this code is for, 1-based, of `pulls`. */
   pull: number;
   pulls: number;
+  /** When the first code opens to everyone else (ms); absent when sniping is off or the first pull is over. */
+  snipeAt?: number;
+  /** Who has used their one snipe try on this bite, lowercase. */
+  tried: Set<string>;
   timer: NodeJS.Timeout;
 }
 
@@ -75,9 +84,38 @@ export function takeBite(channel: string, name: string): Bite | undefined {
   return bite;
 }
 
-export function channelHasBite(channel: string): boolean {
-  for (const k of bites.keys()) if (k.startsWith(`${channel}|`)) return true;
-  return false;
+/** The bite waiting in this channel, whoever it's for. */
+export function channelBite(channel: string): Bite | undefined {
+  for (const [k, bite] of bites) if (k.startsWith(`${channel}|`)) return bite;
+  return undefined;
+}
+
+export const channelHasBite = (channel: string): boolean => !!channelBite(channel);
+
+/**
+ * How long before the first code runs out it opens to snipers: `snipeSeconds`, but
+ * never more than half the window, so the chatter it's for always has it alone first. 0 is off.
+ */
+export const snipeWindowMs = (b: FishBigBiteSetting): number => Math.min(b.snipeSeconds, Math.floor(b.windowSeconds / 2)) * 1000;
+
+/** Whether this bite's first code is open to everyone else right now. */
+export const snipeOpen = (bite: Bite, now: number): boolean => bite.pull === 1 && bite.snipeAt !== undefined && now >= bite.snipeAt && now <= bite.until + STREAM_GRACE_MS;
+
+/**
+ * A sniper answered the first code right, before the chatter it was for: the bite is
+ * theirs now, at the same pull, for the caller to carry on with. Chat says who took it.
+ */
+export function snipeBite(ctx: BiteContext, bite: Bite, name: string, userId: number): void {
+  const from = bite.username;
+  bites.delete(key(ctx.channel, from));
+  clearTimeout(bite.timer);
+  bite.username = name;
+  bite.userId = userId;
+  delete bite.snipeAt;
+  bites.set(key(ctx.channel, name), bite);
+  console.log(`[FISH] ${name} sniped ${from}'s big bite in ${ctx.channel}`);
+  pushOverlay(ctx.db, { username: from, kind: 'miss', text: `🪝 ${name} sniped your big bite!` });
+  void ctx.sendMessage(`@${from} too slow! 🪝 @${name} sniped your big bite and is reeling it in!`).catch(() => {});
 }
 
 export interface BiteContext {
@@ -120,6 +158,9 @@ function arm(ctx: BiteContext, bite: Bite, windowMs: number, text: string, now: 
   bite.code = code;
   bite.startedAt = now;
   bite.until = now + windowMs;
+  const snipeMs = bite.pull === 1 ? snipeWindowMs(ctx.bigBite) : 0;
+  if (snipeMs > 0) bite.snipeAt = bite.until - snipeMs;
+  else delete bite.snipeAt;
   bite.timer = setTimeout(() => {
     if (bites.get(k) !== bite || bite.code !== code) return;
     bites.delete(k);
@@ -129,13 +170,14 @@ function arm(ctx: BiteContext, bite: Bite, windowMs: number, text: string, now: 
   // From the second pull the code flashes: the overlay hides it flashSeconds after it first
   // draws it (not after now: the overlay only sees it on its next poll), the clock keeps running.
   const flash = bite.pull > 1 && ctx.bigBite.flashSeconds > 0 ? { flashMs: ctx.bigBite.flashSeconds * 1000 } : {};
-  pushOverlay(ctx.db, { username: bite.username, kind: 'bite', text, code, until: bite.until, pull: bite.pull, pulls: bite.pulls, ...flash }, now);
+  const snipe = bite.snipeAt !== undefined ? { snipeAt: bite.snipeAt } : {};
+  pushOverlay(ctx.db, { username: bite.username, kind: 'bite', text, code, until: bite.until, pull: bite.pull, pulls: bite.pulls, ...flash, ...snipe }, now);
 }
 
 /** Put a big bite on this chatter's line: chat says so, and only the overlay gets the code. */
 export function startBite(ctx: BiteContext, name: string, userId: number): Bite {
   const now = ctx.now ?? Date.now();
-  const bite: Bite = { username: name, userId, code: '', startedAt: now, until: now, pull: 1, pulls: ctx.bigBite.pulls, timer: setTimeout(() => {}, 0) };
+  const bite: Bite = { username: name, userId, code: '', startedAt: now, until: now, pull: 1, pulls: ctx.bigBite.pulls, tried: new Set(), timer: setTimeout(() => {}, 0) };
   bites.set(key(ctx.channel, name), bite);
   // Whoever started it, the wait for the next one begins again.
   dueAt.delete(ctx.channel);
@@ -145,7 +187,9 @@ export function startBite(ctx: BiteContext, name: string, userId: number): Bite 
   arm(ctx, bite, ctx.bigBite.windowSeconds * 1000,
     `🎣 Something BIG is tugging at your line! Reel it in with $${ctx.command} fish reel <code> within ${ctx.bigBite.windowSeconds}s!${pulls}`, now);
   // The one chat line: who, and where to look. The code and everything after are on stream.
-  void ctx.sendMessage(`@${name} 🎣 Something BIG is on your line! A code is showing on stream now: type $${ctx.command} fish reel and that code within ${ctx.bigBite.windowSeconds}s to reel it in!`).catch(() => {});
+  const snipeS = snipeWindowMs(ctx.bigBite) / 1000;
+  const snipers = snipeS > 0 ? ` For the last ${snipeS}s anyone can snipe it: first right code takes it!` : '';
+  void ctx.sendMessage(`@${name} 🎣 Something BIG is on your line! A code is showing on stream now: type $${ctx.command} fish reel and that code within ${ctx.bigBite.windowSeconds}s to reel it in!${snipers}`).catch(() => {});
   return bite;
 }
 
@@ -154,7 +198,7 @@ export function nextPull(ctx: BiteContext, bite: Bite): void {
   const now = ctx.now ?? Date.now();
   bite.pull++;
   arm(ctx, bite, ctx.bigBite.pullSeconds * 1000,
-    `💪 Got it! It's pulling back hard! Quick, the new code flashes on stream: reel again within ${ctx.bigBite.pullSeconds}s! (pull ${bite.pull}/${bite.pulls})`, now);
+    `💪 Got it! It's pulling back hard! Quick, a new code flashes on stream: type just the code within ${ctx.bigBite.pullSeconds}s! (pull ${bite.pull}/${bite.pulls})`, now);
 }
 
 export interface TickContext extends BiteContext {

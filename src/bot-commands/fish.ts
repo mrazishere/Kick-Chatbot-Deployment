@@ -47,7 +47,7 @@ import { gameInvocation } from '../community/stakes';
 import { addReminder, cancelSelfRemindersStartingWith, openCommunityDb } from '../community/store';
 import { bestEmote, broadcasterIdFor, emoteImages } from '../community/emotes';
 import { OverlayKind, overlayShowing, pushOverlay } from '../community/fish-overlay';
-import { BITE_TOO_FAST_MS, STREAM_GRACE_MS, biteFor, canBite, channelHasBite, codeMatches, getAway, nextPull, pickChatter, startBite, takeBite, type BiteContext } from '../community/big-bite';
+import { BITE_TOO_FAST_MS, STREAM_GRACE_MS, biteFor, canBite, channelBite, channelHasBite, codeMatches, getAway, nextPull, pickChatter, snipeBite, snipeOpen, startBite, takeBite, type BiteContext } from '../community/big-bite';
 import {
   addItem, baitPrice, baitRoll, currentReel, heldFishValue, landsFish, moveFish, pickHeld, stealableFish, stealChance, stealCharges, worstStealCharges, parseSellList, CatchItem, CatchType, FAILURE_EMOTES, FishData, findBait, hasFishedBefore, initialData, rarityOf, recordCatch,
   ITEMS, JUNK_MESSAGES, loadFish, MISS_DELAY_MS, pick, randomInt, rollCatch, saveFish, sellPrice, STORY_STYLES, SUCCESS_EMOTES,
@@ -168,8 +168,19 @@ export async function story(user: string, fishType: string, sizeString: string):
 
 // ─── Command ────────────────────────────────────────────────────────────────
 
+/** A message that is just the code of the sender's big bite, past its first pull, as `fish reel <code>`; else null. */
+function bareReel(message: string, channel: string, name: string): ReturnType<typeof gameInvocation> {
+  const bite = biteFor(channel.replace(/^#/, '').toLowerCase(), name.toLowerCase());
+  if (!bite || bite.pull < 2 || !codeMatches(message, bite.code)) return null;
+  const usage = gameInvocation('!fish', channel, 'fish')?.usage;
+  return usage ? { form: 'currency', args: ['reel', bite.code], usage } : null;
+}
+
 export const fish: CommandFn = async function fish(client, message, channel, tags, config) {
-  const call = gameInvocation(message, channel, 'fish');
+  // From a big bite's second pull the code counts by itself, for whoever is reeling: the
+  // time is short and the prefix is most of the typing on a phone. Only an exact match
+  // is an answer; anything else they say is chat, and loses nothing.
+  const call = gameInvocation(message, channel, 'fish') ?? bareReel(message, channel, tags.username);
   if (!call) return;
   const me = tags.username;
   const meLc = me.toLowerCase();
@@ -177,8 +188,11 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
   if (SYSTEM_BOTS.has(meLc) || isBotSender(me, tags.senderId)) return;
   const chan = channel.replace(/^#/, '').toLowerCase();
   // A reel answering a waiting big bite skips the 5s cooldown: there's one answer per
-  // bite, so nothing to spam, and the cast that started it was seconds ago.
-  const answering = SUBCOMMANDS[String(call.args.find(a => !/^skipstory:/i.test(a)) ?? '').toLowerCase()] === 'reel' && !!biteFor(chan, meLc);
+  // bite, so nothing to spam, and the cast that started it was seconds ago. The same
+  // for a snipe at someone else's while it's open: one try each.
+  const open = channelBite(chan);
+  const answering = SUBCOMMANDS[String(call.args.find(a => !/^skipstory:/i.test(a)) ?? '').toLowerCase()] === 'reel'
+    && (!!biteFor(chan, meLc) || (!!open && snipeOpen(open, Date.now()) && !open.tried.has(meLc)));
   if (!answering && cooldown(meLc)) return;
 
   const svc = getPointsService(chan);
@@ -290,15 +304,28 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
    * `fish reel <code>`: one answer per pull, from the bite's chatter, after the stream
    * could show the code. A right answer before the last pull brings the next code; on
    * the last, the trophy is rolled and lands by its land chance or snaps the line.
+   * Someone else's bite can be sniped while its first code is open to everyone: one
+   * try each, and the first right answer takes the bite and reels on as its chatter.
    */
   function reelIn(codeRaw: string | undefined, uid: number): void {
-    const bite = biteFor(chan, meLc);
-    if (!bite) return void say("There's nothing big on your line right now.");
     const at = Date.now();
-    const fail = (why: string) => { takeBite(chan, meLc); getAway(biteCtx(), me, why); };
-    if (at > bite.until + STREAM_GRACE_MS) return fail('Too slow! It shook the hook and swam off.');
-    if (at - bite.startedAt < BITE_TOO_FAST_MS) return fail('You yanked too early and snapped the line!');
-    if (!codeMatches(codeRaw, bite.code)) return fail('Wrong move! The line snapped.');
+    let bite = biteFor(chan, meLc);
+    if (!bite) {
+      const other = channelBite(chan);
+      if (!other || !snipeOpen(other, at) || !canBite({ channel: chan, excluded: (id, name) => offLimits(id, name) }, uid, me)) {
+        return void say("There's nothing big on your line right now.");
+      }
+      if (other.tried.has(meLc)) return ignore('snipe already tried');
+      other.tried.add(meLc);
+      if (!codeMatches(codeRaw, other.code)) return void say(`Wrong code! You missed your one shot at sniping ${other.username}'s big bite.`);
+      snipeBite(biteCtx(), other, me, uid);
+      bite = other;
+    } else {
+      const fail = (why: string) => { takeBite(chan, meLc); getAway(biteCtx(), me, why); };
+      if (at > bite.until + STREAM_GRACE_MS) return fail('Too slow! It shook the hook and swam off.');
+      if (at - bite.startedAt < BITE_TOO_FAST_MS) return fail('You yanked too early and snapped the line!');
+      if (!codeMatches(codeRaw, bite.code)) return fail('Wrong move! The line snapped.');
+    }
     if (bite.pull < bite.pulls) return nextPull(biteCtx(), bite);
     takeBite(chan, meLc);
     const item = weightedCatch('trophy', g);

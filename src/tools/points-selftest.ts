@@ -101,12 +101,13 @@ function writeConfig(root: string, channel: string, points: Record<string, unkno
 
 const badges = (...types: string[]): RawBadge[] => types.map(type => ({ type }));
 
-function makeService(channel: string, opts: { live?: () => Promise<LiveState | null>; now?: () => number; broadcaster?: number | null; dbProvider?: () => PointsDb | null; lookup?: (n: string) => Promise<number | null>; sent?: string[]; random?: () => number } = {}) {
+function makeService(channel: string, opts: { live?: () => Promise<LiveState | null>; now?: () => number; broadcaster?: number | null; dbProvider?: () => PointsDb | null; lookup?: (n: string) => Promise<number | null>; sent?: string[]; random?: () => number; timeout?: (r: { target: string; seconds: number; reason: string }) => Promise<{ ok: true; target: string; seconds: number; actor: string } | { ok: false; error: string }> } = {}) {
   return new PointsService({
     channelName: channel,
     getBroadcasterUserId: () => opts.broadcaster ?? null,
     sendMessage: async (message: string) => { opts.sent?.push(message); },
     lookupUser: opts.lookup,
+    timeout: opts.timeout,
     tokenFile: '/nonexistent',
     checkLive: opts.live ?? (async () => ({ isLive: true, startedAt: null })),
     now: opts.now,
@@ -584,6 +585,10 @@ async function main(): Promise<void> {
     const demoOff = validatePointsPatch({}, { games: { overlayDemo: false } });
     check('overlayDemo is on unless turned off',
       effectivePointsConfig({}).games.overlayDemo && demoOff.errors.length === 0 && !effectivePointsConfig(demoOff.next).games.overlayDemo, demoOff);
+    const sized = validatePointsPatch({}, { games: { overlaySizePercent: 200 } });
+    const oversized = validatePointsPatch({}, { games: { overlaySizePercent: 400 } });
+    check('overlaySizePercent is 100 unless set, and kept within 50–300',
+      effectivePointsConfig({}).games.overlaySizePercent === 100 && sized.errors.length === 0 && effectivePointsConfig(sized.next).games.overlaySizePercent === 200 && oversized.errors.length === 1, { sized, oversized });
   }
 
   // onlyWhileOffline: casting and trapping are shut while live, open offline; never on with onlyWhileLive
@@ -718,6 +723,35 @@ async function main(): Promise<void> {
     check('anti-spam: the count starts over once the window has passed', balance(ch, 1) === 50, balance(ch, 1));
     now += 5 * 60_000;
     check('anti-spam: no board when nobody was charged in the ten minutes', svc.spamBoardTick() === null && sent.length === 1, sent);
+    // Not enough to pay: what's left is taken and the viewer is timed out.
+    {
+      const ch2 = 'antispamto';
+      const sent2: string[] = [];
+      const timeouts: Array<{ target: string; seconds: number; reason: string }> = [];
+      let now2 = 9_000_000;
+      let refuse = false;
+      writeConfig(root, ch2, { enabled: true, currencyName: '$DON', antiSpam: { enabled: true, keywords: ['kekw'], threshold: 1, windowMinutes: 5, cost: 30 } });
+      const svc2 = makeService(ch2, { now: () => now2, sent: sent2, timeout: async r => { timeouts.push(r); return refuse ? { ok: false, error: 'nope' } : { ok: true, target: r.target, seconds: r.seconds, actor: 'bot' }; } });
+      const db2 = openPointsDb(ch2, { create: true })!;
+      runWrite(db2, () => creditTx(db2, { userId: 1, username: 'spammer', amount: 70, reason: 'mod_add', now: 1 }));
+      let n2 = 0;
+      const say2 = async (text = 'kekw') => { now2 += 1000; svc2.noteChat(1, 'spammer', badges(), text, `t${++n2}`); await new Promise(r => setTimeout(r, 5)); };
+      await say2();
+      await say2();
+      await say2();
+      check('anti-spam: a viewer who can pay is charged, not timed out', balance(ch2, 1) === 10 && timeouts.length === 0 && sent2.length === 0, { b: balance(ch2, 1), timeouts });
+      await say2();
+      check('anti-spam: not enough to pay takes what is left and times them out for a minute, and chat is told', balance(ch2, 1) === 0 && timeouts.length === 1
+        && timeouts[0].target === 'spammer' && timeouts[0].seconds === 60 && sent2.length === 1 && sent2[0] === "@spammer can't pay the 30 $DON spam tax: timed out for 1 min.", { timeouts, sent2 });
+      refuse = true;
+      await say2();
+      check('anti-spam: with nothing at all it is a timeout again; one the moderator refuses is not announced', timeouts.length === 2 && sent2.length === 1, { timeouts, sent2 });
+      writeConfig(root, ch2, { enabled: true, currencyName: '$DON', antiSpam: { enabled: true, keywords: ['kekw'], threshold: 1, windowMinutes: 5, cost: 30, timeoutMinutes: 0 } });
+      now2 += 20_000;
+      await say2();
+      check('anti-spam: timeoutMinutes 0 only takes what they have', timeouts.length === 2 && effectivePointsConfig({}).antiSpam.timeoutMinutes === 1
+        && validatePointsPatch({}, { antiSpam: { timeoutMinutes: 61 } }).errors.length === 1, timeouts);
+    }
     const noWords = validatePointsPatch({}, { antiSpam: { enabled: true } });
     const ok = validatePointsPatch({}, { antiSpam: { enabled: true, keywords: [' KEKW ', 'kekw', 'Free  Money'], threshold: 5, cost: 25 } });
     const bad = validatePointsPatch({}, { antiSpam: { keywords: [''], cost: 0 } });
@@ -986,6 +1020,42 @@ async function main(): Promise<void> {
       check('too slow loses it', !!lastShown()?.text.includes('Too slow'));
       check('reel with nothing on the line', (await run('$don fish reel 42', ['biter', 41])).includes('nothing big on your line'));
       check('the short forms answer the same', (await run('$don f r 42', ['biter', 41])).includes('nothing big on your line') && (await run('$don F stats', ['biter', 41])) !== '');
+
+      // Sniping: the first code's last seconds are open to everyone else, one try each.
+      await fire();
+      const s1 = lastBite()!;
+      check('the first code opens to snipers for its last 20s, never more than half the window', s1.username === 'biter' && s1.snipeAt === s1.until! - 15_000
+        && sent[sent.length - 1].includes('last 15s anyone can snipe'), { s1, chat: sent[sent.length - 1] });
+      check('a snipe before it opens is nobody\'s bite', (await run(`$don fish reel ${s1.code}`, ['other', 44], 5_000)).includes('nothing big on your line') && lastBite()?.username === 'biter');
+      const wrongSnipe = await run(`$don fish reel ${s1.code === '10' ? '11' : '10'}`, ['third', 47], 11_000);
+      check('a wrong snipe uses up that sniper\'s one try and leaves the bite alone', wrongSnipe.includes('Wrong code')
+        && (await run(`$don fish reel ${s1.code}`, ['third', 47], 500)) === '' && lastBite()?.username === 'biter' && lastBite()!.pull === 1, wrongSnipe);
+      const sniped = await run(`$don fish reel ${s1.code}`, ['other', 44], 500);
+      const s2 = lastBite()!;
+      check('the first right snipe takes the bite and carries on from the next pull', sniped.includes('@biter') && sniped.includes('@other sniped') && s2.username === 'other'
+        && s2.pull === 2 && s2.snipeAt === undefined && s2.code !== s1.code, { sniped, s2 });
+      check('the chatter it was for has lost it, and later pulls can\'t be sniped', (await run(`$don fish reel ${s2.code}`, ['biter', 41], 500)).includes('nothing big on your line')
+        && lastBite()?.username === 'other' && lastBite()!.pull === 2);
+      await run(`$don fish reel ${s2.code}`, ['other', 44], 2_500);
+      check('the sniper reels on as its chatter', lastBite()?.username === 'other' && lastBite()!.pull === 3);
+      takeBiteForTest(ch, 'other');
+      // From the second pull the code alone is an answer, for the chatter reeling.
+      await fire();
+      const b1 = lastBite()!;
+      check('the first code needs the command: the code alone is only chat', (await run(b1.code!, ['biter', 41], 3_000)) === '' && lastBite()!.pull === 1 && lastBite()!.code === b1.code);
+      await run(`$don fish reel ${b1.code}`, ['biter', 41], 500);
+      const b2 = lastBite()!;
+      await run(b2.code === 'AAA' ? 'CCC' : 'AAA', ['biter', 41], 2_500);
+      await run('lol nice', ['biter', 41], 200);
+      check('from the second pull, anything that isn\'t the code is chat and loses nothing', lastBite()!.pull === 2 && lastBite()!.code === b2.code && lastShown()?.kind === 'bite');
+      check('nor does the code from someone else', (await run(b2.code!, ['other', 44], 200)) === '' && lastBite()!.pull === 2);
+      await run(` ${b2.code!.toLowerCase()} `, ['biter', 41], 200);
+      const b3 = lastBite()!;
+      check('the code by itself reels in the pull, in any case', b3.pull === 3 && b3.code !== b2.code, b3);
+      await run(`$don f r ${b3.code}`, ['biter', 41], 2_500);
+      check('and the command still works on later pulls', /MYTHIC|So close/.test(lastShown()!.text), lastShown());
+      check('sniping can be switched off', validatePointsPatch({}, { games: { bigBite: { snipeSeconds: 0 } } }).errors.length === 0
+        && effectivePointsConfig(validatePointsPatch({}, { games: { bigBite: { snipeSeconds: 0 } } }).next).games.bigBite.snipeSeconds === 0);
 
       await bsvc.bigBiteTick(() => 0);
       shift += 31 * 60_000;

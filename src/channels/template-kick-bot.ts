@@ -142,6 +142,7 @@ class KickChatBot {
       getBroadcasterUserId: () => this.broadcasterUserId,
       sendMessage: (msg) => this.sendMessage(msg),
       lookupUser: (name) => this.moderator.lookupUser(name),
+      timeout: (request) => this.moderator.timeout(request),
       tokenFile: path.join(__dirname, '..', '.tokens.json')
     });
 

@@ -207,6 +207,8 @@ export interface PointsAntiSpamConfig {
   windowMinutes: number;
   /** Deducted for every keyword message past the threshold. */
   cost: number;
+  /** A viewer who can't cover `cost` loses what they have and is timed out this long; 0 only takes what they have. */
+  timeoutMinutes: number;
   /** Every ten minutes, tell chat the five viewers who lost the most to spam in that time. */
   announce: boolean;
 }
@@ -312,6 +314,8 @@ export interface PointsGamesConfig {
   chatReplies: boolean;
   /** Let the fishing overlay's &demo=1 play. Off, an overlay ignores the flag, even one already open on stream. */
   overlayDemo: boolean;
+  /** How big the fishing overlay draws, as a percentage of its own size (50–300). It reaches an overlay already open on stream, on top of any &scale= on its link. */
+  overlaySizePercent: number;
   /**
    * Every fish and junk item with its odds and price as they apply. Stored as
    * overrides only (StoredFishCatches); an item without one keeps supibot's weight
@@ -343,6 +347,12 @@ export interface FishBigBiteSetting {
   pullSeconds: number;
   /** From the second pull, the overlay shows the code this long, then hides it; 0 keeps it shown. */
   flashSeconds: number;
+  /**
+   * The first code's last seconds, when anyone else chatting can answer it and take
+   * the bite: the first right answer wins it and reels on from the next pull. Never
+   * more than half of windowSeconds; 0 turns sniping off.
+   */
+  snipeSeconds: number;
 }
 
 /**
