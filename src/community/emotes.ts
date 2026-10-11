@@ -54,29 +54,41 @@ async function sevenTvEmotes(kickUserId: number): Promise<Emote[]> {
   });
 }
 
-/** Every emote the channel can show, cached for an hour. */
+/**
+ * Every emote the channel can show, cached for an hour. Once a channel has a
+ * list, an expired one is still returned at once and refreshed behind the
+ * caller: 7TV takes seconds and often its whole timeout, and a chat reply must
+ * not wait on it. Only the first load after a start waits.
+ */
 export async function channelEmotes(channel: string, broadcasterUserId?: number | null): Promise<Emote[]> {
   const ch = channel.replace(/^#/, '').toLowerCase();
   const hit = cache.get(ch);
   if (hit && Date.now() - hit.at < CACHE_MS) return hit.emotes;
-  const running = inflight.get(ch);
-  if (running) return running;
+  const load = inflight.get(ch) ?? refresh(ch, broadcasterUserId);
+  return hit ? hit.emotes : load;
+}
 
+function refresh(ch: string, broadcasterUserId?: number | null): Promise<Emote[]> {
   const load = (async () => {
+    const stale = cache.get(ch)?.emotes ?? [];
     const results = await Promise.allSettled([
       kickEmotes(ch),
       broadcasterUserId ? sevenTvEmotes(broadcasterUserId) : Promise.resolve([] as Emote[])
     ]);
     const emotes: Emote[] = [];
-    for (const r of results) {
-      if (r.status === 'fulfilled') emotes.push(...r.value);
-      else console.warn(`[EMOTES] ${ch}: an emote source failed: ${r.reason instanceof Error ? r.reason.message : String(r.reason)}`);
-    }
-    // Keep a failed fetch from being cached for an hour when nothing came back.
-    if (emotes.length) cache.set(ch, { at: Date.now(), emotes });
+    results.forEach((r, i) => {
+      if (r.status === 'fulfilled') { emotes.push(...r.value); return; }
+      console.warn(`[EMOTES] ${ch}: an emote source failed: ${r.reason instanceof Error ? r.reason.message : String(r.reason)}`);
+      // A source that failed keeps the emotes it gave last time.
+      emotes.push(...stale.filter(e => (e.source === '7tv') === (i === 1)));
+    });
+    // Keep a failed fetch from being cached for an hour: with any source down, the next call tries again.
+    const allOk = results.every(r => r.status === 'fulfilled');
+    if (emotes.length) cache.set(ch, { at: allOk ? Date.now() : 0, emotes });
     return emotes;
   })().finally(() => inflight.delete(ch));
   inflight.set(ch, load);
+  load.catch(() => {});
   return load;
 }
 
