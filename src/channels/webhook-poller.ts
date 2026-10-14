@@ -41,7 +41,7 @@ export interface WebhookHandlers {
 }
 
 // Maps Kick webhook chat.message.sent payload → handleChatMessage data format
-function toHandleChatFormat(event: Record<string, unknown>): Record<string, unknown> {
+export function toHandleChatFormat(event: Record<string, unknown>): Record<string, unknown> {
   const sender = event.sender as Record<string, unknown> | undefined;
   const broadcaster = event.broadcaster as Record<string, unknown> | undefined;
   return {

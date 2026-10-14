@@ -27,7 +27,7 @@ import { ChannelConfig, CommandFn, KickTags, ClientWrapper, ChannelLocation, Loc
 import { markBotOutput } from '../recent-bot-outputs';
 import { resolveBotIdentity } from '../bot-identity';
 import { WebhookPoller } from './webhook-poller';
-import { PUSHER_BAD_KEY_CODES, pusherUrl, refreshPusherKey } from './pusher-key';
+import { noteSocketClose, PUSHER_BAD_KEY_CODES, pusherUrl, refreshPusherKey, watchChatSocket } from './pusher-key';
 import { RewardRedemptionHandler } from './reward-redemptions';
 import { ChannelModerator } from './moderation';
 import { EarningsTracker } from './earnings-tracker';
@@ -84,6 +84,8 @@ class KickChatBot {
   /** When the last pusher:subscribe went out, and whether Pusher has confirmed it since. */
   private subscribeSentAt = 0;
   private subscribed = false;
+  /** Stops the watch that alerts on Telegram when the socket stays down (pusher-key.ts). */
+  private stopSocketWatch: (() => void) | null = null;
   private webhookPoller: WebhookPoller;
   private rewardHandler: RewardRedemptionHandler;
   private moderator: ChannelModerator;
@@ -491,6 +493,7 @@ class KickChatBot {
 
       this.ws.on('close', (code, reason) => {
         console.log(`[WARNING] WebSocket disconnected - Code: ${code}, Reason: ${reason || 'No reason provided'}`);
+        noteSocketClose(code, String(reason ?? ''));
         // Kick moved chat to another Pusher key: ask for it, so the reconnect below uses it.
         if (PUSHER_BAD_KEY_CODES.has(code)) void refreshPusherKey();
 
@@ -1329,6 +1332,7 @@ Rules:
   }
 
   async connect(): Promise<void> {
+    this.stopSocketWatch ??= watchChatSocket(`kick-${this.channelName}`, () => this.subscribed && this.ws?.readyState === WebSocket.OPEN);
     let attempt = 0;
     while (true) {
       try {
@@ -1367,6 +1371,8 @@ Rules:
 
   disconnect(): void {
     this.manualDisconnect = true;
+    this.stopSocketWatch?.();
+    this.stopSocketWatch = null;
 
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);

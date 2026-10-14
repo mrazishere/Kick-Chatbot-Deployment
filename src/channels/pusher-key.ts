@@ -13,6 +13,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import axios from 'axios';
 import { randomUUID } from 'crypto';
+import TelegramNotifier = require('../telegram-notifier');
 
 interface PusherCreds { appKey: string; cluster: string }
 
@@ -25,6 +26,11 @@ const REFRESH_EVERY_MS = 60_000;
 
 /** Pusher's close and error codes for a key it doesn't know or won't take. */
 export const PUSHER_BAD_KEY_CODES: ReadonlySet<number> = new Set([4001, 4003]);
+
+/** Why the last ask for a key came back with nothing usable, for the down alert. */
+let lastAskProblem: string | null = null;
+/** The last close the chat sockets in this process saw. */
+let lastClose: string | null = null;
 
 let creds: PusherCreds | null = null;
 let lastRefresh = 0;
@@ -76,9 +82,11 @@ export function refreshPusherKey(): Promise<boolean> {
       const p = conns.find(c => c.provider === 'pusher')?.credentials;
       const next = { appKey: p?.app_key, cluster: p?.cluster };
       if (!valid(next)) {
-        console.error(`[PUSHER] Kick offered no Pusher key (${conns.map(c => c.provider).join(', ') || 'nothing'})`);
+        lastAskProblem = `Kick offered no Pusher key (it offered: ${conns.map(c => c.provider).join(', ') || 'nothing'})`;
+        console.error(`[PUSHER] ${lastAskProblem}`);
         return false;
       }
+      lastAskProblem = null;
       const before = current();
       if (before.appKey === next.appKey && before.cluster === next.cluster) return false;
       creds = next;
@@ -92,6 +100,7 @@ export function refreshPusherKey(): Promise<boolean> {
       console.log(`[PUSHER] Kick moved chat to key ${next.appKey} on ${next.cluster} (was ${before.appKey} on ${before.cluster})`);
       return true;
     } catch (err) {
+      lastAskProblem = `asking Kick for the key failed: ${err instanceof Error ? err.message : String(err)}`;
       console.error(`[PUSHER] Asking Kick for the Pusher key failed: ${err instanceof Error ? err.message : String(err)}`);
       return false;
     } finally {
@@ -99,4 +108,45 @@ export function refreshPusherKey(): Promise<boolean> {
     }
   })();
   return inFlight;
+}
+
+/** Record a chat socket's close, for the down alert. */
+export function noteSocketClose(code: number, reason: string): void {
+  lastClose = `code ${code}${reason ? `: ${reason.slice(0, 120)}` : ''}`;
+}
+
+/** How long a chat socket may stay unsubscribed before Telegram hears about it. */
+const DOWN_ALERT_MS = 30 * 60_000;
+const WATCH_EVERY_MS = 60_000;
+
+/**
+ * Alert on Telegram when a chat socket has gone `DOWN_ALERT_MS` without a live
+ * subscription, and again when it's back. Kick changes the socket without notice
+ * (it's not part of its public API), and chat carrying on over the webhooks hid a
+ * day-long outage once; this makes the next one show. The alert is shared by every
+ * process, so a Kick-wide change sends one, not one per bot. Returns a stop function.
+ */
+export function watchChatSocket(label: string, isUp: () => boolean): () => void {
+  let downSince: number | null = null;
+  let alerted = false;
+  const notifier = new TelegramNotifier();
+  const timer = setInterval(() => {
+    if (isUp()) {
+      downSince = null;
+      if (alerted) {
+        alerted = false;
+        void notifier.notifyChatSocketRecovered(label).catch(() => {});
+      }
+      return;
+    }
+    downSince ??= Date.now();
+    const downMs = Date.now() - downSince;
+    if (alerted || downMs < DOWN_ALERT_MS) return;
+    alerted = true;
+    const detail = [lastClose && `Last close: ${lastClose}`, lastAskProblem && `Key lookup: ${lastAskProblem}`].filter(Boolean).join('\n');
+    console.error(`[PUSHER] ${label}: chat socket down for ${Math.round(downMs / 60_000)} min — alerting`);
+    void notifier.notifyChatSocketDown(label, Math.round(downMs / 60_000), detail || 'no close recorded').catch(() => {});
+  }, WATCH_EVERY_MS);
+  timer.unref?.();
+  return () => clearInterval(timer);
 }

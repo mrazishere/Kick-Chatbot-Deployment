@@ -118,19 +118,26 @@ class TelegramNotifier {
     return sent;
   }
 
-  /** Drop alert keys so the next failure of that kind alerts straight away. */
-  private async forget(keys: string[]): Promise<void> {
+  /**
+   * Drop alert keys so the next failure of that kind alerts straight away. Resolves
+   * true when this call removed one, so of several processes recovering together
+   * only one announces it.
+   */
+  private async forget(keys: string[]): Promise<boolean> {
     // Read first without the lock: recoveries fire often and there is usually nothing to clear.
     const present = readAlertState();
-    if (!keys.some(k => k in present)) return;
+    if (!keys.some(k => k in present)) return false;
     try {
-      await withFileLock(`${ALERT_STATE_FILE}.lock`, async () => {
+      return await withFileLock(`${ALERT_STATE_FILE}.lock`, async () => {
         const state = readAlertState();
+        const removed = keys.some(k => k in state);
         for (const k of keys) delete state[k];
         writeJsonAtomic(ALERT_STATE_FILE, state);
+        return removed;
       }, ALERT_LOCK);
     } catch (err) {
       console.error('[TELEGRAM] Could not clear alert state:', err instanceof Error ? err.message : String(err));
+      return false;
     }
   }
 
@@ -374,6 +381,34 @@ https://${esc(process.env.OAUTH_DOMAIN || 'mr-ai.dev')}/kick-bot-enroll
 
     // The bot checks once per start, so without a cooldown every restart re-alerts.
     return await this.sendOnce(alertKey('reward-scope-missing', channel), 24 * HOUR, message, false); // audible — needs streamer action
+  }
+
+  // Alert: Kick's chat WebSocket has been down a while (channels/pusher-key.ts). Chat
+  // still arrives over webhooks; the deployment chat and the backup path don't.
+  async notifyChatSocketDown(who: string, minutes: number, detail: string): Promise<boolean> {
+    const message = `
+⚠️ <b>Kick Bot - Chat WebSocket Down</b>
+
+<b>First noticed by:</b> ${esc(who)}
+<b>Down for:</b> ${esc(minutes)} min
+${esc(detail)}
+
+Kick changes its chat socket without notice (it isn't in the public API). Channel chat keeps working over the webhooks, but the deployment chat (!kickaddme) is deaf until the socket is back. The bots retry and look up a new Pusher key by themselves; if Kick offered none, it may have dropped Pusher for Centrifugo.
+    `.trim();
+    return await this.sendOnce(alertKey('chat-socket-down'), 6 * HOUR, message, false); // audible
+  }
+
+  // Informational: the chat WebSocket is back. Sent once, by whichever process clears the alert.
+  async notifyChatSocketRecovered(who: string): Promise<boolean> {
+    if (!(await this.forget([alertKey('chat-socket-down')]))) return false;
+    const message = `
+✅ <b>Kick Bot - Chat WebSocket Back</b>
+
+<b>Noticed by:</b> ${esc(who)}
+
+The chat socket is subscribed again. No action needed.
+    `.trim();
+    return await this.sendMessage(message, true);
   }
 
   // Informational: token refreshed successfully after a failed attempt

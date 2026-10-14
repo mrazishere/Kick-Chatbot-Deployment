@@ -21,7 +21,8 @@ import { markOverlaySeen, readOverlay } from './community/fish-overlay';
 import { publicUserHistory, publicViewerSearch } from './points/store';
 import { ITEMS, rarityName, sellPrice } from './community/fishing';
 import { adjustPoints, backupPoints, caughtFish, duelBoard, heistBoard, heldCatches, getPointsUserDetail, pointsLeaderboard, pointsSummary, resetAllPoints, searchPointsUsers } from './points/store';
-import { PUSHER_BAD_KEY_CODES, pusherUrl, refreshPusherKey } from './channels/pusher-key';
+import { noteSocketClose, PUSHER_BAD_KEY_CODES, pusherUrl, refreshPusherKey, watchChatSocket } from './channels/pusher-key';
+import { toHandleChatFormat } from './channels/webhook-poller';
 
 /* eslint-disable @typescript-eslint/no-var-requires, @typescript-eslint/no-explicit-any */
 const puppeteer = require('puppeteer-extra');
@@ -3641,8 +3642,40 @@ async function startDeploymentBot(): Promise<void> {
   }
 }
 
+/** Whether the deployment socket holds a live subscription, for the down alert. */
+let deploymentSubscribed = false;
+let deploymentWatch: (() => void) | null = null;
+/**
+ * Deployment chat message ids already handled. A command comes over the socket and
+ * the webhook both; whichever arrives first runs it.
+ */
+const deploymentSeen = new Set<string>();
+function firstDeploymentSighting(id: unknown): boolean {
+  if (typeof id !== 'string' || !id) return true;
+  if (deploymentSeen.has(id)) return false;
+  deploymentSeen.add(id);
+  if (deploymentSeen.size > 500) deploymentSeen.delete(deploymentSeen.values().next().value as string);
+  return true;
+}
+
+/**
+ * A chat webhook from the deployment channel. The socket is Kick's unofficial
+ * interface and went deaf for a day once (2026-10-13), so commands also run from
+ * the webhook Kick documents and supports.
+ */
+function handleDeploymentWebhookChat(payload: Record<string, unknown>): void {
+  if (!DEPLOYMENT_CHATROOM_ID) return;
+  const data = toHandleChatFormat(payload);
+  if (!firstDeploymentSighting(data.id)) return;
+  handleDeploymentCommand(data, DEPLOYMENT_CHATROOM_ID).catch(err => {
+    console.error('[DEPLOY BOT] Command from webhook failed:', err instanceof Error ? err.message : String(err));
+  });
+}
+
 function connectDeploymentWebSocket(): void {
   const wsUrl = pusherUrl();
+  deploymentWatch ??= watchChatSocket('deployment chat', () => deploymentSubscribed && deploymentWs?.readyState === WebSocket.OPEN);
+  deploymentSubscribed = false;
 
   console.log('[DEPLOY BOT] Connecting to Kick deployment chat...');
   deploymentWs = new WebSocket(wsUrl);
@@ -3712,8 +3745,10 @@ function connectDeploymentWebSocket(): void {
     // `close` fires after `error`, so reconnect happens there.
   });
 
-  deploymentWs.on('close', (code: number) => {
+  deploymentWs.on('close', (code: number, reason: Buffer) => {
     clearTimeout(connectTimeout);
+    deploymentSubscribed = false;
+    noteSocketClose(code, reason.toString());
     console.log(`[DEPLOY BOT] WebSocket disconnected (code ${code}), reconnecting...`);
     // Kick moved chat to another Pusher key: ask for it, so the reconnect uses it.
     if (PUSHER_BAD_KEY_CODES.has(code)) void refreshPusherKey();
@@ -3741,6 +3776,7 @@ function handleDeploymentMessage(message: { event?: string; data?: unknown; chan
   if (!message.event) return;
 
   if (message.event === 'pusher_internal:subscription_succeeded') {
+    deploymentSubscribed = true;
     console.log('[DEPLOY BOT] Successfully subscribed! Listening for !kickaddme commands...');
     return;
   }
@@ -3752,6 +3788,7 @@ function handleDeploymentMessage(message: { event?: string; data?: unknown; chan
     // Extract chatroom ID from Pusher channel name (e.g. "chatrooms.84265270.v2")
     const chatroomMatch = message.channel?.match(/chatrooms\.(\d+)/);
     const sourceChatroomId = chatroomMatch ? chatroomMatch[1] : DEPLOYMENT_CHATROOM_ID;
+    if (!firstDeploymentSighting(eventData?.id)) return;
     // Nothing awaits this, and an unhandled rejection takes the whole service down.
     handleDeploymentCommand(eventData, sourceChatroomId as string).catch(err => {
       console.error('[DEPLOY BOT] Command failed:', err instanceof Error ? err.message : String(err));
@@ -4115,6 +4152,7 @@ app.post('/kick-webhook', express.raw({ type: '*/*' }), async (req: express.Requ
   const who = (u: unknown): string => (u as { username?: string } | undefined)?.username ?? '?';
   if (eventType === 'chat.message.sent') {
     console.log(`[WEBHOOK] chat.message.sent from ${who(payload['sender'])} in ${channelName}`);
+    if (channelName.toLowerCase() === DEPLOYMENT_CHANNEL.toLowerCase()) handleDeploymentWebhookChat(payload);
   } else if (eventType === 'moderation.banned') {
     const meta = payload['metadata'] as { expires_at?: string | null } | undefined;
     console.log(
