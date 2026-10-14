@@ -10,6 +10,7 @@
 import * as crypto from 'crypto';
 import type { PointsDb } from '../points/db';
 import type { FishReelSetting, PointsGamesConfig } from '../types';
+import type { TrapCheck } from './trap-check';
 
 export type CatchType = 'fish' | 'junk';
 
@@ -126,6 +127,8 @@ export interface FishData {
     sizes?: Record<string, HeldFish[]>;
   };
   trap: { active: boolean; start: number; end: number; duration: number };
+  /** Our addition: the question full traps wait on (community/trap-check.ts), until it's answered. */
+  trapCheck?: TrapCheck;
   readyTimestamp: number;
   /** Our addition: how many of the channel's reels have been bought, in order. */
   reel?: number;
@@ -146,9 +149,12 @@ export interface FishData {
     luckyStreak: number;
     maxFishSize: number;
     maxFishType: string | null;
-    trap: { times: number; timeSpent: number; bestFishCatch: number; cancelled: number };
+    /** checksPassed/checksFailed are our addition: trap check answers, right and wrong. */
+    trap: { times: number; timeSpent: number; bestFishCatch: number; cancelled: number; checksPassed: number; checksFailed: number };
     /** Our addition. As a thief: tries, fish taken, times caught, tries a guard stopped. As a target: fish lost. */
     steal: { attempts: number; stolen: number; caught: number; blocked: number; lost: number };
+    /** Our addition: fish duels fought, and what changed hands in them. */
+    duel: { wins: number; losses: number; fishWon: number; fishLost: number; coinsWon: number; coinsLost: number };
   };
 }
 
@@ -160,8 +166,9 @@ export function initialData(): FishData {
     lifetime: {
       fish: 0, junk: 0, coins: 0, sold: 0, scrapped: 0, baitUsed: 0, attempts: 0,
       dryStreak: 0, luckyStreak: 0, maxFishSize: 0, maxFishType: null,
-      trap: { times: 0, timeSpent: 0, bestFishCatch: 0, cancelled: 0 },
-      steal: { attempts: 0, stolen: 0, caught: 0, blocked: 0, lost: 0 }
+      trap: { times: 0, timeSpent: 0, bestFishCatch: 0, cancelled: 0, checksPassed: 0, checksFailed: 0 },
+      steal: { attempts: 0, stolen: 0, caught: 0, blocked: 0, lost: 0 },
+      duel: { wins: 0, losses: 0, fishWon: 0, fishLost: 0, coinsWon: 0, coinsLost: 0 }
     }
   };
 }
@@ -371,6 +378,7 @@ function withDefaults(raw: Partial<FishData>): FishData {
   return {
     catch: { ...d.catch, ...(raw.catch ?? {}), types: { ...(raw.catch?.types ?? {}) }, sizes: { ...(raw.catch?.sizes ?? {}) } },
     trap: { ...d.trap, ...(raw.trap ?? {}) },
+    ...(raw.trapCheck ? { trapCheck: raw.trapCheck } : {}),
     readyTimestamp: raw.readyTimestamp ?? 0,
     reel: raw.reel ?? 0,
     hook: raw.hook ?? 0,
@@ -378,7 +386,8 @@ function withDefaults(raw: Partial<FishData>): FishData {
     lifetime: {
       ...d.lifetime, ...(raw.lifetime ?? {}),
       trap: { ...d.lifetime.trap, ...(raw.lifetime?.trap ?? {}) },
-      steal: { ...d.lifetime.steal, ...(raw.lifetime?.steal ?? {}) }
+      steal: { ...d.lifetime.steal, ...(raw.lifetime?.steal ?? {}) },
+      duel: { ...d.lifetime.duel, ...(raw.lifetime?.duel ?? {}) }
     }
   };
 }

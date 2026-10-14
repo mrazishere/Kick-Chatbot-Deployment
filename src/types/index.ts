@@ -317,6 +317,14 @@ export interface PointsGamesConfig {
   /** How big the fishing overlay draws, as a percentage of its own size (50–300). It reaches an overlay already open on stream, on top of any &scale= on its link. */
   overlaySizePercent: number;
   /**
+   * A corner of the fishing overlay kept clear, for something else on stream that sits
+   * there (a map, a camera): the bottom-right, this share of the source's width and
+   * height (0–80). Both above 0, the overlay draws around it: replies above it, big
+   * bite codes beside it. Either at 0 and nothing is kept clear.
+   */
+  overlayClearWidthPercent: number;
+  overlayClearHeightPercent: number;
+  /**
    * Every fish and junk item with its odds and price as they apply. Stored as
    * overrides only (StoredFishCatches); an item without one keeps supibot's weight
    * and its price scaled by sellPricePercent.
@@ -326,8 +334,27 @@ export interface PointsGamesConfig {
   reels: FishReelSetting[];
   /** `fish steal`: taking a fish from another viewer, and guards against it. */
   steal: FishStealSetting;
+  /** Fish duels: two viewers each send a fish and the bot plays the fight out. */
+  duel: FishDuelSetting;
   /** Big bites: now and then while live, a random active chatter can reel in a trophy with the code shown on the overlay. */
   bigBite: FishBigBiteSetting;
+  /** Trap checks: a question now and then before an offline trap haul, against macros. */
+  trapCheck: FishTrapCheckSetting;
+}
+
+/**
+ * Our addition, against macros that collect and re-lay traps around the clock.
+ * Collecting full traps while the stream is offline asks a question first, about
+ * `chancePercent` of the time; the haul waits for `fish answer <x>`, with `tries`
+ * answers within `answerSeconds`. Running out of either costs `finePercent` of the
+ * player's balance and the traps come up empty.
+ */
+export interface FishTrapCheckSetting {
+  enabled: boolean;
+  chancePercent: number;
+  finePercent: number;
+  answerSeconds: number;
+  tries: number;
 }
 
 /**
@@ -356,6 +383,25 @@ export interface FishBigBiteSetting {
 }
 
 /**
+ * Fish duels are our addition (community/fish-duel.ts): a challenge, an answer, and
+ * a fight between one fish from each side, played on the overlay. The challenger
+ * sets the stake: nothing, a wager both put up, or the fish themselves ("keeps").
+ */
+export interface FishDuelSetting {
+  enabled: boolean;
+  /** Duels only while the stream is live, whatever games.onlyWhileLive and onlyWhileOffline say for casting and traps. */
+  onlyWhileLive: boolean;
+  /** Whether a challenge can be for keeps: the winner takes the loser's fish. */
+  allowKeeps: boolean;
+  /** How long a challenge waits for an answer. */
+  expirySeconds: number;
+  /** Between one viewer's challenges. */
+  cooldownSeconds: number;
+  /** The most a wager can be; 0 for no limit. */
+  maxWager: number;
+}
+
+/**
  * Stealing is our addition. A thief needs a grappling hook; every try uses one of
  * its tries. A try reaches for one random fish the target has held a while and works
  * by that fish's rarity. It burns a fee on that fish's value and the fishing
@@ -367,6 +413,8 @@ export interface FishBigBiteSetting {
  */
 export interface FishStealSetting {
   enabled: boolean;
+  /** Stealing only while the stream is live, whatever games.onlyWhileLive and onlyWhileOffline say for casting and traps. */
+  onlyWhileLive: boolean;
   hookPrice: number;
   /** Tries one hook gives. */
   hookUses: number;
@@ -461,7 +509,7 @@ export type StoredPointsConfig = Partial<Omit<PointsConfig, 'bonuses' | 'give' |
   gamble?: Partial<PointsGambleConfig>;
   duel?: Partial<PointsDuelConfig>;
   raffle?: Partial<PointsRaffleConfig>;
-  games?: Partial<Omit<PointsGamesConfig, 'catches' | 'steal' | 'bigBite'>> & { catches?: StoredFishCatches; steal?: Partial<FishStealSetting>; bigBite?: Partial<FishBigBiteSetting> };
+  games?: Partial<Omit<PointsGamesConfig, 'catches' | 'steal' | 'duel' | 'bigBite' | 'trapCheck'>> & { catches?: StoredFishCatches; steal?: Partial<FishStealSetting>; duel?: Partial<FishDuelSetting>; bigBite?: Partial<FishBigBiteSetting>; trapCheck?: Partial<FishTrapCheckSetting> };
   /** Staging only, set by editing the file: treat the channel as live. Never exposed by the API. */
   debugForceLive?: boolean;
   /** Staging only, set by editing the file: who can test stealing and big bites (see InternalPointsConfig). */

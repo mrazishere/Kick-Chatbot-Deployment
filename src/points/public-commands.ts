@@ -83,9 +83,16 @@ export function publicCommands(cfg: PointsConfig): PublicCommands {
   if (g.enabled) {
     const f = `${c} fish`;
     const s = `${c} f`;
-    const when = g.onlyWhileOffline ? 'Casting, traps and stealing only work while the stream is offline.'
-      : g.onlyWhileLive ? 'Casting, traps and stealing only work while the stream is live.' : '';
     const steal = g.steal.enabled;
+    // Stealing has a live-only rule of its own; without it, it follows casting and traps.
+    const ownRule = steal && g.steal.onlyWhileLive && !g.onlyWhileLive;
+    const acts = steal && !ownRule ? 'Casting, traps and stealing' : 'Casting and traps';
+    // Duels are live only by a rule of their own, the same way.
+    const duelRule = g.duel.enabled && g.duel.onlyWhileLive && !g.onlyWhileLive;
+    const when = [
+      g.onlyWhileOffline ? `${acts} only work while the stream is offline.` : g.onlyWhileLive ? `${acts} only work while the stream is live.` : '',
+      ownRule && duelRule ? 'Stealing and duels only work while the stream is live.' : ownRule ? 'Stealing only works while the stream is live.' : duelRule ? 'Duels only work while the stream is live.' : ''
+    ].filter(Boolean).join(' ');
     sections.push({
       title: 'Fishing',
       note: [`${s} is short for ${f}.`, when, 'Selling, show, stats, top and the shop work any time.'].filter(Boolean).join(' '),
@@ -95,6 +102,9 @@ export function publicCommands(cfg: PointsConfig): PublicCommands {
         { usage: `${f} trap`, short: `${s} t`, does: `Lay traps for ${g.trapMinutes} minutes, or collect them when they're full; no casting meanwhile` },
         { usage: `${f} trap cancel`, short: `${s} t c`, does: 'Pull your traps in early and lose the catch' },
         { usage: `${f} trap reset`, short: `${s} t r`, does: 'Collect full traps and lay them again' },
+        ...(g.trapCheck.enabled ? [
+          { usage: `${f} answer <x>`, short: `${s} ans <x>`, does: `Answer the question your full traps sometimes ask while the stream is offline: ${g.trapCheck.tries === 1 ? 'one try' : `${g.trapCheck.tries} tries`} within ${g.trapCheck.answerSeconds} seconds${g.trapCheck.finePercent > 0 ? `, or it costs ${g.trapCheck.finePercent}% of your ${cur} and the catch` : ', or you lose the catch'}` }
+        ] : []),
         { usage: `${f} sell 🐟 🦐 3`, short: `${s} s 🐟 🦐 3`, does: 'Sell the kinds you name, each with an optional count' },
         { usage: `${f} sell all fish junk`, short: `${s} s a f j`, does: 'Sell every fish, every piece of junk, or both' },
         { usage: `${f} sell duplicate fish`, short: `${s} s d f`, does: 'Sell your duplicates, keeping the biggest of each' },
@@ -109,6 +119,11 @@ export function publicCommands(cfg: PointsConfig): PublicCommands {
           { usage: `${f} buy hook`, short: `${s} b h`, does: 'A grappling hook, needed to steal' },
           { usage: `${f} buy guard`, short: `${s} b g`, does: 'A guard to watch your fish' },
           { usage: `${f} steal @user`, short: `${s} sl @user`, does: 'Try to steal one of their fish' }
+        ] : []),
+        ...(g.duel.enabled ? [
+          { usage: `${f} duel @user [fish | random] [amount${g.duel.allowKeeps ? ' | keeps' : ''}]`, short: `${s} d @user`, does: `Challenge them to a fish duel with your strongest fish, the one you name (emoji or word, like shark) or a random one: for glory, for a ${cur} wager${g.duel.allowKeeps ? ", or for keeps (the winner takes the loser's fish)" : ''}` },
+          { usage: `${f} accept [fish | random]`, short: `${s} a`, does: 'Take up a duel, with your strongest fish, the one you name or a random one' },
+          { usage: `${f} deny`, short: `${s} dn`, does: 'Turn a duel down, or take back your own challenge' }
         ] : []),
         ...(g.bigBite.enabled ? [
           { usage: `${f} reel <code>`, short: `${s} r <code>`, does: 'Answer a big bite with the code shown on stream' },

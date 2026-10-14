@@ -245,7 +245,29 @@ ALTER TABLE steals ADD COLUMN fee INTEGER;
 ALTER TABLE steals ADD COLUMN fine INTEGER;
 `;
 
-const SCHEMA_VERSION = 9;
+/**
+ * v10: every fish duel fought, for the leaderboard's duels: who sent which fish,
+ * who won, and what was at stake ('friendly', 'wager' with its amount, or 'keeps').
+ */
+const SCHEMA_V10 = `
+CREATE TABLE fish_duels (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts INTEGER NOT NULL,
+  challenger_id INTEGER NOT NULL REFERENCES users(user_id),
+  opponent_id INTEGER NOT NULL REFERENCES users(user_id),
+  winner_id INTEGER NOT NULL REFERENCES users(user_id),
+  challenger_fish TEXT NOT NULL,
+  challenger_cm INTEGER,
+  opponent_fish TEXT NOT NULL,
+  opponent_cm INTEGER,
+  stake TEXT NOT NULL,
+  amount INTEGER,
+  turns INTEGER NOT NULL
+);
+CREATE INDEX fish_duels_ts ON fish_duels(ts);
+`;
+
+const SCHEMA_VERSION = 10;
 
 export function migrate(db: PointsDb): void {
   if ((db.pragma('user_version', { simple: true }) as number) >= SCHEMA_VERSION) return;
@@ -263,6 +285,7 @@ export function migrate(db: PointsDb): void {
     if (version < 7) db.exec(SCHEMA_V7);
     if (version < 8) db.exec(SCHEMA_V8);
     if (version < 9) db.exec(SCHEMA_V9);
+    if (version < 10) db.exec(SCHEMA_V10);
     if (version < SCHEMA_VERSION) db.pragma(`user_version = ${SCHEMA_VERSION}`);
   }).immediate();
 }

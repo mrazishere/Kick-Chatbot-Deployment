@@ -1009,6 +1009,84 @@ export function caughtFish(channel: string, cfg: PointsConfig, broadcasterUserId
   });
 }
 
+/** What one viewer holds unsold: how many of each catch, and the lengths of the sized ones. */
+export interface HeldCatch { username: string; types: Record<string, number>; sizes: Record<string, Array<{ cm: number; record: boolean }>> }
+
+/**
+ * Every viewer's unsold catch, straight from their fish document, for the
+ * leaderboard to price and rank. Excluded accounts are left out, as on the ranked boards.
+ */
+export function heldCatches(channel: string, cfg: PointsConfig, broadcasterUserId?: number | null): HeldCatch[] {
+  return withReadDb(channel, [] as HeldCatch[], db => {
+    const clause = exclusionClause(exclusionsFor(channel, cfg, broadcasterUserId));
+    let rows: Array<{ username: string; types: string | null; sizes: string | null }>;
+    try {
+      rows = db.prepare(
+        `SELECT u.username, json_extract(f.data, '$.catch.types') AS types, json_extract(f.data, '$.catch.sizes') AS sizes FROM fish f
+         JOIN (SELECT user_id, username FROM users WHERE ${clause.sql}) u ON u.user_id = f.user_id WHERE json_extract(f.data, '$.catch.fish') > 0`
+      ).all(...clause.params) as typeof rows;
+    } catch {
+      return []; // a database from before fishing has no fish table
+    }
+    return rows.flatMap(r => {
+      try {
+        return [{ username: r.username, types: JSON.parse(r.types ?? '{}') as HeldCatch['types'], sizes: JSON.parse(r.sizes ?? '{}') as HeldCatch['sizes'] }];
+      } catch {
+        return [];
+      }
+    });
+  });
+}
+
+export interface DuelBoard {
+  totals: { duels: number; wagered: number; fishTaken: number };
+  champions: Array<{ name: string; wins: number; losses: number }>;
+  recent: Array<{ winner: string; loser: string; winnerFish: string; loserFish: string; stake: 'friendly' | 'wager' | 'keeps'; amount: number | null; at: string }>;
+}
+
+/** The leaderboard's fish duels: totals, who has won most, and the latest fights. null before the first one. */
+export function duelBoard(channel: string, cfg: PointsConfig, broadcasterUserId?: number | null): DuelBoard | null {
+  return withReadDb(channel, null as DuelBoard | null, db => {
+    const clause = exclusionClause(exclusionsFor(channel, cfg, broadcasterUserId));
+    const users = `(SELECT user_id, username FROM users WHERE ${clause.sql})`;
+    type Row = { ts: number; challenger: string; opponent: string; challengerWon: number; cf: string; of: string; stake: string; amount: number | null };
+    let rows: Row[];
+    try {
+      rows = db.prepare(
+        `SELECT d.ts, c.username AS challenger, o.username AS opponent, d.winner_id = d.challenger_id AS challengerWon,
+           d.challenger_fish AS cf, d.opponent_fish AS of, d.stake, d.amount FROM fish_duels d
+         JOIN ${users} c ON c.user_id = d.challenger_id JOIN ${users} o ON o.user_id = d.opponent_id ORDER BY d.ts, d.id`
+      ).all(...clause.params, ...clause.params) as Row[];
+    } catch {
+      return null; // a database from before v10
+    }
+    if (!rows.length) return null;
+    const record = new Map<string, { name: string; wins: number; losses: number }>();
+    const of = (name: string) => record.get(name) ?? record.set(name, { name, wins: 0, losses: 0 }).get(name)!;
+    for (const r of rows) {
+      of(r.challengerWon ? r.challenger : r.opponent).wins++;
+      of(r.challengerWon ? r.opponent : r.challenger).losses++;
+    }
+    return {
+      totals: {
+        duels: rows.length,
+        wagered: rows.reduce((sum, r) => sum + (r.stake === 'wager' ? r.amount ?? 0 : 0), 0),
+        fishTaken: rows.filter(r => r.stake === 'keeps').length
+      },
+      champions: [...record.values()].filter(r => r.wins > 0).sort((a, b) => b.wins - a.wins || a.losses - b.losses).slice(0, 5),
+      recent: rows.slice(-5).reverse().map(r => ({
+        winner: r.challengerWon ? r.challenger : r.opponent,
+        loser: r.challengerWon ? r.opponent : r.challenger,
+        winnerFish: r.challengerWon ? r.cf : r.of,
+        loserFish: r.challengerWon ? r.of : r.cf,
+        stake: r.stake === 'wager' || r.stake === 'keeps' ? r.stake : 'friendly',
+        amount: r.stake === 'wager' ? r.amount : null,
+        at: new Date(r.ts).toISOString()
+      }))
+    };
+  });
+}
+
 /** The Fishing tab's heists: who steals, who gets caught, the biggest hauls and the latest. */
 export interface HeistBoard {
   totals: { attempts: number; stolen: number; caught: number; guarded: number; burned: number };

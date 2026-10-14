@@ -22,7 +22,7 @@ import {
   acceptDuel, adjustPoints, backupPoints, createDuel, creditTx, debitTx, duelStats, gambleStats, getUser, grantTick, invariantViolations,
   openRaffle, raffleEntries, gamble,
   ensureUserTx, outgoingDuel, refundDuel, resetAllPoints,
-  caughtFish, heistBoard, pointsLeaderboard, pointsSummary, searchPointsUsers, getPointsUserDetail, transfer
+  caughtFish, heistBoard, heldCatches, pointsLeaderboard, pointsSummary, searchPointsUsers, getPointsUserDetail, transfer
 } from '../points/store';
 import { WebhookPoller } from '../channels/webhook-poller';
 import { points as pointsCommand, SUBCOMMAND_ALIASES } from '../bot-commands/points';
@@ -32,6 +32,9 @@ import { markOverlaySeen, readOverlay } from '../community/fish-overlay';
 import { resetBites, takeBite as takeBiteForTest } from '../community/big-bite';
 import { fish as fishCommand, SUBCOMMANDS as FISH_SUBCOMMANDS } from '../bot-commands/fish';
 import { publicCommands } from '../points/public-commands';
+import { duelBoard } from '../points/store';
+import { answerMatches, makeTrapCheck, normalizeAnswer } from '../community/trap-check';
+import { fight, fighterOf, fishNamed, pickFighter, playMs, randomFish, typeOf, wantsRandom } from '../community/fish-duel';
 
 const MIN = 60_000;
 
@@ -211,7 +214,7 @@ async function main(): Promise<void> {
   // Store basics
   {
     const db = openPointsDb('basics', { create: true })!;
-    check('migrated to user_version 9', db.pragma('user_version', { simple: true }) === 9);
+    check('migrated to user_version 10', db.pragma('user_version', { simple: true }) === 10);
     runWrite(db, () => creditTx(db, { userId: 1, username: 'alice', amount: 100, reason: 'mod_add', now: 1 }));
     const over = runWrite(db, () => debitTx(db, { userId: 1, amount: 150, reason: 'mod_remove', now: 2 }));
     check('debit beyond balance refused', !over.ok && over.balance === 100);
@@ -589,6 +592,11 @@ async function main(): Promise<void> {
     const oversized = validatePointsPatch({}, { games: { overlaySizePercent: 400 } });
     check('overlaySizePercent is 100 unless set, and kept within 50–300',
       effectivePointsConfig({}).games.overlaySizePercent === 100 && sized.errors.length === 0 && effectivePointsConfig(sized.next).games.overlaySizePercent === 200 && oversized.errors.length === 1, { sized, oversized });
+    const cleared = validatePointsPatch({}, { games: { overlayClearWidthPercent: 26, overlayClearHeightPercent: 46 } });
+    const overCleared = validatePointsPatch({}, { games: { overlayClearWidthPercent: 90 } });
+    check('the overlay keeps no corner clear unless set, and at most 80% each way',
+      effectivePointsConfig({}).games.overlayClearWidthPercent === 0 && effectivePointsConfig({}).games.overlayClearHeightPercent === 0 && cleared.errors.length === 0
+      && effectivePointsConfig(cleared.next).games.overlayClearWidthPercent === 26 && effectivePointsConfig(cleared.next).games.overlayClearHeightPercent === 46 && overCleared.errors.length === 1, { cleared, overCleared });
   }
 
   // onlyWhileOffline: casting and trapping are shut while live, open offline; never on with onlyWhileLive
@@ -618,6 +626,27 @@ async function main(): Promise<void> {
     const swap = validatePointsPatch({}, { games: { onlyWhileLive: false, onlyWhileOffline: true } });
     check('onlyWhileOffline can\'t be on together with onlyWhileLive',
       both.errors.length === 1 && swap.errors.length === 0 && effectivePointsConfig(swap.next).games.onlyWhileOffline, { both: both.errors, swap: swap.errors });
+    // steal.onlyWhileLive: stealing keeps to live streams while casting stays offline-only
+    for (const [ch3, isLive] of [['fishsteallive', true], ['fishsteallive2', false]] as const) {
+      writeConfig(root, ch3, { enabled: true, currencyName: '$DON', games: { enabled: true, onlyWhileLive: false, onlyWhileOffline: true, steal: { enabled: true, onlyWhileLive: true } } });
+      makeService(ch3, { broadcaster: 999, live: async () => ({ isLive, startedAt: null }) });
+      const say = async (msg: string, name: string, senderId: number) => {
+        const got: string[] = [];
+        const tg: KickTags = { username: name, 'display-name': name, badges: {}, isBroadcaster: false, isModUp: false, isVIPUp: false, rawBadges: [], senderId };
+        await fishCommand({ say: async (_c, m) => { got.push(m); } }, msg, `#${ch3}`, tg, { channelName: ch3 } as ChannelConfig);
+        return got;
+      };
+      const stole = await say('$don fish steal @nobody', `crook${ch3.length}`, 41);
+      const cast = await say('$don fish trap', `angler${ch3.length}`, 42);
+      check(`steal.onlyWhileLive: ${isLive ? 'live, stealing answers and traps stay silent' : 'offline, stealing stays silent and traps answer'}`,
+        (stole.length === 1) === isLive && (cast.length === 1) === !isLive, { stole, cast });
+    }
+    const stealLive = validatePointsPatch({}, { enabled: true, games: { enabled: true, onlyWhileLive: false, onlyWhileOffline: true, steal: { enabled: true, onlyWhileLive: true } } });
+    const stealBad = validatePointsPatch({}, { games: { steal: { onlyWhileLive: 'yes' } } });
+    const note = publicCommands(effectivePointsConfig(stealLive.next)).sections.find(sec => sec.title === 'Fishing')?.note ?? '';
+    check('steal.onlyWhileLive is stored, validated and named in the command list',
+      stealLive.errors.length === 0 && effectivePointsConfig(stealLive.next).games.steal.onlyWhileLive && !effectivePointsConfig({}).games.steal.onlyWhileLive && stealBad.errors.length === 1
+      && note.includes('Casting and traps only work while the stream is offline.') && note.includes('Stealing only works while the stream is live.'), { errors: stealLive.errors, bad: stealBad.errors, note });
   }
 
   // Short forms: every $don subcommand has one, and it does what the long form does
@@ -759,6 +788,193 @@ async function main(): Promise<void> {
       noWords.errors.length === 1 && ok.errors.length === 0 && JSON.stringify(effectivePointsConfig(ok.next).antiSpam.keywords) === '["kekw","free money"]'
       && effectivePointsConfig(ok.next).antiSpam.threshold === 5 && bad.errors.length === 2 && effectivePointsConfig({}).antiSpam.enabled === false,
       { noWords: noWords.errors, ok: ok.errors, bad: bad.errors });
+  }
+
+  // Fish duels: fighters from held fish, a fight rolled turn by turn, stakes moved once
+  {
+    const ch = 'fishduel';
+    const cfgWith = (duel: Record<string, unknown>, games: Record<string, unknown> = {}) => writeConfig(root, ch, {
+      enabled: true, currencyName: '$DON', games: { enabled: true, onlyWhileLive: false, ...games, duel: { enabled: true, onlyWhileLive: false, cooldownSeconds: 0, ...duel } }
+    });
+    cfgWith({});
+    makeService(ch, { broadcaster: 999 });
+    const ddb = openPointsDb(ch, { create: true })!;
+    const g = effectivePointsConfig({ games: { enabled: true } }).games;
+    const item = (n: string) => ITEMS.find(x => x.name === n)!;
+    const fishOf = (id: number) => loadFish(ddb, id)!;
+    const seed = (id: number, name: string, bal: number, fish: Array<[string, number]>) => runWrite(ddb, () => {
+      creditTx(ddb, { userId: id, username: name, amount: bal, reason: 'mod_add', now: 1 });
+      const d = initialData();
+      d.lifetime.attempts = 1;
+      for (const [n, cm] of fish) {
+        addItem(d, item(n));
+        d.catch.sizes ??= {};
+        (d.catch.sizes[n] ??= []).push({ cm, record: false });
+      }
+      saveFish(ddb, id, d, 1);
+    });
+    seed(51, 'ash', 1000, [['🦈', 90], ['🐟', 20], ['🐟', 60]]);
+    seed(52, 'gary', 1000, [['🐢', 70]]);
+    seed(53, 'brock', 50, []);
+    seed(54, 'misty', 1000, [['🦐', 30]]);
+
+    // The engine
+    const shark = fighterOf(g, item('🦈'), { cm: 90, record: false });
+    const minnow = fighterOf(g, item('🐟'), { cm: 20, record: false });
+    check('a fighter gets its level from rarity, and hit points and attack from its length',
+      shark.rarity === 'Epic' && minnow.rarity === 'Common' && shark.hp > minnow.hp && shark.attack > minnow.attack && fighterOf(g, item('🐟'), { cm: 60, record: false }).attack > fighterOf(g, item('🐟'), { cm: 50, record: false }).attack && fighterOf(g, item('🐟'), { cm: 60, record: false }).hp > fighterOf(g, item('🐟'), { cm: 50, record: false }).hp
+      && typeOf('🦈') === 'Predator' && typeOf('🐟') === 'Swift' && typeOf('🐢') === 'Armored', { shark, minnow });
+    const half: () => number = () => 0.5;
+    const even = fight(shark, minnow, half);
+    check('a coin flip opens and the fight runs until one is out', even.turns[0].by === 1 && even.winner === 0 && even.left[1] === 0 && even.left[0] > 0
+      && even.turns.every((t, i) => t.by === (i % 2 === 0 ? 1 : 0)) && even.turns.filter(t => t.by === 0).every(t => t.edge === 1 && t.damage === Math.round(shark.attack * 1.08)), even);
+    const turtle = fighterOf(g, item('🐢'), { cm: 90, record: false });
+    const sharkWeak = fight(shark, turtle, half).turns.find(t => t.by === 0)!;
+    check('types: Predator is strong against Swift and weak against Armored', sharkWeak.edge === -1 && sharkWeak.damage === Math.round(shark.attack * 0.94), sharkWeak);
+    const wins = Array.from({ length: 400 }, () => fight(shark, minnow).winner).filter(w => w === 0).length;
+    const mirror = Array.from({ length: 2000 }, () => fight(minnow, minnow).winner).filter(w => w === 0).length;
+    check('a far stronger fish nearly always wins; a mirror match is about even', wins > 390 && mirror > 850 && mirror < 1150, { wins, mirror });
+    const bout = (a: string, acm: number, b: string, bcm: number): number => {
+      const fa = fighterOf(g, item(a), { cm: acm, record: false }), fb = fighterOf(g, item(b), { cm: bcm, record: false });
+      return Array.from({ length: 3000 }, (_, i) => (i % 2 ? fight(fa, fb).winner === 0 : fight(fb, fa).winner === 1)).filter(Boolean).length / 3000;
+    };
+    const bigger = bout('🐟', 60, '🐟', 50), rarer = bout('🐠', 50, '🐟', 50), typed = bout('🐸', 50, '🐟', 50), rarerCountered = bout('🐠', 50, '🐸', 50);
+    check('the stats decide: bigger beats smaller, rarer beats commoner even against its counter, a type edge helps',
+      bigger > 0.54 && bigger < 0.68 && rarer > 0.72 && rarer < 0.9 && typed > 0.6 && typed < 0.78 && rarerCountered > 0.52, { bigger, rarer, typed, rarerCountered });
+    check('duel: random sends any fish held, by how many of each', wantsRandom(['Random', 'fish']) && !wantsRandom(['keeps'])
+      && randomFish(fishOf(51), () => 0) !== undefined && pickFighter(fishOf(51), g, randomFish(fishOf(51), () => 0.999)) !== null && randomFish(fishOf(53)) === undefined && randomFish(null) === undefined);
+    check('duel: a fish is named by emoji or by word, never junk', fishNamed(['Shark']) === '🦈' && fishNamed(['50', 'whale']) === '🐳' && fishNamed(['bluewhale']) === '🐋'
+      && fishNamed(['🦈\uFE0F']) === '🦈' && fishNamed(['keeps']) === undefined && fishNamed(['🥾']) === undefined);
+    check('someone sends their strongest fish, or the biggest of the kind they name',
+      pickFighter(fishOf(51), g)!.item.name === '🦈' && pickFighter(fishOf(51), g, '🐟')!.held!.cm === 60 && pickFighter(fishOf(51), g, '🐟')!.index === 1
+      && pickFighter(fishOf(53), g) === null && pickFighter(fishOf(52), g, '🦈') === null);
+    check('the overlay play time grows with the turns but stays short', playMs(4) < playMs(12) && playMs(40) <= 26_000, [playMs(4), playMs(12), playMs(40)]);
+
+    const realNow = Date.now;
+    let shift = 0;
+    Date.now = () => realNow() + shift;
+    try {
+      const run = async (msg: string, who: [string, number]) => {
+        shift += 6_000;
+        const out: string[] = [];
+        const t: KickTags = { username: who[0], 'display-name': who[0], badges: {}, isBroadcaster: false, isModUp: false, isVIPUp: false, rawBadges: [], senderId: who[1] };
+        await fishCommand({ say: async (_c, m) => { out.push(m); } }, msg, `#${ch}`, t, { channelName: ch } as ChannelConfig);
+        return out.join(' | ');
+      };
+      const ash: [string, number] = ['ash', 51];
+      const gary: [string, number] = ['gary', 52];
+      const lastDuel = () => ddb.prepare('SELECT * FROM fish_duels ORDER BY id DESC LIMIT 1').get() as { winner_id: number; challenger_fish: string; opponent_fish: string; stake: string; amount: number | null; turns: number };
+
+      check('a duel needs a fish on both sides', (await run('$don fish duel @gary', ['brock', 53])).includes('need a fish') && (await run('$don fish duel @brock', ash)).includes('has no fish to fight with'));
+      check('no duelling yourself, and nobody to answer without a challenge', (await run('$don fish duel @ash', ash)).includes("can't duel yourself") && (await run('$don fish accept', gary)).includes('Nobody has challenged you'));
+
+      const asked = await run('$don fish duel @gary', ash);
+      check('a challenge names the fish sent and how to answer', asked.startsWith('@gary ⚔️ ash challenges you') && asked.includes('🦈 90 cm') && asked.includes('Predator') && asked.includes('For glory only')
+        && asked.includes('$don fish accept'), asked);
+      check('one challenge at a time, for both sides', (await run('$don fish duel @misty', ash)).includes('already challenged gary') && (await run('$don fish duel @gary', ['misty', 54])).includes('busy with another duel')
+        && (await run('$don fish duel @misty', gary)).includes('challenge to answer first'));
+      const friendly = await run('$don fish accept', gary);
+      const row1 = lastDuel();
+      check('accepting fights it: a result line, a record for both, a row, and nothing changes hands',
+        /⚔️ @(ash|gary)'s .* (crushed|beat|barely survived) @(ash|gary)'s .* in \d+ turns/.test(friendly) && row1.stake === 'friendly' && row1.challenger_fish === '🦈' && row1.opponent_fish === '🐢'
+        && fishOf(51).lifetime.duel.wins + fishOf(52).lifetime.duel.wins === 1 && fishOf(51).lifetime.duel.losses + fishOf(52).lifetime.duel.losses === 1
+        && balance(ch, 51) === 1000 && balance(ch, 52) === 1000 && fishOf(51).catch.types['🦈'] === 1 && fishOf(52).catch.types['🐢'] === 1, { friendly, row1 });
+      const shown = readOverlay(ddb).events.find(e => e.kind === 'duel');
+      check('the overlay gets both sides and every turn', !!shown?.duel && shown.duel.a.user === 'ash' && shown.duel.b.fish === '🐢' && shown.duel.turns.length === row1.turns
+        && shown.duel.winner === (row1.winner_id === 51 ? 0 : 1) && !shown.text.includes('@'), shown);
+      check('a challenge is gone once fought', (await run('$don fish accept', gary)).includes('Nobody has challenged you'));
+
+      check('a wager must be covered by both', (await run('$don fish duel @brock 100', ash)).includes('has no fish') && (await run('$don fish duel @gary 5000', ash)).includes('You only have 1,000')
+        && (await run('$don fish duel @gary 200 300', ash)).includes('Usage:'));
+      const wagered = await run('$don fish duel @gary 🐟 200', ash);
+      check('a wager is named in the challenge, with the fish asked for', wagered.includes('🐟 60 cm') && wagered.includes('Stake: 200 $DON each'), wagered);
+      const paid = await run('$don fish accept 🐢', gary);
+      const row2 = lastDuel();
+      const [w2, l2] = row2.winner_id === 51 ? [51, 52] : [52, 51];
+      check('the loser pays the winner the wager, once', row2.stake === 'wager' && row2.amount === 200 && balance(ch, w2) === 1200 && balance(ch, l2) === 800
+        && paid.includes('takes 200 $DON and now has 1,200') && fishOf(w2).lifetime.duel.coinsWon === 200 && fishOf(l2).lifetime.duel.coinsLost === 200, { paid, row2 });
+
+      const keeps = await run('$don fish duel @gary keeps', ash);
+      check('a duel for keeps says so', keeps.includes("the winner takes the loser's fish"), keeps);
+      const taken = await run('$don fish accept', gary);
+      const row3 = lastDuel();
+      const ashWon = row3.winner_id === 51;
+      check('for keeps: the loser\'s fish moves to the winner with its length', row3.stake === 'keeps' && taken.includes('for keeps!')
+        && (ashWon ? fishOf(51).catch.types['🐢'] === 1 && (fishOf(52).catch.types['🐢'] ?? 0) === 0 && fishOf(51).catch.sizes!['🐢'][0].cm === 70 && fishOf(51).lifetime.duel.fishWon === 1 && fishOf(52).lifetime.duel.fishLost === 1
+          : fishOf(52).catch.types['🦈'] === 1 && (fishOf(51).catch.types['🦈'] ?? 0) === 0 && fishOf(52).catch.sizes!['🦈'][0].cm === 90 && fishOf(52).lifetime.duel.fishWon === 1)
+        && fishOf(51).catch.fish + fishOf(52).catch.fish === 4, { taken, row3 });
+
+      // Whoever won, both go on with what they started with.
+      const restock = (id: number, fish: Array<[string, number]>) => runWrite(ddb, () => {
+        const d = fishOf(id);
+        d.catch.fish = fish.length;
+        d.catch.types = {};
+        d.catch.sizes = {};
+        for (const [n, cm] of fish) {
+          d.catch.types[n] = (d.catch.types[n] ?? 0) + 1;
+          (d.catch.sizes[n] ??= []).push({ cm, record: false });
+        }
+        saveFish(ddb, id, d, 2);
+      });
+      restock(51, [['🦈', 90], ['🐟', 20], ['🐟', 60]]);
+      restock(52, [['🐢', 70]]);
+
+      const misty: [string, number] = ['misty', 54];
+      await run('$don fish duel @misty', ash);
+      const denied = await run('$don fish deny', misty);
+      await run('$don fish duel @misty', ash);
+      const back = await run('$don fish deny', ash);
+      check('a duel can be turned down, or taken back by the one who asked', denied.includes('@ash misty turned down') && back.includes('took back your challenge to misty')
+        && (await run('$don fish deny', misty)).includes('no fish duel to turn down'), { denied, back });
+
+      await run('$don fish duel @misty 🐟 keeps', ash);
+      runWrite(ddb, () => { const d = fishOf(51); d.catch.types['🐟'] = 0; d.catch.sizes!['🐟'] = []; d.catch.fish -= 2; saveFish(ddb, 51, d, 2); });
+      const off = await run('$don fish accept', misty);
+      check('a challenger who no longer has the fish they named calls the duel off', off.includes('no longer has their 🐟') && (await run('$don fish accept', misty)).includes('Nobody has challenged you'), off);
+
+      await run('$don fish duel @misty', ash);
+      shift += 121_000;
+      check('an unanswered challenge runs out', (await run('$don fish accept', misty)).includes('Nobody has challenged you'));
+
+      const board = duelBoard(ch, effectivePointsConfig({ enabled: true, games: { enabled: true, duel: { enabled: true } } }), 999)!;
+      check('the leaderboard counts duels, wagers and fish taken, and lists the latest', board.totals.duels === 3 && board.totals.wagered === 200 && board.totals.fishTaken === 1
+        && board.recent.length === 3 && board.recent[0].stake === 'keeps' && board.champions.reduce((n, c) => n + c.wins, 0) === 3, board);
+      const top = await run('$don fish top duelists', ash);
+      const stats = await run('$don fish stats', ash);
+      check('duel wins have a board and a stats line', top.includes('fish duelists') && /fish duels won: \d, lost: \d/.test(stats), { top, stats });
+
+      cfgWith({ allowKeeps: false, maxWager: 100 });
+      const noKeeps = await run('$don fish duel @gary keeps', ash);
+      const capped = await run('$don fish duel @gary 150', ash);
+      check('keeps can be turned off and wagers capped', noKeeps.includes('for keeps are off') && capped.includes('most you can stake'), { noKeeps, capped });
+      cfgWith({ cooldownSeconds: 300 });
+      await run('$don fish duel @misty', ash);
+      await run('$don fish deny', ash);
+      check('a cooldown between one viewer\'s challenges', (await run('$don fish duel @misty', ash)).includes('challenge someone again in'));
+
+      cfgWith({ enabled: false });
+      check('duels are off unless the channel turns them on', (await run('$don fish duel @gary', ash)).includes('no fish duels here') && !effectivePointsConfig({}).games.duel.enabled);
+    } finally {
+      Date.now = realNow;
+    }
+
+    // Live only by its own rule, in a channel that fishes offline
+    for (const [ch3, isLive] of [['fishduellive', true], ['fishduellive2', false]] as const) {
+      writeConfig(root, ch3, { enabled: true, currencyName: '$DON', games: { enabled: true, onlyWhileLive: false, onlyWhileOffline: true, duel: { enabled: true } } });
+      makeService(ch3, { broadcaster: 999, live: async () => ({ isLive, startedAt: null }) });
+      const got: string[] = [];
+      const tg: KickTags = { username: `duelist${ch3.length}`, 'display-name': `duelist${ch3.length}`, badges: {}, isBroadcaster: false, isModUp: false, isVIPUp: false, rawBadges: [], senderId: 61 };
+      await fishCommand({ say: async (_c, m) => { got.push(m); } }, '$don fish duel @nobody', `#${ch3}`, tg, { channelName: ch3 } as ChannelConfig);
+      check(`duel.onlyWhileLive: ${isLive ? 'answers while live' : 'stays silent offline'}`, (got.length === 1) === isLive, got);
+    }
+    const duelCfg = validatePointsPatch({}, { enabled: true, games: { enabled: true, onlyWhileLive: false, onlyWhileOffline: true, steal: { enabled: true, onlyWhileLive: true }, duel: { enabled: true, maxWager: 500 } } });
+    const duelBad = validatePointsPatch({}, { games: { duel: { enabled: 'yes', expirySeconds: 5, maxWager: -1 } } });
+    const eff = effectivePointsConfig(duelCfg.next);
+    const fishing = publicCommands(eff).sections.find(sec => sec.title === 'Fishing')!;
+    check('duel settings are stored, validated and listed', duelCfg.errors.length === 0 && eff.games.duel.enabled && eff.games.duel.onlyWhileLive && eff.games.duel.maxWager === 500
+      && Object.keys(duelCfg.next?.games?.duel ?? {}).sort().join(',') === 'enabled,maxWager' && duelBad.errors.length === 3
+      && fishing.note!.includes('Stealing and duels only work while the stream is live.') && fishing.rows.some(r => r.usage.includes('fish duel @user') && r.short === '$points f d @user')
+      && fishing.rows.some(r => r.short === '$points f a') && fishing.rows.some(r => r.short === '$points f dn'), { errors: duelCfg.errors, bad: duelBad.errors, note: fishing.note });
   }
 
   // Stealing: a hook to try, rarity odds, a burned fine, guards, grace and protection
@@ -1113,6 +1329,118 @@ async function main(): Promise<void> {
     check('big bite settings are validated', validatePointsPatch({}, { games: { bigBite: { everyMinutes: 5, activeMinutes: 0, windowSeconds: 5, pulls: 9, pullSeconds: 4 } } }).errors.length === 5);
     check('a trophy pool can\'t be switched off entirely', validatePointsPatch({}, { games: { catches: Object.fromEntries(ITEMS.filter(i => i.trophy).map(i => [i.name, { weight: 0 }])) } })
       .errors.some(e => e.includes('big bite trophy')));
+  }
+
+  // Trap checks: a question before an offline haul, against macros
+  {
+    const ch = 'trapcheckch';
+    writeConfig(root, ch, { enabled: true, currencyName: '$DON', games: { enabled: true, onlyWhileLive: false, trapMinutes: 60, trapCheck: { enabled: true, chancePercent: 100 } } });
+    makeService(ch, { broadcaster: 999, live: async () => ({ isLive: false, startedAt: null }) });
+    const pdb = openPointsDb(ch, { create: true })!;
+    const realNow = Date.now;
+    let shift = 0;
+    Date.now = () => realNow() + shift;
+    try {
+      const t: KickTags = { username: 'trapper', 'display-name': 'trapper', badges: {}, isBroadcaster: false, isModUp: false, isVIPUp: false, rawBadges: [], senderId: 31 };
+      const run = async (msg: string) => {
+        shift += 6_000;
+        const out: string[] = [];
+        await fishCommand({ say: async (_c, m) => { out.push(m); } }, msg, `#${ch}`, t, { channelName: ch } as ChannelConfig);
+        return out[0] ?? '';
+      };
+      const fish = () => loadFish(pdb, 31)!;
+      const fill = async (how = '$don fish trap') => { await run('$don fish trap'); shift += 61 * 60_000; return run(how); };
+      runWrite(pdb, () => { ensureUserTx(pdb, 31, 'trapper', 1); creditTx(pdb, { userId: 31, username: 'trapper', amount: 1000, reason: 'test', now: 1 }); });
+
+      const asked = await fill();
+      const q = fish().trapCheck;
+      check('offline, full traps ask a question first and hold the haul', asked.includes('Before you pull them up') && asked.includes('30s and 3 tries')
+        && asked.includes('15% of your $DON') && !!q && fish().trap.active && fish().lifetime.trap.times === 0, { asked, q });
+      const again = await run('$don f t');
+      check('collecting again repeats the same question', again.includes(q!.question) && fish().trap.active, again);
+      const blank = await run('$don fish answer');
+      check('an empty answer repeats it, no fine', blank.includes(q!.question) && balance(ch, 31) === 1000 && !!fish().trapCheck, blank);
+      const quick = async (msg: string) => {
+        shift += 1_000;   // inside the 5s cooldown: a waiting answer skips it
+        const out: string[] = [];
+        await fishCommand({ say: async (_c, m) => { out.push(m); } }, msg, `#${ch}`, t, { channelName: ch } as ChannelConfig);
+        return out[0] ?? '';
+      };
+      const miss = await quick('$don fish answer nope');
+      check('a wrong try leaves the rest, without the cooldown', miss.includes('Not quite! 2 tries left') && miss.includes(q!.question)
+        && fish().trapCheck?.wrong === 1 && balance(ch, 31) === 1000, miss);
+      const right = await quick(`$don f ans ${q!.answers[0]}`);
+      check('a right answer collects the haul', right.includes('Correct!') && right.includes('drag the traps') && !fish().trap.active && !fish().trapCheck
+        && fish().lifetime.trap.checksPassed === 1 && balance(ch, 31) === 1000, right);
+      check('no question waiting says so', (await run('$don fish answer 3')).includes("There's no question"));
+
+      const askedReset = await fill('$don fish trap reset');
+      const qr = fish().trapCheck!;
+      check('a reset asks too', askedReset.includes('Before you pull them up') && qr.reset, askedReset);
+      const relaid = await run(`$don fish answer ${qr.answers[qr.answers.length - 1]}`);
+      check('a right answer to a reset collects and lays again', relaid.includes('Correct!') && relaid.includes('You have laid') && fish().trap.active, relaid);
+      await run('$don fish trap cancel');
+
+      await fill();
+      check('collecting meanwhile repeats it with the time left', (await run('$don fish trap')).includes('but first') && !!fish().trapCheck);
+      shift += 31_000;
+      const late = await run(`$don fish answer ${fish().trapCheck!.answers[0]}`);
+      check('a right answer after the time is up is too late: fined', late.includes("Time's up!") && balance(ch, 31) === 1000 - 150 && !fish().trap.active, { late, b: balance(ch, 31) });
+      await fill();
+      shift += 5 * 3600_000;
+      const restarted = await run('$don fish trap');
+      check('a window whose timer never ran ends on the next trap command', restarted.includes("Time's up!") && !fish().trapCheck && balance(ch, 31) === 850 - 127, { restarted, b: balance(ch, 31) });
+      runWrite(pdb, () => creditTx(pdb, { userId: 31, username: 'trapper', amount: 1000 - balance(ch, 31), reason: 'test', now: 1 }));
+      await fill();
+      await quick('$don fish answer nope');
+      await quick('$don fish answer still no');
+      const wrong = await quick('$don fish answer definitely not it');
+      check('three wrong tries fine 15% and empty the traps', wrong.includes('Wrong again!') && wrong.includes('150 $DON') && balance(ch, 31) === 850
+        && !fish().trap.active && !fish().trapCheck && fish().lifetime.trap.checksFailed === 3, wrong);
+      const ledger = pdb.prepare("SELECT delta, reason FROM ledger WHERE user_id = 31 AND reason = 'game:fish_trap_check'").all();
+      check('the fine is on the ledger', ledger.length === 3, ledger);
+
+      await fill();
+      await run('$don fish trap cancel');
+      check('cancelling drops the question', !fish().trapCheck && !fish().trap.active);
+
+      // The service keeps the live state it learned; a new one starts live.
+      makeService(ch, { broadcaster: 999 });
+      const live = await fill();
+      check('never while live', live.includes('drag the traps') && !fish().trapCheck, live);
+    } finally {
+      Date.now = realNow;
+    }
+
+    check('answers match loosely', answerMatches({ answers: ['6', 'six'] }, ' Six. ')
+      && answerMatches({ answers: [normalizeAnswer('🐙'), 'octopus'] }, '🐙\uFE0F \u{E0021}')
+      && answerMatches({ answers: ['octopus'] }, 'the Octopus')
+      && !answerMatches({ answers: ['6', 'six'] }, '7'));
+    const samples = Array.from({ length: 300 }, () => makeTrapCheck(false, 0, 30));
+    check('a fish question never takes "fish" as its answer', samples.every(c => !c.answers.includes('fish')));
+    check('every question has normalized answers, and the kinds vary', samples.every(c => c.answers.length > 0 && c.answers.every(a => a === normalizeAnswer(a)))
+      && new Set(samples.map(c => c.question.split(' ')[0])).size >= 3, samples.slice(0, 5));
+    // The timer ends a window nobody answered, in real time.
+    {
+      const ch2 = 'trapcheckclock';
+      writeConfig(root, ch2, { enabled: true, currencyName: '$DON', games: { enabled: true, onlyWhileLive: false, trapCheck: { enabled: true, chancePercent: 100, answerSeconds: 10 } } });
+      makeService(ch2, { broadcaster: 999, live: async () => ({ isLive: false, startedAt: null }) });
+      const cdb2 = openPointsDb(ch2, { create: true })!;
+      runWrite(cdb2, () => {
+        ensureUserTx(cdb2, 32, 'sleeper', 1);
+        creditTx(cdb2, { userId: 32, username: 'sleeper', amount: 200, reason: 'test', now: 1 });
+        const d = initialData();
+        d.trap = { active: true, start: Date.now() - 61 * 60_000, end: Date.now() - 60_000, duration: 60 * 60_000 };
+        saveFish(cdb2, 32, d, 1);
+      });
+      const said: string[] = [];
+      const t2: KickTags = { username: 'sleeper', 'display-name': 'sleeper', badges: {}, isBroadcaster: false, isModUp: false, isVIPUp: false, rawBadges: [], senderId: 32 };
+      await fishCommand({ say: async (_c, m) => { said.push(m); } }, '$don fish trap', `#${ch2}`, t2, { channelName: ch2 } as ChannelConfig);
+      await new Promise(r => setTimeout(r, 11_500));
+      check('an unanswered question ends when its time runs out: fined, traps empty', said.length === 2 && said[1].includes("Time's up!") && said[1].includes('30 $DON')
+        && balance(ch2, 32) === 170 && !loadFish(cdb2, 32)!.trapCheck && !loadFish(cdb2, 32)!.trap.active, { said, b: balance(ch2, 32) });
+    }
+    check('trap check settings are validated', validatePointsPatch({}, { games: { trapCheck: { chancePercent: 0, finePercent: 101, enabled: 'yes', answerSeconds: 5, tries: 0 } } }).errors.length === 5);
   }
 
   // Fishing traps set a reminder for when they're full
@@ -1616,25 +1944,25 @@ async function main(): Promise<void> {
     const mch = 'migrate1ch';
     const mdb = openPointsDb(mch, { create: true })!;
     runWrite(mdb, () => creditTx(mdb, { userId: 1, username: 'old', amount: 77, reason: 'mod_add', now: 1 }));
-    mdb.exec('DROP TABLE steals; DROP TABLE overlay_feed; DROP TABLE catches; DROP TABLE fish; DROP TABLE duels; DROP TABLE raffle_entries; DROP TABLE raffles; DROP INDEX ledger_ref');
+    mdb.exec('DROP TABLE fish_duels; DROP TABLE steals; DROP TABLE overlay_feed; DROP TABLE catches; DROP TABLE fish; DROP TABLE duels; DROP TABLE raffle_entries; DROP TABLE raffles; DROP INDEX ledger_ref');
     mdb.pragma('user_version = 1');
     closePointsDb(mch);
     const reopened = openPointsDb(mch, { create: false })!;
     const hasTable = (n: string) => !!reopened.prepare('SELECT 1 FROM sqlite_master WHERE name = ?').get(n);
     check('a v1 database migrates to the latest version keeping balances',
-      reopened.pragma('user_version', { simple: true }) === 9 && balance(mch, 1) === 77
-      && hasTable('duels') && hasTable('raffles') && hasTable('raffle_entries') && hasTable('fish') && hasTable('catches') && hasTable('overlay_feed') && hasTable('steals'));
+      reopened.pragma('user_version', { simple: true }) === 10 && balance(mch, 1) === 77
+      && hasTable('duels') && hasTable('raffles') && hasTable('raffle_entries') && hasTable('fish') && hasTable('catches') && hasTable('overlay_feed') && hasTable('steals') && hasTable('fish_duels'));
 
     // v2 → v3 specifically: a database that already has duels gains the raffle tables.
     const m2 = 'migrate2ch';
     const m2db = openPointsDb(m2, { create: true })!;
     runWrite(m2db, () => creditTx(m2db, { userId: 1, username: 'old2', amount: 42, reason: 'mod_add', now: 1 }));
-    m2db.exec('DROP TABLE steals; DROP TABLE overlay_feed; DROP TABLE catches; DROP TABLE fish; DROP TABLE raffle_entries; DROP TABLE raffles; DROP INDEX ledger_ref');
+    m2db.exec('DROP TABLE fish_duels; DROP TABLE steals; DROP TABLE overlay_feed; DROP TABLE catches; DROP TABLE fish; DROP TABLE raffle_entries; DROP TABLE raffles; DROP INDEX ledger_ref');
     m2db.pragma('user_version = 2');
     closePointsDb(m2);
     const re2 = openPointsDb(m2, { create: false })!;
     check('a v2 database gains the raffle tables and keeps its balances',
-      re2.pragma('user_version', { simple: true }) === 9 && balance(m2, 1) === 42
+      re2.pragma('user_version', { simple: true }) === 10 && balance(m2, 1) === 42
       && !!re2.prepare("SELECT 1 FROM sqlite_master WHERE name = 'raffles'").get());
     void svc;
     makeService(ch, { broadcaster: 999 });
@@ -1855,6 +2183,21 @@ async function main(): Promise<void> {
     const whale = caught.find(c => c.name === '🐋');
     check('caught fish: count, first and latest catcher, excluded left out', caught.length === 2 && whale?.times === 2
       && whale.firstBy === 'alice' && whale.lastBy === 'bob' && whale.firstAt === new Date(1000).toISOString() && !caught.some(c => c.name === '🦈'), caught);
+    runWrite(cdbx, () => {
+      const hold = (id: number, name: string, n: number, sizes?: FishData['catch']['sizes']) => {
+        const d = initialData();
+        d.catch.types[name] = n;
+        d.catch.fish = n;
+        if (sizes) d.catch.sizes = sizes;
+        saveFish(cdbx, id, d, 4000);
+      };
+      hold(1, '🐋', 2, { '🐋': [{ cm: 40, record: false }] });
+      hold(2, '🐟', 0); // sold everything
+      hold(999, '🦈', 1);
+    });
+    const held = heldCatches(ch, cfg, 999);
+    check('held catches: what is unsold, sizes kept, empty-handed and excluded left out', held.length === 1 && held[0].username === 'alice'
+      && held[0].types['🐋'] === 2 && held[0].sizes['🐋']?.[0]?.cm === 40, held);
     const lb = pointsLeaderboard(ch, cfg, 100, 999);
     check('leaderboard excludes system bots', !lb.points.some(r => r.username === 'botrix') && lb.points[0]?.username === 'alice', lb.points);
     const bk = await backupPoints(ch);

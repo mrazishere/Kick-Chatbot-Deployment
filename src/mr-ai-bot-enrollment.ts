@@ -19,8 +19,8 @@ import { publicCommands } from './points/public-commands';
 import { closePointsDb, openPointsDb } from './points/db';
 import { markOverlaySeen, readOverlay } from './community/fish-overlay';
 import { publicUserHistory, publicViewerSearch } from './points/store';
-import { rarityName } from './community/fishing';
-import { adjustPoints, backupPoints, caughtFish, heistBoard, getPointsUserDetail, pointsLeaderboard, pointsSummary, resetAllPoints, searchPointsUsers } from './points/store';
+import { ITEMS, rarityName, sellPrice } from './community/fishing';
+import { adjustPoints, backupPoints, caughtFish, duelBoard, heistBoard, heldCatches, getPointsUserDetail, pointsLeaderboard, pointsSummary, resetAllPoints, searchPointsUsers } from './points/store';
 
 /* eslint-disable @typescript-eslint/no-var-requires, @typescript-eslint/no-explicit-any */
 const puppeteer = require('puppeteer-extra');
@@ -2833,11 +2833,14 @@ app.get('/internal/bot/:channel/overlay/fishing', internalGuard(false), (req, re
   const demo = cfg.games.overlayDemo;
   // size: how big the overlay draws, as a percentage (games.overlaySizePercent).
   const size = cfg.games.overlaySizePercent;
-  if (!db) return res.json({ lastId: 0, events: [], demo, size });
+  // clear: the bottom-right corner the overlay keeps out of, as shares of its width and height.
+  const { overlayClearWidthPercent: w, overlayClearHeightPercent: h } = cfg.games;
+  const clear = w > 0 && h > 0 ? { w, h } : undefined;
+  if (!db) return res.json({ lastId: 0, events: [], demo, size, clear });
   try {
     markOverlaySeen(db);
     // The bot's clock, so the overlay counts a big bite down to the real deadline.
-    return res.json({ ...readOverlay(db), now: Date.now(), demo, size });
+    return res.json({ ...readOverlay(db), now: Date.now(), demo, size, clear });
   } catch (e) {
     return pointsUnavailable(res, channel, e);
   }
@@ -2885,7 +2888,8 @@ app.get('/internal/bot/:channel/points/public-history', internalGuard(false), (r
 /**
  * What the public leaderboard's Fishing tab shows: every catch with its share of
  * catches, a rarity name and its sell price as the channel has them set, the big
- * bite trophies, and the rarest fish anyone has landed. Null where fishing is off.
+ * bite trophies, the rarest fish anyone has landed, and the fish each viewer holds
+ * unsold. Null where fishing is off.
  */
 function publicFishing(channel: string, cfg: ReturnType<typeof effectivePointsConfig>, broadcasterUserId: number | null): Record<string, unknown> | null {
   const g = cfg.games;
@@ -2914,8 +2918,31 @@ function publicFishing(channel: string, cfg: ReturnType<typeof effectivePointsCo
     })
     .sort((a, b) => Number('trophy' in b) - Number('trophy' in a) || a.chance - b.chance || a.firstAt.localeCompare(b.firstAt))
     .slice(0, 5);
+  // Who holds what right now: each viewer's unsold fish, rarest first, priced as a
+  // sale would price them before any reel bonus. The most valuable haul leads.
+  const kinds = ITEMS.filter(i => i.type === 'fish')
+    .map(item => ({ item, odds: odds.get(item.name) }))
+    .sort((a, b) => Number(!!b.item.trophy) - Number(!!a.item.trophy) || (a.odds?.chance ?? 0) - (b.odds?.chance ?? 0) || b.item.price - a.item.price);
+  const holders = heldCatches(channel, cfg, broadcasterUserId)
+    .map(h => {
+      let count = 0;
+      let worth = 0;
+      const held = kinds.flatMap(({ item, odds: o }) => {
+        const n = Math.floor(h.types[item.name] ?? 0);
+        if (!(n > 0)) return [];
+        const sized = (h.sizes[item.name] ?? []).slice(0, n);
+        for (const one of sized) worth += sellPrice(item, g, one);
+        worth += (n - sized.length) * sellPrice(item, g);
+        count += n;
+        return [{ emoji: item.name, n, rarity: o?.rarity ?? 'Never' }];
+      });
+      return { name: h.username, fish: held, count, worth };
+    })
+    .filter(h => h.count > 0)
+    .sort((a, b) => b.worth - a.worth || b.count - a.count || a.name.localeCompare(b.name))
+    .slice(0, 100);
   return {
-    catchOdds: g.catchOdds, fish, junk: list(c => c.type === 'junk'), rarest, steal: g.steal.enabled, heists: heistBoard(channel, cfg, broadcasterUserId),
+    catchOdds: g.catchOdds, fish, junk: list(c => c.type === 'junk'), rarest, holders, steal: g.steal.enabled, heists: heistBoard(channel, cfg, broadcasterUserId), duel: g.duel.enabled, duels: duelBoard(channel, cfg, broadcasterUserId),
     trophies, bigBite: g.bigBite.enabled ? { everyMinutes: g.bigBite.everyMinutes } : null
   };
 }

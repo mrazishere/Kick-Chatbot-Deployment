@@ -7,6 +7,7 @@
  */
 
 import { PointsDb, runWrite } from '../points/db';
+import type { OverlayDuel } from './fish-duel';
 
 /** How long a reply stays readable. The overlay polls every couple of seconds. */
 const KEEP_MS = 5 * 60_000;
@@ -17,10 +18,11 @@ const READ_LIMIT = 50;
  * catch: a fish landed by a cast. trap: traps collected. miss: a cast that came
  * back empty or with junk. bite: a big bite, carrying the reel code the chat reply
  * never shows. steal: a fish taken from another viewer. caught: a
- * thief caught red-handed. info: any other reply, only in feeds from before replies
+ * thief caught red-handed. duel: a fish duel, carrying every turn for the overlay
+ * to play back. info: any other reply, only in feeds from before replies
  * were split between chat and the overlay.
  */
-export type OverlayKind = 'catch' | 'trap' | 'miss' | 'steal' | 'caught' | 'bite' | 'info';
+export type OverlayKind = 'catch' | 'trap' | 'miss' | 'steal' | 'caught' | 'bite' | 'duel' | 'info';
 
 export interface OverlayEvent {
   id: number;
@@ -45,6 +47,8 @@ export interface OverlayEvent {
   /** Which pull of a big bite this code is for, of how many. */
   pull?: number;
   pulls?: number;
+  /** A fish duel: both sides and every turn. */
+  duel?: OverlayDuel;
 }
 
 let writes = 0;

@@ -9,7 +9,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { FishBigBiteSetting, PointsAntiSpamConfig, FishCatchSetting, FishReelSetting, FishStealSetting, PointsBonusesConfig, PointsConfig, PointsDuelConfig, PointsGambleConfig, PointsGamesConfig, PointsGiveConfig, PointsRaffleConfig, StoredFishCatches, StoredPointsConfig, PointsTimeoutPenaltyConfig } from '../types';
+import { FishBigBiteSetting, FishTrapCheckSetting, FishDuelSetting, PointsAntiSpamConfig, FishCatchSetting, FishReelSetting, FishStealSetting, PointsBonusesConfig, PointsConfig, PointsDuelConfig, PointsGambleConfig, PointsGamesConfig, PointsGiveConfig, PointsRaffleConfig, StoredFishCatches, StoredPointsConfig, PointsTimeoutPenaltyConfig } from '../types';
 import { defaultSellPrice, ITEMS } from '../community/fishing';
 
 export function defaultPointsConfig(): PointsConfig {
@@ -85,10 +85,14 @@ export function defaultPointsConfig(): PointsConfig {
       chatReplies: true,
       overlayDemo: true,
       overlaySizePercent: 100,
+      overlayClearWidthPercent: 0,
+      overlayClearHeightPercent: 0,
       catches: effectiveCatches(undefined, 100),
       reels: DEFAULT_REELS.map(r => ({ ...r })),
       steal: { ...DEFAULT_STEAL },
-      bigBite: { ...DEFAULT_BIG_BITE }
+      duel: { ...DEFAULT_FISH_DUEL },
+      bigBite: { ...DEFAULT_BIG_BITE },
+      trapCheck: { ...DEFAULT_TRAP_CHECK }
     }
   };
 }
@@ -120,9 +124,31 @@ export function effectiveBigBite(stored: unknown): FishBigBiteSetting {
   return out;
 }
 
+/** Off until a channel turns it on. */
+export const DEFAULT_TRAP_CHECK: Readonly<FishTrapCheckSetting> = { enabled: false, chancePercent: 25, finePercent: 15, answerSeconds: 30, tries: 3 };
+
+const TRAP_CHECK_NUMBERS: Record<Exclude<keyof FishTrapCheckSetting, 'enabled'>, Rule> = {
+  chancePercent: { min: 1, max: 100, integer: true },
+  finePercent: { min: 0, max: 100, integer: true },
+  // Long enough to read and type on a phone; the window also bounds how long a haul waits.
+  answerSeconds: { min: 10, max: 300, integer: true },
+  tries: { min: 1, max: 5, integer: true }
+};
+
+/** The stored trap check settings with values clamped; anything not stored keeps its default. */
+export function effectiveTrapCheck(stored: unknown): FishTrapCheckSetting {
+  const t = obj(stored);
+  const out: FishTrapCheckSetting = { ...DEFAULT_TRAP_CHECK, enabled: bool(t.enabled, DEFAULT_TRAP_CHECK.enabled) };
+  for (const [k, rule] of Object.entries(TRAP_CHECK_NUMBERS) as Array<[keyof typeof TRAP_CHECK_NUMBERS, Rule]>) {
+    out[k] = num(t[k], DEFAULT_TRAP_CHECK[k], rule.min, rule.max, rule.integer ?? false);
+  }
+  return out;
+}
+
 /** Off until a channel turns it on. Prices sit against a common fish's 75 and a whale's 50,000. */
 export const DEFAULT_STEAL: Readonly<FishStealSetting> = {
   enabled: false,
+  onlyWhileLive: false,
   hookPrice: 150,
   hookUses: 3,
   feePercent: 3,
@@ -142,7 +168,7 @@ export const DEFAULT_STEAL: Readonly<FishStealSetting> = {
 };
 
 /** Bounds for each number in games.steal, shared by reading and validating. */
-const STEAL_NUMBERS: Record<Exclude<keyof FishStealSetting, 'enabled'>, Rule> = {
+const STEAL_NUMBERS: Record<Exclude<keyof FishStealSetting, 'enabled' | 'onlyWhileLive'>, Rule> = {
   hookPrice: { min: 0, max: 1_000_000_000, integer: true },
   hookUses: { min: 1, max: 100, integer: true },
   feePercent: { min: 0, max: 1000, integer: true },
@@ -160,6 +186,35 @@ const STEAL_NUMBERS: Record<Exclude<keyof FishStealSetting, 'enabled'>, Rule> = 
   guardMinimum: { min: 0, max: 1_000_000_000, integer: true },
   guardHours: { min: 1, max: 168, integer: true }
 };
+
+/** Off until a channel turns it on; live only, since the fight plays on the overlay. */
+export const DEFAULT_FISH_DUEL: Readonly<FishDuelSetting> = {
+  enabled: false,
+  onlyWhileLive: true,
+  allowKeeps: true,
+  expirySeconds: 120,
+  cooldownSeconds: 60,
+  maxWager: 0
+};
+
+const FISH_DUEL_FLAGS = ['enabled', 'onlyWhileLive', 'allowKeeps'] as const;
+/** Bounds for each number in games.duel, shared by reading and validating. */
+const FISH_DUEL_NUMBERS: Record<Exclude<keyof FishDuelSetting, typeof FISH_DUEL_FLAGS[number]>, Rule> = {
+  expirySeconds: { min: 30, max: 600, integer: true },
+  cooldownSeconds: { min: 0, max: 3600, integer: true },
+  maxWager: { min: 0, max: 1_000_000_000, integer: true }
+};
+
+/** The stored duel settings with values clamped; anything not stored keeps its default. */
+export function effectiveFishDuel(stored: unknown): FishDuelSetting {
+  const du = obj(stored);
+  const out: FishDuelSetting = { ...DEFAULT_FISH_DUEL };
+  for (const key of FISH_DUEL_FLAGS) out[key] = bool(du[key], DEFAULT_FISH_DUEL[key]);
+  for (const [key, rule] of Object.entries(FISH_DUEL_NUMBERS) as Array<[keyof typeof FISH_DUEL_NUMBERS, Rule]>) {
+    out[key] = num(du[key], DEFAULT_FISH_DUEL[key], rule.min, rule.max, rule.integer ?? false);
+  }
+  return out;
+}
 
 /**
  * Reels are our addition; supibot's fishing shop is empty. Priced against
@@ -181,7 +236,7 @@ const round2 = (n: number): number => Math.round(n * 100) / 100;
 /** The stored steal settings with values clamped; anything not stored keeps its default. */
 export function effectiveSteal(stored: unknown): FishStealSetting {
   const st = obj(stored);
-  const out: FishStealSetting = { ...DEFAULT_STEAL, enabled: bool(st.enabled, DEFAULT_STEAL.enabled) };
+  const out: FishStealSetting = { ...DEFAULT_STEAL, enabled: bool(st.enabled, DEFAULT_STEAL.enabled), onlyWhileLive: bool(st.onlyWhileLive, DEFAULT_STEAL.onlyWhileLive) };
   for (const [key, rule] of Object.entries(STEAL_NUMBERS) as Array<[keyof typeof STEAL_NUMBERS, Rule]>) {
     out[key] = num(st[key], DEFAULT_STEAL[key], rule.min, rule.max, rule.integer ?? false);
   }
@@ -406,10 +461,14 @@ export function internalPointsConfig(raw: unknown): InternalPointsConfig {
     chatReplies: bool(ga.chatReplies, d.games.chatReplies),
     overlayDemo: bool(ga.overlayDemo, d.games.overlayDemo),
     overlaySizePercent: num(ga.overlaySizePercent, d.games.overlaySizePercent, 50, 300, true),
+    overlayClearWidthPercent: num(ga.overlayClearWidthPercent, d.games.overlayClearWidthPercent, 0, 80, true),
+    overlayClearHeightPercent: num(ga.overlayClearHeightPercent, d.games.overlayClearHeightPercent, 0, 80, true),
     catches: [],
     reels: effectiveReels(ga.reels),
     steal: effectiveSteal(ga.steal),
-    bigBite: effectiveBigBite(ga.bigBite)
+    duel: effectiveFishDuel(ga.duel),
+    bigBite: effectiveBigBite(ga.bigBite),
+    trapCheck: effectiveTrapCheck(ga.trapCheck)
   };
   games.catches = effectiveCatches(ga.catches, games.sellPricePercent);
 
@@ -530,7 +589,9 @@ const GAMES_NUMBERS: Record<string, Rule> = {
   trapMinutes: { min: 31, max: 1440, integer: true },
   sellPricePercent: { min: 0, max: 1000, integer: true },
   baitPricePercent: { min: 0, max: 1000, integer: true },
-  overlaySizePercent: { min: 50, max: 300, integer: true }
+  overlaySizePercent: { min: 50, max: 300, integer: true },
+  overlayClearWidthPercent: { min: 0, max: 80, integer: true },
+  overlayClearHeightPercent: { min: 0, max: 80, integer: true }
 };
 /**
  * The whole set of per-item overrides, replacing the stored one: each key an item's
@@ -863,6 +924,26 @@ export function validatePointsPatch(current: unknown, patch: unknown): { next?: 
           else delete next.games!.bigBite;
         }
       }
+      if (ga.trapCheck === null) delete next.games!.trapCheck;
+      else if (ga.trapCheck !== undefined) {
+        if (!ga.trapCheck || typeof ga.trapCheck !== 'object' || Array.isArray(ga.trapCheck)) errors.push('games.trapCheck must be an object');
+        else {
+          const tc = ga.trapCheck as Record<string, unknown>;
+          const out: Partial<FishTrapCheckSetting> = { ...(next.games!.trapCheck ?? {}) };
+          for (const [key, rule] of Object.entries(TRAP_CHECK_NUMBERS)) {
+            if (tc[key] === undefined) continue;
+            const v = checkNumber(`games.trapCheck.${key}`, tc[key], rule, errors);
+            if (v !== undefined) (out as Record<string, unknown>)[key] = v;
+          }
+          if (tc.enabled !== undefined) {
+            if (typeof tc.enabled !== 'boolean') errors.push('games.trapCheck.enabled must be true or false');
+            else out.enabled = tc.enabled;
+          }
+          for (const key of Object.keys(out) as Array<keyof FishTrapCheckSetting>) if (out[key] === DEFAULT_TRAP_CHECK[key]) delete out[key];
+          if (Object.keys(out).length) next.games!.trapCheck = out;
+          else delete next.games!.trapCheck;
+        }
+      }
       if (ga.steal === null) delete next.games!.steal;
       else if (ga.steal !== undefined) {
         if (!ga.steal || typeof ga.steal !== 'object' || Array.isArray(ga.steal)) errors.push('games.steal must be an object');
@@ -874,14 +955,37 @@ export function validatePointsPatch(current: unknown, patch: unknown): { next?: 
             const v = checkNumber(`games.steal.${key}`, st[key], rule, errors);
             if (v !== undefined) (out as Record<string, unknown>)[key] = v;
           }
-          if (st.enabled !== undefined) {
-            if (typeof st.enabled !== 'boolean') errors.push('games.steal.enabled must be true or false');
-            else out.enabled = st.enabled;
+          for (const key of ['enabled', 'onlyWhileLive'] as const) {
+            if (st[key] === undefined) continue;
+            if (typeof st[key] !== 'boolean') errors.push(`games.steal.${key} must be true or false`);
+            else out[key] = st[key] as boolean;
           }
           // Only what differs from the defaults is kept, so a later default change still applies.
           for (const key of Object.keys(out) as Array<keyof FishStealSetting>) if (out[key] === DEFAULT_STEAL[key]) delete out[key];
           if (Object.keys(out).length) next.games!.steal = out;
           else delete next.games!.steal;
+        }
+      }
+      if (ga.duel === null) delete next.games!.duel;
+      else if (ga.duel !== undefined) {
+        if (!ga.duel || typeof ga.duel !== 'object' || Array.isArray(ga.duel)) errors.push('games.duel must be an object');
+        else {
+          const du = ga.duel as Record<string, unknown>;
+          const out: Partial<FishDuelSetting> = { ...(next.games!.duel ?? {}) };
+          for (const [key, rule] of Object.entries(FISH_DUEL_NUMBERS)) {
+            if (du[key] === undefined) continue;
+            const v = checkNumber(`games.duel.${key}`, du[key], rule, errors);
+            if (v !== undefined) (out as Record<string, unknown>)[key] = v;
+          }
+          for (const key of FISH_DUEL_FLAGS) {
+            if (du[key] === undefined) continue;
+            if (typeof du[key] !== 'boolean') errors.push(`games.duel.${key} must be true or false`);
+            else out[key] = du[key] as boolean;
+          }
+          // Only what differs from the defaults is kept, so a later default change still applies.
+          for (const key of Object.keys(out) as Array<keyof FishDuelSetting>) if (out[key] === DEFAULT_FISH_DUEL[key]) delete out[key];
+          if (Object.keys(out).length) next.games!.duel = out;
+          else delete next.games!.duel;
         }
       }
       if (ga.catches === null) delete next.games!.catches;
