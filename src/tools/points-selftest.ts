@@ -12,7 +12,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { spawn } from 'child_process';
 import { ChannelConfig, ClientWrapper, KickTags, RawBadge } from '../types';
-import { effectiveCommand, effectivePointsConfig, invalidateLivePointsConfig, validatePointsPatch } from '../points/config';
+import { DEFAULT_BIG_BITE, effectiveCommand, effectivePointsConfig, invalidateLivePointsConfig, validatePointsPatch } from '../points/config';
 import { closeAllPointsDbs, closePointsDb, openPointsDb, PointsDb, reportDbError, runWrite } from '../points/db';
 import { LiveState } from '../points/live';
 import { PointsService } from '../points/service';
@@ -29,7 +29,7 @@ import { points as pointsCommand, SUBCOMMAND_ALIASES } from '../bot-commands/poi
 import { addItem, FishData, initialData, isTrophy, rarityOf, stealCharges, ITEMS, landsFish, loadFish, parseSellList, recordCatch, saveFish, sellPrice, weightedCatch } from '../community/fishing';
 import { openCommunityDb } from '../community/store';
 import { markOverlaySeen, readOverlay } from '../community/fish-overlay';
-import { resetBites, takeBite as takeBiteForTest } from '../community/big-bite';
+import { drawSnipeMs, resetBites, takeBite as takeBiteForTest } from '../community/big-bite';
 import { fish as fishCommand, SUBCOMMANDS as FISH_SUBCOMMANDS } from '../bot-commands/fish';
 import { publicCommands } from '../points/public-commands';
 import { duelBoard } from '../points/store';
@@ -1160,7 +1160,8 @@ async function main(): Promise<void> {
       const ev1 = lastBite();
       check('a big bite goes to an active chatter, never the streamer, a bot or someone quiet', got === 'biter' && ev1?.username === 'biter');
       check('chat names the chatter but never the code; the overlay has it', !!ev1 && typeof ev1.code === 'string' && /^\d{2}$/.test(ev1.code) && ev1.flashMs === undefined && sent.some(m => m.startsWith('@biter') && m.includes('Something BIG'))
-        && !sent.some(m => m.includes(String(ev1.code))), { sent, ev1 });
+        // As a word: "within 30s" isn't the code 30.
+        && !sent.some(m => new RegExp(`\\b${String(ev1.code)}\\b`).test(m)), { sent, ev1 });
       check('one big bite at a time', (await bsvc.bigBiteTick(() => 0)) === null);
       const fast = await run(`$don fish reel ${ev1!.code}`, ['biter', 41], 500);
       check('an answer faster than the stream could show it snaps the line: the overlay and a chat result', fast.includes('yanked too early') && lastShown()?.kind === 'miss'
@@ -1240,10 +1241,19 @@ async function main(): Promise<void> {
       // Sniping: the first code's last seconds are open to everyone else, one try each.
       await fire();
       const s1 = lastBite()!;
-      check('the first code opens to snipers for its last 20s, never more than half the window', s1.username === 'biter' && s1.snipeAt === s1.until! - 15_000
-        && sent[sent.length - 1].includes('last 15s anyone can snipe'), { s1, chat: sent[sent.length - 1] });
+      // 20s asked, capped at half the 30s window, then up to 3s shorter at random (never past the cap).
+      check('the first code opens to snipers for about its last 15s, never more than half the window', s1.username === 'biter'
+        && s1.until! - s1.snipeAt! >= 12_000 && s1.until! - s1.snipeAt! <= 15_000
+        && sent[sent.length - 1].includes('about the last 15s anyone can snipe'), { s1, chat: sent[sent.length - 1] });
+      const draws = Array.from({ length: 400 }, () => drawSnipeMs({ ...DEFAULT_BIG_BITE, windowSeconds: 30, snipeSeconds: 10 }));
+      check('each bite\'s snipe window is the set seconds ±3s at random', Math.min(...draws) >= 7_000 && Math.max(...draws) <= 13_000
+        && Math.min(...draws) < 8_000 && Math.max(...draws) > 12_000 && new Set(draws).size > 100
+        && drawSnipeMs({ ...DEFAULT_BIG_BITE, snipeSeconds: 0 }) === 0
+        && Array.from({ length: 50 }, () => drawSnipeMs({ ...DEFAULT_BIG_BITE, windowSeconds: 10, snipeSeconds: 2 })).every(ms => ms >= 1_000 && ms <= 5_000),
+        [Math.min(...draws), Math.max(...draws)]);
       check('a snipe before it opens is nobody\'s bite', (await run(`$don fish reel ${s1.code}`, ['other', 44], 5_000)).includes('nothing big on your line') && lastBite()?.username === 'biter');
-      const wrongSnipe = await run(`$don fish reel ${s1.code === '10' ? '11' : '10'}`, ['third', 47], 11_000);
+      // 18.5s in: open whichever way the window was drawn (it opens 15–18s in here).
+      const wrongSnipe = await run(`$don fish reel ${s1.code === '10' ? '11' : '10'}`, ['third', 47], 13_500);
       check('a wrong snipe uses up that sniper\'s one try and leaves the bite alone', wrongSnipe.includes('Wrong code')
         && (await run(`$don fish reel ${s1.code}`, ['third', 47], 500)) === '' && lastBite()?.username === 'biter' && lastBite()!.pull === 1, wrongSnipe);
       const sniped = await run(`$don fish reel ${s1.code}`, ['other', 44], 500);

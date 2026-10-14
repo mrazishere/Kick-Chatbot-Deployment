@@ -9,8 +9,8 @@
  * right answer brings a new code for the next pull, and the last pull lands a
  * Mythic trophy by its land chance. A wrong code or too slow, and it gets away.
  *
- * Sniping: for the last `snipeSeconds` of the first code, anyone else chatting can
- * answer it. The first right answer takes the bite off the chatter it was for and
+ * Sniping: for about the last `snipeSeconds` of the first code (give or take up to
+ * SNIPE_JITTER_MS, drawn per bite), anyone else chatting can answer it. The first right answer takes the bite off the chatter it was for and
  * carries on from the next pull as theirs. Each sniper gets one try per bite.
  *
  * Chat gets two lines: the opening mention, so the chatter knows to look, and the
@@ -98,6 +98,25 @@ export const channelHasBite = (channel: string): boolean => !!channelBite(channe
  */
 export const snipeWindowMs = (b: FishBigBiteSetting): number => Math.min(b.snipeSeconds, Math.floor(b.windowSeconds / 2)) * 1000;
 
+/**
+ * How far a bite's snipe window may run from snipeSeconds, either way. With it fixed,
+ * snipers learned the moment it opened (the countdown showed it) and fired a pre-typed
+ * code on the dot: 139 of 183 bites from 2026-10-11 to 10-14 were sniped, most within
+ * two seconds of opening. The owner asked for ±3s around the dashboard's value.
+ */
+export const SNIPE_JITTER_MS = 3_000;
+
+/**
+ * This bite's snipe window: snipeWindowMs moved by a random amount within
+ * SNIPE_JITTER_MS, never under a second or over half the window. 0 stays off.
+ */
+export function drawSnipeMs(b: FishBigBiteSetting): number {
+  const base = snipeWindowMs(b);
+  if (base <= 0) return 0;
+  const jittered = base + crypto.randomInt(-SNIPE_JITTER_MS, SNIPE_JITTER_MS + 1);
+  return Math.max(1000, Math.min(Math.floor(b.windowSeconds / 2) * 1000, jittered));
+}
+
 /** Whether this bite's first code is open to everyone else right now. */
 export const snipeOpen = (bite: Bite, now: number): boolean => bite.pull === 1 && bite.snipeAt !== undefined && now >= bite.snipeAt && now <= bite.until + STREAM_GRACE_MS;
 
@@ -158,7 +177,7 @@ function arm(ctx: BiteContext, bite: Bite, windowMs: number, text: string, now: 
   bite.code = code;
   bite.startedAt = now;
   bite.until = now + windowMs;
-  const snipeMs = bite.pull === 1 ? snipeWindowMs(ctx.bigBite) : 0;
+  const snipeMs = bite.pull === 1 ? drawSnipeMs(ctx.bigBite) : 0;
   if (snipeMs > 0) bite.snipeAt = bite.until - snipeMs;
   else delete bite.snipeAt;
   bite.timer = setTimeout(() => {
@@ -188,7 +207,7 @@ export function startBite(ctx: BiteContext, name: string, userId: number): Bite 
     `🎣 Something BIG is tugging at your line! Reel it in with $${ctx.command} fish reel <code> within ${ctx.bigBite.windowSeconds}s!${pulls}`, now);
   // The one chat line: who, and where to look. The code and everything after are on stream.
   const snipeS = snipeWindowMs(ctx.bigBite) / 1000;
-  const snipers = snipeS > 0 ? ` For the last ${snipeS}s anyone can snipe it: first right code takes it!` : '';
+  const snipers = snipeS > 0 ? ` For about the last ${snipeS}s anyone can snipe it: first right code takes it!` : '';
   void ctx.sendMessage(`@${name} 🎣 Something BIG is on your line! A code is showing on stream now: type $${ctx.command} fish reel and that code within ${ctx.bigBite.windowSeconds}s to reel it in!${snipers}`).catch(() => {});
   return bite;
 }
