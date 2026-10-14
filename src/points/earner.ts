@@ -21,8 +21,10 @@ const CATCH_UP_MS = 3 * 60_000;
 
 /**
  * The bot owner (KICK_OWNER) is paid every live tick as if they had just chatted:
- * same rate, same active time, only while live, exclusions still apply. They watch
- * without typing (user, 2026-09-17), and asked for it in code, not in settings.
+ * same active time, only while live, exclusions still apply. They watch without
+ * typing (user, 2026-09-17), and asked for it in code, not in settings. Always at
+ * the subscriber rate (user, 2026-10-14: "I am always a sub"): sub status is only
+ * read off counted messages, so a quiet stretch left them paid as a non-sub.
  * Only counts in a channel where the account already has a row.
  */
 function ownerUsername(): string | null {
@@ -167,11 +169,10 @@ export class Earner {
       ) as Array<{ user_id: number; username_lc: string; is_sub: number }>;
       const rows = candidates
         .filter(c => !isExcluded(ex, c.user_id, c.username_lc))
-        .map(c => ({
-          userId: c.user_id,
-          isSub: c.is_sub === 1,
-          points: Math.round(cfg.pointsPerInterval * (c.is_sub === 1 ? cfg.subscriberMultiplier : 1))
-        }));
+        .map(c => {
+          const isSub = c.is_sub === 1 || (owner !== null && c.username_lc === owner);
+          return { userId: c.user_id, isSub, points: Math.round(cfg.pointsPerInterval * (isSub ? cfg.subscriberMultiplier : 1)) };
+        });
 
       const streamKey = streamStart !== null ? `stream:${streamStart}` : `day:${new Date(boundaryMs).toISOString().slice(0, 10)}`;
       const res = grantTick(db, { slotKey, streamKey, now: this.ctx.now(), boundaryMs, seconds: cfg.intervalMinutes * 60, rows });

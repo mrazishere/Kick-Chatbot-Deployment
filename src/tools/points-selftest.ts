@@ -307,16 +307,16 @@ async function main(): Promise<void> {
       creditTx(db, { userId: 51, username: 'quietguy', amount: 1, reason: 'test', now: 1 });
     });
     await svc.runTick(B);
-    check('the owner earns a live tick without chatting; a quiet viewer does not',
-      balance(ch, 91) === 6 && balance(ch, 51) === 1, [balance(ch, 91), balance(ch, 51)]);
+    check('the owner earns a live tick without chatting, at the sub rate; a quiet viewer does not',
+      balance(ch, 91) === 11 && balance(ch, 51) === 1, [balance(ch, 91), balance(ch, 51)]);
     check('the owner also gets the active time', getUser(db, 91)?.watch_seconds === 600, getUser(db, 91));
     live = false;
     await svc.runTick(B + 10 * MIN);
-    check('no lurking pay while offline', balance(ch, 91) === 6);
+    check('no lurking pay while offline', balance(ch, 91) === 11);
     live = true;
     writeConfig(root, ch, { enabled: true, pointsPerInterval: 5, currencyName: '$DON', ignoreUsers: ['ownerx'] });
     await svc.runTick(B + 20 * MIN);
-    check('exclusions still apply to the owner', balance(ch, 91) === 6, balance(ch, 91));
+    check('exclusions still apply to the owner', balance(ch, 91) === 11, balance(ch, 91));
   }
 
   // Earner
