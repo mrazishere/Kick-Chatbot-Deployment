@@ -27,6 +27,7 @@ import { ChannelConfig, CommandFn, KickTags, ClientWrapper, ChannelLocation, Loc
 import { markBotOutput } from '../recent-bot-outputs';
 import { resolveBotIdentity } from '../bot-identity';
 import { WebhookPoller } from './webhook-poller';
+import { PUSHER_BAD_KEY_CODES, pusherUrl, refreshPusherKey } from './pusher-key';
 import { RewardRedemptionHandler } from './reward-redemptions';
 import { ChannelModerator } from './moderation';
 import { EarningsTracker } from './earnings-tracker';
@@ -407,7 +408,7 @@ class KickChatBot {
 
   async connectWebSocket(): Promise<void> {
     return new Promise((resolve, reject) => {
-      const wsUrl = `wss://ws-us2.pusher.com/app/32cbd69e4b950bf97679?protocol=7&client=js&version=8.4.0-rc2&flash=false`;
+      const wsUrl = pusherUrl();
 
       // Clear any existing ping interval
       if (this.pingInterval) {
@@ -490,6 +491,8 @@ class KickChatBot {
 
       this.ws.on('close', (code, reason) => {
         console.log(`[WARNING] WebSocket disconnected - Code: ${code}, Reason: ${reason || 'No reason provided'}`);
+        // Kick moved chat to another Pusher key: ask for it, so the reconnect below uses it.
+        if (PUSHER_BAD_KEY_CODES.has(code)) void refreshPusherKey();
 
         // Clear ping interval on disconnect
         if (this.pingInterval) {

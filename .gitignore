@@ -27,6 +27,7 @@ src/channels/*.ts
 !src/channels/blerp.ts
 !src/channels/blerp-session.ts
 !src/channels/moderation.ts
+!src/channels/pusher-key.ts
 
 # Custom command data and runtime channel configs (contain OAuth tokens)
 data/

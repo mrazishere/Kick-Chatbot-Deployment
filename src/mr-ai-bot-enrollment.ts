@@ -21,6 +21,7 @@ import { markOverlaySeen, readOverlay } from './community/fish-overlay';
 import { publicUserHistory, publicViewerSearch } from './points/store';
 import { ITEMS, rarityName, sellPrice } from './community/fishing';
 import { adjustPoints, backupPoints, caughtFish, duelBoard, heistBoard, heldCatches, getPointsUserDetail, pointsLeaderboard, pointsSummary, resetAllPoints, searchPointsUsers } from './points/store';
+import { PUSHER_BAD_KEY_CODES, pusherUrl, refreshPusherKey } from './channels/pusher-key';
 
 /* eslint-disable @typescript-eslint/no-var-requires, @typescript-eslint/no-explicit-any */
 const puppeteer = require('puppeteer-extra');
@@ -3641,7 +3642,7 @@ async function startDeploymentBot(): Promise<void> {
 }
 
 function connectDeploymentWebSocket(): void {
-  const wsUrl = 'wss://ws-us2.pusher.com/app/32cbd69e4b950bf97679?protocol=7&client=js&version=8.4.0-rc2&flash=false';
+  const wsUrl = pusherUrl();
 
   console.log('[DEPLOY BOT] Connecting to Kick deployment chat...');
   deploymentWs = new WebSocket(wsUrl);
@@ -3711,9 +3712,11 @@ function connectDeploymentWebSocket(): void {
     // `close` fires after `error`, so reconnect happens there.
   });
 
-  deploymentWs.on('close', () => {
+  deploymentWs.on('close', (code: number) => {
     clearTimeout(connectTimeout);
-    console.log('[DEPLOY BOT] WebSocket disconnected, reconnecting...');
+    console.log(`[DEPLOY BOT] WebSocket disconnected (code ${code}), reconnecting...`);
+    // Kick moved chat to another Pusher key: ask for it, so the reconnect uses it.
+    if (PUSHER_BAD_KEY_CODES.has(code)) void refreshPusherKey();
     if (deploymentPingInterval) {
       clearInterval(deploymentPingInterval);
       deploymentPingInterval = null;
