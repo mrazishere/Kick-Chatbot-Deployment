@@ -20,7 +20,7 @@ const one = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v);
 
 // A browser source for OBS: fishing plays out as a small animated scene over a transparent page.
 // ?key= is required, and picks the look: the scene, or the earlier text cards.
-// Optional: max=lanes (scene) or cards, scale=0.5–3, demo=1 (with steals=1, 3 in 10 demo replies are steals; the channel can shut the demo out, which the feed tells the overlay); side=left|right for cards.
+// Optional: max=lanes (scene) or cards, scale=0.5–3, wheel=1 (a made-up prize wheel spin every 25s), demo=1 (with steals=1, 3 in 10 demo replies are steals; the channel can shut the demo out, which the feed tells the overlay); side=left|right for cards.
 export default async function FishOverlayPage({ params, searchParams }: Props) {
   const { channel } = await params;
   const slug = channel.toLowerCase();
@@ -31,6 +31,10 @@ export default async function FishOverlayPage({ params, searchParams }: Props) {
 
   const scale = Math.min(3, Math.max(0.5, Number(one(q.scale)) || 1));
   const demo = one(q.demo) === "1";
+  // duel=1 plays a made-up fish duel now and then, to see how one looks in the source.
+  const duelDemo = one(q.duel) === "1";
+  // wheel=1 spins a made-up prize wheel now and then, to place it in the source.
+  const wheelDemo = one(q.wheel) === "1";
   // The demo rolls at the channel's own odds, from what its public leaderboard shows.
   let demoOdds: DemoOdds | null = null;
   if (demo) {
@@ -52,6 +56,8 @@ export default async function FishOverlayPage({ params, searchParams }: Props) {
           scale={scale}
           demo={demo}
           demoOdds={demoOdds}
+          duelDemo={duelDemo}
+          wheelDemo={wheelDemo}
         />
       ) : (
         <FishOverlay
@@ -61,6 +67,8 @@ export default async function FishOverlayPage({ params, searchParams }: Props) {
           scale={scale}
           demo={demo}
           demoOdds={demoOdds}
+          duelDemo={duelDemo}
+          wheelDemo={wheelDemo}
         />
       )}
     </>

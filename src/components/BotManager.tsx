@@ -6,6 +6,8 @@ import {
   Gift, MapPin, Pencil, Play, Plus, Power, RefreshCw, ScrollText, ShieldCheck, Sparkles, Terminal, Trash2, Users, X,
 } from "lucide-react";
 import SiteHeader from "./SiteHeader";
+import WheelCard from "./WheelCard";
+import SuspectsCard from "./SuspectsCard";
 import PointsCard, { type PointsConfig } from "./PointsCard";
 import type { OverlayLink } from "@/lib/fish-overlay";
 import ClipSessionCard from "./ClipSessionCard";
@@ -2133,6 +2135,12 @@ export default function BotManager({
             fishOverlays={fishOverlays}
             onSaved={(data) => setBot(data as unknown as BotChannel)}
           />
+
+          {/* ------------------------------------------------- possible cheaters */}
+          {bot.points?.enabled && bot.points?.games?.enabled ? <SuspectsCard channel={channel} /> : null}
+
+          {/* ---------------------------------------------------- prize wheel */}
+          <WheelCard channel={channel} fishingOn={!!bot.points?.enabled && !!bot.points?.games?.enabled} />
 
           {/* -------------------------------------------------------- settings */}
           <Card title="Settings" icon={<ShieldCheck className="h-4 w-4" />}>

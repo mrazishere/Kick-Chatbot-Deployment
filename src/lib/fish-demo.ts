@@ -1,4 +1,5 @@
 import type { FishOverlayEvent, PublicFishing } from "./bot-api";
+import { botNow } from "./overlay-clock";
 
 /**
  * The overlay's demo (?demo=1): replies rolled the way the bot rolls them, at the
@@ -161,4 +162,32 @@ export function demoGenerator(odds: DemoOdds | null) {
       username,
     }));
   };
+}
+
+const TROPHIES = ["🦭", "🦦", "🦕", "💎", "👑", "🐉"];
+
+/**
+ * A big bite for the demo, as the bot plays one: the first code, two more pulls
+ * with codes that flash and hide, then the trophy landed (or, 1 time in 4, the
+ * line snapping). Each step comes with how long after the start it happens;
+ * `at` is called when a step is due, so the codes' deadlines are right then.
+ */
+export function demoBigBite(startId: number): Array<{ afterMs: number; at: () => FishOverlayEvent }> {
+  // Not one of the burst's anglers: a reply to the same viewer would end their code card early.
+  const username = "TheBigOne";
+  const code = () => String(int(10, 99));
+  const trophy = pick(TROPHIES);
+  const step = (i: number, ev: () => Omit<FishOverlayEvent, "id" | "ts" | "username">) => () => ({ ...ev(), id: startId - i, ts: botNow(), username });
+  const landed = Math.random() < 0.75;
+  return [
+    { afterMs: 0, at: step(0, () => ({ kind: "bite", code: code(), pull: 1, pulls: 3, until: botNow() + 12_000, text: "🎣 Something BIG is tugging at your line! Reel it in with $don fish reel <code> within 30s! (3 pulls)" })) },
+    { afterMs: 7_000, at: step(1, () => ({ kind: "bite", code: code(), pull: 2, pulls: 3, until: botNow() + 8_000, flashMs: 3_000, text: "💪 Got it! It's pulling back hard! Quick, a new code flashes on stream: type just the code within 8s! (pull 2/3)" })) },
+    { afterMs: 12_000, at: step(2, () => ({ kind: "bite", code: code(), pull: 3, pulls: 3, until: botNow() + 8_000, flashMs: 3_000, text: "💪 Got it! It's pulling back hard! Quick, a new code flashes on stream: type just the code within 8s! (pull 3/3)" })) },
+    {
+      afterMs: 17_000,
+      at: step(3, () => landed
+        ? { kind: "catch", item: trophy, rarity: "Mythic", text: `🏆 You reeled it in! A MYTHIC ✨${trophy}✨! It is ${int(1, 100)} cm in length. Worth 1,000 $DON.` }
+        : { kind: "miss", item: trophy, rarity: "Mythic", text: `So close! It was a ✨${trophy}✨! It thrashed free on the last pull and snapped the line! 😱` }),
+    },
+  ];
 }

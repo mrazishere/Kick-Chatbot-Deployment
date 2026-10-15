@@ -1,10 +1,12 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { FishOverlayEvent } from "@/lib/bot-api";
 import { isStale, reloadInto, takeCursor } from "@/lib/overlay-build";
-import { syncClock, useCodeHidden, useCountdown } from "@/lib/overlay-clock";
-import { demoGenerator, type DemoOdds } from "@/lib/fish-demo";
+import { snipeIsOpen, syncClock, useCodeHidden, useCountdown } from "@/lib/overlay-clock";
+import { demoBigBite, demoGenerator, type DemoOdds } from "@/lib/fish-demo";
+import { useWheel } from "@/components/FishWheelStage";
+import { useDuels } from "@/components/FishDuelStage";
 
 // The first overlay design: each fish reply as a text card. Kept beside the
 // fishing scene (FishOverlay) so both can be compared; its URL has its own key.
@@ -16,6 +18,17 @@ const TICK_MS = 100;
 const EXIT_MS = 520;
 /** Past this many waiting, misses (then other chatter) are dropped so the overlay catches up. */
 const QUEUE_CAP = 20;
+/** The share of the source's height, from the top, kept for big bite codes; every other reply stacks in the rest. */
+const TOP_SHARE = 0.5;
+/** A big bite's code card with the room around it, in em of its own font: its zone has to hold that. */
+const TOP_ZONE_EM = 9;
+/** And across: the card at its widest with its margins. Only checked where a corner is kept clear, which narrows the zone. */
+const ROAM_WIDTH_EM = 17.4;
+/** Every other reply draws at this share of the asked size: they come often, so they stay small beside a big bite's code. */
+const STACK_SHARE = 0.75;
+
+/** The bottom-right corner kept clear, as percentages of the source's width and height. */
+type Clear = { w: number; h: number };
 
 /**
  * How a burst is handled: at most `max` cards on screen, new ones enter one at a
@@ -31,7 +44,13 @@ interface Card {
   /** A big bite card's spot in the source, each 0 to 1 across and down: a new one for every code. */
   x?: number;
   y?: number;
+  /** A reply too long for the zone turns pages: how many, and how long each shows. Set by the card once it's drawn. */
+  pages?: number;
+  pageMs?: number;
 }
+
+/** A reply this long (in characters) is a leaderboard or a stats line, not a one-liner. */
+const LONG_TEXT = 160;
 
 /** A big bite stays up for its whole window. */
 const biteMs = (ev: FishOverlayEvent) => Math.max(5_000, Math.min(120_000, (ev.until ?? ev.ts + 30_000) - ev.ts));
@@ -42,6 +61,8 @@ function holdMs(ev: FishOverlayEvent): number {
   if (ev.rarity === "Legendary") return 14_000;
   if (ev.rarity === "Epic") return 11_000;
   if (ev.kind === "miss") return 4_500;
+  // A leaderboard or someone's stats takes a while to read.
+  if (ev.text.length > LONG_TEXT) return 12_000;
   if (ev.kind === "info") return 6_000;
   return 8_000;
 }
@@ -53,6 +74,7 @@ function floorMs(ev: FishOverlayEvent): number {
   if (ev.rarity === "Legendary") return 6_000;
   if (ev.rarity === "Epic") return 4_000;
   if (ev.kind === "miss") return 1_400;
+  if (ev.text.length > LONG_TEXT) return 7_000;
   return 2_200;
 }
 
@@ -101,18 +123,53 @@ function Words({ text, emotes }: { text: string; emotes?: Record<string, string>
   );
 }
 
-const ICON: Record<FishOverlayEvent["kind"], string> = { catch: "🐟", trap: "🪤", miss: "🎣", steal: "🪝", caught: "🚨", bite: "🎣", info: "🎣" };
+const ICON: Record<FishOverlayEvent["kind"], string> = { catch: "🐟", trap: "🪤", miss: "🎣", steal: "🪝", caught: "🚨", bite: "🎣", duel: "⚔️", wheel: "🎡", info: "🎣" };
 
 function CardView({ card, side }: { card: Card; side: "left" | "right" }) {
   const { ev } = card;
   const { main, note } = splitNote(ev.text);
   const rarity = ev.kind === "catch" && ev.rarity && ev.rarity !== "Common" ? ev.rarity : null;
-  const measure = (el: HTMLDivElement | null) => {
-    if (el && !el.style.getPropertyValue("--h")) el.style.setProperty("--h", `${el.scrollHeight}px`);
-  };
+  const wrap = useRef<HTMLDivElement>(null);
+  // A long reply (a leaderboard, someone's stats) takes as many lines as the lower zone has room for. If that still
+  // isn't all of it, the text stays at its full size and the card turns pages, so it can be read from a small source.
+  // Fitted again on every draw: the size and the zone change when the feed or the source's size does.
+  const [pages, setPages] = useState(1);
+  const [page, setPage] = useState(0);
+  useLayoutEffect(() => {
+    const el = wrap.current;
+    if (!el) return;
+    const text = el.querySelector<HTMLElement>(".fo-text");
+    const zone = el.parentElement;
+    if (text && zone && card.x === undefined && ev.kind !== "miss") {
+      text.style.display = "";
+      text.style.maxHeight = "";
+      const zoneEm = zone.clientHeight / (parseFloat(getComputedStyle(zone).fontSize) || 20);
+      // A card is its text lines (1.215em each) plus about 4.1em of name, note and padding; the zone has 1.6em of its own.
+      const lines = Math.max(2, Math.floor((zoneEm - 1.6 - 4.1) / 1.215));
+      text.style.setProperty("-webkit-line-clamp", String(lines));
+      let n = 1;
+      if (text.scrollHeight > text.clientHeight + 1) {
+        const pageH = lines * (parseFloat(getComputedStyle(text).lineHeight) || text.clientHeight / lines);
+        text.style.display = "block";
+        text.style.maxHeight = `${pageH}px`;
+        n = Math.max(1, Math.ceil((text.scrollHeight - 2) / pageH));
+        text.scrollTop = Math.min(page, n - 1) * pageH;
+        card.pageMs = Math.min(6_500, 2_000 + 1_100 * lines);
+      }
+      card.pages = n;
+      if (n !== pages) setPages(n);
+    }
+    if (!el.style.getPropertyValue("--h")) el.style.setProperty("--h", `${el.scrollHeight}px`);
+  });
+  useEffect(() => {
+    if (pages <= 1) return;
+    const t = setInterval(() => setPage(Math.min(pages - 1, Math.floor((performance.now() - card.shownAt) / (card.pageMs ?? 5_000)))), 250);
+    return () => clearInterval(t);
+  }, [pages, card]);
   return (
     <div
-      ref={measure}
+      ref={wrap}
+      data-card={ev.id}
       className={`fo-wrap ${card.phase === "in" ? "fo-in" : "fo-out"} ${side === "right" ? "fo-right" : ""} ${card.x !== undefined ? "fo-roam" : ""}`}
       style={card.x !== undefined ? ({ "--x": card.x, "--y": card.y ?? 0 } as React.CSSProperties) : undefined}
     >
@@ -127,6 +184,7 @@ function CardView({ card, side }: { card: Card; side: "left" | "right" }) {
               {ev.username}
             </span>
             {rarity ? <span className="fo-rarity">{rarity}</span> : null}
+            {pages > 1 ? <span className="fo-page">{Math.min(page, pages - 1) + 1}/{pages}</span> : null}
           </div>
           <div className="fo-text">
             <Words text={main} emotes={ev.emotes} />
@@ -143,12 +201,22 @@ function CardView({ card, side }: { card: Card; side: "left" | "right" }) {
 function BiteCode({ ev }: { ev: FishOverlayEvent }) {
   const { secs } = useCountdown(ev.until, biteMs(ev));
   const hidden = useCodeHidden(ev.flashMs);
+  const sniping = snipeIsOpen(ev.snipeAt);
   return (
-    <div className="fo-bigcode">
-      {ev.pulls && ev.pulls > 1 ? `Pull ${ev.pull}/${ev.pulls}` : "Reel code"} <b>{hidden ? "• • •" : ev.code}</b>
+    <div className={`fo-bigcode ${sniping ? "fo-sniping" : ""}`}>
+      {sniping ? "Anyone can snipe it!" : ev.pulls && ev.pulls > 1 ? `Pull ${ev.pull}/${ev.pulls}` : "Reel code"} <b>{hidden ? "• • •" : ev.code}</b>
       <span className="fo-bigsecs">{secs > 0 ? `${secs}s left` : "time's up!"}</span>
     </div>
   );
+}
+
+/**
+ * Where the two zones sit, for the stylesheet: the stack's top and bottom edges, and the
+ * codes' zone from its top-left corner (it always starts at the source's left edge).
+ */
+function zones(clear: Clear | null): Record<string, string> {
+  if (!clear) return { "--st": `${TOP_SHARE * 100}vh`, "--sb": "0px", "--rt": "0px", "--rw": "100vw", "--rh": `${TOP_SHARE * 100}vh` };
+  return { "--st": "0px", "--sb": `${clear.h}vh`, "--rt": `${100 - clear.h}vh`, "--rw": `${100 - clear.w}vw`, "--rh": `${clear.h}vh` };
 }
 
 // ─── The overlay ─────────────────────────────────────────────────────────────
@@ -161,6 +229,8 @@ export default function FishOverlayCards({
   scale,
   demo,
   demoOdds,
+  duelDemo,
+  wheelDemo = false,
 }: {
   channel: string;
   overlayKey: string;
@@ -170,14 +240,59 @@ export default function FishOverlayCards({
   demo: boolean;
   /** The channel's odds for the demo; null uses the bot's defaults. */
   demoOdds: DemoOdds | null;
+  /** Play a made-up fish duel now and then, to preview it. */
+  duelDemo: boolean;
+  /** Spin a made-up wheel now and then, to preview it. */
+  wheelDemo?: boolean;
 }) {
   const queue = useRef<FishOverlayEvent[]>([]);
   const cards = useRef<Card[]>([]);
   const lastRelease = useRef(0);
   const lastSpot = useRef({ x: -1, y: -1 });
+  const root = useRef<HTMLDivElement>(null);
+  // The source is split: big bite codes get the top half (TOP_SHARE), every other reply stacks in the rest.
+  // With a corner kept clear (the channel's map, say) it's the other way up: replies stack above the corner,
+  // and the codes roam the strip to its left.
+  // A code card is about 7em tall; where its zone is shorter than that, it draws smaller to fit.
+  const [roamPx, setRoamPx] = useState(20 * scale);
+  // Drawn bigger, a reply wraps onto more lines, but never so many that one card is taller than the lower zone.
+  const [lines, setLines] = useState(3);
+  // And where even a two-line card wouldn't fit there, the stack draws smaller, as the code card does.
+  const [stackPx, setStackPx] = useState(20 * scale * STACK_SHARE);
   const [, setVersion] = useState(0);
   // Whether the channel lets the demo play, from the feed; null until the feed has answered.
   const [demoAllowed, setDemoAllowed] = useState<boolean | null>(null);
+  // The channel's own size setting, from the feed, on top of the link's scale.
+  const [size, setSize] = useState(1);
+  // And the corner it wants kept clear, from the feed too.
+  const [clear, setClear] = useState<Clear | null>(null);
+  // The prize wheel plays over everything, and holds the cards until it's done.
+  const wheel = useWheel({ fontPx: 20 * scale * size, clearBottom: clear ? clear.h / 100 : 0, demo: wheelDemo && demoAllowed === true });
+  const takeWheel = wheel.take;
+  const wheelShowing = wheel.isShowing;
+  const wheelBusy = wheel.busy;
+  // Fish duels play on a stage of their own, over the cards.
+  const duels = useDuels({ fontPx: 20 * scale * size, demo: duelDemo && demoAllowed === true, clearBottom: clear ? clear.h / 100 : 0, held: wheel.showing });
+  const takeDuels = duels.take;
+  const duelsBusy = duels.busy;
+
+  useEffect(() => {
+    const fit = () => {
+      const asked = 20 * scale * size;
+      const roamH = window.innerHeight * (clear ? clear.h / 100 : TOP_SHARE);
+      const roamW = clear ? (window.innerWidth * (100 - clear.w)) / 100 : Infinity;
+      const stackH = window.innerHeight - roamH;
+      setRoamPx(Math.max(8, Math.min(asked, roamH / TOP_ZONE_EM, roamW / ROAM_WIDTH_EM)));
+      // A card is its text lines (1.215em each) plus about 4.1em of name, note and padding; the zone has 1.6em of its own padding.
+      const em = Math.max(8, Math.min(asked * STACK_SHARE, stackH / (1.6 + 4.1 + 2 * 1.215 + 0.3)));
+      setStackPx(em);
+      const fitLines = Math.floor((stackH / em - 1.6 - 4.1) / 1.215);
+      setLines(Math.max(2, Math.min(Math.max(3, Math.ceil(3 * size)), fitLines)));
+    };
+    fit();
+    window.addEventListener("resize", fit);
+    return () => window.removeEventListener("resize", fit);
+  }, [scale, size, clear]);
 
   // Poll the feed. The first answer only sets where to start, so opening the
   // source doesn't replay the last few minutes.
@@ -192,23 +307,27 @@ export default function FishOverlayCards({
           setDemoAllowed((a) => a ?? true); // no feed (fishing off, say): the demo still previews
           return;
         }
-        const data = (await res.json()) as { lastId: number; events: FishOverlayEvent[]; now?: number; build?: string; demo?: boolean };
+        const data = (await res.json()) as { lastId: number; events: FishOverlayEvent[]; now?: number; build?: string; demo?: boolean; size?: number; clear?: Clear };
         syncClock(data.now);
         setDemoAllowed(data.demo !== false);
+        setSize((data.size ?? 100) / 100);
+        const c = data.clear ?? null;
+        setClear((was) => (was?.w === c?.w && was?.h === c?.h ? was : c));
         if (after === null || data.lastId < after) {
           after = data.lastId; // first load, or the feed restarted
           return;
         }
-        const fresh = data.events.filter((e) => e.id > (after as number));
-        if (fresh.length) {
-          after = Math.max(...fresh.map((e) => e.id));
+        const all = data.events.filter((e) => e.id > (after as number));
+        if (all.length) {
+          after = Math.max(...all.map((e) => e.id));
+          const fresh = takeDuels(takeWheel(all));
           // A reel code can't wait its turn: big bites go to the front.
           queue.current.unshift(...fresh.filter((e) => e.kind === "bite"));
           queue.current.push(...fresh.filter((e) => e.kind !== "bite"));
           trimQueue(queue.current);
         }
         // A newer dashboard build is live: reload into it once nothing is on screen.
-        if (isStale(data.build) && cards.current.length === 0 && queue.current.length === 0) reloadInto(data.build!, url, after);
+        if (isStale(data.build) && cards.current.length === 0 && queue.current.length === 0 && !duelsBusy() && !wheelBusy()) reloadInto(data.build!, url, after);
       } catch {
         // offline for a moment; the next poll catches up
         setDemoAllowed((a) => a ?? true);
@@ -217,22 +336,32 @@ export default function FishOverlayCards({
     void poll();
     const t = setInterval(poll, POLL_MS);
     return () => clearInterval(t);
-  }, [channel, overlayKey]);
+  }, [channel, overlayKey, takeDuels, duelsBusy, takeWheel, wheelBusy]);
 
   useEffect(() => {
     if (!demo || !demoAllowed) return;
     // Ten anglers at once, repeated, rolled at the channel's odds, to see how a burst plays.
     const demoBurst = demoGenerator(demoOdds);
     let id = -1;
+    const timers: Array<ReturnType<typeof setTimeout>> = [];
     const fire = () => {
       queue.current.push(...demoBurst(id));
-      id -= 10;
+      // And a big bite a few seconds into each burst: its codes, then the trophy.
+      for (const s of demoBigBite(id - 10)) {
+        timers.push(setTimeout(() => {
+          const ev = s.at();
+          if (ev.kind === "bite") queue.current.unshift(ev);
+          else queue.current.push(ev);
+        }, 3_000 + s.afterMs));
+      }
+      id -= 20;
       trimQueue(queue.current);
     };
     fire();
     const t = setInterval(fire, 25_000);
     return () => {
       clearInterval(t);
+      timers.forEach(clearTimeout);
       // Turned off mid-burst: the demo anglers still waiting go too.
       queue.current = queue.current.filter((e) => e.id >= 0);
     };
@@ -247,11 +376,26 @@ export default function FishOverlayCards({
       cards.current = cards.current.filter((c) => !(c.phase === "out" && now - c.outAt >= EXIT_MS));
       if (cards.current.length !== before) changed = true;
 
+      // The wheel is up: cards on screen go back to the front of the queue to show in
+      // full afterwards (not a big bite's code: the bot holds bites around a spin, so
+      // one still up has ended), and nothing new shows until it's done.
+      if (wheelShowing()) {
+        if (cards.current.length) {
+          queue.current.unshift(...cards.current.filter((c) => c.phase === "in" && c.ev.kind !== "bite").map((c) => c.ev));
+          cards.current = [];
+          changed = true;
+        }
+        if (changed) setVersion((v) => v + 1);
+        return;
+      }
+
       const waiting = queue.current.length;
       const live = () => cards.current.filter((c) => c.phase === "in");
       for (const c of live()) {
         const full = holdMs(c.ev);
-        const hold = waiting > 0 ? Math.max(floorMs(c.ev), full * (waiting > 5 ? 0.35 : 0.6)) : full;
+        // A card turning pages stays for all of them, whatever is waiting.
+        const paged = (c.pages ?? 1) > 1 ? c.pages! * (c.pageMs ?? 5_000) + 400 : 0;
+        const hold = paged || (waiting > 0 ? Math.max(floorMs(c.ev), full * (waiting > 5 ? 0.35 : 0.6)) : full);
         if (now - c.shownAt >= hold) {
           c.phase = "out";
           c.outAt = now;
@@ -259,9 +403,25 @@ export default function FishOverlayCards({
         }
       }
 
+      // The stack has the lower zone only. It's as good as full when one more card, taken
+      // at the size of the newest, wouldn't fit under the top zone.
+      const zoneFull = (): boolean => {
+        const zone = root.current;
+        const stackNow = live().filter((c) => c.x === undefined);
+        if (!zone || !stackNow.length) return false;
+        const first = zone.querySelector(`[data-card="${stackNow[0].ev.id}"]`)?.getBoundingClientRect();
+        const last = zone.querySelector(`[data-card="${stackNow[stackNow.length - 1].ev.id}"]`)?.getBoundingClientRect();
+        if (!first || !last) return false;
+        const style = getComputedStyle(zone);
+        const room = zone.clientHeight - parseFloat(style.paddingTop) - parseFloat(style.paddingBottom) - (last.bottom - first.top);
+        return room < last.height;
+      };
+      // A card turning pages has the lower zone to itself until it's done: nothing new stacks on it and pushes it out.
+      const full = live().length >= max || live().some((c) => (c.pages ?? 1) > 1) || zoneFull();
+
       // Full and more waiting: the oldest card past its floor makes way.
-      if (waiting > 0 && live().length >= max) {
-        const oldest = live().find((c) => now - c.shownAt >= floorMs(c.ev));
+      if (waiting > 0 && full) {
+        const oldest = live().find((c) => c.x === undefined && (c.pages ?? 1) <= 1 && now - c.shownAt >= floorMs(c.ev));
         if (oldest) {
           oldest.phase = "out";
           oldest.outAt = now;
@@ -269,13 +429,30 @@ export default function FishOverlayCards({
         }
       }
 
+      // The stack only has the lower zone: when it outgrows it, its oldest card leaves,
+      // one at a time (a leaving card still takes up room for a moment).
+      const el = root.current;
+      const stack = live().filter((c) => c.x === undefined);
+      const topCard = stack.length > 1 ? el?.querySelector(`[data-card="${stack[0].ev.id}"]`) : null;
+      if (el && topCard && topCard.getBoundingClientRect().top < el.getBoundingClientRect().top - 1 && !cards.current.some((c) => c.phase === "out" && c.x === undefined)) {
+        {
+          stack[0].phase = "out";
+          stack[0].outAt = now;
+          changed = true;
+        }
+      }
+
       const stagger = waiting > 4 ? 160 : 340;
-      if (queue.current.length > 0 && live().length < max && now - lastRelease.current >= stagger) {
+      // A big bite's code has the top zone to itself, so it never waits on the stack.
+      if (queue.current.length > 0 && (!full || queue.current[0].kind === "bite") && now - lastRelease.current >= stagger) {
         const ev = queue.current.shift()!;
         // The angler's answer, or their next pull's code, ends their big bite card; another
         // reply to them (a lookup they typed meanwhile) leaves the code up.
         for (const c of ev.kind === "info" ? [] : live()) {
-          if (c.ev.kind === "bite" && c.ev.username === ev.username) {
+          // Only a reply from after the code: an older one may have waited in the queue behind it.
+          // Feed ids count up; the demo's count down from -1.
+          const newer = c.ev.id >= 0 ? ev.id > c.ev.id : ev.id < c.ev.id;
+          if (c.ev.kind === "bite" && c.ev.username === ev.username && newer) {
             c.phase = "out";
             c.outAt = now;
           }
@@ -299,29 +476,32 @@ export default function FishOverlayCards({
       if (changed) setVersion((v) => v + 1);
     }, TICK_MS);
     return () => clearInterval(t);
-  }, [max]);
+  }, [max, wheelShowing]);
 
   return (
     <>
       <style>{CSS}</style>
-      <div className={`fo-root ${side === "right" ? "fo-root-right" : ""}`} style={{ fontSize: `${20 * scale}px` }}>
+      <div ref={root} className={`fo-root ${side === "right" ? "fo-root-right" : ""}`} style={{ fontSize: `${stackPx}px`, "--lines": lines, "--roam": `${roamPx}px`, ...zones(clear), opacity: wheel.showing ? 0 : duels.dim ? 0.12 : 1, transition: "opacity .4s ease" } as React.CSSProperties}>
         {cards.current.map((c) => (
           <CardView key={c.ev.id} card={c} side={side} />
         ))}
       </div>
+      {duels.stage}
+      {wheel.stage}
     </>
   );
 }
 
 const CSS = `
-.fo-root{position:fixed;inset:0;display:flex;flex-direction:column;justify-content:flex-end;align-items:flex-start;padding:1.2em;pointer-events:none;
+/* The stack's zone (--st to --sb): replies stack up from its bottom and never reach into the big bite codes' zone. */
+.fo-root{position:fixed;inset:var(--st,50vh) 0 var(--sb,0px) 0;display:flex;flex-direction:column;justify-content:flex-end;align-items:flex-start;padding:.4em 1.2em 1.2em;overflow:hidden;pointer-events:none;
   font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif,"Segoe UI Emoji","Apple Color Emoji","Noto Color Emoji";color:#f5f5f5}
 .fo-root-right{align-items:flex-end}
-.fo-wrap{--dir:1;overflow:hidden;padding:.35em .6em;margin:-.1em -.6em;max-width:36em}
+.fo-wrap{--dir:1;flex-shrink:0;overflow:hidden;padding:.35em .6em;margin:-.1em -.6em;max-width:36em}
 .fo-wrap.fo-right{--dir:-1}
-/* A big bite's code is a small card that turns up anywhere in the source, off the stack, so it has to be looked for. */
-.fo-wrap.fo-roam{position:fixed;left:1.2em;top:1.2em;z-index:2;margin:0;max-width:15em;
-  transform:translate(calc(var(--x,0) * max(0px,100vw - 2.4em - 100%)),calc(var(--y,0) * max(0px,100vh - 2.4em - 100%)))}
+/* A big bite's code is a small card that turns up anywhere in its own zone of the source (--rw by --rh, from --rt down), clear of the stack, so it has to be looked for. */
+.fo-wrap.fo-roam{position:fixed;left:1.2em;top:calc(var(--rt,0px) + .8em);z-index:2;margin:0;max-width:15em;font-size:var(--roam,1em);
+  transform:translate(calc(var(--x,0) * max(0px,var(--rw,100vw) - 2.4em - 100%)),calc(var(--y,0) * max(0px,var(--rh,50vh) - 1.2em - 100%)))}
 .fo-roam .fo-card{gap:.5em;padding:.45em .7em .5em .5em}
 .fo-roam .fo-icon{width:1.7em;height:1.7em;font-size:1em}
 .fo-roam .fo-text{font-size:.68em;-webkit-line-clamp:2}
@@ -349,7 +529,9 @@ const CSS = `
 .fo-head{display:flex;align-items:center;gap:.45em;line-height:1.2}
 .fo-name{font-weight:700;font-size:.95em}
 .fo-rarity{font-size:.62em;font-weight:800;letter-spacing:.08em;text-transform:uppercase;padding:.15em .45em;border-radius:.4em;border:1px solid currentColor}
-.fo-text{font-size:.9em;line-height:1.35;margin-top:.1em;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+/* Drawn bigger in the same source, a reply wraps onto more lines: --lines grows with the channel's size. */
+.fo-text{font-size:.9em;line-height:1.35;margin-top:.1em;display:-webkit-box;-webkit-line-clamp:var(--lines,3);-webkit-box-orient:vertical;overflow:hidden}
+.fo-page{margin-left:auto;font-size:.62em;font-weight:700;color:rgba(230,236,245,.6);padding-left:.6em}
 .fo-note{font-size:.68em;color:rgba(230,236,245,.55);margin-top:.2em}
 .fo-emote{display:inline-block;height:1.5em;vertical-align:-.4em;margin:0 .05em}
 .fo-pop{display:inline-block;animation:fo-pop .75s cubic-bezier(.3,1.9,.5,1) .25s both}
@@ -379,6 +561,8 @@ const CSS = `
 .fo-bigcode{margin-top:.3em;font-size:.8em;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:#fde047}
 .fo-bigcode b{margin-left:.3em;font-size:2em;letter-spacing:.04em;color:#fff;vertical-align:middle;text-shadow:0 0 .3em rgba(253,224,71,.8)}
 .fo-bigsecs{margin-left:.6em;font-size:1em;color:#fbbf24}
+/* The first code's last seconds, open to everyone. */
+.fo-sniping{color:#f87171}
 .fo-mythic{border:1.5px solid rgba(244,114,182,.9);background:linear-gradient(135deg,rgba(60,14,48,.92),rgba(14,20,50,.9))}
 .fo-in>.fo-mythic{animation:fo-slide .6s cubic-bezier(.2,1.35,.4,1) both,fo-mythic 1.2s ease-in-out .6s infinite}
 .fo-mythic .fo-rarity{color:#f9a8d4}

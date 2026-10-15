@@ -1,5 +1,5 @@
 import "server-only";
-import { BotApiError, getPointsLeaderboard, getPublicHistory, getPublicViewers, type PublicHistory, type PublicViewer, type PointsLeaderboard, type PublicCommands, type PublicCommandRow, type PublicCommandSection, type PointsLeaderboardEntry, type PublicCatch, type PublicFishing, type PublicHeists, type PublicRareCatch } from "./bot-api";
+import { BotApiError, getPointsLeaderboard, getPublicHistory, getPublicViewers, type PublicHistory, type PublicViewer, type PointsLeaderboard, type PublicCommands, type PublicCommandRow, type PublicCommandSection, type PointsLeaderboardEntry, type PublicCatch, type PublicDuels, type PublicFishing, type PublicHeists, type PublicHolder, type PublicRareCatch } from "./bot-api";
 
 /**
  * The public leaderboard page is the one page anyone can open signed out, so it
@@ -102,11 +102,54 @@ function publicHeists(raw: unknown): PublicHeists | null {
   };
 }
 
+/** The fish duels, keeping only well-formed rows. */
+function publicDuels(raw: unknown): PublicDuels | null {
+  const d = raw as Partial<PublicDuels> | null | undefined;
+  if (!d || typeof d !== "object" || !d.totals) return null;
+  const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+  const name = (v: unknown) => typeof v === "string" && USERNAME.test(v);
+  const fish = (v: unknown) => typeof v === "string" && v.length <= 8;
+  const rows = <T,>(list: unknown, keep: (r: Record<string, unknown>) => T | null): T[] =>
+    (Array.isArray(list) ? list : []).slice(0, 5).flatMap((r) => {
+      const out = r && typeof r === "object" ? keep(r as Record<string, unknown>) : null;
+      return out ? [out] : [];
+    });
+  return {
+    totals: { duels: n(d.totals.duels), wagered: n(d.totals.wagered), fishTaken: n(d.totals.fishTaken) },
+    champions: rows(d.champions, (r) => (name(r.name) ? { name: r.name as string, wins: n(r.wins), losses: n(r.losses) } : null)),
+    recent: rows(d.recent, (r) =>
+      name(r.winner) && name(r.loser) && fish(r.winnerFish) && fish(r.loserFish)
+        ? {
+            winner: r.winner as string, loser: r.loser as string, winnerFish: r.winnerFish as string, loserFish: r.loserFish as string,
+            stake: r.stake === "wager" || r.stake === "keeps" ? r.stake : ("friendly" as const),
+            amount: typeof r.amount === "number" ? r.amount : null, at: typeof r.at === "string" ? r.at.slice(0, 40) : "",
+          }
+        : null,
+    ),
+  };
+}
+
+/** Who holds what, keeping only well-formed rows. */
+function publicHolders(rows: unknown): PublicHolder[] {
+  if (!Array.isArray(rows)) return [];
+  const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v > 0 ? Math.floor(v) : 0);
+  return rows.slice(0, 100).flatMap((row) => {
+    const r = row as Partial<PublicHolder> | null;
+    if (!r || typeof r.name !== "string" || !USERNAME.test(r.name) || !Array.isArray(r.fish)) return [];
+    const fish = r.fish.slice(0, 40).flatMap((f) =>
+      f && typeof f.emoji === "string" && f.emoji.length <= 8 && n(f.n) > 0 && typeof f.rarity === "string" && RARITIES.has(f.rarity)
+        ? [{ emoji: f.emoji, n: n(f.n), rarity: f.rarity }]
+        : [],
+    );
+    return fish.length ? [{ name: r.name, fish, count: fish.reduce((sum, f) => sum + f.n, 0), worth: n(r.worth) }] : [];
+  });
+}
+
 function publicFishing(raw: unknown): PublicFishing | null {
   const f = raw as Partial<PublicFishing> | null | undefined;
   if (!f || typeof f.catchOdds !== "number") return null;
   const fish = publicCatches(f.fish);
-  return fish.length ? { catchOdds: f.catchOdds, fish, junk: publicCatches(f.junk), rarest: publicRarest(f.rarest), steal: f.steal === true, heists: publicHeists(f.heists),
+  return fish.length ? { catchOdds: f.catchOdds, fish, junk: publicCatches(f.junk), rarest: publicRarest(f.rarest), holders: publicHolders(f.holders), steal: f.steal === true, heists: publicHeists(f.heists), duel: f.duel === true, duels: publicDuels(f.duels),
     trophies: publicCatches(f.trophies),
     bigBite: f.bigBite && typeof f.bigBite.everyMinutes === "number" ? { everyMinutes: f.bigBite.everyMinutes } : null } : null;
 }

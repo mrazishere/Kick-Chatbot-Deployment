@@ -24,6 +24,9 @@ export function useCodeHidden(flashMs: number | undefined): boolean {
   return flashMs !== undefined && Date.now() - shownAt >= flashMs;
 }
 
+/** Whether a big bite's first code has opened to snipers, on the bot's clock. Re-evaluated on each countdown tick. */
+export const snipeIsOpen = (snipeAt: number | undefined): boolean => snipeAt !== undefined && botNow() >= snipeAt;
+
 /** Time left to a big bite's deadline, ticking a few times a second. `total` is the whole window. */
 export function useCountdown(until: number | undefined, total: number): { left: number; frac: number; secs: number } {
   const [, tick] = useState(0);

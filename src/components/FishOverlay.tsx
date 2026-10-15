@@ -3,8 +3,10 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import type { FishOverlayEvent } from "@/lib/bot-api";
 import { isStale, reloadInto, takeCursor } from "@/lib/overlay-build";
-import { syncClock, useCodeHidden, useCountdown } from "@/lib/overlay-clock";
-import { demoGenerator, type DemoOdds } from "@/lib/fish-demo";
+import { snipeIsOpen, syncClock, useCodeHidden, useCountdown } from "@/lib/overlay-clock";
+import { demoBigBite, demoGenerator, type DemoOdds } from "@/lib/fish-demo";
+import { useWheel } from "@/components/FishWheelStage";
+import { useDuels } from "@/components/FishDuelStage";
 
 const BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
 
@@ -25,7 +27,7 @@ type Scene =
   | { v: "catch"; item: string; rarity: string | null; cm: number | null }
   | { v: "miss"; junk: string | null }
   | { v: "trap"; haul: string[] }
-  | { v: "bite"; code: string; windowSec: number; pull: number; pulls: number; until?: number; flashMs?: number }
+  | { v: "bite"; code: string; windowSec: number; pull: number; pulls: number; until?: number; flashMs?: number; snipeAt?: number }
   | { v: "steal"; item: string; victim: string | null; cm: number | null }
   | { v: "caught"; item: string; victim: string | null; fine: string | null }
   | { v: "lay" }
@@ -68,7 +70,7 @@ function sceneOf(ev: FishOverlayEvent): Scene | null {
     const windowSec = Math.max(5, Math.min(120, ((ev.until ?? ev.ts + 30_000) - ev.ts) / 1000));
     return {
       v: "bite", code: ev.code, windowSec, pull: ev.pull ?? 1, pulls: ev.pulls ?? 1,
-      ...(ev.until ? { until: ev.until } : {}), ...(ev.flashMs ? { flashMs: ev.flashMs } : {}),
+      ...(ev.until ? { until: ev.until } : {}), ...(ev.flashMs ? { flashMs: ev.flashMs } : {}), ...(ev.snipeAt ? { snipeAt: ev.snipeAt } : {}),
     };
   }
   if (ev.kind === "steal" && ev.item) {
@@ -200,6 +202,7 @@ function BiteView({ scene }: { scene: Extract<Scene, { v: "bite" }> }) {
   const { frac, secs } = useCountdown(scene.until, scene.windowSec * 1000);
   const hidden = useCodeHidden(scene.flashMs);
   const color = frac > 0.6 ? "#fde047" : frac > 0.3 ? "#fbbf24" : "#ef4444";
+  const sniping = snipeIsOpen(scene.snipeAt);
   return (
     <>
       <div className="fo-line" />
@@ -207,7 +210,7 @@ function BiteView({ scene }: { scene: Extract<Scene, { v: "bite" }> }) {
       <div className="fo-ripple r1" />
       <div className="fo-ripple r2" />
       <div className="fo-codebox">
-        <span className="fo-codelabel">{scene.pulls > 1 ? `Pull ${scene.pull}/${scene.pulls}` : "Reel code"}</span>
+        <span className="fo-codelabel" style={sniping ? { color: "#f87171" } : undefined}>{sniping ? "Anyone can snipe!" : scene.pulls > 1 ? `Pull ${scene.pull}/${scene.pulls}` : "Reel code"}</span>
         {hidden ? <b className="fo-codegone">• • •</b> : <b className={scene.code.length > 2 ? "fo-codelong" : ""}>{scene.code}</b>}
         <span className="fo-codesecs" style={{ color }}>{secs > 0 ? `${secs}s left` : "time's up!"}</span>
       </div>
@@ -429,6 +432,8 @@ export default function FishOverlay({
   scale,
   demo,
   demoOdds,
+  duelDemo,
+  wheelDemo = false,
 }: {
   channel: string;
   overlayKey: string;
@@ -437,6 +442,10 @@ export default function FishOverlay({
   demo: boolean;
   /** The channel's odds for the demo; null uses the bot's defaults. */
   demoOdds: DemoOdds | null;
+  /** Play a made-up fish duel now and then, to preview it. */
+  duelDemo: boolean;
+  /** Spin a made-up wheel now and then, to preview it. */
+  wheelDemo?: boolean;
 }) {
   const queue = useRef<Waiting[]>([]);
   const lanes = useRef<Array<Lane | null>>([]);
@@ -447,7 +456,20 @@ export default function FishOverlay({
   const [, setVersion] = useState(0);
   // Whether the channel lets the demo play, from the feed; null until the feed has answered.
   const [demoAllowed, setDemoAllowed] = useState<boolean | null>(null);
-  const fontPx = 18 * scale;
+  // The channel's own size setting, from the feed, on top of the link's scale.
+  const [size, setSize] = useState(1);
+  // And the bottom-right corner it wants kept clear (a map, say): the water and its lanes stop short of it.
+  const [clear, setClear] = useState<{ w: number; h: number } | null>(null);
+  const fontPx = 18 * scale * size;
+  // The prize wheel plays over everything, and holds the scene's alerts until it's done.
+  const wheel = useWheel({ fontPx, clearBottom: clear ? clear.h / 100 : 0, demo: wheelDemo && demoAllowed === true });
+  const takeWheel = wheel.take;
+  const wheelShowing = wheel.isShowing;
+  const wheelBusy = wheel.busy;
+  // Fish duels play on a stage of their own, over the scene.
+  const duels = useDuels({ fontPx, demo: duelDemo && demoAllowed === true, clearBottom: clear ? clear.h / 100 : 0, held: wheel.showing });
+  const takeDuels = duels.take;
+  const duelsBusy = duels.busy;
 
   const enqueue = (events: FishOverlayEvent[]) => {
     for (const ev of events) {
@@ -482,11 +504,11 @@ export default function FishOverlay({
 
   // As many lanes as fit the source's width, up to `max`.
   useEffect(() => {
-    const fit = () => setLaneCount(Math.max(1, Math.min(max, Math.floor(window.innerWidth / (LANE_EM * fontPx)))));
+    const fit = () => setLaneCount(Math.max(1, Math.min(max, Math.floor((window.innerWidth * (1 - (clear?.w ?? 0) / 100)) / (LANE_EM * fontPx)))));
     fit();
     window.addEventListener("resize", fit);
     return () => window.removeEventListener("resize", fit);
-  }, [max, fontPx]);
+  }, [max, fontPx, clear]);
 
   // Poll the feed. The first answer only sets where to start, so opening the
   // source doesn't replay the last few minutes.
@@ -501,9 +523,12 @@ export default function FishOverlay({
           setDemoAllowed((a) => a ?? true); // no feed (fishing off, say): the demo still previews
           return;
         }
-        const data = (await res.json()) as { lastId: number; events: FishOverlayEvent[]; now?: number; build?: string; demo?: boolean };
+        const data = (await res.json()) as { lastId: number; events: FishOverlayEvent[]; now?: number; build?: string; demo?: boolean; size?: number; clear?: { w: number; h: number } };
         syncClock(data.now);
         setDemoAllowed(data.demo !== false);
+        setSize((data.size ?? 100) / 100);
+        const c = data.clear ?? null;
+        setClear((was) => (was?.w === c?.w && was?.h === c?.h ? was : c));
         if (after === null || data.lastId < after) {
           after = data.lastId; // first load, or the feed restarted
           return;
@@ -511,10 +536,10 @@ export default function FishOverlay({
         const fresh = data.events.filter((e) => e.id > (after as number));
         if (fresh.length) {
           after = Math.max(...fresh.map((e) => e.id));
-          enqueue(fresh);
+          enqueue(takeDuels(takeWheel(fresh)));
         }
         // A newer dashboard build is live: reload into it once nothing is on screen.
-        if (isStale(data.build) && !lanes.current.some(Boolean) && queue.current.length === 0) reloadInto(data.build!, url, after);
+        if (isStale(data.build) && !lanes.current.some(Boolean) && queue.current.length === 0 && !duelsBusy() && !wheelBusy()) reloadInto(data.build!, url, after);
       } catch {
         // offline for a moment; the next poll catches up
         setDemoAllowed((a) => a ?? true);
@@ -523,21 +548,28 @@ export default function FishOverlay({
     void poll();
     const t = setInterval(poll, POLL_MS);
     return () => clearInterval(t);
-  }, [channel, overlayKey]);
+  }, [channel, overlayKey, takeDuels, duelsBusy, takeWheel, wheelBusy]);
 
   useEffect(() => {
     if (!demo || !demoAllowed) return;
     // Ten anglers at once, repeated, rolled at the channel's odds, to see how a burst plays.
     const demoBurst = demoGenerator(demoOdds);
     let id = -1;
+    const timers: Array<ReturnType<typeof setTimeout>> = [];
+    let bursts = 0;
     const fire = () => {
       enqueue(demoBurst(id));
-      id -= 10;
+      // And a big bite a few seconds into every other burst: its codes, then the trophy.
+      if (bursts++ % 2 === 0) {
+        for (const s of demoBigBite(id - 10)) timers.push(setTimeout(() => enqueue([s.at()]), 3_000 + s.afterMs));
+      }
+      id -= 20;
     };
     fire();
     const t = setInterval(fire, 15_000);
     return () => {
       clearInterval(t);
+      timers.forEach(clearTimeout);
       // Turned off mid-burst: the demo anglers still waiting go too.
       queue.current = queue.current.filter((w) => w.ev.id >= 0);
     };
@@ -559,6 +591,21 @@ export default function FishOverlay({
         }
         return l;
       });
+      // The wheel is up: what was playing goes back to the front of the queue to play
+      // in full afterwards, and nothing starts until it's done.
+      if (wheelShowing()) {
+        const cut = lanes.current.filter((l): l is Lane => l !== null).sort((a, b) => a.endsAt - b.endsAt);
+        if (cut.length) {
+          // Not a big bite's code: the bot holds bites around a spin, so one still up has ended.
+          queue.current.unshift(...cut.filter((l) => l.scene.v !== "bite").map(({ ev, scene }) => ({ ev, scene })));
+          lanes.current = lanes.current.map(() => null);
+          changed = true;
+        }
+        idleSince.current = 0;
+        setActive(false);
+        if (changed) setVersion((v) => v + 1);
+        return;
+      }
       const waiting = queue.current.length;
       // A big bite with every lane busy takes the lane closest to finishing.
       if (queue.current[0]?.scene.v === "bite" && !lanes.current.some((l) => !l)) {
@@ -592,12 +639,12 @@ export default function FishOverlay({
       if (changed) setVersion((v) => v + 1);
     }, TICK_MS);
     return () => clearInterval(t);
-  }, [laneCount]);
+  }, [laneCount, wheelShowing]);
 
   return (
     <>
       <style>{CSS}</style>
-      <div className="fo-root" style={{ fontSize: `${fontPx}px` }}>
+      <div className="fo-root" style={{ fontSize: `${fontPx}px`, right: `${clear?.w ?? 0}vw`, opacity: duels.dim ? 0.12 : 1, transition: "opacity .4s ease" }}>
         <div className={`fo-water ${active ? "on" : ""}`}>
           <div className="w1" />
           <div className="w2" />
@@ -610,6 +657,8 @@ export default function FishOverlay({
           ) : null,
         )}
       </div>
+      {duels.stage}
+      {wheel.stage}
     </>
   );
 }

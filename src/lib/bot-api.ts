@@ -143,6 +143,11 @@ export interface PointsGames {
   chatReplies?: boolean;
   /** The fishing overlay's &demo=1 may play; off, overlays ignore it. Absent from an older bot service. */
   overlayDemo?: boolean;
+  /** How big the fishing overlay draws, as a percentage (50–300). Absent from an older bot service. */
+  overlaySizePercent?: number;
+  /** The bottom-right corner the fishing overlay keeps clear, as shares of its width and height (0–80; both above 0 to apply). Absent from an older bot service. */
+  overlayClearWidthPercent?: number;
+  overlayClearHeightPercent?: number;
 }
 
 /**
@@ -223,6 +228,8 @@ export interface PointsAntiSpam {
   threshold: number;
   windowMinutes: number;
   cost: number;
+  /** A viewer who can't cover the cost is timed out this long; 0 only takes what they have. Absent from an older bot service. */
+  timeoutMinutes?: number;
   announce: boolean;
 }
 
@@ -377,6 +384,12 @@ export interface PublicRareCatch {
   trophy?: boolean;
 }
 
+export interface PublicDuels {
+  totals: { duels: number; wagered: number; fishTaken: number };
+  champions: Array<{ name: string; wins: number; losses: number }>;
+  recent: Array<{ winner: string; loser: string; winnerFish: string; loserFish: string; stake: "friendly" | "wager" | "keeps"; amount: number | null; at: string }>;
+}
+
 export interface PublicFishing {
   /** 1 in this many plain casts lands a fish. */
   catchOdds: number;
@@ -384,14 +397,28 @@ export interface PublicFishing {
   junk: PublicCatch[];
   /** The rarest fish landed, rarest first. Empty from a bot service older than it. */
   rarest: PublicRareCatch[];
+  /** The fish each viewer holds unsold, most valuable haul first. Absent from a bot service older than it. */
+  holders?: PublicHolder[];
   /** Whether viewers can steal fish here. Absent from a bot service older than stealing. */
   steal?: boolean;
   /** Every steal ranked; null before the first one. Absent from a bot service older than it. */
   heists?: PublicHeists | null;
+  /** Whether viewers can duel their fish here. Absent from a bot service older than duels. */
+  duel?: boolean;
+  /** Fish duels fought; null before the first one. Absent from a bot service older than them. */
+  duels?: PublicDuels | null;
   /** Big bite trophies, chances as shares of big bites. Absent from a bot service older than them. */
   trophies?: PublicCatch[];
   /** About one big bite every this many live minutes; null where they're off. */
   bigBite?: { everyMinutes: number } | null;
+}
+
+/** One viewer's unsold fish: each kind with how many, rarest first, and what the lot would sell for. */
+export interface PublicHolder {
+  name: string;
+  fish: Array<{ emoji: string; n: number; rarity: PublicCatch["rarity"] }>;
+  count: number;
+  worth: number;
 }
 
 /** The Fishing tab's heists. Names only, as everywhere on the public page. */
@@ -587,6 +614,28 @@ export interface CustomCommandInput {
   originalName?: string;
 }
 
+/** A channel's prize wheel (the bot's data/wheel/<channel>.json). */
+export interface WheelConfig {
+  items: WheelItem[];
+  spinSeconds: number;
+  removeWinner: boolean;
+  /** Bumped on every change, chat's included: a save names the one it loaded. */
+  version: number;
+  limits?: { maxItems: number; maxLabel: number; spinSeconds: { min: number; max: number } };
+}
+
+export function getWheel(channel: string): Promise<WheelConfig> {
+  return request(`/internal/bot/${encodeURIComponent(channel)}/wheel`);
+}
+
+/** Refused with 409 when chat changed the wheel since `version` was loaded. */
+export function saveWheel(
+  channel: string,
+  wheel: Pick<WheelConfig, "items" | "spinSeconds" | "removeWinner" | "version">,
+): Promise<WheelConfig & { ok: true }> {
+  return request(`/internal/bot/${encodeURIComponent(channel)}/wheel`, { method: "PUT", body: wheel });
+}
+
 export function getCustomCommands(channel: string): Promise<{ commands: CustomCommand[] }> {
   return request(`/internal/bot/${encodeURIComponent(channel)}/custom-commands`);
 }
@@ -691,6 +740,32 @@ export function deleteReward(channel: string, rewardId: string): Promise<Channel
     method: "DELETE",
     timeoutMs: REWARD_WRITE_TIMEOUT_MS,
   });
+}
+
+/** One flag on a possible cheater, with the numbers behind it (the bot's community/cheat-signals.ts). */
+export interface CheatFlag {
+  code: "fast_answers" | "instant_traps" | "no_sleep" | "clockwork_casts" | "parked_don";
+  label: string;
+  evidence: string;
+}
+
+export interface CheatSuspect {
+  userId: number;
+  username: string;
+  flags: CheatFlag[];
+  casts: number;
+  trapHauls: number;
+  checks: { asked: number; passed: number; wrongTries: number; failed: number };
+  lastSeen: number;
+}
+
+export interface CheatSuspects {
+  days: number;
+  suspects: CheatSuspect[];
+}
+
+export function getCheatSuspects(channel: string, days: number): Promise<CheatSuspects> {
+  return request(`/internal/bot/${encodeURIComponent(channel)}/points/suspects?days=${days}`);
 }
 
 export function getPointsSummary(channel: string): Promise<PointsSummary> {
@@ -804,7 +879,7 @@ export interface FishOverlayEvent {
   id: number;
   ts: number;
   username: string;
-  kind: "catch" | "trap" | "miss" | "steal" | "caught" | "bite" | "info";
+  kind: "catch" | "trap" | "miss" | "steal" | "caught" | "bite" | "duel" | "wheel" | "info";
   text: string;
   item?: string;
   rarity?: string;
@@ -815,9 +890,53 @@ export interface FishOverlayEvent {
   flashMs?: number;
   /** When a big bite gets away (ms since epoch, the bot's clock). */
   until?: number;
+  /** When a big bite's first code opens to snipers (ms since epoch, the bot's clock). */
+  snipeAt?: number;
   /** Which pull of a big bite this code is for, of how many. */
   pull?: number;
   pulls?: number;
+  /** A fish duel, for the overlay to play back. */
+  duel?: FishDuel;
+  /** A spin of the prize wheel. */
+  wheel?: FishOverlayWheel;
+}
+
+/** One slice of the prize wheel. `color` is #rrggbb; absent, the overlay picks one. */
+export interface WheelItem {
+  label: string;
+  color?: string;
+}
+
+/** A wheel spin as the bot rolled it: the slices, the winning index, how long it spins (ms). */
+export interface FishOverlayWheel {
+  items: WheelItem[];
+  winner: number;
+  spinMs: number;
+}
+
+export type FishDuelType = "Predator" | "Swift" | "Armored";
+
+export interface FishDuelSide {
+  user: string;
+  fish: string;
+  /** null for a fish with no length. */
+  cm: number | null;
+  type: FishDuelType;
+  rarity: string;
+  hp: number;
+}
+
+/** A fish duel as the bot rolled it: a is the challenger, b the one who accepted. */
+export interface FishDuel {
+  a: FishDuelSide;
+  b: FishDuelSide;
+  /** Each hit: who struck (0 is a), the damage, 0 a miss / 1 a hit / 2 a critical, and 1 / 0 / -1 for a type advantage, none, or a disadvantage. */
+  turns: Array<[by: 0 | 1, damage: number, hit: 0 | 1 | 2, edge: 1 | 0 | -1]>;
+  winner: 0 | 1;
+  stake: "friendly" | "wager" | "keeps";
+  /** A wager's size and the channel's currency name. */
+  amount?: number;
+  currency?: string;
 }
 
 export interface FishOverlayFeed {
@@ -827,6 +946,10 @@ export interface FishOverlayFeed {
   now?: number;
   /** False when the channel has shut the overlay's demo out (games.overlayDemo). */
   demo?: boolean;
+  /** How big the channel wants the overlay drawn, as a percentage (games.overlaySizePercent); absent means 100. */
+  size?: number;
+  /** The bottom-right corner the overlay keeps clear, as percentages of its width and height; absent means none. */
+  clear?: { w: number; h: number };
 }
 
 export function getFishOverlay(channel: string): Promise<FishOverlayFeed> {

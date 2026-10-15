@@ -47,10 +47,12 @@ export interface PointsAntiSpam {
   threshold: number;
   windowMinutes: number;
   cost: number;
+  /** A viewer who can't cover the cost is timed out this long; 0 only takes what they have. Absent from an older bot service. */
+  timeoutMinutes?: number;
   announce: boolean;
 }
 
-const ANTI_SPAM_DEFAULTS: PointsAntiSpam = { enabled: false, keywords: [], threshold: 3, windowMinutes: 10, cost: 10, announce: true };
+const ANTI_SPAM_DEFAULTS: PointsAntiSpam = { enabled: false, keywords: [], threshold: 3, windowMinutes: 10, cost: 10, timeoutMinutes: 1, announce: true };
 
 export interface PointsConfig {
   enabled: boolean;
@@ -104,19 +106,64 @@ export interface PointsGames {
   chatReplies?: boolean;
   /** The fishing overlay's &demo=1 may play; off, overlays ignore it. Absent from an older bot service. */
   overlayDemo?: boolean;
+  /** How big the fishing overlay draws, as a percentage (50–300). Absent from an older bot service. */
+  overlaySizePercent?: number;
+  /** The bottom-right corner the fishing overlay keeps clear (0–80 each; both above 0 to apply). Absent from an older bot service. */
+  overlayClearWidthPercent?: number;
+  overlayClearHeightPercent?: number;
   /** Every fish and junk item's odds and price. Absent from a bot service older than per-item settings. */
   catches?: FishCatch[];
   /** Reels in buying order. Absent from a bot service older than reels. */
   reels?: FishReel[];
   /** `fish steal`. Absent from a bot service older than stealing. */
   steal?: FishSteal;
+  /** `fish duel`. Absent from a bot service older than duels. */
+  duel?: FishDuelSettings;
   /** Big bites. Absent from a bot service older than them. */
   bigBite?: FishBigBite;
+  /** Trap and cast checks. Absent from a bot service older than them. */
+  trapCheck?: FishTrapCheck;
 }
+
+/**
+ * Trap and cast checks, against macros: while offline, collecting full traps (and a share
+ * of casts) asks a question first; tries and time run out into a fine. Mirrors the bot's
+ * FishTrapCheckSetting.
+ */
+export interface FishTrapCheck {
+  enabled: boolean;
+  chancePercent: number;
+  finePercent: number;
+  answerSeconds: number;
+  tries: number;
+  /** Absent from a bot service older than cast checks. */
+  castChancePercent?: number;
+}
+
+/** `fish duel`: two viewers each send a fish and the bot plays the fight out. Mirrors the bot's FishDuelSetting. */
+export interface FishDuelSettings {
+  enabled: boolean;
+  onlyWhileLive: boolean;
+  allowKeeps: boolean;
+  expirySeconds: number;
+  cooldownSeconds: number;
+  maxWager: number;
+}
+
+type DuelNumber = "expirySeconds" | "cooldownSeconds" | "maxWager";
+
+/** The duel settings' inputs, in the order shown, with the bot's bounds and defaults. */
+const DUEL_FIELDS: Array<{ key: DuelNumber; label: string; hint: string; min: number; max: number }> = [
+  { key: "maxWager", label: "Biggest wager", hint: "0 for no limit", min: 0, max: 1_000_000_000 },
+  { key: "expirySeconds", label: "Seconds to answer", hint: "default 120", min: 30, max: 600 },
+  { key: "cooldownSeconds", label: "Seconds between challenges", hint: "per viewer, default 60", min: 0, max: 3600 },
+];
 
 /** `fish steal`: a hook to try, rarity odds, a burned fine when caught, and guards. Mirrors the bot's FishStealSetting. */
 export interface FishSteal {
   enabled: boolean;
+  /** Stealing only while live, whatever the fishing live/offline rule says. Absent from a bot service older than it. */
+  onlyWhileLive?: boolean;
   hookPrice: number;
   hookUses: number;
   feePercent: number;
@@ -128,6 +175,7 @@ export interface FishSteal {
   oddsRare: number;
   oddsEpic: number;
   oddsLegendary: number;
+  luckPercent: number;
   graceMinutes: number;
   protectMinutes: number;
   guardPercent: number;
@@ -135,7 +183,7 @@ export interface FishSteal {
   guardHours: number;
 }
 
-type StealNumber = Exclude<keyof FishSteal, "enabled">;
+type StealNumber = Exclude<keyof FishSteal, "enabled" | "onlyWhileLive">;
 
 /** The steal settings' inputs, in the order shown, with the bot's bounds and defaults. */
 const STEAL_FIELDS: Array<{ key: StealNumber; label: string; hint: string; min: number; max: number }> = [
@@ -150,6 +198,7 @@ const STEAL_FIELDS: Array<{ key: StealNumber; label: string; hint: string; min: 
   { key: "oddsRare", label: "Rare (%)", hint: "default 20", min: 0, max: 100 },
   { key: "oddsEpic", label: "Epic (%)", hint: "default 10", min: 0, max: 100 },
   { key: "oddsLegendary", label: "Legendary (%)", hint: "default 5", min: 0, max: 100 },
+  { key: "luckPercent", label: "Thief's luck (%)", hint: "raises every chance by this share, fines stay as priced: stealing pays, default 0", min: 0, max: 100 },
   { key: "graceMinutes", label: "Safe after landing (min)", hint: "default 30", min: 0, max: 1440 },
   { key: "protectMinutes", label: "Target left alone (min)", hint: "after a try, default 60", min: 0, max: 1440 },
   { key: "guardPercent", label: "Guard price (% of fish held)", hint: "default 5", min: 0, max: 100 },
@@ -187,6 +236,8 @@ export interface FishBigBite {
   pulls: number;
   pullSeconds: number;
   flashSeconds: number;
+  /** The first code's last seconds, open to snipers; 0 is off. Absent from an older bot service. */
+  snipeSeconds?: number;
 }
 
 /** The bot's defaults, for a bot service that doesn't report game settings yet. */
@@ -201,6 +252,7 @@ const GAMES_DEFAULTS: PointsGames = {
   stories: true,
   chatReplies: true,
   overlayDemo: true,
+  overlaySizePercent: 100,
 };
 
 /** `$<cmd> duel @user <amount>`: viewer against viewer, 50/50, winner takes both stakes. */
@@ -376,6 +428,7 @@ interface SettingsForm {
   spamThreshold: string;
   spamWindow: string;
   spamCost: string;
+  spamTimeout: string;
   spamAnnounce: boolean;
   gambleEnabled: boolean;
   gambleChance: string;
@@ -408,13 +461,19 @@ interface SettingsForm {
   fishStories: boolean;
   fishChatReplies: boolean;
   fishOverlayDemo: boolean;
+  fishOverlaySize: string;
+  fishOverlayClearW: string;
+  fishOverlayClearH: string;
   fishCatches: { name: string; type: "fish" | "junk"; weight: string; price: string; defaultWeight: number; defaultPrice: number; trophy?: boolean }[];
   /** null when the bot service doesn't report big bites. */
-  fishBigBite: { enabled: boolean; everyMinutes: string; activeMinutes: string; windowSeconds: string; pulls: string; pullSeconds: string; flashSeconds: string } | null;
+  fishBigBite: { enabled: boolean; everyMinutes: string; activeMinutes: string; windowSeconds: string; pulls: string; pullSeconds: string; flashSeconds: string; snipeSeconds: string } | null;
+  fishTrapCheck: { enabled: boolean; chancePercent: string; castChancePercent: string; finePercent: string; answerSeconds: string; tries: string } | null;
   /** null when the bot service doesn't report reels. */
   fishReels: { name: string; price: string; odds: string; rarity: string; value: string }[] | null;
   /** null when the bot service doesn't report stealing. */
-  fishSteal: ({ enabled: boolean } & Record<StealNumber, string>) | null;
+  fishSteal: ({ enabled: boolean; onlyWhileLive: boolean } & Record<StealNumber, string>) | null;
+  /** null when the bot service doesn't report duels. */
+  fishDuel: ({ enabled: boolean; onlyWhileLive: boolean; allowKeeps: boolean } & Record<DuelNumber, string>) | null;
 }
 
 function formFromConfig(c: PointsConfig): SettingsForm {
@@ -451,6 +510,7 @@ function formFromConfig(c: PointsConfig): SettingsForm {
     spamThreshold: String((c.antiSpam ?? ANTI_SPAM_DEFAULTS).threshold),
     spamWindow: String((c.antiSpam ?? ANTI_SPAM_DEFAULTS).windowMinutes),
     spamCost: String((c.antiSpam ?? ANTI_SPAM_DEFAULTS).cost),
+    spamTimeout: String((c.antiSpam ?? ANTI_SPAM_DEFAULTS).timeoutMinutes ?? 1),
     spamAnnounce: (c.antiSpam ?? ANTI_SPAM_DEFAULTS).announce,
     gambleEnabled: (c.gamble ?? GAMBLE_DEFAULTS).enabled,
     gambleChance: String((c.gamble ?? GAMBLE_DEFAULTS).winChancePercent),
@@ -483,6 +543,9 @@ function formFromConfig(c: PointsConfig): SettingsForm {
     fishStories: (c.games ?? GAMES_DEFAULTS).stories,
     fishChatReplies: (c.games ?? GAMES_DEFAULTS).chatReplies !== false,
     fishOverlayDemo: (c.games ?? GAMES_DEFAULTS).overlayDemo !== false,
+    fishOverlaySize: String((c.games ?? GAMES_DEFAULTS).overlaySizePercent ?? 100),
+    fishOverlayClearW: String(c.games?.overlayClearWidthPercent ?? 0),
+    fishOverlayClearH: String(c.games?.overlayClearHeightPercent ?? 0),
     fishCatches: (c.games?.catches ?? []).map((x) => ({ ...x, weight: String(x.weight), price: String(x.price) })),
     fishBigBite: c.games?.bigBite
       ? {
@@ -493,6 +556,17 @@ function formFromConfig(c: PointsConfig): SettingsForm {
           pulls: String(c.games.bigBite.pulls ?? 3),
           pullSeconds: String(c.games.bigBite.pullSeconds ?? 8),
           flashSeconds: String(c.games.bigBite.flashSeconds ?? 3),
+          snipeSeconds: String(c.games.bigBite.snipeSeconds ?? 20),
+        }
+      : null,
+    fishTrapCheck: c.games?.trapCheck
+      ? {
+          enabled: c.games.trapCheck.enabled,
+          chancePercent: String(c.games.trapCheck.chancePercent),
+          castChancePercent: String(c.games.trapCheck.castChancePercent ?? 0),
+          finePercent: String(c.games.trapCheck.finePercent),
+          answerSeconds: String(c.games.trapCheck.answerSeconds),
+          tries: String(c.games.trapCheck.tries),
         }
       : null,
     fishReels: c.games?.reels
@@ -507,7 +581,16 @@ function formFromConfig(c: PointsConfig): SettingsForm {
     fishSteal: c.games?.steal
       ? {
           enabled: c.games.steal.enabled,
+          onlyWhileLive: c.games.steal.onlyWhileLive ?? false,
           ...(Object.fromEntries(STEAL_FIELDS.map(({ key }) => [key, String(c.games!.steal![key])])) as Record<StealNumber, string>),
+        }
+      : null,
+    fishDuel: c.games?.duel
+      ? {
+          enabled: c.games.duel.enabled,
+          onlyWhileLive: c.games.duel.onlyWhileLive,
+          allowKeeps: c.games.duel.allowKeeps,
+          ...(Object.fromEntries(DUEL_FIELDS.map(({ key }) => [key, String(c.games!.duel![key])])) as Record<DuelNumber, string>),
         }
       : null,
   };
@@ -622,6 +705,7 @@ function buildPatch(f: SettingsForm): { patch: PointsSettingsPatch } | { error: 
       threshold: whole(f.spamThreshold, "Free spam messages", 1, 1000),
       windowMinutes: whole(f.spamWindow, "Spam window", 1, 1440),
       cost: whole(f.spamCost, "Spam cost", 1, 1_000_000_000),
+      timeoutMinutes: whole(f.spamTimeout, "Spam timeout", 0, 60),
       announce: f.spamAnnounce,
     },
     gamble: {
@@ -678,6 +762,9 @@ function buildPatch(f: SettingsForm): { patch: PointsSettingsPatch } | { error: 
     stories: f.fishStories,
     chatReplies: f.fishChatReplies,
     overlayDemo: f.fishOverlayDemo,
+    overlaySizePercent: whole(f.fishOverlaySize, "Overlay size", 50, 300),
+    overlayClearWidthPercent: whole(f.fishOverlayClearW, "Clear corner width", 0, 80),
+    overlayClearHeightPercent: whole(f.fishOverlayClearH, "Clear corner height", 0, 80),
   };
   if (f.fishCatches.length > 0) {
     // Only items that differ from their default are sent; the rest keep following it.
@@ -725,12 +812,28 @@ function buildPatch(f: SettingsForm): { patch: PointsSettingsPatch } | { error: 
       pulls: whole(f.fishBigBite.pulls, "Big bite pulls", 1, 5),
       pullSeconds: whole(f.fishBigBite.pullSeconds, "Big bite time per pull", 5, 60),
       flashSeconds: whole(f.fishBigBite.flashSeconds, "Big bite code flash", 0, 60),
+      snipeSeconds: whole(f.fishBigBite.snipeSeconds, "Big bite sniping", 0, 60),
+    };
+  }
+  if (f.fishTrapCheck) {
+    patch.games.trapCheck = {
+      enabled: f.fishTrapCheck.enabled,
+      chancePercent: whole(f.fishTrapCheck.chancePercent, "Trap checks: chance on full traps", 1, 100),
+      castChancePercent: whole(f.fishTrapCheck.castChancePercent, "Trap checks: chance on casts", 0, 100),
+      finePercent: whole(f.fishTrapCheck.finePercent, "Trap checks: fine", 0, 100),
+      answerSeconds: whole(f.fishTrapCheck.answerSeconds, "Trap checks: time to answer", 10, 300),
+      tries: whole(f.fishTrapCheck.tries, "Trap checks: tries", 1, 5),
     };
   }
   if (f.fishSteal) {
-    const steal = { enabled: f.fishSteal.enabled } as FishSteal;
+    const steal = { enabled: f.fishSteal.enabled, onlyWhileLive: f.fishSteal.onlyWhileLive } as FishSteal;
     for (const { key, label, min, max } of STEAL_FIELDS) steal[key] = whole(f.fishSteal[key], `Stealing: ${label}`, min, max);
     patch.games.steal = steal;
+  }
+  if (f.fishDuel) {
+    const duel = { enabled: f.fishDuel.enabled, onlyWhileLive: f.fishDuel.onlyWhileLive, allowKeeps: f.fishDuel.allowKeeps } as FishDuelSettings;
+    for (const { key, label, min, max } of DUEL_FIELDS) duel[key] = whole(f.fishDuel[key], `Fish duels: ${label}`, min, max);
+    patch.games.duel = duel;
   }
 
   return errors.length > 0 ? { error: errors.join("; ") } : { patch };
@@ -885,15 +988,116 @@ function BigBiteSettings({ value, command, disabled, onChange }: {
             <Field label="Later codes flash for (s)" hint="then hide; 0 keeps them shown, default 3">
               <input value={value.flashSeconds} inputMode="numeric" disabled={disabled} onChange={(e) => onChange({ ...value, flashSeconds: e.target.value })} className={INPUT} />
             </Field>
+            <Field label="Snipers get the last (s)" hint="of the first code, give or take 3s at random per bite, at most half of it; 0 = no sniping, default 20">
+              <input value={value.snipeSeconds} inputMode="numeric" disabled={disabled} onChange={(e) => onChange({ ...value, snipeSeconds: e.target.value })} className={INPUT} />
+            </Field>
           </div>
           <p className="mt-3 text-xs text-neutral-500">
-            {`While the stream is live and a fishing overlay is showing, a random viewer who chatted recently gets something big on their line, as often as set, give or take two minutes, so 15 means 13 to 17 minutes after the last one (never the same viewer twice in a row). Chat gets two lines, one naming them and one with the result; the reel codes and every pull play on the overlay only, which keeps chat quiet and means chat scripts can't answer. They type $${command} fish reel <code>, and each right answer brings a harder code for the next pull (two digits, then three and four letters and numbers, any case) with less time, shown only for a flash before it hides; the overlay counts each one down, and an answer still counts a few seconds after zero for the stream's delay; after the last pull the trophy lands by its own chance (🦭 90% down to 🐉 40%) or snaps the line. A wrong code or too slow and it gets away. It isn't a cast: it doesn't touch their fishing cooldown. With no overlay showing, there are no big bites.`}
+            {`While the stream is live and a fishing overlay is showing, a random viewer who chatted recently gets something big on their line, as often as set, give or take two minutes, so 15 means 13 to 17 minutes after the last one (never the same viewer twice in a row). Chat gets two lines, one naming them and one with the result; the reel codes and every pull play on the overlay only, which keeps chat quiet and means chat scripts can't answer. They type $${command} fish reel <code>, and each right answer brings a harder code for the next pull (two digits, then three and four letters and numbers, any case) with less time, shown only for a flash before it hides; from the second code they can type just the code, without the command; the overlay counts each one down, and an answer still counts a few seconds after zero for the stream's delay; after the last pull the trophy lands by its own chance (🦭 90% down to 🐉 40%) or snaps the line. A wrong code or too slow and it gets away. For the first code's last seconds, as set, anyone else chatting can snipe it: the first to type the right code takes the bite from them and reels on from the next pull (one try each, and chat says who took it). It isn't a cast: it doesn't touch their fishing cooldown. With no overlay showing, there are no big bites.`}
           </p>
         </>
       ) : null}
     </div>
   );
 }
+type TrapCheckForm = NonNullable<SettingsForm["fishTrapCheck"]>;
+
+/** Trap and cast checks: off until a channel turns them on; the numbers only show once on. */
+function TrapCheckSettings({ value, currency, command, disabled, onChange }: {
+  value: TrapCheckForm;
+  currency: string;
+  command: string;
+  disabled: boolean;
+  onChange: (v: TrapCheckForm) => void;
+}) {
+  const field = (key: Exclude<keyof TrapCheckForm, "enabled">, label: string, hint: string) => (
+    <Field label={label} hint={hint}>
+      <input value={value[key]} inputMode="numeric" disabled={disabled} onChange={(e) => onChange({ ...value, [key]: e.target.value })} className={INPUT} />
+    </Field>
+  );
+  return (
+    <div className="mt-4 rounded-md border border-neutral-800 p-3">
+      <Checkbox
+        label="Trap & cast checks: while offline, ask a question before some trap hauls and casts, against macros"
+        checked={value.enabled}
+        disabled={disabled}
+        onChange={(enabled) => onChange({ ...value, enabled })}
+      />
+      {value.enabled ? (
+        <>
+          <div className="mt-3 grid gap-4 sm:grid-cols-3">
+            {field("chancePercent", "Chance on full traps (%)", "per offline collect, 1–100, default 25")}
+            {field("castChancePercent", "Chance on casts (%)", "per offline cast, 0–100; 0 = off, default 0")}
+            {field("finePercent", `Fine (% of ${currency})`, "for running out of tries or time, 0–100, default 15")}
+            {field("answerSeconds", "Time to answer (s)", "10–300, default 30")}
+            {field("tries", "Tries", "1–5, default 3")}
+          </div>
+          <p className="mt-3 text-xs text-neutral-500">
+            {`Only while the stream is offline. On that share of trap collects (and of casts, if set), the bot asks a question first: count an emoji, add or subtract, pick the fish or the junk out of a numbered row, or say where an emoji sits. Every one can be answered with a plain number, so nobody on a phone has to copy an emoji; the emoji and its everyday names (plurals too) count as well. They answer with $${command} fish answer and the answer, within the time and tries set; answers skip the 5-second cooldown. Right, the traps are collected (or the line is freed to cast again). Out of tries or time, they pay the fine on their balance and the traps come up empty (a cast check leaves traps alone). Once asked, the question stays until answered or out of time, so waiting it out doesn't skip it.`}
+          </p>
+        </>
+      ) : null}
+    </div>
+  );
+}
+type DuelForm = NonNullable<SettingsForm["fishDuel"]>;
+
+/** `fish duel`, off until a channel turns it on; the rest only shows once it's on. */
+function DuelSettings({ value, currency, command, disabled, onChange }: {
+  value: DuelForm;
+  currency: string;
+  command: string;
+  disabled: boolean;
+  onChange: (v: DuelForm) => void;
+}) {
+  return (
+    <div className="mt-4 rounded-md border border-neutral-800 p-3">
+      <Checkbox
+        label={`Let viewers duel their fish ($${command} fish duel @user)`}
+        checked={value.enabled}
+        disabled={disabled}
+        onChange={(enabled) => onChange({ ...value, enabled })}
+      />
+      {value.enabled ? (
+        <>
+          <div className="mt-2 space-y-2">
+            <Checkbox
+              label="Only duel while the stream is live (whatever the live/offline setting above says for casting and traps)"
+              checked={value.onlyWhileLive}
+              disabled={disabled}
+              onChange={(onlyWhileLive) => onChange({ ...value, onlyWhileLive })}
+            />
+            <Checkbox
+              label="Allow duels for keeps: the winner takes the loser's fish"
+              checked={value.allowKeeps}
+              disabled={disabled}
+              onChange={(allowKeeps) => onChange({ ...value, allowKeeps })}
+            />
+          </div>
+          <div className="mt-3 grid gap-4 sm:grid-cols-3">
+            {DUEL_FIELDS.map(({ key, label, hint }) => (
+              <Field key={key} label={label} hint={hint}>
+                <input
+                  value={value[key]}
+                  inputMode="numeric"
+                  disabled={disabled}
+                  onChange={(e) => onChange({ ...value, [key]: e.target.value })}
+                  className={INPUT}
+                />
+              </Field>
+            ))}
+          </div>
+          <p className="mt-3 text-xs text-neutral-500">
+            {`A viewer challenges another with $${command} fish duel @user, sending their strongest fish or the one they name, and sets the stake: nothing, an amount of ${currency} both put up, or "keeps". The other answers with $${command} fish accept (naming a fish if they like) or $${command} fish deny. `}
+            {`The fight is automatic and plays on the fishing overlay, turn by turn: the stats decide it, with little left to luck. Rarity is a fish's level, a longer fish has more hit points and hits harder, and each fish has a type that gives a small edge (Predator beats Swift, Swift beats Armored, Armored beats Predator). `}
+            {`Chat gets the challenge and the result; with an overlay open the result waits until the fight has played. Nothing is held while a challenge waits: the stake is checked and moved when the duel is fought.`}
+          </p>
+        </>
+      ) : null}
+    </div>
+  );
+}
+
 type StealForm = NonNullable<SettingsForm["fishSteal"]>;
 
 /** `fish steal`, off until a channel turns it on; the numbers only show once it's on. */
@@ -914,6 +1118,14 @@ function StealSettings({ value, currency, command, disabled, onChange }: {
       />
       {value.enabled ? (
         <>
+          <div className="mt-2">
+            <Checkbox
+              label="Only steal while the stream is live (whatever the live/offline setting above says for casting and traps)"
+              checked={value.onlyWhileLive}
+              disabled={disabled}
+              onChange={(onlyWhileLive) => onChange({ ...value, onlyWhileLive })}
+            />
+          </div>
           <div className="mt-3 grid gap-4 sm:grid-cols-5">
             {STEAL_FIELDS.map(({ key, label, hint }) => (
               <Field key={key} label={label} hint={hint}>
@@ -1820,6 +2032,15 @@ export default function PointsCard({
                     onChange={(v) => set("fishBigBite", v)}
                   />
                 ) : null}
+                {form.fishTrapCheck ? (
+                  <TrapCheckSettings
+                    value={form.fishTrapCheck}
+                    currency={form.currencyName.trim() || "points"}
+                    command={commandPreview || "…"}
+                    disabled={readOnly || !!busy}
+                    onChange={(v) => set("fishTrapCheck", v)}
+                  />
+                ) : null}
                 {form.fishSteal ? (
                   <StealSettings
                     value={form.fishSteal}
@@ -1827,6 +2048,15 @@ export default function PointsCard({
                     command={commandPreview || "…"}
                     disabled={readOnly || !!busy}
                     onChange={(v) => set("fishSteal", v)}
+                  />
+                ) : null}
+                {form.fishDuel ? (
+                  <DuelSettings
+                    value={form.fishDuel}
+                    currency={form.currencyName.trim() || "points"}
+                    command={commandPreview || "…"}
+                    disabled={readOnly || !!busy}
+                    onChange={(v) => set("fishDuel", v)}
                   />
                 ) : null}
                 {form.fishCatches.length > 0 ? (
@@ -1852,7 +2082,7 @@ export default function PointsCard({
                   />
                   {form.gamesOfflineOnly ? (
                     <p className="pl-6 text-xs text-amber-300/80">
-                      {form.fishBigBite?.enabled ? "Big bites still come while the stream is live; only casting, traps and stealing wait for it to end. " : ""}
+                      {form.fishBigBite?.enabled ? `Big bites still come while the stream is live; only casting${form.fishSteal?.enabled && form.fishSteal.onlyWhileLive ? " and traps" : ", traps and stealing"} wait for it to end. ` : ""}
                       While the stream is live with a fishing overlay open, fishing replies show on the overlay only; chat gets them once it&apos;s offline.
                     </p>
                   ) : null}
@@ -1888,6 +2118,17 @@ export default function PointsCard({
                       Overlays ignore &amp;demo=1, including one already open in OBS with it left on its link.
                     </p>
                   ) : null}
+                </div>
+                <div className="mt-4 grid gap-4 sm:grid-cols-3">
+                  <Field label="Overlay size (%)" hint="100 = as designed. Raise it if the source was shrunk in OBS and reads too small. An overlay already open follows within a couple of seconds.">
+                    {text("fishOverlaySize", { inputMode: "numeric" })}
+                  </Field>
+                  <Field label="Clear corner width (%)" hint="Keeps the source's bottom-right corner free for something else on stream, a map say: this share of its width. 0 = nothing kept clear.">
+                    {text("fishOverlayClearW", { inputMode: "numeric" })}
+                  </Field>
+                  <Field label="Clear corner height (%)" hint="And this share of its height. Replies then show above the corner, big bite codes to its left. Both must be above 0.">
+                    {text("fishOverlayClearH", { inputMode: "numeric" })}
+                  </Field>
                 </div>
                 <div className="mt-4">
                   <FishOverlayLinks links={fishOverlays} />
@@ -1960,6 +2201,9 @@ export default function PointsCard({
                   <Field label="Cost per message after that" hint={spamExample(form.spamThreshold, form.spamWindow, form.spamCost, form.currencyName)}>
                     {text("spamCost", { inputMode: "numeric" })}
                   </Field>
+                  <Field label="Timeout if they can't pay (min)" hint="Per message they can't cover. 0 = no timeout, default 1.">
+                    {text("spamTimeout", { inputMode: "numeric" })}
+                  </Field>
                 </div>
                 <div className="mt-3 space-y-2">
                   <Checkbox
@@ -1971,7 +2215,9 @@ export default function PointsCard({
                 </div>
                 <p className="mt-3 text-xs text-neutral-500">
                   Counted per viewer, one per message however often it repeats the keyword. The streamer and moderators
-                  are never charged, nor is anyone excluded from earning. A viewer never goes below zero.
+                  are never charged, nor is anyone excluded from earning. A viewer never goes below zero: one who can't cover the cost
+                  loses what they have and is timed out for the minutes set, and chat is told why. Timeouts need the bot to be able to
+                  moderate here; moderators and the bot owner are never timed out.
                 </p>
               </div>
 
