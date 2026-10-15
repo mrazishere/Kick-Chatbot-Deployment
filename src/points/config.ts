@@ -125,14 +125,15 @@ export function effectiveBigBite(stored: unknown): FishBigBiteSetting {
 }
 
 /** Off until a channel turns it on. */
-export const DEFAULT_TRAP_CHECK: Readonly<FishTrapCheckSetting> = { enabled: false, chancePercent: 25, finePercent: 15, answerSeconds: 30, tries: 3 };
+export const DEFAULT_TRAP_CHECK: Readonly<FishTrapCheckSetting> = { enabled: false, chancePercent: 25, finePercent: 15, answerSeconds: 30, tries: 3, castChancePercent: 0 };
 
 const TRAP_CHECK_NUMBERS: Record<Exclude<keyof FishTrapCheckSetting, 'enabled'>, Rule> = {
   chancePercent: { min: 1, max: 100, integer: true },
   finePercent: { min: 0, max: 100, integer: true },
   // Long enough to read and type on a phone; the window also bounds how long a haul waits.
   answerSeconds: { min: 10, max: 300, integer: true },
-  tries: { min: 1, max: 5, integer: true }
+  tries: { min: 1, max: 5, integer: true },
+  castChancePercent: { min: 0, max: 100, integer: true }
 };
 
 /** The stored trap check settings with values clamped; anything not stored keeps its default. */
@@ -160,6 +161,7 @@ export const DEFAULT_STEAL: Readonly<FishStealSetting> = {
   oddsRare: 20,
   oddsEpic: 10,
   oddsLegendary: 5,
+  luckPercent: 0,
   graceMinutes: 30,
   protectMinutes: 60,
   guardPercent: 5,
@@ -180,6 +182,7 @@ const STEAL_NUMBERS: Record<Exclude<keyof FishStealSetting, 'enabled' | 'onlyWhi
   oddsRare: { min: 0, max: 100, integer: true },
   oddsEpic: { min: 0, max: 100, integer: true },
   oddsLegendary: { min: 0, max: 100, integer: true },
+  luckPercent: { min: 0, max: 100, integer: true },
   graceMinutes: { min: 0, max: 1440, integer: true },
   protectMinutes: { min: 0, max: 1440, integer: true },
   guardPercent: { min: 0, max: 100, integer: true },

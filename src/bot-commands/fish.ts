@@ -56,12 +56,14 @@ import { gameInvocation } from '../community/stakes';
 import { addReminder, cancelSelfRemindersStartingWith, openCommunityDb } from '../community/store';
 import { bestEmote, broadcasterIdFor, emoteImages } from '../community/emotes';
 import { OverlayKind, overlayShowing, pushOverlay } from '../community/fish-overlay';
-import { addChallenge, challengeBy, challengeFor, describe, dropChallenge, fight, fishNamed, overlayDuel, pickFighter, playMs, randomFish, wantsRandom, type DuelStake } from '../community/fish-duel';
+import { addChallenge, challengeBy, challengeFor, closeInValue, describe, dropChallenge, fight, fishNamed, fishValue, keepsRange, overlayDuel, pickByValue, pickFighter, pickForKeeps, sameFish, playMs, randomFish, wantsRandom, type DuelStake } from '../community/fish-duel';
 import { parseBet } from './points';
 import { answerMatches, makeTrapCheck, type TrapCheck } from '../community/trap-check';
+import { wheelBusy } from '../community/wheel-state';
+import { recordSignal } from '../community/cheat-signals';
 import { BITE_TOO_FAST_MS, STREAM_GRACE_MS, biteFor, canBite, channelBite, channelHasBite, codeMatches, getAway, nextPull, pickChatter, snipeBite, snipeOpen, startBite, takeBite, type BiteContext } from '../community/big-bite';
 import {
-  addItem, baitPrice, baitRoll, currentReel, heldFishValue, landsFish, moveFish, pickHeld, stealableFish, stealChance, stealCharges, worstStealCharges, parseSellList, CatchItem, CatchType, FAILURE_EMOTES, FishData, findBait, hasFishedBefore, initialData, rarityOf, recordCatch,
+  addItem, baitPrice, baitRoll, currentReel, heldFishValue, landsFish, moveFish, pickHeld, stealableFish, stealChance, stealCharges, stealRollChance, worstStealCharges, parseSellList, CatchItem, CatchType, FAILURE_EMOTES, FishData, findBait, hasFishedBefore, initialData, rarityOf, recordCatch,
   ITEMS, JUNK_MESSAGES, loadFish, MISS_DELAY_MS, pick, randomInt, rollCatch, saveFish, sellPrice, STORY_STYLES, SUCCESS_EMOTES,
   takeItems, TYPE_DESCRIPTIONS, weightedCatch
 } from '../community/fishing';
@@ -340,6 +342,13 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     let bite = biteFor(chan, meLc);
     if (!bite) {
       const other = channelBite(chan);
+      // Too early for someone else's first code: that was their one try (spamming the
+      // code from the start used to cost nothing, so the ±3s on the window didn't help).
+      if (other && other.pull === 1 && other.snipeAt !== undefined && at < other.snipeAt && !other.tried.has(meLc)
+        && canBite({ channel: chan, excluded: (id, name) => offLimits(id, name) }, uid, me)) {
+        other.tried.add(meLc);
+        return void say(`Too early! You spooked it: no more snipes at ${other.username}'s big bite.`);
+      }
       if (!other || !snipeOpen(other, at) || !canBite({ channel: chan, excluded: (id, name) => offLimits(id, name) }, uid, me)) {
         return void say("There's nothing big on your line right now.");
       }
@@ -382,6 +391,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
   function testBite(uid: number): void {
     if (!tester) return;
     if (biteFor(chan, meLc)) return void say('You already have a big bite on your line.');
+    if (wheelBusy(chan)) return void say('The wheel is spinning: try once it has landed.');
     if (!overlayShowing(db!)) return void say('Open the fishing overlay first: a big bite needs somewhere to show its code.');
     startBite(biteCtx(), me, uid);
   }
@@ -390,6 +400,11 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
   async function cast(baitWord: string | undefined, uid: number): Promise<void> {
     if (!tester && !(await liveOk())) return;
     const bait = findBait(baitWord);
+    // Cast checks (games.trapCheck.castChancePercent): offline only, like trap checks.
+    const tc = g.trapCheck;
+    const liveNow = (await svc!.isLiveNow()) === true;
+    const mayAsk = tc.enabled && tc.castChancePercent > 0 && !liveNow;
+    let askedCheck: TrapCheck | null = null;
     type Outcome =
       | { kind: 'reply'; text: string }
       | { kind: 'miss'; text: string; delay: number; appendix: string; streak: string }
@@ -398,6 +413,8 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     const out = once<Outcome>(now => {
       ensureUserTx(db!, uid, me, now);
       const d = loadFish(db!, uid) ?? initialData();
+      // Every cast command, early ones too: how soon after the cooldown people cast (cheat-signals.ts).
+      recordSignal(db!, { userId: uid, kind: 'cast', now, delayMs: d.readyTimestamp ? now - d.readyTimestamp : null, live: liveNow });
       if (d.readyTimestamp !== 0 && now < d.readyTimestamp) {
         return { kind: 'reply', text: `Hol' up partner! You can go fishing again in ${span(d.readyTimestamp - now)}!` };
       }
@@ -408,6 +425,24 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
             ? `You cannot go fishing while your traps are laid out - you would be disturbing the catch! Your traps are ready to be collected! Go ahead and use "${cmd} fish trap" to get your stuff.`
             : `You cannot go fishing while your traps are laid out - you would be disturbing the catch! If you wish to get rid of the traps immediately, use "${cmd} fish trap cancel", but you will not get any catch from them.`
         };
+      }
+      // A cast check waiting: answer it first. (A trap one can't be: the traps would be out.)
+      if (d.trapCheck) {
+        if (now > d.trapCheck.until) {
+          const text = failCheck(d, uid, d.trapCheck, 'time', now);
+          saveFish(db!, uid, d, now);
+          return { kind: 'reply', text };
+        }
+        return { kind: 'reply', text: `Before you cast again: ${d.trapCheck.question} ${answerHowLine} (${span(d.trapCheck.until - now)} left)` };
+      }
+      if (mayAsk && randomInt(1, 100) <= tc.castChancePercent) {
+        d.trapCheck = askedCheck = { ...makeTrapCheck(false, now, tc.answerSeconds, true), fine: Math.floor((getUser(db!, uid)?.balance ?? 0) * tc.finePercent / 100) };
+        recordSignal(db!, { userId: uid, kind: 'check_asked', now, live: liveNow, detail: 'cast' });
+        saveFish(db!, uid, d, now);
+        console.log(`[FISH] ${me} got a cast check in ${chan}: ${d.trapCheck.question}`);
+        const stake = tc.finePercent > 0 ? `costs ${tc.finePercent}% of your ${cur}` : 'just ends it';
+        const tries = tc.tries === 1 ? 'one try' : `${tc.tries} tries`;
+        return { kind: 'reply', text: `🎣 Your line snagged! Free it before you cast: ${d.trapCheck.question} ${answerHowLine} You have ${span(tc.answerSeconds * 1000)} and ${tries}; running out ${stake}.` };
       }
 
       let rollMaximum = g.catchOdds;
@@ -454,6 +489,8 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       return { kind: 'catch', item, sizeString, appendix };
     });
     if (!out) return;
+    const asked = askedCheck as TrapCheck | null;
+    if (asked) timeCheck(uid, asked);
     if (out.kind === 'reply') return void say(out.text);
 
     if (out.kind === 'miss') {
@@ -484,6 +521,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
   function streamerBite(target: string | undefined): void {
     if (!g.bigBite.enabled) return void say('Big bites are off here.');
     if (channelHasBite(chan)) return void say('Someone already has a big bite on their line.');
+    if (wheelBusy(chan)) return void say('The wheel is spinning: start a big bite once it has landed.');
     if (!overlayShowing(db!)) return void say('Open the fishing overlay first: a big bite needs somewhere to show its code.');
     const who = { channel: chan, db: db!, bigBite: g.bigBite, excluded: (id: number, name: string) => offLimits(id, name) };
     const nameLc = (target ?? '').replace(/^@+/, '').toLowerCase();
@@ -509,6 +547,8 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
    * Collecting, cancelling or re-laying the traps first clears the old one.
    */
   const TRAP_REMINDER = 'your fishing traps are ready';
+  // Kick chat drops anything in angle brackets: "<x>" came out as nothing.
+  const answerHowLine = `Reply "${cmd} fish answer" followed by your answer.`;
   const remindsOn = !((config as ChannelConfig).excludedCommands as string[] | undefined ?? []).some(c => String(c).toLowerCase() === 'remind');
   function syncTrapReminder(trapEnd: number | null): void {
     const cdb = openCommunityDb(channel);
@@ -540,7 +580,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       if (!before.trapCheck) return void say("There's no question waiting on your traps.");
       // Nothing after "answer" isn't a try: the question again, while there's time.
       const wait = before.trapCheck.until - Date.now();
-      if (!answer && wait >= 0) return void say(`Your traps are waiting on this: ${before.trapCheck.question} Answer with "${cmd} fish answer <x>" (${span(wait)} left).`);
+      if (!answer && wait >= 0) return void say(`Your traps are waiting on this: ${before.trapCheck.question} Reply "${cmd} fish answer" followed by your answer (${span(wait)} left).`);
     }
     // Laying traps is fishing, so it follows the live rule; collecting or cancelling doesn't.
     // An answer to a reset lays them again too, but if it can't, it still collects.
@@ -550,13 +590,13 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     const mayLay = laysTraps && (await liveOk());
     if (laysTraps && !mayLay && operation !== 'answer') return;
     // Checks only ask offline; an unknown live state counts as offline.
-    const mayAsk = tc.enabled && operation !== 'answer' && operation !== 'cancel' && before.trap.active && !before.trapCheck
-      && (await svc!.isLiveNow()) !== true;
+    const liveNow = (await svc!.isLiveNow()) === true;
+    const mayAsk = tc.enabled && operation !== 'answer' && operation !== 'cancel' && before.trap.active && !before.trapCheck && !liveNow;
     const waitEmote = await emotesFor(['PauseChamp'], '⌛');
     // What the traps are after this message: laid until a time, emptied, or untouched.
     let after: { laidUntil: number | null } | null = null;
     let collected = false;
-    const answerHow = `Answer with "${cmd} fish answer <x>".`;
+    const answerHow = answerHowLine;
     let askedCheck: TrapCheck | null = null;
 
     const text = once(now => {
@@ -564,6 +604,13 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       const d = loadFish(db!, uid) ?? initialData();
       if (operation !== 'answer' && d.readyTimestamp !== 0 && now < d.readyTimestamp) {
         return `Hol' up partner! You can go set up your fishing traps in ${span(d.readyTimestamp - now)}!`;
+      }
+      // A cast check waiting comes first, traps included.
+      if (operation !== 'answer' && d.trapCheck?.cast) {
+        if (now <= d.trapCheck.until) return `Free your line first: ${d.trapCheck.question} ${answerHow} (${span(d.trapCheck.until - now)} left)`;
+        const text = failCheck(d, uid, d.trapCheck, 'time', now);
+        saveFish(db!, uid, d, now);
+        return text;
       }
       const setUp = (): string => {
         const duration = g.trapMinutes * 60_000;
@@ -574,6 +621,8 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       };
       const collect = (): string => {
         collected = true;
+        // How long after the traps filled they were collected (cheat-signals.ts).
+        recordSignal(db!, { userId: uid, kind: 'trap_collect', now, delayMs: now - d.trap.end, live: liveNow });
         const rolls = Math.floor(d.trap.duration / 60_000 * randomInt(75, 90) / 100);
         const skip = g.catchCooldownMinutes;
         let fishAmount = 0;
@@ -612,18 +661,27 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
           reply = failCheck(d, uid, check, 'time', now);
           after = { laidUntil: null };
         } else if (answerMatches(check, answer)) {
+          recordSignal(db!, { userId: uid, kind: 'check_passed', now, delayMs: now - check.askedAt, live: liveNow, detail: check.cast ? 'cast' : 'trap' });
           delete d.trapCheck;
           d.lifetime.trap.checksPassed++;
           console.log(`[FISH] ${me} passed a trap check in ${chan}`);
-          reply = check.reset && mayLay ? `Correct! ${collect()} ${setUp()}` : `Correct! ${collect()}`;
-        } else if (++check.wrong >= tc.tries) {
-          console.log(`[FISH] ${me} answered "${answer}" to a trap check in ${chan}`);
-          reply = failCheck(d, uid, check, 'wrong', now);
-          after = { laidUntil: null };
+          reply = check.cast ? 'Correct! Your line is free: cast away.' : check.reset && mayLay ? `Correct! ${collect()} ${setUp()}` : `Correct! ${collect()}`;
         } else {
-          const left = tc.tries - check.wrong;
-          reply = `Not quite! ${left} ${left === 1 ? 'try' : 'tries'} left, ${span(check.until - now)} to go: ${check.question}`;
+          recordSignal(db!, { userId: uid, kind: 'check_wrong', now, delayMs: now - check.askedAt, live: liveNow });
+          if (++check.wrong >= tc.tries) {
+            console.log(`[FISH] ${me} answered "${answer}" to a trap check in ${chan}`);
+            reply = failCheck(d, uid, check, 'wrong', now);
+            after = { laidUntil: null };
+          } else {
+            const left = tc.tries - check.wrong;
+            reply = `Not quite! ${left} ${left === 1 ? 'try' : 'tries'} left, ${span(check.until - now)} to go: ${check.question}`;
+          }
         }
+      } else if (operation === 'cancel' && d.trapCheck && !d.trapCheck.cast) {
+        // Pulling the traps to dodge the question used to cost only the haul (2026-10-14 audit).
+        d.lifetime.trap.cancelled++;
+        reply = failCheck(d, uid, d.trapCheck, now > d.trapCheck.until ? 'time' : 'cancel', now);
+        after = { laidUntil: null };
       } else if (operation === 'cancel') {
         if (!d.trap.active) return "You cannot cancel your fishing traps as you don't have them set up!";
         d.trap = { active: false, start: 0, end: 0, duration: 0 };
@@ -647,7 +705,8 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
         }
         return `Your traps are full, but first: ${d.trapCheck.question} ${answerHow} (${span(d.trapCheck.until - now)} left)`;
       } else if (mayAsk && randomInt(1, 100) <= tc.chancePercent) {
-        d.trapCheck = askedCheck = makeTrapCheck(operation === 'reset', now, tc.answerSeconds);
+        d.trapCheck = askedCheck = { ...makeTrapCheck(operation === 'reset', now, tc.answerSeconds), fine: Math.floor((getUser(db!, uid)?.balance ?? 0) * tc.finePercent / 100) };
+        recordSignal(db!, { userId: uid, kind: 'check_asked', now, live: liveNow, detail: 'trap' });
         console.log(`[FISH] ${me} got a trap check in ${chan}: ${d.trapCheck.question}`);
         const stake = tc.finePercent > 0 ? `costs ${tc.finePercent}% of your ${cur} and the catch` : 'loses the catch';
         const tries = tc.tries === 1 ? 'one try' : `${tc.tries} tries`;
@@ -674,21 +733,25 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
    * pays the fine. Inside a write transaction; the caller saves `d` and clears the
    * reminder. Returns the reply.
    */
-  function failCheck(d: FishData, uid: number, check: TrapCheck, why: 'wrong' | 'time', now: number): string {
+  function failCheck(d: FishData, uid: number, check: TrapCheck, why: 'wrong' | 'time' | 'cancel', now: number): string {
     const tc = g.trapCheck;
     delete d.trapCheck;
     d.lifetime.trap.checksFailed++;
-    d.trap = { active: false, start: 0, end: 0, duration: 0 };
+    recordSignal(db!, { userId: uid, kind: 'check_failed', now, live: false, detail: why });
+    // A cast check has no haul: the traps (not out, or it couldn't have been asked) stay as they are.
+    if (!check.cast) d.trap = { active: false, start: 0, end: 0, duration: 0 };
     const balance = getUser(db!, uid)?.balance ?? 0;
-    const fine = Math.floor(balance * tc.finePercent / 100);
+    // Set when it was asked, so $DON moved away since doesn't shrink it; at most what's left.
+    const fine = Math.min(balance, check.fine ?? Math.floor(balance * tc.finePercent / 100));
     const left = fine > 0
       ? debitTx(db!, { userId: uid, amount: fine, reason: 'game:fish_trap_check', actor: `chat:${me}`, note: `${why}: ${check.question}`, now }).balance
       : balance;
-    console.log(`[FISH] ${me} failed a trap check in ${chan} (${why === 'time' ? 'out of time' : 'out of tries'}), fined ${fine}`);
-    const head = why === 'time' ? "Time's up!" : 'Wrong again!';
+    console.log(`[FISH] ${me} failed a ${check.cast ? 'cast' : 'trap'} check in ${chan} (${why === 'time' ? 'out of time' : why === 'cancel' ? 'pulled the traps' : 'out of tries'}), fined ${fine}`);
+    const head = why === 'time' ? "Time's up!" : why === 'cancel' ? 'Pulling your traps doesn\'t dodge the question!' : 'Wrong again!';
+    const lost = check.cast ? 'Your line snaps' : 'Your traps come up empty';
     return fine > 0
-      ? `${head} Your traps come up empty and you pay a fine of ${groupDigits(fine)} ${cur} (${groupDigits(left)} ${cur} left).`
-      : `${head} Your traps come up empty.`;
+      ? `${head} ${lost} and you pay a fine of ${groupDigits(fine)} ${cur} (${groupDigits(left)} ${cur} left).`
+      : `${head} ${lost}.`;
   }
 
   /** End `check` when its time runs out, unless it's answered or ended first. */
@@ -970,8 +1033,9 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       if (fee > 0) debitTx(db!, { userId: uid, amount: fee, reason: 'game:fish_steal', actor: `chat:${me}`, note: `${victim.username} ${item.name}`, now });
       const cooldown = `${g.catchCooldownMinutes}m cooldown`;
 
-      if (randomInt(1, 100) <= chance) {
-        moveFish(v, d, item, picked);
+      // Luck raises the roll's odds, not the fine's.
+      if (randomInt(1, 1000) <= Math.round(stealRollChance(g, item.name) * 10)) {
+        moveFish(v, d, item, picked, true);
         d.lifetime.steal.stolen++;
         v.lifetime.steal.lost++;
         saveFish(db!, uid, d, now);
@@ -1045,38 +1109,47 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     if (!tester && wait > 0) return void say(`You can challenge someone again in ${span(wait)}.`);
 
     const rest = words.filter(w => w !== nameWord);
-    // `random` sends any fish held; the pick is made now and named in the challenge, like a fish asked for.
-    const fishName = wantsRandom(rest) ? randomFish(loadFish(db!, uid)) : fishNamed(rest);
-    const fighter = pickFighter(loadFish(db!, uid), g, fishName);
-    if (!fighter) return void say(fishName ? `You don't have a ${fishName} to send.` : 'You need a fish to duel with. Go catch one!');
-    if (!pickFighter(loadFish(db!, rival.user_id), g)) return void say(`${rival.username} has no fish to fight with.`);
-
-    let stake: DuelStake = { kind: 'friendly' };
     const others = rest.filter(w => fishNamed([w]) === undefined && !wantsRandom([w]));
     if (others.length > 1) return void say(usage);
-    if (others.length === 1) {
-      const word = others[0].toLowerCase();
-      if (word === 'keeps' || word === 'keep' || word === 'k') {
-        if (!du.allowKeeps) return void say('Duels for keeps are off here. Name an amount, or nothing at all.');
-        stake = { kind: 'keeps' };
-      } else {
-        const balance = getUser(db!, uid)?.balance ?? 0;
-        const amount = parseBet(word, balance);
-        if (amount === null || amount <= 0) return void say(usage);
-        if (du.maxWager > 0 && amount > du.maxWager) return void say(`The most you can stake on a fish duel is ${groupDigits(du.maxWager)} ${cur}.`);
-        if (amount > balance) return void say(`You only have ${groupDigits(balance)} ${cur}.`);
-        if (rival.balance < amount) return void say(`${rival.username} only has ${groupDigits(rival.balance)} ${cur}.`);
-        stake = { kind: 'wager', amount };
-      }
+    const word = others[0]?.toLowerCase();
+    const keeps = word === 'keeps' || word === 'keep' || word === 'k';
+    if (keeps && !du.allowKeeps) return void say('Duels for keeps are off here. Name an amount, or nothing at all.');
+    const mineD = loadFish(db!, uid);
+    const theirsD = loadFish(db!, rival.user_id);
+    // `random` sends any fish held; the pick is made now and named in the challenge, like a fish asked for.
+    const fishName = wantsRandom(rest) ? randomFish(mineD) : fishNamed(rest);
+    const strongest = pickFighter(mineD, g, fishName);
+    if (!strongest) return void say(fishName ? `You don't have a ${fishName} to send.` : 'You need a fish to duel with. Go catch one!');
+    if (!pickFighter(theirsD, g)) return void say(`${rival.username} has no fish to fight with.`);
+    // For keeps, the fish sent is one they hold a fish close in value to: the strongest such, of the kind named if one was.
+    const fighter = keeps ? pickForKeeps(mineD, theirsD, g, fishName) : strongest;
+    if (!fighter) {
+      return void say(`For keeps, both fish must be close in value, and none of your ${fishName ?? 'fish'} is close to any fish ${rival.username} has.`);
+    }
+
+    let stake: DuelStake = { kind: 'friendly' };
+    if (keeps) {
+      stake = { kind: 'keeps' };
+    } else if (word !== undefined) {
+      const balance = getUser(db!, uid)?.balance ?? 0;
+      const amount = parseBet(word, balance);
+      if (amount === null || amount <= 0) return void say(usage);
+      if (du.maxWager > 0 && amount > du.maxWager) return void say(`The most you can stake on a fish duel is ${groupDigits(du.maxWager)} ${cur}.`);
+      if (amount > balance) return void say(`You only have ${groupDigits(balance)} ${cur}.`);
+      if (rival.balance < amount) return void say(`${rival.username} only has ${groupDigits(rival.balance)} ${cur}.`);
+      stake = { kind: 'wager', amount };
     }
 
     addChallenge(chan, {
       challengerId: uid, challenger: me, targetId: rival.user_id, target: rival.username,
-      fish: fighter.item.name, stake, expiresAt: now + du.expirySeconds * 1000
+      fish: fighter.item.name, ...(keeps && fighter.held ? { cm: fighter.held.cm } : {}), stake, expiresAt: now + du.expirySeconds * 1000
     }, now);
     lastChallenge.set(cdKey, now);
     console.log(`[FISH] ${me} challenged ${rival.username} to a duel in ${chan} with ${fighter.item.name} (${stake.kind}${stake.kind === 'wager' ? ` ${stake.amount}` : ''})`);
-    const text = `⚔️ ${me} challenges you to a fish duel with their ${describe(fighter.fighter)}. ${stakeLine(stake)} Answer within ${span(du.expirySeconds * 1000)}: ${cmd} fish accept [fish] or ${cmd} fish deny.`;
+    const keepsNote = stake.kind === 'keeps'
+      ? (() => { const w = fishValue(g, fighter); const [lo, hi] = keepsRange(w); return ` It's worth ${groupDigits(w)}: answer with a fish worth ${groupDigits(lo)}–${groupDigits(hi)} (a plain accept sends your closest).`; })()
+      : '';
+    const text = `⚔️ ${me} challenges you to a fish duel with their ${describe(fighter.fighter)}. ${stakeLine(stake)}${keepsNote} Answer within ${span(du.expirySeconds * 1000)}: ${cmd} fish accept [fish] or ${cmd} fish deny.`;
     pushOverlay(db!, { username: me, kind: 'info', text: `⚔️ challenges ${rival.username} to a fish duel with their ${describe(fighter.fighter)}. ${stakeLine(stake)}` });
     await announce(`@${rival.username} ${text}`);
   }
@@ -1092,11 +1165,19 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     const fought = once((now): Fought => {
       ensureUserTx(db!, uid, me, now);
       const theirs = loadFish(db!, c.challengerId);
-      const a = pickFighter(theirs, g, c.fish);
+      const keeps = c.stake.kind === 'keeps';
+      // For keeps, the very fish named in the challenge; otherwise the biggest of its kind.
+      const a = keeps ? sameFish(theirs, g, c.fish, c.cm) : pickFighter(theirs, g, c.fish);
       if (!theirs || !a) return { off: `${c.challenger} no longer has their ${c.fish}, so the duel is off.` };
       const own = loadFish(db!, uid);
-      const b = pickFighter(own, g, random ? randomFish(own) : fishName);
+      const kind = random ? randomFish(own) : fishName;
+      // For keeps, the fish closest in value to theirs, of the kind named if one was, whatever its length.
+      const b = keeps ? pickByValue(own, g, fishValue(g, a), kind) : pickFighter(own, g, kind);
       if (!own || !b) return { retry: fishName ? `You don't have a ${fishName} to send.` : 'You have no fish to fight with.' };
+      if (keeps && !closeInValue(fishValue(g, a), fishValue(g, b))) {
+        const [lo, hi] = keepsRange(fishValue(g, a));
+        return { retry: `For keeps, both fish must be close in value: their ${a.item.name} is worth ${groupDigits(fishValue(g, a))} and your closest ${kind ? b.item.name : 'fish'} ${groupDigits(fishValue(g, b))}. Send one worth ${groupDigits(lo)}–${groupDigits(hi)}, or ${cmd} fish deny.` };
+      }
       const sides = [theirs, own] as const;
       if (c.stake.kind === 'wager') {
         if ((getUser(db!, c.challengerId)?.balance ?? 0) < c.stake.amount) return { off: `${c.challenger} can't cover the ${groupDigits(c.stake.amount)} ${cur} stake any more, so the duel is off.` };

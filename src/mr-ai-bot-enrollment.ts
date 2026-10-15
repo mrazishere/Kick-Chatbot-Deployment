@@ -21,6 +21,8 @@ import { markOverlaySeen, readOverlay } from './community/fish-overlay';
 import { publicUserHistory, publicViewerSearch } from './points/store';
 import { ITEMS, rarityName, sellPrice } from './community/fishing';
 import { adjustPoints, backupPoints, caughtFish, duelBoard, heistBoard, heldCatches, getPointsUserDetail, pointsLeaderboard, pointsSummary, resetAllPoints, searchPointsUsers } from './points/store';
+import { RULES as CHEAT_RULES, suspects as cheatSuspects } from './community/cheat-signals';
+import { changeWheel, MAX_ITEMS as WHEEL_MAX_ITEMS, MAX_LABEL as WHEEL_MAX_LABEL, readWheel, SPIN_SECONDS as WHEEL_SPIN_SECONDS, validateWheel } from './community/wheel';
 import { noteSocketClose, PUSHER_BAD_KEY_CODES, pusherUrl, refreshPusherKey, watchChatSocket } from './channels/pusher-key';
 import { toHandleChatFormat } from './channels/webhook-poller';
 
@@ -2156,6 +2158,40 @@ app.delete('/internal/bot/:channel/custom-commands/:name', internalGuard(true), 
   return res.json({ ok: true, commands: listCustomCommands(commands) });
 });
 
+// ---- Spin the wheel (community/wheel.ts) ------------------------------------
+// data/wheel/<channel>.json: items and settings. Chat edits it too (!wheel add /
+// remove, and a landed item when removeWinner is on), so a save names the
+// version it loaded and is refused if chat changed the wheel since.
+
+app.get('/internal/bot/:channel/wheel', internalGuard(false), (req, res) => {
+  const channelRaw = req.params['channel'];
+  const channel = (typeof channelRaw === 'string' ? channelRaw : '').toLowerCase();
+  if (!validateChannelName(channel)) return res.status(400).json({ error: 'Invalid channel name' });
+  if (!readChannelConfig(channel)) return res.status(404).json({ error: 'Not enrolled' });
+  return res.json({ ...readWheel(channel), limits: { maxItems: WHEEL_MAX_ITEMS, maxLabel: WHEEL_MAX_LABEL, spinSeconds: WHEEL_SPIN_SECONDS } });
+});
+
+app.put('/internal/bot/:channel/wheel', internalGuard(true), async (req, res) => {
+  const channelRaw = req.params['channel'];
+  const channel = (typeof channelRaw === 'string' ? channelRaw : '').toLowerCase();
+  if (!validateChannelName(channel)) return res.status(400).json({ error: 'Invalid channel name' });
+  if (!readChannelConfig(channel)) return res.status(404).json({ error: 'Not enrolled' });
+  const checked = validateWheel(req.body);
+  if ('errors' in checked) return res.status(400).json({ error: checked.errors.join('; ') });
+  try {
+    const out = await changeWheel(channel, w => (w.version !== checked.version ? 'conflict' : { ...w, ...checked.wheel }));
+    if (out === 'conflict') {
+      return res.status(409).json({ error: 'The wheel was changed from chat since you loaded it — reload to see the latest, then save again', wheel: readWheel(channel) });
+    }
+    if (typeof out === 'string') return res.status(500).json({ error: out });
+    console.log(`[WHEEL] ${channel}: dashboard saved ${out.items.length} item(s), ${out.spinSeconds}s spins, removeWinner=${out.removeWinner}`);
+    return res.json({ ok: true, ...out });
+  } catch (e) {
+    console.error(`[WHEEL] Saving ${channel}'s wheel failed:`, e instanceof Error ? e.message : String(e));
+    return res.status(503).json({ error: 'The wheel is busy, try again' });
+  }
+});
+
 // ---- Channel point rewards ----------------------------------------------------
 // Backs the dashboard's rewards card: the channel's rewards as Kick has them,
 // each with the bot action attached (`rewardActions` in the channel config).
@@ -2647,6 +2683,26 @@ app.get('/internal/bot/:channel/points', internalGuard(false), (req, res) => {
 });
 
 // Prefix search by username; no q lists the top balances. ?q=&limit=1-50
+// Possible cheaters: players whose offline fishing looks scripted (community/cheat-signals.ts).
+// ?days=1–30, default 7. Evidence for the owner to judge; nothing acts on it.
+app.get('/internal/bot/:channel/points/suspects', internalGuard(false), (req, res) => {
+  const channelRaw = req.params['channel'];
+  const channel = (typeof channelRaw === 'string' ? channelRaw : '').toLowerCase();
+  if (!validateChannelName(channel)) return res.status(400).json({ error: 'Invalid channel name' });
+  const config = readChannelConfig(channel);
+  if (!config) return res.status(404).json({ error: 'Not enrolled' });
+  const cfg = effectivePointsConfig(config['points']);
+  if (!cfg.enabled) return res.status(404).json({ error: 'Points are off in this channel' });
+  const days = Math.min(30, Math.max(1, Math.round(Number(req.query['days']) || 7)));
+  const db = openPointsDb(channel, { create: false });
+  if (!db) return res.json({ days, rules: CHEAT_RULES, suspects: [] });
+  try {
+    return res.json({ days, rules: CHEAT_RULES, suspects: cheatSuspects(db, Date.now(), days) });
+  } catch (e) {
+    return pointsUnavailable(res, channel, e);
+  }
+});
+
 app.get('/internal/bot/:channel/points/users', internalGuard(false), (req, res) => {
   const channelRaw = req.params['channel'];
   const channel = (typeof channelRaw === 'string' ? channelRaw : '').toLowerCase();
@@ -2814,7 +2870,7 @@ app.get('/internal/bot/:channel/points/leaderboard', internalGuard(false), (req,
 
   try {
     const board = pointsLeaderboard(channel, cfg, limit, broadcasterIdOf(config));
-    return res.json({ channel, currencyName: cfg.currencyName, updatedAt: new Date().toISOString(), ...board, fishing: publicFishing(channel, cfg, broadcasterIdOf(config)), commands: publicCommands(cfg) });
+    return res.json({ channel, currencyName: cfg.currencyName, updatedAt: new Date().toISOString(), ...board, fishing: publicFishing(channel, cfg, broadcasterIdOf(config)), commands: publicCommands(cfg, { wheel: !((config['excludedCommands'] as unknown[] | undefined) ?? []).some(c => String(c).toLowerCase() === 'wheel') }) });
   } catch (e) {
     return pointsUnavailable(res, channel, e);
   }
@@ -3523,7 +3579,8 @@ async function removeChannelCompletely(channel: string): Promise<{ archivedTo: s
     path.join('points', channel),
     path.join('reward-pause', `${channel}.json`),
     path.join('reward-resolutions', `${channel}.json`),
-    path.join('reward-limits', `${channel}.json`)
+    path.join('reward-limits', `${channel}.json`),
+    path.join('wheel', `${channel}.json`)
   ];
   // This service reads points for the dashboard; let go of the file before moving it.
   closePointsDb(channel);

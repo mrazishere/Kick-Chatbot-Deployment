@@ -26,6 +26,7 @@ import { SYSTEM_BOTS } from '../system-bots';
 import type { PointsDb } from '../points/db';
 import type { FishBigBiteSetting } from '../types';
 import { overlayShowing, pushOverlay } from './fish-overlay';
+import { wheelBusy } from './wheel-state';
 
 /** A big bite waiting for its reel code. */
 export interface Bite {
@@ -243,7 +244,8 @@ export function tick(ctx: TickContext): string | null {
     dueAt.delete(ctx.channel);
     return null;
   }
-  if (channelHasBite(ctx.channel)) return null;
+  // Nor while the prize wheel is on the overlay: its code would show behind the wheel.
+  if (channelHasBite(ctx.channel) || wheelBusy(ctx.channel, now)) return null;
   let due = dueAt.get(ctx.channel);
   if (!due || due.every !== b.everyMinutes) {
     due = { at: now + b.everyMinutes * 60_000 + ((ctx.random ?? Math.random)() * 2 - 1) * BITE_JITTER_MS, every: b.everyMinutes };

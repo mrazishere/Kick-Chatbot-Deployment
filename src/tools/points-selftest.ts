@@ -26,7 +26,7 @@ import {
 } from '../points/store';
 import { WebhookPoller } from '../channels/webhook-poller';
 import { points as pointsCommand, SUBCOMMAND_ALIASES } from '../bot-commands/points';
-import { addItem, FishData, initialData, isTrophy, rarityOf, stealCharges, ITEMS, landsFish, loadFish, parseSellList, recordCatch, saveFish, sellPrice, weightedCatch } from '../community/fishing';
+import { moveFish, takeItems, addItem, FishData, initialData, isTrophy, rarityOf, stealChance, stealCharges, stealRollChance, ITEMS, landsFish, loadFish, parseSellList, recordCatch, saveFish, sellPrice, weightedCatch } from '../community/fishing';
 import { openCommunityDb } from '../community/store';
 import { markOverlaySeen, readOverlay } from '../community/fish-overlay';
 import { drawSnipeMs, resetBites, takeBite as takeBiteForTest } from '../community/big-bite';
@@ -34,7 +34,11 @@ import { fish as fishCommand, SUBCOMMANDS as FISH_SUBCOMMANDS } from '../bot-com
 import { publicCommands } from '../points/public-commands';
 import { duelBoard } from '../points/store';
 import { answerMatches, makeTrapCheck, normalizeAnswer } from '../community/trap-check';
-import { fight, fighterOf, fishNamed, pickFighter, playMs, randomFish, typeOf, wantsRandom } from '../community/fish-duel';
+import { changeWheel, readWheel, validateWheel } from '../community/wheel';
+import { recordSignal, suspects } from '../community/cheat-signals';
+import { resetWheelBusy, wheelBusy } from '../community/wheel-state';
+import { wheel as wheelCommand } from '../bot-commands/wheel';
+import { fight, fighterOf, fishNamed, fishValue, pickByValue, pickFighter, pickForKeeps, playMs, sameFish, randomFish, typeOf, wantsRandom } from '../community/fish-duel';
 
 const MIN = 60_000;
 
@@ -214,7 +218,7 @@ async function main(): Promise<void> {
   // Store basics
   {
     const db = openPointsDb('basics', { create: true })!;
-    check('migrated to user_version 10', db.pragma('user_version', { simple: true }) === 10);
+    check('migrated to user_version 11', db.pragma('user_version', { simple: true }) === 11);
     runWrite(db, () => creditTx(db, { userId: 1, username: 'alice', amount: 100, reason: 'mod_add', now: 1 }));
     const over = runWrite(db, () => debitTx(db, { userId: 1, amount: 150, reason: 'mod_remove', now: 2 }));
     check('debit beyond balance refused', !over.ok && over.balance === 100);
@@ -796,7 +800,8 @@ async function main(): Promise<void> {
     const cfgWith = (duel: Record<string, unknown>, games: Record<string, unknown> = {}) => writeConfig(root, ch, {
       enabled: true, currencyName: '$DON', games: { enabled: true, onlyWhileLive: false, ...games, duel: { enabled: true, onlyWhileLive: false, cooldownSeconds: 0, ...duel } }
     });
-    cfgWith({});
+    // Keeps are only between fish close in value: priced so a 90 cm 🦈 and a 70 cm 🐢 are both worth 1,260.
+    cfgWith({}, { catches: { '🦈': { price: 700 }, '🐢': { price: 900 } } });
     makeService(ch, { broadcaster: 999 });
     const ddb = openPointsDb(ch, { create: true })!;
     const g = effectivePointsConfig({ games: { enabled: true } }).games;
@@ -848,6 +853,22 @@ async function main(): Promise<void> {
     check('someone sends their strongest fish, or the biggest of the kind they name',
       pickFighter(fishOf(51), g)!.item.name === '🦈' && pickFighter(fishOf(51), g, '🐟')!.held!.cm === 60 && pickFighter(fishOf(51), g, '🐟')!.index === 1
       && pickFighter(fishOf(53), g) === null && pickFighter(fishOf(52), g, '🦈') === null);
+    const holding = (sizes: Record<string, number[]>): FishData => {
+      const d = initialData();
+      for (const [name, cms] of Object.entries(sizes)) {
+        d.catch.types[name] = cms.length;
+        (d.catch.sizes ??= {})[name] = cms.map(cm => ({ cm, record: false }));
+        d.catch.fish += cms.length;
+      }
+      return d;
+    };
+    const keeper = holding({ '🦈': [120], '🐟': [90, 30] }), matcher = holding({ '🐟': [32] });
+    const kept = pickForKeeps(keeper, matcher, g), keptNamed = pickForKeeps(keeper, matcher, g, '🐟');
+    check('keeps: the challenger sends a fish the rival can match, a shorter one of a kind too; the answer is the closest by value, whatever its length',
+      kept?.item.name === '🐟' && kept.held?.cm === 30 && keptNamed?.held?.cm === 30 && pickForKeeps(keeper, matcher, g, '🦈') === null
+      && pickByValue(holding({ '🐟': [90, 31] }), g, fishValue(g, kept!), '🐟')?.held?.cm === 31
+      && sameFish(keeper, g, '🐟', 30)?.index === 1 && sameFish(keeper, g, '🐟', 31) === null,
+      { kept: kept?.held, keptNamed: keptNamed?.held });
     check('the overlay play time grows with the turns but stays short', playMs(4) < playMs(12) && playMs(40) <= 26_000, [playMs(4), playMs(12), playMs(40)]);
 
     const realNow = Date.now;
@@ -927,7 +948,7 @@ async function main(): Promise<void> {
       check('a duel can be turned down, or taken back by the one who asked', denied.includes('@ash misty turned down') && back.includes('took back your challenge to misty')
         && (await run('$don fish deny', misty)).includes('no fish duel to turn down'), { denied, back });
 
-      await run('$don fish duel @misty 🐟 keeps', ash);
+      await run('$don fish duel @misty 🐟', ash);
       runWrite(ddb, () => { const d = fishOf(51); d.catch.types['🐟'] = 0; d.catch.sizes!['🐟'] = []; d.catch.fish -= 2; saveFish(ddb, 51, d, 2); });
       const off = await run('$don fish accept', misty);
       check('a challenger who no longer has the fish they named calls the duel off', off.includes('no longer has their 🐟') && (await run('$don fish accept', misty)).includes('Nobody has challenged you'), off);
@@ -1091,6 +1112,12 @@ async function main(): Promise<void> {
     const ch20 = stealCharges(bal, 3000, 20);
     check('the fine is set from the odds so thieves lose the edge on average', ch20.fee === 90 && ch20.fine === 788
       && Math.abs((0.2 * 3000 - ch20.fee - 0.8 * ch20.fine) / (0.2 * 3000) + 0.2) < 0.01, ch20);
+    const lucky = effectivePointsConfig({ games: { enabled: true, steal: { luckPercent: 25 } } }).games;
+    const luckier = effectivePointsConfig({ games: { enabled: true, steal: { luckPercent: 25, oddsCommon: 90 } } }).games;
+    const common = ITEMS.find(i => i.type === 'fish' && rarityOf(bal, i.name) === 'Common')!.name;
+    check('luck raises the roll\'s odds and not the fine\'s', bal.steal.luckPercent === 0 && stealRollChance(bal, common) === 40
+      && stealRollChance(lucky, common) === 50 && stealChance(lucky, common) === 40 && stealRollChance(luckier, common) === 100,
+      { common, roll: stealRollChance(lucky, common), capped: stealRollChance(luckier, common) });
     check('effective config strips debugFishTesters', !('debugFishTesters' in effectivePointsConfig({ debugFishTesters: ['x'] })));
     check('debugFishTesters survives a dashboard save', validatePointsPatch({ debugFishTesters: ['x'] }, { enabled: true }).next?.debugFishTesters?.[0] === 'x');
     const bad = validatePointsPatch({}, { games: { steal: { oddsCommon: 101, hookUses: 0, enabled: 'yes' } } });
@@ -1210,7 +1237,7 @@ async function main(): Promise<void> {
         await fire();
         const before = loadFish(bdb, 41) ?? initialData();
         const last = (await reelAll()).shown.pop()!;
-        const after = loadFish(bdb, 41)!;
+        const after = loadFish(bdb, 41) ?? initialData();   // none yet when the first bite snapped free
         if (last.includes('MYTHIC') && !won) {
           won = last;
           landed = Object.keys(after.catch.types).find(n => isTrophy(n) && (after.catch.types[n] ?? 0) > (before.catch.types[n] ?? 0));
@@ -1251,11 +1278,12 @@ async function main(): Promise<void> {
         && drawSnipeMs({ ...DEFAULT_BIG_BITE, snipeSeconds: 0 }) === 0
         && Array.from({ length: 50 }, () => drawSnipeMs({ ...DEFAULT_BIG_BITE, windowSeconds: 10, snipeSeconds: 2 })).every(ms => ms >= 1_000 && ms <= 5_000),
         [Math.min(...draws), Math.max(...draws)]);
-      check('a snipe before it opens is nobody\'s bite', (await run(`$don fish reel ${s1.code}`, ['other', 44], 5_000)).includes('nothing big on your line') && lastBite()?.username === 'biter');
+      check('a snipe before it opens uses up that sniper\'s try', (await run(`$don fish reel ${s1.code}`, ['early', 48], 5_000)).includes('Too early') && lastBite()?.username === 'biter');
       // 18.5s in: open whichever way the window was drawn (it opens 15–18s in here).
       const wrongSnipe = await run(`$don fish reel ${s1.code === '10' ? '11' : '10'}`, ['third', 47], 13_500);
       check('a wrong snipe uses up that sniper\'s one try and leaves the bite alone', wrongSnipe.includes('Wrong code')
         && (await run(`$don fish reel ${s1.code}`, ['third', 47], 500)) === '' && lastBite()?.username === 'biter' && lastBite()!.pull === 1, wrongSnipe);
+      check('an early sniper gets no second try once it opens', (await run(`$don fish reel ${s1.code}`, ['early', 48], 300)) === '' && lastBite()?.username === 'biter');
       const sniped = await run(`$don fish reel ${s1.code}`, ['other', 44], 500);
       const s2 = lastBite()!;
       check('the first right snipe takes the bite and carries on from the next pull', sniped.includes('@biter') && sniped.includes('@other sniped') && s2.username === 'other'
@@ -1341,6 +1369,85 @@ async function main(): Promise<void> {
       .errors.some(e => e.includes('big bite trophy')));
   }
 
+  // A stream's end reaches commands within LIVE_FRESH_MS, without waiting for a tick or a webhook
+  {
+    const ch = 'liveagech';
+    writeConfig(root, ch, { enabled: true, currencyName: '$DON' });
+    let live = true;
+    let asks = 0;
+    let at = 1_000_000_000;
+    const lsvc = makeService(ch, { live: async () => { asks++; return { isLive: live, startedAt: null }; }, now: () => at });
+    check('first ask goes to Kick', (await lsvc.isLiveNow()) === true && asks === 1);
+    live = false;
+    at += 10_000;
+    check('a fresh answer is reused', (await lsvc.isLiveNow()) === true && asks === 1);
+    at += 25_000;
+    check('a stale one is asked again: the stream has ended', (await lsvc.isLiveNow()) === false && asks === 2);
+    live = true;
+    lsvc.onLivestreamStatus({ is_live: true } as never, { ageMs: 0 } as never);
+    check('a webhook counts as fresh', (await lsvc.isLiveNow()) === true && asks === 2);
+  }
+
+  // Spin the wheel: chat edits, spins on the overlay, holds big bites
+  {
+    const ch = 'wheelch';
+    writeConfig(root, ch, { enabled: true, currencyName: '$DON', games: { enabled: true, onlyWhileLive: false } });
+    const wsvc = makeService(ch, { broadcaster: 999 });
+    const wdb = openPointsDb(ch, { create: true })!;
+    const said: string[] = [];
+    const as = (username: string, mod: boolean): KickTags => ({ username, 'display-name': username, badges: {}, isBroadcaster: false, isModUp: mod, isVIPUp: mod, rawBadges: [], senderId: 70 });
+    const say = async (msg: string, who = as('modder', true)) => {
+      const before = said.length;
+      await wheelCommand({ say: async (_c, m) => { said.push(m); } }, msg, `#${ch}`, who, { channelName: ch } as ChannelConfig);
+      return said.slice(before).join(' | ');
+    };
+    resetWheelBusy();
+    check('an empty wheel says so', (await say('!wheel')).includes('The wheel is empty'));
+    const added = await say('!wheel add Sing a song | Do 10 pushups | sing a song');
+    check('mods add items, several at once, without duplicates', added.includes('added "Sing a song", "Do 10 pushups"') && added.includes('skipped "sing a song"')
+      && readWheel(ch).items.length === 2, added);
+    check('viewers get no answer to any of it', (await say('!wheel add Nope', as('viewer', false))) === '' && (await say('!spin', as('viewer', false))) === ''
+      && (await say('!wheel', as('viewer', false))) === '' && (await say('!wheel list', as('viewer', false))) === '' && readWheel(ch).items.length === 2);
+    await say('!wheel add Pick a game');
+    check('the list is numbered', (await say('!wheel list')).includes('1. Sing a song · 2. Do 10 pushups · 3. Pick a game'));
+    check('remove by number or label', (await say('!wheel rm 2')).includes('removed "Do 10 pushups"') && (await say('!wheel remove pick A GAME')).includes('removed "Pick a game"')
+      && (await say('!wheel remove nothing')).includes("isn't on the wheel") && readWheel(ch).items.length === 1);
+    check('a one-item wheel won\'t spin', (await say('!spin')).includes('at least 2 items'));
+    await say('!wheel add Raid someone | Hydrate');
+    check('no overlay, no spin', (await say('!wheel spin')).includes('open the fishing overlay'));
+    // markOverlaySeen writes at most every 5s per process; earlier tests just did.
+    runWrite(wdb, () => wdb.prepare("INSERT INTO meta (key, value) VALUES ('overlay_seen_at', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(String(Date.now() + 10_000)));
+    const spun = await say('!wheel spin');
+    const ev = readOverlay(wdb).events.find(e => e.kind === 'wheel');
+    check('a spin goes to the overlay with its items and winner, and holds the overlay', spun === '' && !!ev?.wheel && ev.wheel.items.length === 3
+      && ev.wheel.winner >= 0 && ev.wheel.winner < 3 && ev.wheel.spinMs === 6000 && wheelBusy(ch), ev);
+    check('one spin at a time', (await say('!spin')).includes('already spinning'));
+    check('no big bite starts while it spins', (await wsvc.bigBiteTick(() => 0)) === null);
+
+    // The dashboard's save: whole wheel, refused if chat changed it since it loaded.
+    const v = readWheel(ch).version;
+    const bad = validateWheel({ version: v, items: [{ label: '' }, { label: 'A', color: 'red' }, { label: 'B' }, { label: 'b' }], spinSeconds: 1, removeWinner: 'yes' });
+    check('a dashboard save is checked', 'errors' in bad && bad.errors.length === 5, bad);
+    const good = validateWheel({ version: v, items: [{ label: 'A', color: '#FF8800' }, { label: 'B' }], spinSeconds: 4, removeWinner: true });
+    check('a valid save passes', !('errors' in good) && good.wheel.items[0].color === '#ff8800', good);
+    await say('!wheel add C');
+    const stale = await changeWheel(ch, w => (w.version !== v ? 'conflict' : w));
+    check('a save from before a chat change is refused', stale === 'conflict');
+    const saved = 'errors' in good ? null : await changeWheel(ch, w => ({ ...w, ...good.wheel }));
+    check('a fresh save replaces the wheel', typeof saved === 'object' && saved !== null && saved.items.length === 2 && saved.spinSeconds === 4 && saved.removeWinner, saved);
+
+    // Remove the winner: the landed item leaves the wheel once chat has the result (4s spin + 4s grace).
+    resetWheelBusy();
+    said.length = 0;
+    await say('!spin');
+    await new Promise(r => setTimeout(r, 8_600));
+    const result = said.find(m => m.includes('The wheel landed on'));
+    const landedLabel = result?.replace(/^.*landed on: (.*)!$/, '$1');
+    check('the result goes to chat, and with removeWinner the item leaves the wheel', !!result && readWheel(ch).items.length === 1
+      && !readWheel(ch).items.some(i => i.label === landedLabel), { said, items: readWheel(ch).items });
+    resetWheelBusy();
+  }
+
   // Trap checks: a question before an offline haul, against macros
   {
     const ch = 'trapcheckch';
@@ -1414,6 +1521,19 @@ async function main(): Promise<void> {
       await run('$don fish trap cancel');
       check('cancelling drops the question', !fish().trapCheck && !fish().trap.active);
 
+      // Pulling the traps while a question waits is a failed check, fined.
+      runWrite(pdb, () => creditTx(pdb, { userId: 31, username: 'trapper', amount: 1000 - balance(ch, 31), reason: 'test', now: 1 }));
+      await fill();
+      const pulled = await run('$don fish trap cancel');
+      check('cancelling traps with a question waiting is a failed check', pulled.includes("Pulling your traps doesn't dodge") && pulled.includes('150 $DON')
+        && balance(ch, 31) === 850 && !fish().trapCheck && !fish().trap.active, pulled);
+      // The fine is set when asked: $DON moved away afterwards doesn't shrink it (only what's left caps it).
+      await fill();
+      check('the fine is set when the question is asked', fish().trapCheck?.fine === 127, fish().trapCheck);
+      runWrite(pdb, () => debitTx(pdb, { userId: 31, amount: 400, reason: 'test', now: 1 }));
+      shift += 121_000;
+      const late2 = await run('$don fish trap');
+      check('moving $DON away doesn\'t shrink it', late2.includes("Time's up") && balance(ch, 31) === 850 - 400 - 127, { late2, b: balance(ch, 31) });
       // The service keeps the live state it learned; a new one starts live.
       makeService(ch, { broadcaster: 999 });
       const live = await fill();
@@ -1425,11 +1545,148 @@ async function main(): Promise<void> {
     check('answers match loosely', answerMatches({ answers: ['6', 'six'] }, ' Six. ')
       && answerMatches({ answers: [normalizeAnswer('🐙'), 'octopus'] }, '🐙\uFE0F \u{E0021}')
       && answerMatches({ answers: ['octopus'] }, 'the Octopus')
-      && !answerMatches({ answers: ['6', 'six'] }, '7'));
+      && !answerMatches({ answers: ['6', 'six'] }, '7')
+      // Plurals and spacing: "socks" for 🧦 was refused on 2026-10-14.
+      && answerMatches({ answers: ['🧦', 'sock'] }, 'Socks') && answerMatches({ answers: ['pufferfish'] }, 'puffer fish')
+      && answerMatches({ answers: ['leaves', 'leaf'] }, 'leafs') && !answerMatches({ answers: ['16', 'sixteen'] }, '1'));
     const samples = Array.from({ length: 300 }, () => makeTrapCheck(false, 0, 30));
     check('a fish question never takes "fish" as its answer', samples.every(c => !c.answers.includes('fish')));
+    // On a phone an emoji is hard to copy: every question can be answered with digits.
+    check('every question takes a plain number', samples.every(c => c.answers.some(a => /^\d+$/.test(a))), samples.filter(c => !c.answers.some(a => /^\d+$/.test(a))).slice(0, 3));
     check('every question has normalized answers, and the kinds vary', samples.every(c => c.answers.length > 0 && c.answers.every(a => a === normalizeAnswer(a)))
       && new Set(samples.map(c => c.question.split(' ')[0])).size >= 3, samples.slice(0, 5));
+    // Cast checks: the same question on a share of offline casts.
+    {
+      const ch3 = 'castcheckch';
+      writeConfig(root, ch3, { enabled: true, currencyName: '$DON', games: { enabled: true, onlyWhileLive: false, trapCheck: { enabled: true, chancePercent: 100, castChancePercent: 100, answerSeconds: 120 } } });
+      makeService(ch3, { broadcaster: 999, live: async () => ({ isLive: false, startedAt: null }) });
+      const cdb3 = openPointsDb(ch3, { create: true })!;
+      runWrite(cdb3, () => { ensureUserTx(cdb3, 33, 'caster', 1); creditTx(cdb3, { userId: 33, username: 'caster', amount: 1000, reason: 'test', now: 1 }); });
+      const t3: KickTags = { username: 'caster', 'display-name': 'caster', badges: {}, isBroadcaster: false, isModUp: false, isVIPUp: false, rawBadges: [], senderId: 33 };
+      const realNow3 = Date.now;
+      let shift3 = 0;
+      Date.now = () => realNow3() + shift3;
+      try {
+        const run3 = async (msg: string) => {
+          shift3 += 6_000;
+          const out: string[] = [];
+          await fishCommand({ say: async (_c, m) => { out.push(m); } }, msg, `#${ch3}`, t3, { channelName: ch3 } as ChannelConfig);
+          return out[0] ?? '';
+        };
+        const f3 = () => loadFish(cdb3, 33)!;
+        const snag = await run3('$don fish');
+        const q3 = f3().trapCheck;
+        check('an offline cast can ask first, and doesn\'t cast', snag.includes('Your line snagged') && snag.includes('followed by your answer') && !!q3?.cast && f3().lifetime.attempts === 0, snag);
+        check('casting again repeats it', (await run3('$don f')).includes('Before you cast again') && f3().lifetime.attempts === 0);
+        check('so does laying traps', (await run3('$don fish trap')).includes('Free your line first') && !f3().trap.active);
+        const freed = await run3(`$don fish answer ${q3!.answers.find(a => /^\d+$/.test(a))}`);
+        check('a right answer frees the line, no fine', freed.includes('Correct! Your line is free') && !f3().trapCheck && balance(ch3, 33) === 1000, freed);
+        await run3('$don fish');
+        for (const w of ['nope', 'still no']) await run3(`$don fish answer ${w}`);
+        const snapped = await run3('$don fish answer definitely not');
+        check('failing a cast check fines and leaves the traps alone', snapped.includes('Wrong again! Your line snaps') && balance(ch3, 33) === 850
+          && !f3().trapCheck && !f3().trap.active && f3().lifetime.trap.checksFailed === 1, snapped);
+      } finally {
+        Date.now = realNow3;
+      }
+    }
+
+    // Play records the signals the cheater flags read.
+    {
+      const kinds = (pdb.prepare('SELECT kind, COUNT(*) AS n FROM fish_signals WHERE user_id = 31 GROUP BY kind').all() as Array<{ kind: string; n: number }>)
+        .reduce<Record<string, number>>((o, r) => ({ ...o, [r.kind]: r.n }), {});
+      check('trap checks and hauls are recorded as signals', (kinds.check_asked ?? 0) >= 5 && (kinds.check_passed ?? 0) >= 2 && (kinds.check_wrong ?? 0) >= 3
+        && (kinds.check_failed ?? 0) >= 3 && (kinds.trap_collect ?? 0) >= 2, kinds);
+    }
+
+    // Reels have no effect on stealing: a stolen fish sells at its plain price, whoever holds it.
+  {
+    const g0 = effectivePointsConfig({ games: { enabled: true } }).games;
+    const shark = ITEMS.find(i => i.name === '🦈')!;
+    const shell = ITEMS.find(i => i.name === '🐚')!;   // unsized
+    const plain = (held?: { cm: number; record: boolean }) => sellPrice(shark, g0, held);
+    const victim = initialData();
+    const thief = initialData();
+    addItem(victim, shark);
+    victim.catch.sizes = { '🦈': [{ cm: 50, record: false }] };
+    addItem(thief, shark);
+    thief.catch.sizes = { '🦈': [{ cm: 50, record: false }] };
+    moveFish(victim, thief, shark, { index: 0, held: victim.catch.sizes['🦈'][0] }, true);
+    const sold = takeItems(thief, shark, 2, g0, false, 3);
+    check('a stolen fish sells at its plain price; the thief\'s own catch keeps the reel bonus',
+      sold === plain({ cm: 50, record: false }) * 3 + plain({ cm: 50, record: false }), { sold, plain: plain({ cm: 50, record: false }) });
+    // Unsized: two own shells and one stolen; the stolen one is plain-priced, and the mark follows it on.
+    const v2 = initialData();
+    const t2 = initialData();
+    addItem(v2, shell);
+    addItem(t2, shell);
+    addItem(t2, shell);
+    moveFish(v2, t2, shell, { index: -1 }, true);
+    check('a stolen unsized fish is counted as stolen', t2.catch.stolen?.['🐚'] === 1 && !v2.catch.stolen);
+    const third = initialData();
+    const t3 = JSON.parse(JSON.stringify(t2)) as FishData;
+    t3.catch.types['🐚'] = 1;
+    t3.catch.fish = 1;
+    moveFish(t3, third, shell, { index: -1 });   // its only shell is the stolen one: it stays stolen
+    check('a stolen fish stays marked when it moves on', third.catch.stolen?.['🐚'] === 1 && !t3.catch.stolen);
+    const unit = sellPrice(shell, g0);
+    const shells = takeItems(t2, shell, 3, g0, false, 2);
+    check('unsized: own ones with the reel, the stolen one plain', shells === unit * 2 * 2 + unit && !t2.catch.stolen, { shells, unit });
+    const dv = initialData();
+    const dw = initialData();
+    addItem(dv, shark);
+    dv.catch.sizes = { '🦈': [{ cm: 40, record: false }] };
+    moveFish(dv, dw, shark, { index: 0, held: dv.catch.sizes['🦈'][0] });
+    check('a fish won in a keeps duel isn\'t stolen', !dw.catch.sizes?.['🦈']?.[0]?.stolen);
+  }
+
+  // Possible cheaters: each pattern on its own made-up player, and a normal one who isn't flagged.
+    {
+      const sdb = openPointsDb('cheatch', { create: true })!;
+      const T0 = 1_800_000_000_000;
+      const sig = (userId: number, kind: Parameters<typeof recordSignal>[1]['kind'], at: number, delayMs: number | null = null, live = false) =>
+        recordSignal(sdb, { userId, kind, now: at, delayMs, live });
+      runWrite(sdb, () => {
+        for (const [id, name] of [[1, 'agent'], [2, 'pinger'], [3, 'insomniac'], [4, 'metronome'], [5, 'human'], [6, 'streamwatcher']] as const) ensureUserTx(sdb, id, name, T0);
+        for (let i = 0; i < 4; i++) sig(1, 'check_passed', T0 + i * 3600_000, 2_500 + i * 300);
+        for (let i = 0; i < 10; i++) sig(2, 'trap_collect', T0 + i * 3_660_000, 8_000 + i * 500);
+        for (let h = 0; h <= 25; h++) sig(3, 'cast', T0 + h * 3600_000 + 7 * 60_000);
+        for (let i = 0; i < 12; i++) sig(4, 'cast', T0 + i * 61_000);
+        // A person: slower answers with a slip, traps collected minutes late, uneven casting, asleep at night.
+        for (const [at, ms] of [[0, 24_000], [2, 41_000], [5, 18_000]]) sig(5, 'check_passed', T0 + at * 3600_000, ms);
+        sig(5, 'check_wrong', T0 + 3600_000, 9_000);
+        for (let i = 0; i < 10; i++) sig(5, 'trap_collect', T0 + i * 4_000_000, 240_000 + i * 37_000);
+        for (const g of [0, 45, 130, 170, 260, 300, 420, 470, 590, 640, 700, 830]) sig(5, 'cast', T0 + g * 1000);
+        // Live play doesn't count: the stream is watching.
+        for (let i = 0; i < 6; i++) sig(6, 'check_passed', T0 + i * 60_000, 2_000, true);
+      });
+      // Gives: the two ledger rows share a ref, as transfer() writes them.
+      const give = (from: number, to: number, amount: number, left: number, at: number) => {
+        const ref = `give:test-${from}-${at}`;
+        sdb.prepare('INSERT INTO ledger (ts, user_id, delta, balance_after, reason, ref, actor, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(at, from, -amount, left, 'give_out', ref, 'chat:x', null);
+        sdb.prepare('INSERT INTO ledger (ts, user_id, delta, balance_after, reason, ref, actor, note) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(at, to, amount, amount, 'give_in', ref, 'chat:x', null);
+      };
+      runWrite(sdb, () => {
+        for (const [id, name] of [[7, 'parker'], [8, 'parkers_alt'], [9, 'generous'], [10, 'retiree']] as const) ensureUserTx(sdb, id, name, T0);
+        give(7, 8, 95_000, 5_000, T0 + 3600_000);
+        for (let i = 0; i < 3; i++) sig(7, 'cast', T0 + 2 * 3600_000 + i * 90_000);
+        give(9, 8, 30_000, 70_000, T0 + 3600_000);
+        for (let i = 0; i < 3; i++) sig(9, 'cast', T0 + 2 * 3600_000 + i * 90_000);
+        sig(10, 'cast', T0);
+        give(10, 8, 99_000, 1_000, T0 + 3600_000);
+      });
+      const list = suspects(sdb, T0 + 30 * 3600_000, 7);
+      const flagsOf = (name: string) => list.find(x => x.username === name)?.flags.map(f => f.code) ?? [];
+      check('an agent\'s fast, flawless answers are flagged', flagsOf('agent').includes('fast_answers'), list);
+      check('collecting traps the moment they fill is flagged', flagsOf('pinger').includes('instant_traps'));
+      check('playing round the clock is flagged', flagsOf('insomniac').includes('no_sleep'));
+      check('casting like a metronome is flagged', flagsOf('metronome').includes('clockwork_casts'));
+      const parked = list.find(x => x.username === 'parker')?.flags.find(f => f.code === 'parked_don');
+      check('giving most of your $DON away and fishing on is flagged, naming who got it', !!parked && parked.evidence.includes('95%') && parked.evidence.includes('parkers_alt') && parked.evidence.includes('3 casts'), parked);
+      check('a modest give, or parking then stopping, isn\'t', !flagsOf('generous').includes('parked_don') && !flagsOf('retiree').includes('parked_don'));
+      check('a normal player and live play aren\'t', !list.some(x => x.username === 'human' || x.username === 'streamwatcher'), list.map(x => [x.username, x.flags.map(f => f.code)]));
+    }
+
     // The timer ends a window nobody answered, in real time.
     {
       const ch2 = 'trapcheckclock';
@@ -1954,25 +2211,25 @@ async function main(): Promise<void> {
     const mch = 'migrate1ch';
     const mdb = openPointsDb(mch, { create: true })!;
     runWrite(mdb, () => creditTx(mdb, { userId: 1, username: 'old', amount: 77, reason: 'mod_add', now: 1 }));
-    mdb.exec('DROP TABLE fish_duels; DROP TABLE steals; DROP TABLE overlay_feed; DROP TABLE catches; DROP TABLE fish; DROP TABLE duels; DROP TABLE raffle_entries; DROP TABLE raffles; DROP INDEX ledger_ref');
+    mdb.exec('DROP TABLE fish_signals; DROP TABLE fish_duels; DROP TABLE steals; DROP TABLE overlay_feed; DROP TABLE catches; DROP TABLE fish; DROP TABLE duels; DROP TABLE raffle_entries; DROP TABLE raffles; DROP INDEX ledger_ref');
     mdb.pragma('user_version = 1');
     closePointsDb(mch);
     const reopened = openPointsDb(mch, { create: false })!;
     const hasTable = (n: string) => !!reopened.prepare('SELECT 1 FROM sqlite_master WHERE name = ?').get(n);
     check('a v1 database migrates to the latest version keeping balances',
-      reopened.pragma('user_version', { simple: true }) === 10 && balance(mch, 1) === 77
-      && hasTable('duels') && hasTable('raffles') && hasTable('raffle_entries') && hasTable('fish') && hasTable('catches') && hasTable('overlay_feed') && hasTable('steals') && hasTable('fish_duels'));
+      reopened.pragma('user_version', { simple: true }) === 11 && balance(mch, 1) === 77
+      && hasTable('duels') && hasTable('raffles') && hasTable('raffle_entries') && hasTable('fish') && hasTable('catches') && hasTable('overlay_feed') && hasTable('steals') && hasTable('fish_duels') && hasTable('fish_signals'));
 
     // v2 → v3 specifically: a database that already has duels gains the raffle tables.
     const m2 = 'migrate2ch';
     const m2db = openPointsDb(m2, { create: true })!;
     runWrite(m2db, () => creditTx(m2db, { userId: 1, username: 'old2', amount: 42, reason: 'mod_add', now: 1 }));
-    m2db.exec('DROP TABLE fish_duels; DROP TABLE steals; DROP TABLE overlay_feed; DROP TABLE catches; DROP TABLE fish; DROP TABLE raffle_entries; DROP TABLE raffles; DROP INDEX ledger_ref');
+    m2db.exec('DROP TABLE fish_signals; DROP TABLE fish_duels; DROP TABLE steals; DROP TABLE overlay_feed; DROP TABLE catches; DROP TABLE fish; DROP TABLE raffle_entries; DROP TABLE raffles; DROP INDEX ledger_ref');
     m2db.pragma('user_version = 2');
     closePointsDb(m2);
     const re2 = openPointsDb(m2, { create: false })!;
     check('a v2 database gains the raffle tables and keeps its balances',
-      re2.pragma('user_version', { simple: true }) === 10 && balance(m2, 1) === 42
+      re2.pragma('user_version', { simple: true }) === 11 && balance(m2, 1) === 42
       && !!re2.prepare("SELECT 1 FROM sqlite_master WHERE name = 'raffles'").get());
     void svc;
     makeService(ch, { broadcaster: 999 });

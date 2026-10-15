@@ -33,7 +33,8 @@ export interface PublicCommands {
   sections: PublicCommandSection[];
 }
 
-export function publicCommands(cfg: PointsConfig): PublicCommands {
+/** `wheel`: the channel has the !wheel command on (it rides on the fishing overlay). */
+export function publicCommands(cfg: PointsConfig, opts: { wheel?: boolean } = {}): PublicCommands {
   const c = `$${effectiveCommand(cfg)}`;
   const cur = cfg.currencyName;
   const g = cfg.games;
@@ -103,7 +104,7 @@ export function publicCommands(cfg: PointsConfig): PublicCommands {
         { usage: `${f} trap cancel`, short: `${s} t c`, does: 'Pull your traps in early and lose the catch' },
         { usage: `${f} trap reset`, short: `${s} t r`, does: 'Collect full traps and lay them again' },
         ...(g.trapCheck.enabled ? [
-          { usage: `${f} answer <x>`, short: `${s} ans <x>`, does: `Answer the question your full traps sometimes ask while the stream is offline: ${g.trapCheck.tries === 1 ? 'one try' : `${g.trapCheck.tries} tries`} within ${g.trapCheck.answerSeconds} seconds${g.trapCheck.finePercent > 0 ? `, or it costs ${g.trapCheck.finePercent}% of your ${cur} and the catch` : ', or you lose the catch'}` }
+          { usage: `${f} answer <x>`, short: `${s} ans <x>`, does: `Answer the question your full traps${g.trapCheck.castChancePercent > 0 ? ' or a cast' : ''} sometimes ask while the stream is offline: ${g.trapCheck.tries === 1 ? 'one try' : `${g.trapCheck.tries} tries`} within ${g.trapCheck.answerSeconds} seconds${g.trapCheck.finePercent > 0 ? `, or it costs ${g.trapCheck.finePercent}% of your ${cur} and the catch` : ', or you lose the catch'}` }
         ] : []),
         { usage: `${f} sell 🐟 🦐 3`, short: `${s} s 🐟 🦐 3`, does: 'Sell the kinds you name, each with an optional count' },
         { usage: `${f} sell all fish junk`, short: `${s} s a f j`, does: 'Sell every fish, every piece of junk, or both' },
@@ -129,6 +130,19 @@ export function publicCommands(cfg: PointsConfig): PublicCommands {
           { usage: `${f} reel <code>`, short: `${s} r <code>`, does: 'Answer a big bite with the code shown on stream' },
           { usage: `${f} bigbite [@user | me]`, short: `${s} bb`, does: 'Start a big bite now, on a random chatter, the one named, or yourself', who: 'streamer' as const }
         ] : [])
+      ]
+    });
+  }
+
+  if (g.enabled && opts.wheel) {
+    sections.push({
+      title: 'Wheel',
+      note: 'The prize wheel spins on the stream overlay; chat gets the result.',
+      rows: [
+        { usage: '!wheel', does: 'List the items on the wheel', who: 'mods' },
+        { usage: '!wheel spin', short: '!spin', does: 'Spin the wheel', who: 'mods' },
+        { usage: '!wheel add <item> | <item>', does: 'Add one or more items, split with |', who: 'mods' },
+        { usage: '!wheel remove <item or number>', short: '!wheel rm', does: 'Take an item off the wheel', who: 'mods' }
       ]
     });
   }

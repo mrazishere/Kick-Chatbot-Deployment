@@ -31,6 +31,13 @@ const APPLIED_KEEP_MS = 30 * 24 * 60 * 60_000;
 const STATUS_MAX_AGE_MS = 30 * 60_000;
 /** How long a live check made for a command is trusted, so a burst of gambles asks Kick once. */
 const LIVE_PROBE_MS = 60_000;
+/**
+ * How long a known live state is trusted before a command asks Kick again. The tick
+ * only checks every interval and the offline webhook comes late or not at all
+ * (2026-10-14: none for a stream that ended), so offline-only fishing stayed shut
+ * for up to 10 minutes after a stream ended.
+ */
+const LIVE_FRESH_MS = 30_000;
 
 export interface PointsServiceDeps {
   channelName: string;
@@ -72,6 +79,8 @@ export class PointsService {
   private started = false;
   private dbReady = false;
   private lastLive: boolean | null = null;
+  /** When lastLive was last learned, from a tick, a webhook or a command's check. */
+  private lastLiveAt = 0;
   /** A live check a command asked for, while nothing else knew; see isLiveNow. */
   private liveProbe: { at: number; value: boolean | null } | null = null;
   private liveProbeInFlight: Promise<boolean | null> | null = null;
@@ -96,7 +105,7 @@ export class PointsService {
       flushPresence: () => this.flushPresence(),
       exclusions: () => this.exclusions(),
       checkLive: deps.checkLive ?? (() => checkLive(this.channel, deps.tokenFile)),
-      onLiveState: isLive => { this.lastLive = isLive; },
+      onLiveState: isLive => { this.setLive(isLive); },
       now: () => this.now()
     });
     registry.set(this.channel, this);
@@ -244,27 +253,38 @@ export class PointsService {
     return { win: roll < threshold, roll, threshold };
   }
 
+  private setLive(isLive: boolean): void {
+    this.lastLive = isLive;
+    this.lastLiveAt = this.now();
+  }
+
   /**
-   * Whether the channel is live, for commands that only work while it is. The
-   * last tick or livestream webhook usually knows. Right after a restart nothing
-   * does for up to one interval, so Kick is asked once, and the answer kept for
-   * a minute. null when that fails too; callers treat it as offline.
+   * Whether the channel is live, for commands that only work while it is. A state
+   * learned in the last LIVE_FRESH_MS (from a tick, a webhook, or an earlier ask)
+   * is used as is; an older one is checked with Kick again, one ask at a time, so a
+   * stream's end reaches offline-only commands within about half a minute of Kick
+   * showing it. If the ask fails the last known state stands; with none at all
+   * (just restarted), null, which callers treat as offline.
    */
   async isLiveNow(): Promise<boolean | null> {
     if (this.config().debugForceLive) return true;
-    if (this.lastLive !== null) return this.lastLive;
     const now = this.now();
-    if (this.liveProbe && now - this.liveProbe.at < LIVE_PROBE_MS) return this.liveProbe.value;
+    if (this.lastLive !== null && now - this.lastLiveAt < LIVE_FRESH_MS) return this.lastLive;
+    if (this.lastLive === null && this.liveProbe && now - this.liveProbe.at < LIVE_PROBE_MS) return this.liveProbe.value;
     if (!this.liveProbeInFlight) {
       const check = this.deps.checkLive ?? (() => checkLive(this.channel, this.deps.tokenFile, 1, 0));
+      const askedAt = now;
       this.liveProbeInFlight = check()
         .catch(() => null)
         .then(state => {
           const value = state ? state.isLive : null;
           // A real answer is as good as a tick's; don't overwrite one that arrived meanwhile.
-          if (value !== null && this.lastLive === null) this.lastLive = value;
+          if (value !== null && this.lastLiveAt <= askedAt) {
+            if (this.lastLive !== null && this.lastLive !== value) console.log(`[POINTS] ${this.channel} is ${value ? 'live' : 'offline'} (checked for a command)`);
+            this.setLive(value);
+          }
           this.liveProbe = { at: this.now(), value };
-          return value;
+          return value ?? this.lastLive;
         })
         .finally(() => { this.liveProbeInFlight = null; });
     }
@@ -477,7 +497,7 @@ export class PointsService {
   onLivestreamStatus(e: LivestreamStatusEvent, meta: QueueMeta): void {
     this.guard('livestream status', () => {
       if (meta.ageMs !== null && meta.ageMs > STATUS_MAX_AGE_MS) return;
-      this.lastLive = e?.is_live === true;
+      this.setLive(e?.is_live === true);
       console.log(`[POINTS] ${this.channel} is ${this.lastLive ? 'live' : 'offline'} (webhook)`);
       const db = this.db();
       if (!db) return;

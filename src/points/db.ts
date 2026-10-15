@@ -267,7 +267,25 @@ CREATE TABLE fish_duels (
 CREATE INDEX fish_duels_ts ON fish_duels(ts);
 `;
 
-const SCHEMA_VERSION = 10;
+/**
+ * v11: how people play the offline fishing games, for spotting scripts and agents
+ * (community/cheat-signals.ts): each cast, trap haul and check, with its timing.
+ */
+const SCHEMA_V11 = `
+CREATE TABLE fish_signals (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts INTEGER NOT NULL,
+  user_id INTEGER NOT NULL,
+  kind TEXT NOT NULL,
+  delay_ms INTEGER,
+  live INTEGER,
+  detail TEXT
+);
+CREATE INDEX fish_signals_ts ON fish_signals(ts);
+CREATE INDEX fish_signals_user ON fish_signals(user_id, ts);
+`;
+
+const SCHEMA_VERSION = 11;
 
 export function migrate(db: PointsDb): void {
   if ((db.pragma('user_version', { simple: true }) as number) >= SCHEMA_VERSION) return;
@@ -286,6 +304,7 @@ export function migrate(db: PointsDb): void {
     if (version < 8) db.exec(SCHEMA_V8);
     if (version < 9) db.exec(SCHEMA_V9);
     if (version < 10) db.exec(SCHEMA_V10);
+    if (version < 11) db.exec(SCHEMA_V11);
     if (version < SCHEMA_VERSION) db.pragma(`user_version = ${SCHEMA_VERSION}`);
   }).immediate();
 }

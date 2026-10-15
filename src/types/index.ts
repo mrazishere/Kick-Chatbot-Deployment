@@ -355,6 +355,11 @@ export interface FishTrapCheckSetting {
   finePercent: number;
   answerSeconds: number;
   tries: number;
+  /**
+   * The same check on a share of offline casts, against casting macros (0 is off).
+   * The cast waits for the answer; failing costs the fine and leaves traps alone.
+   */
+  castChancePercent: number;
 }
 
 /**
@@ -434,6 +439,11 @@ export interface FishStealSetting {
   oddsRare: number;
   oddsEpic: number;
   oddsLegendary: number;
+  /**
+   * Raises every success chance by this share (25: a 40% try works 50% of the time), while
+   * fines stay priced from the odds above: past 0, stealing pays on average.
+   */
+  luckPercent: number;
   /** A fish can't be stolen until its owner has held it this long. */
   graceMinutes: number;
   /** After a try that went ahead (stolen or caught), the target is left alone this long. */

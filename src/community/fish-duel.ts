@@ -21,7 +21,7 @@
 
 import * as crypto from 'crypto';
 import type { PointsGamesConfig } from '../types';
-import { CatchItem, FishData, HeldFish, ITEMS, rarityOf } from './fishing';
+import { CatchItem, FishData, HeldFish, ITEMS, rarityOf, sellPrice } from './fishing';
 
 export type DuelType = 'Predator' | 'Swift' | 'Armored';
 
@@ -86,6 +86,68 @@ export function fighterOf(g: PointsGamesConfig, item: CatchItem, held?: HeldFish
 const might = (f: Fighter): number => f.hp * f.attack;
 
 export interface Picked { item: CatchItem; index: number; held?: HeldFish; fighter: Fighter }
+
+/**
+ * Keeps duels are only between fish close in value. Strength comes from rarity and
+ * length, not price, so a cheap strong fish could win an expensive one (a 90 cm 🐙
+ * worth 810 beat a 🦈 worth 18,000 about 43% of the time, 2026-10-14 audit).
+ */
+export const KEEPS_RATIO = 1.25;
+
+/** A fish's plain sell price: no reel bonus, as the steal fee and fine price it. */
+export const fishValue = (g: PointsGamesConfig, p: Pick<Picked, 'item' | 'held'>): number => sellPrice(p.item, g, p.held);
+
+export const closeInValue = (a: number, b: number): boolean => Math.max(a, b) <= Math.min(a, b) * KEEPS_RATIO;
+
+/** The values a fish may have to fight one worth `value` for keeps. */
+export const keepsRange = (value: number): [number, number] => [Math.ceil(value / KEEPS_RATIO), Math.floor(value * KEEPS_RATIO)];
+
+/**
+ * Every fish held, one by one (only of `name`, when given): each one with a length, and one
+ * with no length where any are held. `index` is as in pickFighter.
+ */
+export function heldFish(d: FishData | null | undefined, g: PointsGamesConfig, name?: string): Picked[] {
+  if (!d) return [];
+  const out: Picked[] = [];
+  for (const item of ITEMS) {
+    if (item.type !== 'fish' || (name !== undefined && item.name !== name)) continue;
+    const have = d.catch.types[item.name] ?? 0;
+    if (have <= 0) continue;
+    const sized = (d.catch.sizes?.[item.name] ?? []).slice(0, have);
+    sized.forEach((held, index) => out.push({ item, index, held, fighter: fighterOf(g, item, held) }));
+    if (have > sized.length) out.push({ item, index: -1, fighter: fighterOf(g, item) });
+  }
+  return out;
+}
+
+/** The one fish held (of `name`, when given) closest in value to `value`, whatever its length. */
+export function pickByValue(d: FishData | null | undefined, g: PointsGamesConfig, value: number, name?: string): Picked | null {
+  let best: Picked | null = null;
+  let bestGap = Infinity;
+  for (const p of heldFish(d, g, name)) {
+    const gap = Math.abs(Math.log(Math.max(1, fishValue(g, p)) / Math.max(1, value)));
+    if (gap < bestGap) { best = p; bestGap = gap; }
+  }
+  return best;
+}
+
+/**
+ * The challenger's fish for keeps: of the ones (of `name`, when given) that the rival holds a
+ * fish close in value to, the strongest. null when there's no such pair.
+ */
+export function pickForKeeps(mine: FishData | null | undefined, theirs: FishData | null | undefined, g: PointsGamesConfig, name?: string): Picked | null {
+  const values = heldFish(theirs, g).map(p => fishValue(g, p));
+  let best: Picked | null = null;
+  for (const p of heldFish(mine, g, name)) {
+    const v = fishValue(g, p);
+    if (values.some(w => closeInValue(v, w)) && (!best || might(p.fighter) > might(best.fighter))) best = p;
+  }
+  return best;
+}
+
+/** That exact fish, by kind and length (no length: one without), or null when it's gone. */
+export const sameFish = (d: FishData | null | undefined, g: PointsGamesConfig, name: string, cm: number | undefined): Picked | null =>
+  heldFish(d, g, name).find(p => p.held?.cm === cm) ?? null;
 
 /**
  * The fish someone sends: their biggest of `name`, or with no name their strongest
@@ -255,6 +317,8 @@ export interface Challenge {
   target: string;
   /** The fish the challenger named or, with none named, their strongest when they asked. */
   fish: string;
+  /** For keeps, the length of that very fish (absent: one with no length), picked to match one the target holds. */
+  cm?: number;
   stake: DuelStake;
   expiresAt: number;
 }

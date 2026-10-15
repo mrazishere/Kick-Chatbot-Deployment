@@ -114,7 +114,12 @@ export const JUNK_MESSAGES = [
 export const STORY_STYLES = ['exciting', 'spooky', 'smug', 'radical', 'mysterious', 'hilarious', 'enchanting', 'touching', 'intriguing'];
 
 /** One sized fish still held: its length and whether it beat an earlier record. */
-export interface HeldFish { cm: number; record: boolean }
+/**
+ * `stolen`: taken with `fish steal`. A stolen fish sells at its plain price, never
+ * with the holder's reel bonus (the owner, 2026-10-14: reels have no effect on
+ * stealing), whoever holds it after.
+ */
+export interface HeldFish { cm: number; record: boolean; stolen?: boolean }
 
 export interface FishData {
   catch: {
@@ -125,6 +130,8 @@ export interface FishData {
      * sell at the base price.
      */
     sizes?: Record<string, HeldFish[]>;
+    /** Our addition: how many of the unsized fish held of each kind were stolen (see HeldFish). */
+    stolen?: Record<string, number>;
   };
   trap: { active: boolean; start: number; end: number; duration: number };
   /** Our addition: the question full traps wait on (community/trap-check.ts), until it's answered. */
@@ -298,17 +305,26 @@ export function takeItems(d: FishData, item: CatchItem, n: number, g: PointsGame
     const unsized = have - list.length;
     if (keepBiggest) list.sort((a, b) => a.cm - b.cm);
     // Sell unsized ones first when keeping the biggest, so the kept one is a real size.
-    let fromUnsized = keepBiggest ? Math.min(n, Math.max(0, unsized)) : 0;
-    total += fromUnsized * sellPrice(item, g, undefined, value);
-    taken += fromUnsized;
+    // Unsized ones that weren't stolen sell first, at the reel's value; stolen ones at the plain price.
+    let ownUnsized = Math.max(0, unsized - stolenUnsized(d, item.name));
+    let hotUnsized = Math.max(0, unsized) - ownUnsized;
+    const sellUnsized = (k: number) => {
+      const own = Math.min(k, ownUnsized);
+      const hot = Math.min(k - own, hotUnsized);
+      ownUnsized -= own;
+      hotUnsized -= hot;
+      total += own * sellPrice(item, g, undefined, value) + hot * sellPrice(item, g, undefined, 1);
+      taken += own + hot;
+    };
+    if (keepBiggest) sellUnsized(Math.min(n, Math.max(0, unsized)));
     while (taken < n && list.length) {
-      total += sellPrice(item, g, list.shift(), value);
+      const held = list.shift()!;
+      total += sellPrice(item, g, held, held.stolen ? 1 : value);
       taken++;
     }
-    fromUnsized = n - taken;
-    total += fromUnsized * sellPrice(item, g, undefined, value);
-    taken += fromUnsized;
+    sellUnsized(n - taken);
     d.catch.sizes[item.name] = list;
+    setStolenUnsized(d, item.name, hotUnsized);
   } else {
     total = n * sellPrice(item, g, undefined, value);
     taken = n;
@@ -376,7 +392,7 @@ export function findBait(word: string | undefined): Bait | undefined {
 function withDefaults(raw: Partial<FishData>): FishData {
   const d = initialData();
   return {
-    catch: { ...d.catch, ...(raw.catch ?? {}), types: { ...(raw.catch?.types ?? {}) }, sizes: { ...(raw.catch?.sizes ?? {}) } },
+    catch: { ...d.catch, ...(raw.catch ?? {}), types: { ...(raw.catch?.types ?? {}) }, sizes: { ...(raw.catch?.sizes ?? {}) }, ...(raw.catch?.stolen ? { stolen: { ...raw.catch.stolen } } : {}) },
     trap: { ...d.trap, ...(raw.trap ?? {}) },
     ...(raw.trapCheck ? { trapCheck: raw.trapCheck } : {}),
     readyTimestamp: raw.readyTimestamp ?? 0,
@@ -436,6 +452,10 @@ export function stealChance(g: PointsGamesConfig, name: string): number {
   };
   return byRarity[rarityOf(g, name) ?? 'Common'] ?? 0;
 }
+
+/** The chance a steal try on this fish works: its odds raised by luckPercent. The fine is priced from stealChance. */
+export const stealRollChance = (g: PointsGamesConfig, name: string): number =>
+  Math.min(100, stealChance(g, name) * (100 + g.steal.luckPercent) / 100);
 
 /**
  * What a steal try on a fish costs: the fee every time, and the fine on top when
@@ -502,7 +522,28 @@ export function pickHeld(d: FishData, item: CatchItem): { index: number; held?: 
 }
 
 /** Move one fish picked by pickHeld from `from` to `to`. It keeps its length but not a record bonus, which was the catcher's. */
-export function moveFish(from: FishData, to: FishData, item: CatchItem, picked: { index: number; held?: HeldFish }): void {
+/** How many of the unsized `name` fish held were stolen, never more than are unsized. */
+function stolenUnsized(d: FishData, name: string): number {
+  const unsized = (d.catch.types[name] ?? 0) - (d.catch.sizes?.[name]?.length ?? 0);
+  return Math.max(0, Math.min(unsized, d.catch.stolen?.[name] ?? 0));
+}
+
+function setStolenUnsized(d: FishData, name: string, n: number): void {
+  if (n > 0) (d.catch.stolen ??= {})[name] = n;
+  else if (d.catch.stolen) {
+    delete d.catch.stolen[name];
+    if (!Object.keys(d.catch.stolen).length) delete d.catch.stolen;
+  }
+}
+
+/**
+ * Hand one fish over: a steal (`stolen`) or a duel for keeps. A stolen fish stays
+ * marked stolen wherever it goes after, so it never sells with a reel bonus. An
+ * unsized one leaving counts as stolen only when every unsized one of its kind was.
+ */
+export function moveFish(from: FishData, to: FishData, item: CatchItem, picked: { index: number; held?: HeldFish }, stolen = false): void {
+  const unsizedBefore = (from.catch.types[item.name] ?? 0) - (from.catch.sizes?.[item.name]?.length ?? 0);
+  const fromHot = stolenUnsized(from, item.name);
   from.catch.types[item.name] = Math.max(0, (from.catch.types[item.name] ?? 0) - 1);
   from.catch.fish = Math.max(0, from.catch.fish - 1);
   if (picked.held && picked.index >= 0) from.catch.sizes?.[item.name]?.splice(picked.index, 1);
@@ -510,7 +551,11 @@ export function moveFish(from: FishData, to: FishData, item: CatchItem, picked: 
   to.catch.fish++;
   if (picked.held) {
     to.catch.sizes ??= {};
-    (to.catch.sizes[item.name] ??= []).push({ cm: picked.held.cm, record: false });
+    (to.catch.sizes[item.name] ??= []).push({ cm: picked.held.cm, record: false, ...(stolen || picked.held.stolen ? { stolen: true } : {}) });
+  } else {
+    const hot = stolen || (unsizedBefore > 0 && fromHot >= unsizedBefore);
+    setStolenUnsized(from, item.name, Math.min(fromHot, Math.max(0, unsizedBefore - 1)));
+    if (hot) setStolenUnsized(to, item.name, stolenUnsized(to, item.name) + 1);
   }
 }
 

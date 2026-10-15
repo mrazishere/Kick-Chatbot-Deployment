@@ -315,12 +315,19 @@ export const points: CommandFn = async function points(client, message, channel,
     }
 
     // ── give ──
+    // A fishing check waiting (bot-commands/fish.ts): its fine was set when it was asked,
+    // and giving or staking the $DON away meanwhile would only dodge it (2026-10-14 audit).
+    const checkPending = (): boolean => {
+      const t = self ? loadFish(db, self.user_id)?.trapCheck : undefined;
+      return !!t && Date.now() <= t.until;
+    };
     if (sub === 'give') {
       if (!cfg.give.enabled) {
         if (!cooldownLeft(`${channelName}:${meLc}:give-off`, USER_COOLDOWN_MS, true)) say(`@${me} giving ${cur} is turned off`);
         return;
       }
       if (isExcluded(ex, self?.user_id ?? null, meLc) || isBotSender(me, tags.senderId)) return;
+      if (checkPending()) return void say(`@${me} answer your fishing question first ($${cmd} fish answer), then you can give ${cur}.`);
       // A replay must stay silent, e.g. not answer "the minimum is 10" after its own give-all emptied the balance.
       if (tags.messageId && isApplied(db, `chat:${tags.messageId}`)) return;
       // "user amount" in either order; an @ marks the name. The amount takes the same
@@ -445,6 +452,7 @@ export const points: CommandFn = async function points(client, message, channel,
       const ignore = (why: string) => void console.log(`[POINTS] ${sub} from ${me} ignored: ${why}`);
       if (!d.enabled) return ignore('duels disabled');
       if (isExcluded(ex, self?.user_id ?? null, meLc) || isBotSender(me, tags.senderId)) return ignore('excluded');
+      if ((sub === 'duel' || sub === 'accept') && checkPending()) return void say(`@${me} answer your fishing question first ($${cmd} fish answer), then you can duel.`);
       // A replay must stay silent, not answer "you already challenged…" about the duel it made.
       if (tags.messageId && isApplied(db, `chat:${tags.messageId}`)) return ignore('already handled');
       // Refund whatever ran out first, so nobody accepts or waits on a dead duel.
