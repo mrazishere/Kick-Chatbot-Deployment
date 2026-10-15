@@ -189,14 +189,14 @@ function FishingTab({ fishing, currency, channel }: { fishing: PublicFishing; cu
   );
 }
 
-const WHO_LABEL = { mods: "Mods", streamer: "Streamer" } as const;
+const WHO_LABEL = { subs: "Subs & up", vips: "VIPs & up", mods: "Mods only", streamer: "Streamer only" } as const;
 
-/** Every currency command the channel has on, with its short form. */
+/** Every command the channel has on: the currency ones with their short forms, then the bot's ! commands. */
 function CommandsTab({ commands }: { commands: PublicCommands }) {
   return (
     <div className="space-y-4">
       <p className="text-xs text-neutral-500">
-        {`Type these in chat. Every command has a short form that does the same thing; words in [brackets] are optional.`}
+        {`Type these in chat. A green tag is a short form that does the same thing; words in [brackets] are optional.`}
       </p>
       {commands.sections.map((s) => (
         <section key={s.title} className="overflow-hidden rounded-xl border border-neutral-800 bg-neutral-950/60">
@@ -211,7 +211,7 @@ function CommandsTab({ commands }: { commands: PublicCommands }) {
                   <code className="font-mono text-[13px] text-neutral-100">{r.usage}</code>
                   {r.short ? <code className="rounded-md border border-neutral-800 bg-neutral-900 px-1.5 py-0.5 font-mono text-xs text-[#53FC18]">{r.short}</code> : null}
                   {r.who ? (
-                    <span className="rounded-md border border-amber-900/60 bg-amber-950/40 px-1.5 py-0.5 text-xs text-amber-300">{WHO_LABEL[r.who]} only</span>
+                    <span className="rounded-md border border-amber-900/60 bg-amber-950/40 px-1.5 py-0.5 text-xs text-amber-300">{WHO_LABEL[r.who]}</span>
                   ) : null}
                 </div>
                 <p className="mt-1 text-xs text-neutral-400">{r.does}</p>

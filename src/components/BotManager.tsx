@@ -1313,6 +1313,7 @@ export default function BotManager({
           {/* -------------------------------------------------------- commands */}
           <Card
             title={`Commands (${listedCommands.filter((c) => !excluded.has(c)).length}/${listedCommands.length} enabled)`}
+            locked={canAdminister ? undefined : "Only the broadcaster can change this."}
             icon={<Check className="h-4 w-4" />}
             actions={
               <div className="flex gap-2">
@@ -2143,7 +2144,7 @@ export default function BotManager({
           <WheelCard channel={channel} fishingOn={!!bot.points?.enabled && !!bot.points?.games?.enabled} />
 
           {/* -------------------------------------------------------- settings */}
-          <Card title="Settings" icon={<ShieldCheck className="h-4 w-4" />}>
+          <Card title="Settings" icon={<ShieldCheck className="h-4 w-4" />} locked={canAdminister ? undefined : "Only the broadcaster can change this."}>
             <div className="space-y-5">
               <Toggle
                 label="Chat-only mode"
@@ -2265,6 +2266,7 @@ export default function BotManager({
           {/* ---------------------------------------------------------- claude */}
           <Card
             title="AI personality"
+            locked={canAdminister ? undefined : "Only the broadcaster can change this."}
             icon={<Sparkles className="h-4 w-4" />}
             actions={
               <div className="flex gap-2">
@@ -2398,6 +2400,7 @@ export default function BotManager({
           {/* -------------------------------------------------------- location */}
           <Card
             title="Location"
+            locked={canAdminister ? undefined : "Only the broadcaster can change this."}
             icon={<MapPin className="h-4 w-4" />}
             actions={
               locationDirty ? (

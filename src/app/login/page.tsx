@@ -20,7 +20,8 @@ export default async function LoginPage({
     state_mismatch: "Session expired. Try again.",
   };
   // Own keys only: "__proto__" or "toString" found inherited values, and rendering those crashed the page.
-  const errorMsg = error ? (Object.hasOwn(errorMessages, error) ? errorMessages[error] : `Auth error: ${error}`) : null;
+  // Anything else gets one plain line: echoing ?error= let a link put any text on this page (2026-10-16 audit).
+  const errorMsg = error ? (Object.hasOwn(errorMessages, error) ? errorMessages[error] : "Sign-in didn't complete. Try again.") : null;
 
   return (
     <div className="flex min-h-screen flex-col items-center justify-center gap-8 px-4">

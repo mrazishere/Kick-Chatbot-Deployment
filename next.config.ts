@@ -28,6 +28,28 @@ const nextConfig: NextConfig = {
   // This app is its own root. Without this, Next picks up an unrelated
   // package-lock.json in the home directory and warns on every build.
   outputFileTracingRoot: path.join(__dirname),
+  // Security headers (2026-10-16 audit); nginx adds none. Framing is refused everywhere but the
+  // overlay pages, which a streaming tool may load in a frame of its own.
+  poweredByHeader: false,
+  async headers() {
+    return [
+      {
+        source: "/:path*",
+        headers: [
+          { key: "Strict-Transport-Security", value: "max-age=31536000" },
+          { key: "X-Content-Type-Options", value: "nosniff" },
+          { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+        ],
+      },
+      {
+        source: "/:path((?!.*overlay).*)",
+        headers: [
+          { key: "X-Frame-Options", value: "DENY" },
+          { key: "Content-Security-Policy", value: "frame-ancestors 'none'" },
+        ],
+      },
+    ];
+  },
   // No output: "standalone". pm2 runs `next start`, which doesn't support that
   // output and warned about it on every restart; nothing used the standalone build.
 };

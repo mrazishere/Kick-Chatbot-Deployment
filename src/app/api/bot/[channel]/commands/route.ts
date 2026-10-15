@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { setExcludedCommands } from "@/lib/bot-api";
-import { authorizeChannel, errorResponse, validChannel, visibleTo } from "@/lib/bot-auth";
+import { authorizeChannel, errorResponse, requireAdminister, validChannel, visibleTo } from "@/lib/bot-auth";
 
 type Params = { params: Promise<{ channel: string }> };
 
@@ -13,6 +13,9 @@ export async function POST(req: Request, { params }: Params): Promise<NextRespon
 
   const gate = await authorizeChannel(channel);
   if (!gate.ok) return gate.response;
+  // Turning commands on or off is the broadcaster's (managers restart, and edit custom commands and the wheel).
+  const denied = requireAdminister(gate.auth);
+  if (denied) return denied;
 
   let excluded: unknown;
   try {

@@ -159,15 +159,15 @@ function publicCommands(raw: unknown): PublicCommands | null {
   const c = raw as Partial<PublicCommands> | null | undefined;
   if (!c || typeof c.command !== "string" || !/^\$[a-z0-9_]{2,20}$/.test(c.command) || !Array.isArray(c.sections)) return null;
   const text = (v: unknown, max: number): string | null => (typeof v === "string" && v.length > 0 && v.length <= max ? v : null);
-  const sections = c.sections.slice(0, 8).flatMap((s): PublicCommandSection[] => {
+  const sections = c.sections.slice(0, 16).flatMap((s): PublicCommandSection[] => {
     const title = text(s?.title, 40);
     if (!title || !Array.isArray(s.rows)) return [];
-    const rows = s.rows.slice(0, 40).flatMap((r): PublicCommandRow[] => {
+    const rows = s.rows.slice(0, 60).flatMap((r): PublicCommandRow[] => {
       const usage = text(r?.usage, 80);
       const does = text(r?.does, 200);
       if (!usage || !does) return [];
       const short = text(r.short, 80);
-      return [{ usage, does, ...(short ? { short } : {}), ...(r.who === "mods" || r.who === "streamer" ? { who: r.who } : {}) }];
+      return [{ usage, does, ...(short ? { short } : {}), ...(r.who === "subs" || r.who === "vips" || r.who === "mods" || r.who === "streamer" ? { who: r.who } : {}) }];
     });
     const note = text(s.note, 300);
     return rows.length ? [{ title, rows, ...(note ? { note } : {}) }] : [];

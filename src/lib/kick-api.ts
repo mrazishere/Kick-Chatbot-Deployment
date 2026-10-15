@@ -168,7 +168,7 @@ export async function scrapeVods(slug: string): Promise<ScrapedVod[]> {
   try {
     const res = await fetch(
       `http://localhost:${ENROLLMENT_PORT}/internal/vods/${encodeURIComponent(slug)}`,
-      { next: { revalidate: 120 } }
+      { next: { revalidate: 120 }, headers: { "x-internal-secret": process.env.INTERNAL_API_SECRET ?? "" } }
     );
     if (!res.ok) return [];
     const { vods } = (await res.json()) as { vods?: ScrapedVod[] };

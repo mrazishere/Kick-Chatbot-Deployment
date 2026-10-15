@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getSession, isAdmin } from "@/lib/session";
-import { getPayouts, upsertPayout, validKppChannel } from "@/lib/kpp-data";
+import { getSession } from "@/lib/session";
+import { channelHasData, getPayouts, upsertPayout, validKppChannel } from "@/lib/kpp-data";
+import { authorizeChannel } from "@/lib/bot-auth";
 import { z } from "zod";
 
 const PayoutSchema = z.object({
@@ -38,9 +39,14 @@ export async function POST(req: NextRequest): Promise<NextResponse> {
 
   const { channel, date, actualCents, note } = parsed.data;
 
-  // Only the channel owner or an admin can write payout data
-  const canEdit = session.username === channel || isAdmin(session.userId);
-  if (!canEdit) {
+  // Only a channel with KPP data: any Kick account can sign in, and its own name made a
+  // payouts file (a fake channel on the admin page) for anyone (2026-10-16 audit).
+  if (!channelHasData(channel)) {
+    return NextResponse.json({ error: "No such channel" }, { status: 404 });
+  }
+  // Only the channel owner (by Kick user id, see authorizeChannel) or an admin can write payout data
+  const authz = await authorizeChannel(channel);
+  if (!authz.ok || !authz.auth.canAdminister) {
     return NextResponse.json({ error: "Not authorised to edit this channel" }, { status: 403 });
   }
 

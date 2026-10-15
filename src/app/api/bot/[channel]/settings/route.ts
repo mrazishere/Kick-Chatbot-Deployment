@@ -41,14 +41,12 @@ export async function POST(req: Request, { params }: Params): Promise<NextRespon
     return NextResponse.json({ error: "No settings provided" }, { status: 400 });
   }
 
-  // KPP recording and its calibration decide what the channel's public earnings
-  // page claims, so they're the broadcaster's call, not a moderator's. So is the
-  // points economy: rates and bonuses set what every viewer's balance is worth.
-  // Managers can still adjust individual balances, through /points/adjust.
-  if (keys.includes("kpp") || keys.includes("points")) {
-    const denied = requireAdminister(gate.auth);
-    if (denied) return denied;
-  }
+  // Every setting is the broadcaster's call (or the admin's). KPP and earnings decide what the
+  // public earnings figures claim, points what every balance is worth, claude what the bot says
+  // in chat and what it costs. Managers restart the bot and edit custom commands and the wheel,
+  // nothing more (the owner's call, 2026-10-16 audit).
+  const denied = requireAdminister(gate.auth);
+  if (denied) return denied;
 
   try {
     const result = await updateSettings(channel, body as SettingsPatch);

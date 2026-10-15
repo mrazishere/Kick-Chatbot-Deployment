@@ -123,6 +123,7 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
         accessToken: tokenData.access_token,
         refreshToken: tokenData.refresh_token,
         expiresIn: tokenData.expires_in,
+        userId,
       });
       console.log(`[KPP Auth] Refreshed streamer grant for ${username} via login`);
     } catch (e) {

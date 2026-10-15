@@ -358,7 +358,7 @@ export interface PublicCommandRow {
   short?: string;
   does: string;
   /** Who may use it when it isn't everyone. */
-  who?: "mods" | "streamer";
+  who?: "subs" | "vips" | "mods" | "streamer";
 }
 
 export interface PublicCatch {
@@ -508,13 +508,13 @@ async function request<T>(
   const method = init?.method ?? "GET";
   const mutating = method !== "GET";
 
-  if (mutating && !INTERNAL_SECRET) {
+  // Every call carries the secret: the bot service wants it on reads too (2026-10-16 audit).
+  if (!INTERNAL_SECRET) {
     throw new BotApiError("INTERNAL_API_SECRET is not configured on the dashboard", 503);
   }
 
-  const headers: Record<string, string> = {};
+  const headers: Record<string, string> = { "x-internal-secret": INTERNAL_SECRET };
   if (init?.body !== undefined) headers["Content-Type"] = "application/json";
-  if (mutating) headers["x-internal-secret"] = INTERNAL_SECRET;
 
   let res: Response;
   try {
@@ -980,7 +980,7 @@ export function updateSettings(
  */
 export function storeChannelGrant(
   channel: string,
-  grant: { accessToken: string; refreshToken: string; expiresIn: number },
+  grant: { accessToken: string; refreshToken: string; expiresIn: number; userId: number },
 ): Promise<BotChannel & { ok: true }> {
   return request(`/internal/bot/${encodeURIComponent(channel)}/oauth`, {
     method: "POST",

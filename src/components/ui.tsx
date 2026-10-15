@@ -6,12 +6,14 @@
 import { Loader2 } from "lucide-react";
 
 export function Card({
-  title, icon, children, actions,
+  title, icon, children, actions, locked,
 }: {
   title: string;
   icon: React.ReactNode;
   children: React.ReactNode;
   actions?: React.ReactNode;
+  /** Shown read-only, every control inside disabled, with this note: for a manager, the broadcaster-only cards. */
+  locked?: string;
 }) {
   return (
     <section className="rounded-xl border border-neutral-800 bg-neutral-950/60">
@@ -20,9 +22,18 @@ export function Card({
           <span className="text-neutral-500">{icon}</span>
           {title}
         </h2>
-        {actions}
+        {locked ? null : actions}
       </header>
-      <div className="px-5 py-4">{children}</div>
+      <div className="px-5 py-4">
+        {locked ? (
+          <>
+            <p className="mb-4 text-xs text-neutral-500">{locked}</p>
+            <fieldset disabled className="min-w-0">{children}</fieldset>
+          </>
+        ) : (
+          children
+        )}
+      </div>
     </section>
   );
 }

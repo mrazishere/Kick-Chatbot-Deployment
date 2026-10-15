@@ -38,14 +38,9 @@ export async function authorizeChannel(
   if (isAdmin(session.userId)) {
     return { ok: true, auth: { username, userId: session.userId, role: "admin", canAdminister: true } };
   }
-  if (username === slug) {
-    return { ok: true, auth: { username, userId: session.userId, role: "owner", canAdminister: true } };
-  }
-
-  // Not owner or admin — the only remaining route in is an explicit grant.
-  let managers: string[] = [];
+  let bot: Awaited<ReturnType<typeof getChannel>> | null = null;
   try {
-    managers = (await getChannel(slug)).managers ?? [];
+    bot = await getChannel(slug);
   } catch (e) {
     // A channel that isn't enrolled has no managers, so this is a plain denial
     // rather than an error worth surfacing.
@@ -53,6 +48,15 @@ export async function authorizeChannel(
       console.error("[bot-auth] Could not read managers:", e);
     }
   }
+
+  // The owner is the channel's Kick account by user id, not just by name: a name someone
+  // else claims after a rename doesn't inherit the bot (2026-10-16 audit).
+  if (username === slug && (!bot?.broadcasterUserId || bot.broadcasterUserId === session.userId)) {
+    return { ok: true, auth: { username, userId: session.userId, role: "owner", canAdminister: true } };
+  }
+
+  // Not owner or admin — the only remaining route in is an explicit grant.
+  const managers: string[] = bot?.managers ?? [];
 
   if (managers.includes(username)) {
     return { ok: true, auth: { username, userId: session.userId, role: "manager", canAdminister: false } };

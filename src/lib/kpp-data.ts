@@ -122,6 +122,10 @@ export async function getSessionChatActivity(
   if (!Number.isFinite(sessionStartMs) || !Number.isFinite(requestedEndMs) || requestedEndMs <= sessionStartMs) {
     return null;
   }
+  // Only a finished session's own span (the earnings page asks for nothing else). Any other
+  // range missed the cache and scanned the whole log, so made-up ranges tied up every scan
+  // slot (2026-10-16 audit).
+  if (!getSessions(channel).some(s => Date.parse(s.startedAt) === sessionStartMs && Date.parse(s.endedAt) === requestedEndMs)) return null;
   const sessionEndMs = Math.min(requestedEndMs, sessionStartMs + MAX_ACTIVITY_SPAN_MS);
 
   const cacheKey = `${channel}|${sessionStartMs}|${sessionEndMs}|${windowMinutes ?? ""}`;
