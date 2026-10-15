@@ -10,6 +10,7 @@
 
 import { PointsConfig } from '../types';
 import { effectiveCommand } from './config';
+import { botCommandSections, type BotCommandChannel, type CustomCommands } from './public-bot-commands';
 
 export interface PublicCommandRow {
   /** The command as typed in full, e.g. "$don gamble 100". */
@@ -18,7 +19,7 @@ export interface PublicCommandRow {
   short?: string;
   does: string;
   /** Who may use it when it isn't everyone. */
-  who?: 'mods' | 'streamer';
+  who?: 'subs' | 'vips' | 'mods' | 'streamer';
 }
 
 export interface PublicCommandSection {
@@ -33,8 +34,12 @@ export interface PublicCommands {
   sections: PublicCommandSection[];
 }
 
-/** `wheel`: the channel has the !wheel command on (it rides on the fishing overlay). */
-export function publicCommands(cfg: PointsConfig, opts: { wheel?: boolean } = {}): PublicCommands {
+/**
+ * `channel`: the channel config, for the bot's ! commands it has on (public-bot-commands.ts),
+ * !wheel among them; `custom`: its custom commands.
+ */
+export function publicCommands(cfg: PointsConfig, opts: { channel?: BotCommandChannel; custom?: CustomCommands | null } = {}): PublicCommands {
+  const excluded = Array.isArray(opts.channel?.excludedCommands) ? opts.channel.excludedCommands.map(c => String(c).toLowerCase()) : [];
   const c = `$${effectiveCommand(cfg)}`;
   const cur = cfg.currencyName;
   const g = cfg.games;
@@ -134,7 +139,7 @@ export function publicCommands(cfg: PointsConfig, opts: { wheel?: boolean } = {}
     });
   }
 
-  if (g.enabled && opts.wheel) {
+  if (g.enabled && opts.channel && !excluded.includes('wheel')) {
     sections.push({
       title: 'Wheel',
       note: 'The prize wheel spins on the stream overlay; chat gets the result.',
@@ -147,12 +152,15 @@ export function publicCommands(cfg: PointsConfig, opts: { wheel?: boolean } = {}
     });
   }
 
+  if (opts.channel) sections.push(...botCommandSections(opts.channel, opts.custom ?? null, cfg.enabled));
+
   sections.push({
     title: 'Streamer',
     rows: [
       { usage: `${c} add @user 500`, short: `${c} ad @user 500`, does: `Add ${cur} to a viewer`, who: 'streamer' },
       { usage: `${c} remove @user 500`, short: `${c} rm @user 500`, does: `Take ${cur} from a viewer`, who: 'streamer' },
-      { usage: `${c} set @user 500`, short: `${c} st @user 500`, does: `Set a viewer's ${cur}`, who: 'streamer' }
+      { usage: `${c} set @user 500`, short: `${c} st @user 500`, does: `Set a viewer's ${cur}`, who: 'streamer' },
+      { usage: '!config exclude add | remove <command>', does: 'Turn one of the bot\'s commands off or back on here (list shows them)', who: 'streamer' }
     ]
   });
   return { command: c, sections };

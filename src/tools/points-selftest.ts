@@ -32,12 +32,14 @@ import { markOverlaySeen, readOverlay } from '../community/fish-overlay';
 import { drawSnipeMs, resetBites, takeBite as takeBiteForTest } from '../community/big-bite';
 import { fish as fishCommand, SUBCOMMANDS as FISH_SUBCOMMANDS } from '../bot-commands/fish';
 import { publicCommands } from '../points/public-commands';
-import { duelBoard } from '../points/store';
+import { duelBoard, publicLedgerText } from '../points/store';
 import { answerMatches, makeTrapCheck, normalizeAnswer } from '../community/trap-check';
 import { changeWheel, readWheel, validateWheel } from '../community/wheel';
 import { recordSignal, suspects } from '../community/cheat-signals';
 import { resetWheelBusy, wheelBusy } from '../community/wheel-state';
 import { wheel as wheelCommand } from '../bot-commands/wheel';
+import { streamstatus } from '../bot-commands/streamstatus';
+import { LISTED_FILES, NOT_LISTED } from '../points/public-bot-commands';
 import { fight, fighterOf, fishNamed, fishValue, pickByValue, pickFighter, pickForKeeps, playMs, sameFish, randomFish, typeOf, wantsRandom } from '../community/fish-duel';
 
 const MIN = 60_000;
@@ -709,6 +711,17 @@ async function main(): Promise<void> {
       && listed.sections.map(s => s.title).join(',') === 'Points,Games,Fishing,Streamer' && listed.sections[2].note!.includes('offline'), { wrong, t: listed.sections.map(s => s.title) });
     const bare = publicCommands(effectivePointsConfig({ enabled: true, currencyName: '$DON', raffle: { enabled: false } }));
     check('and leaves out what the channel has off', bare.command === '$don' && bare.sections.map(s => s.title).join(',') === '$DON,Streamer' && !bare.sections[0].rows.some(r => /give|gamble/.test(r.usage)), bare.sections.map(s => s.title));
+    // The bot's ! commands: every command file is listed (or has a reason it isn't), and what a channel has off is left out.
+    const files = fs.readdirSync(path.join(__dirname, '..', 'bot-commands')).filter(f => /\.(ts|js)$/.test(f) && !f.endsWith('.d.ts')).map(f => f.replace(/\.(ts|js)$/, ''));
+    const unlisted = files.filter(f => !LISTED_FILES.has(f) && !(f in NOT_LISTED));
+    const withBot = publicCommands(full, { channel: { excludedCommands: ['Weather', 'wheel'], kpp: { enabled: true } }, custom: { crime: ['n', 'committed $counter crimes', 3], trap: ['n', '/timeout $user1 1m', 0], secret: ['y', 'mods only', 0] } });
+    const rows = withBot.sections.flatMap(s => s.rows);
+    check('the Commands tab lists every bot command a channel has on, and its custom commands',
+      unlisted.length === 0 && rows.some(r => r.usage === '!clip [45s] [title]') && rows.some(r => r.usage === '!kpp') && !rows.some(r => r.usage.startsWith('!weather'))
+      && !rows.some(r => r.usage === '!earnings') && !rows.some(r => r.usage.startsWith('!blerp')) && !withBot.sections.some(s => s.title === 'Wheel')
+      && rows.find(r => r.usage === '!crime')?.does === 'committed N crimes' && rows.find(r => r.usage === '!trap')?.does === 'A surprise 🤫' && rows.find(r => r.usage === '!secret')?.who === 'mods'
+      && withBot.sections.length <= 16 && withBot.sections.every(s => s.rows.length <= 60 && s.rows.every(r => r.usage.length <= 80 && r.does.length <= 200)),
+      { unlisted, titles: withBot.sections.map(s => s.title) });
   }
 
   // Anti-spam: keyword messages past the threshold cost points, per viewer, inside the window
@@ -1118,6 +1131,12 @@ async function main(): Promise<void> {
     check('luck raises the roll\'s odds and not the fine\'s', bal.steal.luckPercent === 0 && stealRollChance(bal, common) === 40
       && stealRollChance(lucky, common) === 50 && stealChance(lucky, common) === 40 && stealRollChance(luckier, common) === 100,
       { common, roll: stealRollChance(lucky, common), capped: stealRollChance(luckier, common) });
+    const pub = (reason: string, actor: string | null, note: string | null) => publicLedgerText(reason, actor, note);
+    check('the public history hides who adjusted a balance and private notes, and keeps chat\'s own',
+      pub('dash_add', 'dashboard:alice:admin', 'refund').actor === 'staff' && pub('dash_add', 'dashboard:alice:admin', 'refund').note === null
+      && pub('manual', 'MrAZisHere (via Claude)', 'x').actor === 'staff' && pub('spam_penalty', 'system', 'kekw').note === null
+      && pub('game:fish_trap_check', 'chat:bob', 'Q').note === null && pub('channel_points', 'chat:bob', 'Pardon').note === 'Pardon'
+      && pub('game:fish_steal', 'chat:bob', 'carol 🐟').actor === 'chat:bob');
     check('effective config strips debugFishTesters', !('debugFishTesters' in effectivePointsConfig({ debugFishTesters: ['x'] })));
     check('debugFishTesters survives a dashboard save', validatePointsPatch({ debugFishTesters: ['x'] }, { enabled: true }).next?.debugFishTesters?.[0] === 'x');
     const bad = validatePointsPatch({}, { games: { steal: { oddsCommon: 101, hookUses: 0, enabled: 'yes' } } });
@@ -1386,6 +1405,27 @@ async function main(): Promise<void> {
     live = true;
     lsvc.onLivestreamStatus({ is_live: true } as never, { ageMs: 0 } as never);
     check('a webhook counts as fresh', (await lsvc.isLiveNow()) === true && asks === 2);
+
+    // !offline / !live: commands follow it while Kick lags, until Kick agrees, a webhook, or it runs out
+    const replies: string[] = [];
+    const chat = { say: async (_c: string, m: string) => { replies.push(m); } } as never;
+    const tag = (username: string, mod: boolean): KickTags => ({ username, 'display-name': username, badges: {}, isBroadcaster: false, isModUp: mod, isVIPUp: mod, rawBadges: [], senderId: 71 });
+    await streamstatus(chat, '!offline', `#${ch}`, tag('viewer', false), {} as never);
+    check('!offline: viewers get nothing', replies.length === 0 && (await lsvc.isLiveNow()) === true);
+    await streamstatus(chat, '!offline', `#${ch}`, tag('modder', true), {} as never);
+    at += 60_000; // Kick still says live when asked again
+    check('!offline: commands see offline while Kick still says live', replies.length === 1 && replies[0].includes('offline') && (await lsvc.isLiveNow()) === false && asks === 2);
+    lsvc.onLivestreamStatus({ is_live: true } as never, { ageMs: 0 } as never);
+    check('a livestream webhook ends it either way', (await lsvc.isLiveNow()) === true);
+    await streamstatus(chat, '!offline', `#${ch}`, tag('modder', true), {} as never);
+    live = false;
+    at += 31_000;
+    lsvc.setLiveOverride(false, 'again');
+    at += 21 * 60_000;
+    check('it runs out after 20 minutes, back to Kick', (await lsvc.isLiveNow()) === false && asks === 3);
+    live = true;
+    at += 31_000;
+    check('and Kick decides again', (await lsvc.isLiveNow()) === true);
   }
 
   // Spin the wheel: chat edits, spins on the overlay, holds big bites

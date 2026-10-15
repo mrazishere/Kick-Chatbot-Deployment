@@ -81,7 +81,8 @@ export async function withFileLock<T>(lockPath: string, fn: () => Promise<T>, op
 export function writeJsonAtomic(file: string, data: unknown): void {
   const tmp = `${file}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`;
   try {
-    fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
+    // Owner-only: these hold tokens and channel configs (2026-10-16 audit).
+    fs.writeFileSync(tmp, JSON.stringify(data, null, 2), { mode: 0o600 });
     fs.renameSync(tmp, file);
   } catch (err) {
     try { fs.unlinkSync(tmp); } catch { /* never created */ }

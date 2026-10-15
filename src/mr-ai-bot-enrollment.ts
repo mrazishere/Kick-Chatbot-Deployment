@@ -3,6 +3,7 @@ import express from 'express';
 import axios from 'axios';
 import * as fs from 'fs';
 import * as path from 'path';
+import * as http from 'http';
 import * as crypto from 'crypto';
 import { exec } from 'child_process';
 import WebSocket from 'ws';
@@ -16,6 +17,7 @@ import { resolveBotIdentity } from './bot-identity';
 import { SYSTEM_BOTS } from './system-bots';
 import { commandWordCollides, effectiveCommand, effectivePointsConfig, readSubscriptionStatus, validatePointsPatch } from './points/config';
 import { publicCommands } from './points/public-commands';
+import type { BotCommandChannel } from './points/public-bot-commands';
 import { closePointsDb, openPointsDb } from './points/db';
 import { markOverlaySeen, readOverlay } from './community/fish-overlay';
 import { publicUserHistory, publicViewerSearch } from './points/store';
@@ -435,7 +437,8 @@ function validateChannelName(name: string): boolean {
 /** Write JSON through a rename, so a process reading the file never sees half of it. */
 function writeJsonAtomic(file: string, data: unknown): void {
   const tmp = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
+  // Owner-only: channel configs hold the streamer's tokens (2026-10-16 audit).
+  fs.writeFileSync(tmp, JSON.stringify(data, null, 2), { mode: 0o600 });
   fs.renameSync(tmp, file);
 }
 
@@ -867,6 +870,7 @@ app.get('/kick-bot-enroll/start', (_req: express.Request, res: express.Response)
     codeVerifier: pkce.codeVerifier,
     createdAt: Date.now()
   });
+  setStateCookie(res, state);
 
   // Clean up old sessions (older than 10 minutes)
   for (const [key, session] of pendingSessions) {
@@ -959,6 +963,7 @@ app.get('/kick-bot-reauth/start', (_req: express.Request, res: express.Response)
     codeVerifier: pkce.codeVerifier,
     createdAt: Date.now()
   });
+  setStateCookie(res, state);
 
   // Clean up old sessions
   for (const [key, session] of pendingSessions) {
@@ -982,6 +987,15 @@ app.get('/kick-bot-reauth/start', (_req: express.Request, res: express.Response)
   res.redirect(`${authServer}/oauth/authorize?${authParams.toString()}`);
 });
 
+/**
+ * The OAuth state also goes in a cookie for the callback to match (2026-10-16 audit), so a
+ * callback link made in someone else's browser can't finish a sign-in in yours.
+ */
+const STATE_COOKIE = 'enrollState';
+function setStateCookie(res: express.Response, state: string): void {
+  res.cookie(STATE_COOKIE, state, { httpOnly: true, secure: true, sameSite: 'lax', maxAge: 600000, path: '/kick-bot-enroll/callback' });
+}
+
 // OAuth callback
 app.get('/kick-bot-enroll/callback', async (req: express.Request, res: express.Response) => {
   const code      = typeof req.query.code  === 'string' ? req.query.code  : undefined;
@@ -999,6 +1013,11 @@ app.get('/kick-bot-enroll/callback', async (req: express.Request, res: express.R
   const session = pendingSessions.get(state);
   if (!session) {
     return res.send(errorPage('Session Expired', 'Please try again'));
+  }
+  const stateCookie = cookieLib.parse(req.headers.cookie || '')[STATE_COOKIE];
+  res.clearCookie(STATE_COOKIE, { path: '/kick-bot-enroll/callback' });
+  if (stateCookie !== state) {
+    return res.send(errorPage('Session Mismatch', 'Start again from the sign-up page in this browser'));
   }
 
   pendingSessions.delete(state);
@@ -1196,6 +1215,7 @@ app.get('/kick-bot-enroll/callback', async (req: express.Request, res: express.R
     // Store token in HttpOnly cookie — not in URL (SEC-04)
     res.cookie('enrollSession', enrollToken, {
       httpOnly: true,
+      secure: true,
       sameSite: 'lax',
       maxAge: 600000 // 10 minutes, matches pendingEnrollments TTL
     });
@@ -1500,7 +1520,7 @@ function findVodUuid(obj: Record<string, unknown>): string | null {
   return null;
 }
 
-app.get('/internal/vods/:username', async (req: express.Request, res: express.Response) => {
+app.get('/internal/vods/:username', internalGuard(false), async (req: express.Request, res: express.Response) => {
   const usernameRaw = req.params['username'];
   const slug = (typeof usernameRaw === 'string' ? usernameRaw : '').toLowerCase();
   if (!validateChannelName(slug)) {
@@ -1646,26 +1666,29 @@ function isLoopback(req: express.Request): boolean {
   return addr === '127.0.0.1' || addr === '::1' || addr === '::ffff:127.0.0.1';
 }
 
-function internalGuard(mutating: boolean) {
+/**
+ * Every /internal route: loopback and the shared secret, reads too (2026-10-16 audit; loopback
+ * alone let anything on the box that could be made to send a local request read logs, balances
+ * and suspects). `mutating` only marks the routes that change things.
+ */
+function internalGuard(_mutating: boolean) {
   return (req: express.Request, res: express.Response, next: express.NextFunction): void => {
     if (!isLoopback(req)) {
       res.status(403).json({ error: 'Forbidden' });
       return;
     }
-    if (mutating) {
-      const secret = process.env.INTERNAL_API_SECRET;
-      if (!secret) {
-        res.status(503).json({ error: 'INTERNAL_API_SECRET not configured' });
-        return;
-      }
-      const supplied = req.get('x-internal-secret') || '';
-      // Constant-time compare; mismatched lengths short-circuit to false.
-      const a = Buffer.from(supplied);
-      const b = Buffer.from(secret);
-      if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
-        res.status(401).json({ error: 'Bad secret' });
-        return;
-      }
+    const secret = process.env.INTERNAL_API_SECRET;
+    if (!secret) {
+      res.status(503).json({ error: 'INTERNAL_API_SECRET not configured' });
+      return;
+    }
+    const supplied = req.get('x-internal-secret') || '';
+    // Constant-time compare; mismatched lengths short-circuit to false.
+    const a = Buffer.from(supplied);
+    const b = Buffer.from(secret);
+    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+      res.status(401).json({ error: 'Bad secret' });
+      return;
     }
     next();
   };
@@ -1678,22 +1701,37 @@ interface Pm2Proc {
   monit?: { memory?: number; cpu?: number };
 }
 
+/**
+ * `pm2 jlist` forks a pm2 CLI (~0.13s, ~46 MB). Callers at the same moment share one run,
+ * and a result is reused for PM2_LIST_FRESH_MS, so a burst of page loads can't fork one
+ * each (2026-10-16 audit). Any pm2 command run through execAsync drops the cached list.
+ */
+const PM2_LIST_FRESH_MS = 1_500;
+let pm2Cached: { at: number; procs: Pm2Proc[] } | null = null;
+let pm2InFlight: Promise<Pm2Proc[]> | null = null;
+
 async function pm2List(): Promise<Pm2Proc[]> {
-  return new Promise((resolve) => {
+  if (pm2Cached && Date.now() - pm2Cached.at < PM2_LIST_FRESH_MS) return pm2Cached.procs;
+  pm2InFlight ??= new Promise<Pm2Proc[]>((resolve) => {
     exec('pm2 jlist', { maxBuffer: 10 * 1024 * 1024 }, (error, stdout) => {
       if (error) return resolve([]);
       try {
-        resolve(JSON.parse(stdout) as Pm2Proc[]);
+        const procs = JSON.parse(stdout) as Pm2Proc[];
+        pm2Cached = { at: Date.now(), procs };
+        resolve(procs);
       } catch {
         resolve([]);
       }
     });
-  });
+  }).finally(() => { pm2InFlight = null; });
+  return pm2InFlight;
 }
 
 function execAsync(cmd: string, maxLen = 500): Promise<{ ok: boolean; message: string }> {
+  if (cmd.startsWith('pm2 ')) pm2Cached = null;
   return new Promise((resolve) => {
     exec(cmd, { maxBuffer: 10 * 1024 * 1024 }, (error, stdout, stderr) => {
+      if (cmd.startsWith('pm2 ')) pm2Cached = null;
       if (error) resolve({ ok: false, message: (stderr || error.message).trim().slice(0, 500) });
       else resolve({ ok: true, message: (stdout || '').trim().slice(0, maxLen) });
     });
@@ -1865,6 +1903,8 @@ app.get('/internal/bot/:channel', internalGuard(false), async (req, res) => {
   const channelRaw = req.params['channel'];
   const channel = (typeof channelRaw === 'string' ? channelRaw : '').toLowerCase();
   if (!validateChannelName(channel)) return res.status(400).json({ error: 'Invalid channel name' });
+  // Anyone can make the dashboard ask about a made-up channel: answer that before forking pm2.
+  if (!readChannelConfig(channel)) return res.status(404).json({ error: 'Not enrolled' });
   const procs = await pm2List();
   const summary = summariseChannel(channel, procs);
   if (!summary.exists) return res.status(404).json({ error: 'Not enrolled' });
@@ -2029,6 +2069,15 @@ function hasCustomCommand(commands: Record<string, CustomCommandTuple>, name: st
 function customCommandsUnreadable(res: express.Response, channel: string, e: unknown): express.Response {
   console.error(`[INTERNAL] ${channel} custom commands unreadable:`, e instanceof Error ? e.message : String(e));
   return res.status(500).json({ error: 'Could not read the custom commands file — try again in a moment' });
+}
+
+/** For the public Commands tab: a file caught mid-write leaves the custom commands off the page this once. */
+function customCommandsForPublic(channel: string): Record<string, CustomCommandTuple> | null {
+  try {
+    return readCustomCommands(channel);
+  } catch {
+    return null;
+  }
 }
 
 app.get('/internal/bot/:channel/custom-commands', internalGuard(false), (req, res) => {
@@ -2870,7 +2919,7 @@ app.get('/internal/bot/:channel/points/leaderboard', internalGuard(false), (req,
 
   try {
     const board = pointsLeaderboard(channel, cfg, limit, broadcasterIdOf(config));
-    return res.json({ channel, currencyName: cfg.currencyName, updatedAt: new Date().toISOString(), ...board, fishing: publicFishing(channel, cfg, broadcasterIdOf(config)), commands: publicCommands(cfg, { wheel: !((config['excludedCommands'] as unknown[] | undefined) ?? []).some(c => String(c).toLowerCase() === 'wheel') }) });
+    return res.json({ channel, currencyName: cfg.currencyName, updatedAt: new Date().toISOString(), ...board, fishing: publicFishing(channel, cfg, broadcasterIdOf(config)), commands: publicCommands(cfg, { channel: config as BotCommandChannel, custom: customCommandsForPublic(channel) }) });
   } catch (e) {
     return pointsUnavailable(res, channel, e);
   }
@@ -3292,7 +3341,14 @@ app.post('/internal/bot/:channel/oauth', internalGuard(true), async (req, res) =
   const config = readChannelConfig(channel);
   if (!config) return res.status(404).json({ error: 'Not enrolled' });
 
-  const body = req.body as { accessToken?: unknown; refreshToken?: unknown; expiresIn?: unknown };
+  const body = req.body as { accessToken?: unknown; refreshToken?: unknown; expiresIn?: unknown; userId?: unknown };
+  // Only the channel's own Kick account, by user id: someone who later takes the name can't
+  // replace the grant (2026-10-16 audit).
+  const owner = config['broadcasterUserId'];
+  if (typeof owner === 'number' && owner > 0 && body?.userId !== owner) {
+    console.warn(`[INTERNAL] ${channel} grant refused: signed-in user ${String(body?.userId)} isn't the broadcaster`);
+    return res.status(403).json({ error: 'Not this channel\'s Kick account' });
+  }
   if (typeof body?.accessToken !== 'string' || body.accessToken.length === 0) {
     return res.status(400).json({ error: 'accessToken required' });
   }
@@ -4141,6 +4197,22 @@ async function sendDeploymentMessage(message: string, sourceChatroomId: string):
 
 // ==================== KICK WEBHOOK ====================
 
+/** How old a webhook may be (by Kick's message timestamp) and still count. */
+const WEBHOOK_MAX_AGE_MS = 60 * 60_000;
+/** Message ids received lately, with when; pruned past the window. */
+const seenWebhookIds = new Map<string, number>();
+
+/** Kick's message timestamp in ms: an RFC 3339 date, or unix seconds or ms. null when there's none or it can't be read. */
+function parseWebhookTimestamp(raw: string): number | null {
+  if (!raw) return null;
+  if (/^\d+(\.\d+)?$/.test(raw)) {
+    const n = Number(raw);
+    return n > 1e12 ? n : n * 1000;
+  }
+  const ms = Date.parse(raw);
+  return Number.isFinite(ms) ? ms : null;
+}
+
 app.post('/kick-webhook', express.raw({ type: '*/*' }), async (req: express.Request, res: express.Response) => {
   // Acknowledge immediately — Kick expects a fast 2xx
   res.status(200).send('OK');
@@ -4167,6 +4239,25 @@ app.post('/kick-webhook', express.raw({ type: '*/*' }), async (req: express.Requ
     }
   } else {
     console.warn('[WEBHOOK] Signature verification skipped (WEBHOOK_VERIFY=false)');
+  }
+
+  // A signed delivery captured once can't be replayed (2026-10-16 audit): one too old is
+  // dropped, and one seen before. Kick can deliver late, so the window is generous.
+  const sentMs = parseWebhookTimestamp(timestamp);
+  if (sentMs !== null && Math.abs(Date.now() - sentMs) > WEBHOOK_MAX_AGE_MS) {
+    console.warn(`[WEBHOOK] Dropped message ${messageId || '?'}: sent ${timestamp}, outside the ${WEBHOOK_MAX_AGE_MS / 60_000}-minute window`);
+    return;
+  }
+  if (messageId) {
+    const now = Date.now();
+    if (seenWebhookIds.has(messageId)) {
+      console.warn(`[WEBHOOK] Dropped message ${messageId}: already received`);
+      return;
+    }
+    seenWebhookIds.set(messageId, now);
+    if (seenWebhookIds.size > 5_000) {
+      for (const [id, at] of seenWebhookIds) if (now - at > WEBHOOK_MAX_AGE_MS + 10 * 60_000) seenWebhookIds.delete(id);
+    }
   }
 
   let event: Record<string, unknown>;
@@ -4320,8 +4411,10 @@ async function backupAllPoints(): Promise<void> {
   }
 }
 
-// Start server
-app.listen(PORT, () => {
+// Start server. Loopback only (2026-10-16 audit): nginx proxies `localhost`, which resolves
+// to ::1 first, so both loopback addresses listen; nothing is reachable from outside the box.
+http.createServer(app).listen(Number(PORT), '::1').on('error', err => console.error(`[INFO] Could not listen on [::1]:${PORT}: ${err.message}`));
+app.listen(Number(PORT), '127.0.0.1', () => {
   console.log(`[INFO] Mr-AI Bot Enrollment Service running on http://localhost:${PORT}`);
   console.log(`[INFO] Public URL: https://${oauthDomain}/kick-bot-enroll`);
 

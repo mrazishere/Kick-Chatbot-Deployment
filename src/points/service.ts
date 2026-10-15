@@ -38,6 +38,12 @@ const LIVE_PROBE_MS = 60_000;
  * for up to 10 minutes after a stream ended.
  */
 const LIVE_FRESH_MS = 30_000;
+/**
+ * How long a !live / !offline from the streamer or a mod stands while Kick's API still
+ * says otherwise (it lags a stream's start and end by minutes). Kick agreeing, or a
+ * livestream webhook either way, ends it sooner.
+ */
+export const LIVE_OVERRIDE_MS = 20 * 60_000;
 
 export interface PointsServiceDeps {
   channelName: string;
@@ -84,6 +90,8 @@ export class PointsService {
   /** A live check a command asked for, while nothing else knew; see isLiveNow. */
   private liveProbe: { at: number; value: boolean | null } | null = null;
   private liveProbeInFlight: Promise<boolean | null> | null = null;
+  /** A !live or !offline (bot-commands/streamstatus.ts) standing in for Kick until Kick catches up. */
+  private liveOverride: { value: boolean; until: number; by: string } | null = null;
   private duelTimer: NodeJS.Timeout | null = null;
   private raffleTimer: NodeJS.Timeout | null = null;
   private pruneTimer: NodeJS.Timeout | null = null;
@@ -105,7 +113,7 @@ export class PointsService {
       flushPresence: () => this.flushPresence(),
       exclusions: () => this.exclusions(),
       checkLive: deps.checkLive ?? (() => checkLive(this.channel, deps.tokenFile)),
-      onLiveState: isLive => { this.setLive(isLive); },
+      onLiveState: isLive => { this.setLive(isLive, 'poll'); },
       now: () => this.now()
     });
     registry.set(this.channel, this);
@@ -253,21 +261,57 @@ export class PointsService {
     return { win: roll < threshold, roll, threshold };
   }
 
-  private setLive(isLive: boolean): void {
+  /**
+   * What Kick says. A poll that agrees with a !live / !offline ends it (Kick has caught up);
+   * one that disagrees is taken as Kick lagging. A webhook is news of a change, so it ends one either way.
+   */
+  private setLive(isLive: boolean, source: 'poll' | 'webhook'): void {
     this.lastLive = isLive;
     this.lastLiveAt = this.now();
+    const o = this.liveOverride;
+    if (o && (source === 'webhook' || o.value === isLive)) {
+      this.liveOverride = null;
+      console.log(`[POINTS] ${this.channel}: Kick ${o.value === isLive ? 'caught up with' : 'overrode'} ${o.by}'s !${o.value ? 'live' : 'offline'} (${source})`);
+    }
+  }
+
+  /**
+   * !live / !offline: commands treat the stream as live or offline now, until Kick says
+   * the same, a livestream webhook arrives, or LIVE_OVERRIDE_MS passes. Payouts still
+   * follow Kick's own check (the tick), so this can't mint currency. Returns what
+   * commands saw before.
+   */
+  setLiveOverride(value: boolean, by: string): boolean | null {
+    const before = this.liveOverrideNow() ?? this.lastLive;
+    this.liveOverride = { value, until: this.now() + LIVE_OVERRIDE_MS, by };
+    console.log(`[POINTS] ${this.channel} set ${value ? 'live' : 'offline'} by ${by} (Kick last said ${this.lastLive === null ? 'nothing' : this.lastLive ? 'live' : 'offline'})`);
+    return before;
+  }
+
+  /** The standing !live / !offline, or null with none (or once it ran out). */
+  liveOverrideNow(): boolean | null {
+    const o = this.liveOverride;
+    if (!o) return null;
+    if (this.now() >= o.until) {
+      this.liveOverride = null;
+      console.log(`[POINTS] ${this.channel}: ${o.by}'s !${o.value ? 'live' : 'offline'} ran out; back to Kick's state`);
+      return null;
+    }
+    return o.value;
   }
 
   /**
    * Whether the channel is live, for commands that only work while it is. A state
    * learned in the last LIVE_FRESH_MS (from a tick, a webhook, or an earlier ask)
-   * is used as is; an older one is checked with Kick again, one ask at a time, so a
+   * is used as is (a standing !live / !offline before either); an older one is checked with Kick again, one ask at a time, so a
    * stream's end reaches offline-only commands within about half a minute of Kick
    * showing it. If the ask fails the last known state stands; with none at all
    * (just restarted), null, which callers treat as offline.
    */
   async isLiveNow(): Promise<boolean | null> {
     if (this.config().debugForceLive) return true;
+    const override = this.liveOverrideNow();
+    if (override !== null) return override;
     const now = this.now();
     if (this.lastLive !== null && now - this.lastLiveAt < LIVE_FRESH_MS) return this.lastLive;
     if (this.lastLive === null && this.liveProbe && now - this.liveProbe.at < LIVE_PROBE_MS) return this.liveProbe.value;
@@ -281,7 +325,7 @@ export class PointsService {
           // A real answer is as good as a tick's; don't overwrite one that arrived meanwhile.
           if (value !== null && this.lastLiveAt <= askedAt) {
             if (this.lastLive !== null && this.lastLive !== value) console.log(`[POINTS] ${this.channel} is ${value ? 'live' : 'offline'} (checked for a command)`);
-            this.setLive(value);
+            this.setLive(value, 'poll');
           }
           this.liveProbe = { at: this.now(), value };
           return value ?? this.lastLive;
@@ -497,7 +541,7 @@ export class PointsService {
   onLivestreamStatus(e: LivestreamStatusEvent, meta: QueueMeta): void {
     this.guard('livestream status', () => {
       if (meta.ageMs !== null && meta.ageMs > STATUS_MAX_AGE_MS) return;
-      this.setLive(e?.is_live === true);
+      this.setLive(e?.is_live === true, 'webhook');
       console.log(`[POINTS] ${this.channel} is ${this.lastLive ? 'live' : 'offline'} (webhook)`);
       const db = this.db();
       if (!db) return;

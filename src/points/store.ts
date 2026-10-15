@@ -834,6 +834,18 @@ export interface PublicUserHistory {
   gamble: GambleStats;
 }
 
+/** Reasons whose notes stay private: an adjuster's typed reason, the spam keyword that fired, a check's question. */
+const PRIVATE_NOTES = /^(dash_|spam_penalty$|game:fish_trap_check$)/;
+
+/**
+ * A ledger row's actor and note as the public history shows them (2026-10-16 audit): chat and the
+ * bot's own jobs by name; a dashboard, owner or manual adjustment only as "staff", with no note.
+ */
+export function publicLedgerText(reason: string, actor: string | null, note: string | null): { actor: string | null; note: string | null } {
+  const shown = actor === null || /^chat:/.test(actor) || ['system', 'raffle', 'expiry', 'reward'].includes(actor) ? actor : 'staff';
+  return { actor: shown, note: shown === 'staff' || PRIVATE_NOTES.test(reason) ? null : note };
+}
+
 export function publicUserHistory(channel: string, cfg: PointsConfig, name: string, limit: number, broadcasterUserId?: number | null): PublicUserHistory | null {
   return withReadDb(channel, null as PublicUserHistory | null, db => {
     const found = findUserByName(db, name.replace(/^@+/, '').toLowerCase());
@@ -853,7 +865,7 @@ export function publicUserHistory(channel: string, cfg: PointsConfig, name: stri
       ledgerCount: totals.reduce((n, t) => n + t.count, 0),
       ledger: ledgerFor(db, u.user_id, Math.min(200, Math.max(1, limit))).map(l => ({
         id: l.id, ts: iso(l.ts)!, delta: l.delta, balanceAfter: l.balance_after, reason: l.reason,
-        actor: l.actor, note: l.note, counterparty: l.counterparty
+        ...publicLedgerText(l.reason, l.actor, l.note), counterparty: l.counterparty
       })),
       lifetimeEarned: u.lifetime_earned,
       isSub: u.is_sub === 1,

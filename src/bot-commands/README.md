@@ -39,6 +39,7 @@ Each file exports a `CommandFn` registered in the channel config and dispatched 
 | Mini games | `!8ball` · `!roll [20\|5-10\|2d6]` · `!coinflip` · `!pick a b c` · `!percent` | All users (1/5s) | All channels |
 | Fishing | `$<currency> fish` · `sell` · `show` · `stats` · `top` · `trap` · `buy` · `steal` · `duel` | All users | Channels with points and Fishing on (Points settings); `steal` and `duel` where each is on too |
 | Wheel | `!wheel` · `!wheel spin` (`!spin`) · `!wheel add` · `!wheel remove` | Streamer, bot owner, mods (viewers get no answer) | Channels with points and Fishing on (it spins on the fishing overlay) |
+| Stream status | `!live` · `!offline` | Streamer, bot owner, mods (viewers get no answer) | Channels with points on: commands that only work live or offline follow it at once, until Kick's API agrees, a livestream webhook arrives, or 20 minutes pass (`LIVE_OVERRIDE_MS`). Payouts and reward pausing still follow Kick |
 | Slots | `!slots words…` · `!slots pattern:7tv` · `!slots winners` | All users (1/5s) | All channels |
 | Fortune cookie | `!cookie` · `donate @user` · `stats` · `top` | All users (1/10s) | All channels |
 

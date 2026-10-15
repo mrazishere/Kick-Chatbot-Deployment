@@ -316,7 +316,7 @@ class KickChatBot {
     change(config);
     const file = this.configPath();
     const tmp = `${file}.${process.pid}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(config, null, 2));
+    fs.writeFileSync(tmp, JSON.stringify(config, null, 2), { mode: 0o600 }); // owner-only: holds tokens
     fs.renameSync(tmp, file);
     this.config = config;
   }
