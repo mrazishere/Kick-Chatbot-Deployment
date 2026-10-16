@@ -107,7 +107,7 @@ const BUY_SHORT: Record<string, string> = { r: 'reel', h: 'hook', g: 'guard' };
 const BAIT_SHORT: Record<string, string> = { w: 'worm', f: 'fly', c: 'cricket' };
 const SELL_SHORT: Record<string, string> = { a: 'all', d: 'duplicate' };
 const STATS_SHORT: Record<string, string> = { g: 'global' };
-const BOARD_SHORT: Record<string, string> = {
+export const BOARD_SHORT: Record<string, string> = {
   f: 'fish', c: 'coins', j: 'junk', l: 'lucky', u: 'unlucky', t: 'traps', a: 'attempts', th: 'thieves', ca: 'caught', r: 'robbed', d: 'duelists',
   tf: 'total-fish', tc: 'total-coins', tj: 'total-junk', tl: 'total-lucky', tu: 'total-unlucky'
 };

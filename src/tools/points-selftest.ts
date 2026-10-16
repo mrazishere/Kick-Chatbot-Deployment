@@ -30,8 +30,8 @@ import { moveFish, takeItems, addItem, FishData, initialData, isTrophy, rarityOf
 import { openCommunityDb } from '../community/store';
 import { markOverlaySeen, readOverlay } from '../community/fish-overlay';
 import { drawSnipeMs, resetBites, takeBite as takeBiteForTest } from '../community/big-bite';
-import { fish as fishCommand, SUBCOMMANDS as FISH_SUBCOMMANDS } from '../bot-commands/fish';
-import { publicCommands } from '../points/public-commands';
+import { fish as fishCommand, SUBCOMMANDS as FISH_SUBCOMMANDS, BOARDS as FISH_BOARD_MAP, BOARD_SHORT as FISH_BOARD_SHORT } from '../bot-commands/fish';
+import { publicCommands, FISH_BOARDS } from '../points/public-commands';
 import { duelBoard, publicLedgerText } from '../points/store';
 import { answerMatches, makeTrapCheck, normalizeAnswer } from '../community/trap-check';
 import { changeWheel, readWheel, validateWheel } from '../community/wheel';
@@ -709,6 +709,13 @@ async function main(): Promise<void> {
     });
     check('the public command list only shows short forms that work', listed.command === '$points' && wrong.length === 0
       && listed.sections.map(s => s.title).join(',') === 'Points,Games,Fishing,Streamer' && listed.sections[2].note!.includes('offline'), { wrong, t: listed.sections.map(s => s.title) });
+    // Every named fishing board (the emoji ones aside) is on the Commands tab, with the short form `fish top` takes.
+    const named = [...FISH_BOARD_MAP.keys()].filter(k => /^[a-z-]+$/.test(k));
+    check('the Commands tab names every fishing board and its short form',
+      named.length === FISH_BOARDS.length && named.every(k => FISH_BOARDS.some(b => b.board === k && FISH_BOARD_SHORT[b.short] === k))
+      && Object.keys(FISH_BOARD_SHORT).length === FISH_BOARDS.length
+      && ['lucky (l)', 'total-lucky (tl)', 'robbed (r)', 'who holds the most'].every(t => listed.sections[2].rows.some(r => r.does.includes(t))),
+      { named, listedBoards: FISH_BOARDS.map(b => b.board) });
     const bare = publicCommands(effectivePointsConfig({ enabled: true, currencyName: '$DON', raffle: { enabled: false } }));
     check('and leaves out what the channel has off', bare.command === '$don' && bare.sections.map(s => s.title).join(',') === '$DON,Streamer' && !bare.sections[0].rows.some(r => /give|gamble/.test(r.usage)), bare.sections.map(s => s.title));
     // The bot's ! commands: every command file is listed (or has a reason it isn't), and what a channel has off is left out.

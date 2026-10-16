@@ -12,6 +12,25 @@ import { PointsConfig } from '../types';
 import { effectiveCommand } from './config';
 import { botCommandSections, type BotCommandChannel, type CustomCommands } from './public-bot-commands';
 
+/**
+ * The fishing leaderboards `fish top` answers to, with their short forms, as the
+ * Commands tab names them. BOARDS and BOARD_SHORT in bot-commands/fish.ts are the
+ * source; the points selftest checks this list matches them.
+ */
+export const FISH_BOARDS: { board: string; short: string; group: 'catch' | 'total' | 'steal' | 'duel' }[] = [
+  { board: 'fish', short: 'f', group: 'catch' }, { board: 'coins', short: 'c', group: 'catch' }, { board: 'junk', short: 'j', group: 'catch' },
+  { board: 'lucky', short: 'l', group: 'catch' }, { board: 'unlucky', short: 'u', group: 'catch' }, { board: 'traps', short: 't', group: 'catch' },
+  { board: 'attempts', short: 'a', group: 'catch' },
+  { board: 'total-fish', short: 'tf', group: 'total' }, { board: 'total-coins', short: 'tc', group: 'total' }, { board: 'total-junk', short: 'tj', group: 'total' },
+  { board: 'total-lucky', short: 'tl', group: 'total' }, { board: 'total-unlucky', short: 'tu', group: 'total' },
+  { board: 'thieves', short: 'th', group: 'steal' }, { board: 'caught', short: 'ca', group: 'steal' }, { board: 'robbed', short: 'r', group: 'steal' },
+  { board: 'duelists', short: 'd', group: 'duel' }
+];
+
+function fishBoards(group: string): string {
+  return FISH_BOARDS.filter(b => b.group === group).map(b => `${b.board} (${b.short})`).join(', ');
+}
+
 export interface PublicCommandRow {
   /** The command as typed in full, e.g. "$don gamble 100". */
   usage: string;
@@ -116,7 +135,11 @@ export function publicCommands(cfg: PointsConfig, opts: { channel?: BotCommandCh
         { usage: `${f} sell duplicate fish`, short: `${s} s d f`, does: 'Sell your duplicates, keeping the biggest of each' },
         { usage: `${f} show [@user] [fish | junk]`, short: `${s} sh`, does: 'A collection, reel and purse' },
         { usage: `${f} stats [@user | global]`, short: `${s} st`, does: 'Attempts, catches, traps, bait, sales and streaks' },
-        { usage: `${f} top [type]`, short: `${s} tp`, does: 'Top 10 anglers: fish, coins, junk, lucky, unlucky, traps, attempts and more' },
+        { usage: `${f} top [board]`, short: `${s} tp`, does: `Top 10 on a board, fish by default: ${fishBoards('catch')}` },
+        { usage: `${f} top total-fish`, short: `${s} tp tf`, does: `All-time boards: ${fishBoards('total')}` },
+        ...(steal ? [{ usage: `${f} top thieves`, short: `${s} tp th`, does: `Stealing boards: ${fishBoards('steal')}` }] : []),
+        ...(g.duel.enabled ? [{ usage: `${f} top duelists`, short: `${s} tp d`, does: 'Most fish duels won' }] : []),
+        { usage: `${f} top 🐋`, does: 'Any fish or junk emoji: who holds the most of it' },
         ...(g.reels.length ? [
           { usage: `${f} buy`, short: `${s} b`, does: 'The gear shop: your reel and the next one\'s price' },
           { usage: `${f} buy reel`, short: `${s} b r`, does: 'Buy the next reel, for better odds, rarer fish and higher prices' }
