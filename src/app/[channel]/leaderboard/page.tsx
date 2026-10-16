@@ -177,6 +177,19 @@ function hasBigBiteVideo(channel: string): boolean {
 function FishingTab({ fishing, currency, channel }: { fishing: PublicFishing; currency: string; channel: string }) {
   return (
     <div className="space-y-4">
+      {fishing.bigBite && hasBigBiteVideo(channel) ? (
+        <figure className="overflow-hidden rounded-xl border border-neutral-800 bg-neutral-950/60">
+          <video
+            className="block aspect-video w-full bg-black"
+            src={`${BASE_PATH}/videos/big-bite-${channel}.mp4`}
+            poster={`${BASE_PATH}/videos/big-bite-${channel}.jpg`}
+            controls
+            playsInline
+            preload="none"
+          />
+          <figcaption className="px-5 py-2 text-xs text-neutral-500">🎣 How to play big bites: how one plays out on stream, from the code to a snipe.</figcaption>
+        </figure>
+      ) : null}
       <p className="text-xs text-neutral-500">
         {`A cast lands a fish 1 time in ${fishing.catchOdds}; bait and reels improve that. Chance is how often a catch is that fish. `}
         {`Prices are for an average 50 cm fish: length scales it from half (1 cm) to double (100 cm), and beating your record adds 50%.`}
@@ -191,19 +204,6 @@ function FishingTab({ fishing, currency, channel }: { fishing: PublicFishing; cu
           <p className="text-xs text-neutral-500">
             {`🎣 Big bites: while the stream is live, about every ${fishing.bigBite.everyMinutes} minutes someone chatting gets something big on their line. Reel in the codes shown on stream, one per pull and each harder and briefer than the last, and the trophy may still snap free on the last one. Chance here is a share of big bites.`}
           </p>
-          {hasBigBiteVideo(channel) ? (
-            <figure className="overflow-hidden rounded-xl border border-neutral-800 bg-neutral-950/60">
-              <video
-                className="block aspect-video w-full bg-black"
-                src={`${BASE_PATH}/videos/big-bite-${channel}.mp4`}
-                poster={`${BASE_PATH}/videos/big-bite-${channel}.jpg`}
-                controls
-                playsInline
-                preload="none"
-              />
-              <figcaption className="px-5 py-2 text-xs text-neutral-500">How a big bite plays out on stream, from the code to a snipe.</figcaption>
-            </figure>
-          ) : null}
           <CatchTable title="Trophies" rows={fishing.trophies} currency={currency} />
         </>
       ) : null}
