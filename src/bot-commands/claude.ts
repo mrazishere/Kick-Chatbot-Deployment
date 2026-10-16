@@ -28,6 +28,7 @@ import { CommandFn, ChannelConfig, KickTags } from '../types';
 import { hlsResolver } from '../channels/hls-resolver';
 import { captureFrames, loadReferencePhotos, ImageBlob } from '../channels/live-frames';
 import { recordLeaderboardEvent } from '../leaderboard-store';
+import { MAX_TOOL_ROUNDS, runStatTool, statTools, StatToolContext } from '../claude-stat-tools';
 import { channelConfigPath, effectivePointsConfig } from '../points/config';
 import { publicCommands, PublicCommandSection } from '../points/public-commands';
 import { botCommandSections, BotCommandChannel, CustomCommands } from '../points/public-bot-commands';
@@ -55,7 +56,13 @@ interface ClaudeChannelConfig {
 interface AnthropicContentBlock {
   type: string;
   text?: string;
+  /** tool_use blocks */
+  id?: string;
+  name?: string;
+  input?: unknown;
 }
+
+type ApiMessage = { role: string; content: unknown };
 
 interface AnthropicResponse {
   content: AnthropicContentBlock[];
@@ -238,6 +245,9 @@ function loadChannelConfig(channelName: string): ClaudeChannelConfig {
 
   return channelConfig;
 }
+
+// Only the main !claude path gets the stats tools, so only it is told about them.
+const STATS_RULE = 'STATS: the viewer_stats, top_list and channel_stats tools read this channel\'s real data. Use them whenever someone asks about a balance, rank, leaderboard, gambling, fishing or Hall of Shame numbers, theirs ("me") or anyone\'s, and quote the numbers they return. Never guess a number or take one from chat history, <chat_lore> or earlier replies: those go stale and get faked. A tool error or empty result means you do not know, so say that. Do not call the tools for anything else.';
 
 // ─── The bot's own commands ───────────────────────────────────────────────────
 // Viewers ask the bot about its commands, and with nothing to go on it answered
@@ -588,7 +598,41 @@ function throwForStatus(status: number, body: string, label = 'API'): never {
 }
 
 // Call Claude API with retry logic
-async function callClaudeAPI(messages: Array<{ role: string; content: string }>, systemPromptText: string): Promise<AnthropicResponse> {
+/** The stats tools for a request body, when the call may use them. */
+function toolsParam(tools: StatToolContext | undefined): { tools?: Array<Record<string, unknown>> } {
+  return tools ? { tools: statTools(tools.channel) } : {};
+}
+
+/**
+ * When the model asked for stats, run the tools and continue the conversation
+ * (as a plain call, which can ask again) until it answers, up to MAX_TOOL_ROUNDS.
+ */
+async function followTools(data: AnthropicResponse, sent: ApiMessage[], systemPromptText: string, tools: StatToolContext | undefined, round = 0): Promise<AnthropicResponse> {
+  if (!tools || data.stop_reason !== 'tool_use') return data;
+  const calls = data.content.filter(b => b.type === 'tool_use' && b.id && b.name);
+  if (!calls.length) return data;
+  if (round >= MAX_TOOL_ROUNDS) {
+    logStructured('warn', 'Stats tools: out of rounds, answering with what there is', { channel: tools.channel });
+    return { ...data, content: data.content.filter(b => b.type === 'text') };
+  }
+  const results = calls.map(b => {
+    const out = runStatTool(tools, b.name!, b.input);
+    console.log(`[CLAUDE] stat tool ${b.name}(${JSON.stringify(b.input)}) for ${tools.asker} in ${tools.channel}: ${out.length} chars`);
+    return { type: 'tool_result', tool_use_id: b.id, content: out };
+  });
+  try {
+    return await callClaudeAPI(
+      [...sent, { role: 'assistant', content: data.content }, { role: 'user', content: results }],
+      systemPromptText, tools, round + 1
+    );
+  } catch (error) {
+    // That call already retried; the caller's retry loop must not start the whole reply over.
+    if (error instanceof NonRetryableAPIError) throw error;
+    throw new NonRetryableAPIError(0, `stats follow-up failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+async function callClaudeAPI(messages: ApiMessage[], systemPromptText: string, tools?: StatToolContext, round = 0): Promise<AnthropicResponse> {
   let retries = 0;
   const maxRetries = 5;
 
@@ -610,7 +654,8 @@ async function callClaudeAPI(messages: Array<{ role: string; content: string }>,
           // is never displayed, so it is off.
           thinking: { type: 'disabled' },
           system: systemPromptText,
-          messages: messages
+          messages: messages,
+          ...toolsParam(tools)
         })
       });
 
@@ -628,7 +673,7 @@ async function callClaudeAPI(messages: Array<{ role: string; content: string }>,
         throwForStatus(response.status, JSON.stringify(data));
       }
 
-      return data;
+      return await followTools(data, messages, systemPromptText, tools, round);
     } catch (error) {
       const isLastRetry = retries === maxRetries - 1;
 
@@ -671,7 +716,7 @@ async function callClaudeAPI(messages: Array<{ role: string; content: string }>,
   throw new Error('callClaudeAPI exhausted all retries');
 }
 
-async function callClaudeAPIWithSearch(messages: Array<{ role: string; content: string }>, systemPromptText: string, queryFrom?: string): Promise<AnthropicResponse> {
+async function callClaudeAPIWithSearch(messages: Array<{ role: string; content: string }>, systemPromptText: string, queryFrom?: string, tools?: StatToolContext): Promise<AnthropicResponse> {
   let retries = 0;
   const maxRetries = 5;
 
@@ -737,7 +782,8 @@ async function callClaudeAPIWithSearch(messages: Array<{ role: string; content: 
           // is never displayed, so it is off.
           thinking: { type: 'disabled' },
           system: enhancedSystemPrompt,
-          messages: messages
+          messages: messages,
+          ...toolsParam(tools)
         })
       });
 
@@ -756,7 +802,7 @@ async function callClaudeAPIWithSearch(messages: Array<{ role: string; content: 
         throwForStatus(response.status, JSON.stringify(data));
       }
 
-      return data;
+      return await followTools(data, messages, enhancedSystemPrompt, tools);
 
     } catch (error) {
       const isLastRetry = retries === maxRetries - 1;
@@ -896,7 +942,8 @@ async function callClaudeAPIWithVision(
   messages: Array<{ role: string; content: string }>,
   systemPromptText: string,
   vision: VisionContext,
-  streamerDisplayName: string
+  streamerDisplayName: string,
+  tools?: StatToolContext
 ): Promise<AnthropicResponse> {
   // Build vision-aware system prompt addendum
   const refClause = vision.refBlocks.length > 0
@@ -949,7 +996,8 @@ async function callClaudeAPIWithVision(
           // is never displayed, so it is off.
           thinking: { type: 'disabled' },
           system: enhancedSystem,
-          messages: enhanced
+          messages: enhanced,
+          ...toolsParam(tools)
         })
       });
 
@@ -964,7 +1012,7 @@ async function callClaudeAPIWithVision(
       if (!response.ok) {
         throwForStatus(response.status, JSON.stringify(data).substring(0, 300), 'Vision API');
       }
-      return data;
+      return await followTools(data, enhanced, enhancedSystem, tools);
     } catch (error) {
       const isLastRetry = retries === maxRetries - 1;
       // Terminal status (bad key, low credit, forbidden): don't retry.
@@ -1938,7 +1986,7 @@ export const claude: CommandFn = async function claude(client, message, channel,
         channelLastActivity.set(channel, Date.now());
 
         // Build channel-specific system prompt
-        const channelSystemPrompt = buildSystemPrompt(channel);
+        const channelSystemPrompt = `${buildSystemPrompt(channel)}\n\n${STATS_RULE}`;
 
         const currentHistoryForClaude = channelHistory.get(channel) ?? [];
         const messages = [
@@ -1978,14 +2026,17 @@ export const claude: CommandFn = async function claude(client, message, channel,
           ? `${channelSystemPrompt}\n\nNOTE: You normally CAN see this stream — live frames are attached when the streamer is live. This time the frame grab failed, so you have no images for this message only. If asked about anything visual, say you could not grab the stream right now and to try again in a moment. Do NOT say you lack image or vision capability, and do NOT suggest plugging in a vision model.`
           : channelSystemPrompt;
 
+        // Stats lookups for this reply: this channel's data only, "me" is the asker.
+        const statCtx: StatToolContext = { channel: channelKey(channel).toLowerCase(), asker: tags.username };
+
         let data: AnthropicResponse;
         if (visionContext) {
           const cleanChannel = channel.startsWith('#') ? channel.slice(1) : channel;
-          data = await callClaudeAPIWithVision(messagesForCall, channelSystemPrompt, visionContext, cleanChannel);
+          data = await callClaudeAPIWithVision(messagesForCall, channelSystemPrompt, visionContext, cleanChannel, statCtx);
         } else {
           data = needsSearch ?
-            await callClaudeAPIWithSearch(messagesForCall, systemPromptForCall, formattedPrompt) :
-            await callClaudeAPI(messagesForCall, systemPromptForCall);
+            await callClaudeAPIWithSearch(messagesForCall, systemPromptForCall, formattedPrompt, statCtx) :
+            await callClaudeAPI(messagesForCall, systemPromptForCall, statCtx);
 
           // Smart fallback: if no search was done but Claude seems uncertain, try web search
           if (!needsSearch && data && data.content && data.content.length > 0) {
@@ -1998,7 +2049,7 @@ export const claude: CommandFn = async function claude(client, message, channel,
 
             if (detectUncertainty(responseText)) {
               console.log(`[DEBUG] Claude uncertain about "${userPrompt}" - attempting web search fallback`);
-              data = await callClaudeAPIWithSearch(messagesForCall, systemPromptForCall, formattedPrompt);
+              data = await callClaudeAPIWithSearch(messagesForCall, systemPromptForCall, formattedPrompt, statCtx);
             }
           }
         }

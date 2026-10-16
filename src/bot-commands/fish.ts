@@ -115,7 +115,7 @@ const BOARD_SHORT: Record<string, string> = {
 const long = <T extends string | undefined>(word: T, short: Record<string, string>): T | string =>
   (word !== undefined && short[word.toLowerCase()]) || word;
 
-const BOARDS = new Map<string, Board>([
+export const BOARDS = new Map<string, Board>([
   ['fish', { path: '$.catch.fish', name: 'anglers', value: d => d.catch.fish }],
   ['total-fish', { path: '$.lifetime.fish', name: 'all-time piscators', value: d => d.lifetime.fish }],
   // Coins are the currency itself: the purse is the points balance.
@@ -138,7 +138,7 @@ const BOARDS = new Map<string, Board>([
 
 type TopRow = { user_id: number; username: string; value: number };
 
-function topRows(db: PointsDb, board: Board): TopRow[] {
+export function topRows(db: PointsDb, board: Board): TopRow[] {
   if (board.path === null) {
     return db.prepare(
       `SELECT u.user_id, u.username, u.balance AS value FROM fish f JOIN users u ON u.user_id = f.user_id
