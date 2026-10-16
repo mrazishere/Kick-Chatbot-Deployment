@@ -299,10 +299,10 @@ export function gambleStatsFor(db: PointsDb, userId: number): GambleStats {
 }
 
 /**
- * The biggest net gamble winners with at least `minGambles` gambles, so one lucky
- * bet can't top the list. Excluded accounts are left out.
+ * The biggest net gamble winners (or with 'losers', the biggest net losers) with at
+ * least `minGambles` gambles, so one lucky bet can't top the list. Excluded accounts are left out.
  */
-export function gambleTop(db: PointsDb, minGambles: number, limit: number, ex: Exclusions): Array<GambleStats & { username: string }> {
+export function gambleTop(db: PointsDb, minGambles: number, limit: number, ex: Exclusions, order: 'winners' | 'losers' = 'winners'): Array<GambleStats & { username: string }> {
   const excl = exclusionClause(ex);
   return db.prepare(
     `SELECT u.username, g.gambles, g.wins, g.staked, g.net FROM (
@@ -311,7 +311,7 @@ export function gambleTop(db: PointsDb, minGambles: number, limit: number, ex: E
        FROM ledger WHERE reason IN (?, ?) GROUP BY user_id
      ) g JOIN users u ON u.user_id = g.user_id
      WHERE g.gambles >= ? AND ${excl.sql.replace(/\b(username_lc|user_id) NOT IN/g, 'u.$1 NOT IN')}
-     ORDER BY g.net DESC LIMIT ?`
+     ORDER BY g.net ${order === 'losers' ? 'ASC' : 'DESC'} LIMIT ?`
   ).all(GAMBLE_STAKE, GAMBLE_WIN, GAMBLE_STAKE, GAMBLE_STAKE, GAMBLE_WIN, minGambles, ...excl.params, limit) as Array<GambleStats & { username: string }>;
 }
 

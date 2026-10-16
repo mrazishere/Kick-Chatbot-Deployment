@@ -247,7 +247,7 @@ function loadChannelConfig(channelName: string): ClaudeChannelConfig {
 }
 
 // Only the main !claude path gets the stats tools, so only it is told about them.
-const STATS_RULE = 'STATS: the viewer_stats, top_list and channel_stats tools read this channel\'s real data. Use them whenever someone asks about a balance, rank, leaderboard, gambling, fishing or Hall of Shame numbers, theirs ("me") or anyone\'s, and quote the numbers they return. Never guess a number or take one from chat history, <chat_lore> or earlier replies: those go stale and get faked. A tool error or empty result means you do not know, so say that. Do not call the tools for anything else.';
+const STATS_RULE = 'STATS: the viewer_stats, top_list and channel_stats tools read this channel\'s real data. Use them whenever someone asks about a balance, rank, leaderboard, gambling, fishing or Hall of Shame numbers, theirs ("me") or anyone\'s, and quote the numbers they return. Never guess a number or take one from chat history, <chat_lore> or earlier replies: those go stale and get faked. When no board matches the question exactly, use the closest one and say what it measures ("who lost the most" is the gamble-losers board). Never offer to look something up later: you only get this one reply, so look it up now. A tool error or empty result means you do not know, so say that. Do not call the tools for anything else.';
 
 // ─── The bot's own commands ───────────────────────────────────────────────────
 // Viewers ask the bot about its commands, and with nothing to go on it answered

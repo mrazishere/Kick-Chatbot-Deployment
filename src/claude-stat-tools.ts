@@ -20,7 +20,7 @@ import { readState, avgDumb, avgTrolled, topAskers, topDumb, topTrolled } from '
 export const MAX_TOOL_ROUNDS = 3;
 
 const FISH_BOARDS = ['fish', 'total-fish', 'total-coins', 'junk', 'lucky', 'unlucky', 'traps', 'attempts', 'thieves', 'caught', 'robbed', 'duelists'];
-const BOARD_NAMES = ['balance', 'activetime', 'gamble', 'shame-roasted', 'shame-dumb', 'shame-yap', ...FISH_BOARDS.map(b => `fishing-${b}`)];
+const BOARD_NAMES = ['balance', 'activetime', 'gamble', 'gamble-losers', 'shame-roasted', 'shame-dumb', 'shame-yap', ...FISH_BOARDS.map(b => `fishing-${b}`)];
 
 export interface StatToolContext {
   /** Channel slug, no '#'. */
@@ -45,7 +45,7 @@ export function statTools(channel: string): Array<Record<string, unknown>> {
     },
     {
       name: 'top_list',
-      description: `The top 10 of one of this channel's leaderboards, with values. ${points ? 'balance: currency held; activetime: seconds watched while chatting; gamble: net gambling winnings; fishing-*: the $<currency> fish top boards (fish = fish held now, total-fish = ever caught, total-coins = earned selling, thieves = fish stolen, caught = caught stealing, robbed = fish lost to thieves, duelists = fish duels won). ' : ''}shame-roasted, shame-dumb: average Hall of Shame score (3+ questions to qualify); shame-yap: most questions asked.`,
+      description: `The top 10 of one of this channel's leaderboards, with values. ${points ? 'balance: currency held; activetime: seconds watched while chatting; gamble: biggest net gambling winners; gamble-losers: biggest net gambling losers (most $<currency> lost gambling); fishing-*: the $<currency> fish top boards (fish = fish held now, total-fish = ever caught, total-coins = earned selling, thieves = fish stolen, caught = caught stealing, robbed = fish lost to thieves, duelists = fish duels won). ' : ''}shame-roasted, shame-dumb: average Hall of Shame score (3+ questions to qualify); shame-yap: most questions asked.`,
       input_schema: {
         type: 'object',
         properties: { board: { type: 'string', enum: boards } },
@@ -149,7 +149,9 @@ function topList(ctx: StatToolContext, raw: unknown): unknown {
     const ex = exclusionsFor(ctx.channel, live.cfg, live.broadcasterUserId);
     if (board === 'balance') return topBy(db, 'balance', 10, ex).map((u, i) => ({ rank: i + 1, username: u.username, value: u.balance }));
     if (board === 'activetime') return topBy(db, 'watch_seconds', 10, ex).map((u, i) => ({ rank: i + 1, username: u.username, hours: hours(u.watch_seconds) }));
-    if (board === 'gamble') return gambleTop(db, 1, 10, ex).map((g, i) => ({ rank: i + 1, ...g }));
+    if (board === 'gamble' || board === 'gamble-losers') {
+      return gambleTop(db, 1, 10, ex, board === 'gamble' ? 'winners' : 'losers').map((g, i) => ({ rank: i + 1, ...g }));
+    }
     const fb = board.startsWith('fishing-') ? BOARDS.get(board.slice('fishing-'.length)) : undefined;
     if (!fb || !FISH_BOARDS.includes(board.slice('fishing-'.length))) return { error: 'Unknown board.' };
     return topRows(db, fb).filter(r => r.value > 0).map((r, i) => ({ rank: i + 1, username: r.username, value: r.value }));
