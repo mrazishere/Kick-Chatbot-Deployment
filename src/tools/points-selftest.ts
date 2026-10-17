@@ -1151,7 +1151,7 @@ async function main(): Promise<void> {
     const setWord = (word: string) => runWrite(wdb, () => wdb.prepare("UPDATE meta SET value = json_set(value, '$.word', ?) WHERE key = 'wordle_game'").run(word));
     check('viewers can\'t start one; there\'s none yet', (await run('$don wordle start', ['ann', 91])) === '' && (await run('$don wordle', ['ann', 91])).includes('No Wordle is on'));
     const started = await run('$don wordle start', ['modder', 92], true);
-    check('a mod starts one, with the rules', started.includes('Wordle!') && started.includes('3 guesses for the whole chat') && started.includes('wins 500 $DON'), started);
+    check('a mod starts one, with the rules', started.includes('Wordle!') && started.includes('$don w <word>') && started.includes('3 guesses for the whole chat') && started.includes('wins 500 $DON'), started);
     setWord('crane');
     check('a second start says one is on', (await run('$don w start', ['modder', 92], true)).includes('already on'));
     check('not a word, or not 5 letters, uses no guess', (await run('$don wordle zzzzz', ['ann', 91])).includes("isn't in my word list") && (await run('$don wordle cat', ['ann', 91])).includes('5 letters'));

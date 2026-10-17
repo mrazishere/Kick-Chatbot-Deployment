@@ -140,9 +140,9 @@ export const wordle: CommandFn = async function wordle(client, message, channel,
       writeGame(db, { word, guesses: [], startedBy: me, startedAt: Date.now() });
       return null;
     });
-    if (started) return void say(`@${me} a Wordle is already on (${started.guesses.length}/${w.maxGuesses}): $${cmd} wordle shows the board.`);
+    if (started) return void say(`@${me} a Wordle is already on (${started.guesses.length}/${w.maxGuesses}): $${cmd} w shows the board.`);
     console.log(`[WORDLE] ${me} started a game in ${chan}`);
-    return void say(`🟩🟨⬛ Wordle! Guess the 5-letter word with $${cmd} wordle <word>. ${w.maxGuesses} guesses for the whole chat.${prize}`);
+    return void say(`🟩🟨⬛ Wordle! Guess the 5-letter word with $${cmd} w <word>. ${w.maxGuesses} guesses for the whole chat.${prize}`);
   }
 
   if (arg === 'stop') {
@@ -161,14 +161,14 @@ export const wordle: CommandFn = async function wordle(client, message, channel,
 
   if (!arg) {
     const g = readGame(db);
-    if (!g || g.over) return void say(`No Wordle is on.${isMod ? ` Start one with $${cmd} wordle start.` : ' A mod can start one.'}`);
-    if (!g.guesses.length) return void say(`Wordle: no guesses yet, ${w.maxGuesses} for the whole chat. $${cmd} wordle <word>`);
+    if (!g || g.over) return void say(`No Wordle is on.${isMod ? ` Start one with $${cmd} w start.` : ' A mod can start one.'}`);
+    if (!g.guesses.length) return void say(`Wordle: no guesses yet, ${w.maxGuesses} for the whole chat. $${cmd} w <word>`);
     return void say(`${board(g)} | ${status(g, w.maxGuesses)}`);
   }
 
   // A guess.
   if (isExcluded(svc.exclusions(), Number(tags.senderId) || null, meLc)) return;
-  if (!/^[a-z]{5}$/.test(arg)) return void say(`@${me} guesses are 5 letters: $${cmd} wordle <word>`);
+  if (!/^[a-z]{5}$/.test(arg)) return void say(`@${me} guesses are 5 letters: $${cmd} w <word>`);
   const now = Date.now();
   const cdKey = `${chan}|${meLc}`;
   if (now - (lastGuess.get(cdKey) ?? 0) < w.guessCooldownSeconds * 1000) return;
@@ -200,7 +200,7 @@ export const wordle: CommandFn = async function wordle(client, message, channel,
   const run = tags.messageId ? applyOnce(db, `chat:${tags.messageId}`, now, play) : { applied: true, result: runWrite(db, play) };
   if (!run.applied) return;
   const r = run.result!;
-  if (r.kind === 'none') return void say(`@${me} no Wordle is on.${isMod ? ` Start one with $${cmd} wordle start.` : ''}`);
+  if (r.kind === 'none') return void say(`@${me} no Wordle is on.${isMod ? ` Start one with $${cmd} w start.` : ''}`);
   if (r.kind === 'dup') return void say(`@${me} ${arg.toUpperCase()} was guessed already.`);
   const n = `${r.game.guesses.length}/${w.maxGuesses}`;
   if (r.kind === 'won') {

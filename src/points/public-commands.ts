@@ -79,7 +79,7 @@ export function publicCommands(cfg: PointsConfig, opts: { channel?: BotCommandCh
       ...(cfg.video.enabled ? [
         { usage: `${c} video <youtube link>`, short: `${c} v <link>`, does: `Play a YouTube video on stream, with sound, for ${cfg.video.pricePerSecond.toLocaleString('en-US')} ${cur} a second (up to ${cfg.video.maxSeconds}s; a ?t= start time works). One in line each, up to ${cfg.video.queueMax} waiting${cfg.video.onlyWhileLive ? ', while live' : ''}` },
         { usage: `${c} video`, short: `${c} v`, does: "What's playing and how many wait" },
-        { usage: `${c} video skip`, does: 'Skip the video playing (no refund)', who: 'mods' as const }
+        { usage: `${c} video skip`, short: `${c} v skip`, does: 'Skip the video playing (no refund)', who: 'mods' as const }
       ] : [])
     ]
   });
@@ -155,7 +155,7 @@ export function publicCommands(cfg: PointsConfig, opts: { channel?: BotCommandCh
         { usage: `${f} top total-fish`, short: `${s} tp tf`, does: `All-time boards: ${fishBoards('total')}` },
         ...(steal ? [{ usage: `${f} top thieves`, short: `${s} tp th`, does: `Stealing boards: ${fishBoards('steal')}` }] : []),
         ...(g.duel.enabled ? [{ usage: `${f} top duelists`, short: `${s} tp d`, does: 'Most fish duels won' }] : []),
-        { usage: `${f} top 🐋`, does: 'Any fish or junk emoji: who holds the most of it' },
+        { usage: `${f} top 🐋`, short: `${s} tp 🐋`, does: 'Any fish or junk emoji: who holds the most of it' },
         ...(g.reels.length ? [
           { usage: `${f} buy`, short: `${s} b`, does: 'The gear shop: your reel and the next one\'s price' },
           { usage: `${f} buy reel`, short: `${s} b r`, does: 'Buy the next reel, for better odds, rarer fish and higher prices' }
