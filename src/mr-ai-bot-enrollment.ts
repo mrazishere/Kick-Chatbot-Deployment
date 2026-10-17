@@ -2936,6 +2936,12 @@ app.get('/internal/bot/:channel/overlay/fishing', internalGuard(false), (req, re
   const config = readChannelConfig(channel);
   if (!config) return res.status(404).json({ error: 'Not enrolled' });
   const cfg = effectivePointsConfig(config['points']);
+  // Fishing off but videos tested on this overlay (points.video.onFishOverlay): an empty
+  // feed, so the page stays up (and reloads into new builds) for the video box.
+  if (cfg.enabled && !cfg.games.enabled && cfg.video.enabled && cfg.video.onFishOverlay) {
+    const pdb = openPointsDb(channel, { create: false });
+    return res.json({ lastId: pdb ? readOverlay(pdb).lastId : 0, events: [], now: Date.now(), demo: false });
+  }
   if (!cfg.enabled || !cfg.games.enabled) return res.status(404).json({ error: 'Fishing is off in this channel' });
   const db = openPointsDb(channel, { create: false });
   // demo: whether the overlay's &demo=1 may play (games.overlayDemo).
@@ -2969,6 +2975,8 @@ app.get('/internal/bot/:channel/overlay/video', internalGuard(false), (req, res)
   if (!config) return res.status(404).json({ error: 'Not enrolled' });
   const cfg = effectivePointsConfig(config['points']);
   if (!cfg.enabled || !cfg.video.enabled) return res.status(404).json({ error: 'Video sharing is off in this channel' });
+  // ?in=fishing: the player inside the fishing overlay, only while the channel tests videos there.
+  if (req.query['in'] === 'fishing' && !cfg.video.onFishOverlay) return res.status(404).json({ error: 'Videos are not on the fishing overlay' });
   const db = openPointsDb(channel, { create: false });
   if (!db) return res.json({ now: Date.now(), current: null, waiting: 0 });
   try {

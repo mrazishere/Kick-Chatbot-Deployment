@@ -34,7 +34,7 @@ export function defaultPointsConfig(): PointsConfig {
       announce: false
     },
     give: { enabled: false, minAmount: 10, maxAmount: 0, cooldownSeconds: 30 },
-    video: { enabled: false, pricePerSecond: 100, maxSeconds: 180, queueMax: 5, onlyWhileLive: true },
+    video: { enabled: false, pricePerSecond: 100, maxSeconds: 180, queueMax: 5, onlyWhileLive: true, ownerOnly: false, onFishOverlay: false },
     modMaxAdjust: 1_000_000,
     publicLeaderboard: true,
     timeoutPenalty: {
@@ -403,7 +403,9 @@ export function internalPointsConfig(raw: unknown): InternalPointsConfig {
     pricePerSecond: num(vd.pricePerSecond, d.video.pricePerSecond, 0, 1_000_000, true),
     maxSeconds: num(vd.maxSeconds, d.video.maxSeconds, 5, 3600, true),
     queueMax: num(vd.queueMax, d.video.queueMax, 1, 50, true),
-    onlyWhileLive: bool(vd.onlyWhileLive, d.video.onlyWhileLive)
+    onlyWhileLive: bool(vd.onlyWhileLive, d.video.onlyWhileLive),
+    ownerOnly: bool(vd.ownerOnly, d.video.ownerOnly),
+    onFishOverlay: bool(vd.onFishOverlay, d.video.onFishOverlay)
   };
   const give: PointsGiveConfig = {
     enabled: bool(g.enabled, d.give.enabled),
@@ -855,7 +857,7 @@ export function validatePointsPatch(current: unknown, patch: unknown): { next?: 
     if (!p.video || typeof p.video !== 'object' || Array.isArray(p.video)) errors.push('video must be an object');
     else {
       const v = p.video as Record<string, unknown>;
-      for (const key of ['enabled', 'onlyWhileLive'] as const) {
+      for (const key of ['enabled', 'onlyWhileLive', 'ownerOnly', 'onFishOverlay'] as const) {
         if (v[key] === undefined) continue;
         if (typeof v[key] !== 'boolean') errors.push(`video.${key} must be true or false`);
         else next.video![key] = v[key] as boolean;

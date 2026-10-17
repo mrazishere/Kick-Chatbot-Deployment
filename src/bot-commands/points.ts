@@ -401,6 +401,8 @@ export const points: CommandFn = async function points(client, message, channel,
         return;
       }
       if (isExcluded(ex, self?.user_id ?? null, meLc) || isBotSender(me, tags.senderId)) return;
+      // Testing on a live channel: only the bot owner.
+      if (v.ownerOnly && !isOwner) return;
       const arg = args[1];
       const now = Date.now();
 
