@@ -39,7 +39,11 @@ export interface Bite {
   /** The pull this code is for, 1-based, of `pulls`. */
   pull: number;
   pulls: number;
-  /** When the first code opens to everyone else (ms); absent when sniping is off or the first pull is over. */
+  /**
+   * When the first code opens to everyone else (ms); absent when sniping is off or the
+   * first pull is over. Planned at first; at that time chat is told, and it becomes the
+   * moment Kick has posted that line (SNIPE_PENDING while it's being posted).
+   */
   snipeAt?: number;
   /** Who has used their one snipe try on this bite, lowercase. */
   tried: Set<string>;
@@ -150,6 +154,9 @@ export interface BiteContext {
   delayMs?: number;
 }
 
+/** snipeAt while the "SNIPE OPEN" line is being posted: answers then are too early, nobody can have seen it. */
+export const SNIPE_PENDING = Number.MAX_SAFE_INTEGER;
+
 /** A big bite lost: the overlay and chat say so (chat's result line). Nothing else changes. */
 export function getAway(ctx: BiteContext, name: string, why: string): void {
   console.log(`[FISH] ${name}'s big bite got away in ${ctx.channel}: ${why}`);
@@ -185,13 +192,21 @@ function arm(ctx: BiteContext, bite: Bite, windowMs: number, text: string, now: 
   const snipeMs = bite.pull === 1 ? drawSnipeMs(ctx.bigBite) : 0;
   if (snipeMs > 0) bite.snipeAt = bite.until - snipeMs;
   else delete bite.snipeAt;
-  // Chat says the moment snipes open: chat has no stream delay, so everyone hears it at once,
-  // however far behind their stream runs. Nothing if the bite was settled, sniped or moved on first.
+  // Chat is the one signal that snipes are open: it has no stream delay, so everyone sees it
+  // at once however far behind their stream runs. Snipes open once Kick has posted the line
+  // (about a second after asking); an answer before that can't have come from seeing it.
+  // Nothing if the bite was settled, sniped or moved on first.
   if (bite.snipeAt !== undefined) {
+    const still = () => bites.get(k) === bite && bite.code === code && bite.pull === 1 && bite.snipeAt !== undefined;
     const t = setTimeout(() => {
-      if (bites.get(k) !== bite || bite.code !== code || bite.pull !== 1 || bite.snipeAt === undefined) return;
-      console.log(`[FISH] snipes open on ${bite.username}'s big bite in ${ctx.channel}`);
-      void ctx.sendMessage(`🪝 SNIPE OPEN! @${bite.username}'s big bite is up for grabs: first to type $${ctx.command} fish reel and the code on stream takes it!`).catch(() => {});
+      if (!still()) return;
+      bite.snipeAt = SNIPE_PENDING;
+      const open = () => {
+        if (!still()) return;
+        bite.snipeAt = Date.now();
+        console.log(`[FISH] snipes open on ${bite.username}'s big bite in ${ctx.channel}`);
+      };
+      ctx.sendMessage(`🪝 SNIPE OPEN! @${bite.username}'s big bite is up for grabs: first to type $${ctx.command} fish reel and the code on stream takes it!`).then(open, open);
     }, Math.max(0, bite.snipeAt - Date.now()));
     t.unref?.();
   }
@@ -204,7 +219,9 @@ function arm(ctx: BiteContext, bite: Bite, windowMs: number, text: string, now: 
   // From the second pull the code flashes: the overlay hides it flashSeconds after it first
   // draws it (not after now: the overlay only sees it on its next poll), the clock keeps running.
   const flash = bite.pull > 1 && ctx.bigBite.flashSeconds > 0 ? { flashMs: ctx.bigBite.flashSeconds * 1000 } : {};
-  const snipe = bite.snipeAt !== undefined ? { snipeAt: bite.snipeAt } : {};
+  // The overlay gets no snipe time: its "Anyone can snipe!" would reach viewers with a short
+  // stream delay before the chat line, and chat is the signal.
+  const snipe = {};
   pushOverlay(ctx.db, { username: bite.username, kind: 'bite', text, code, until: bite.until, pull: bite.pull, pulls: bite.pulls, ...flash, ...snipe }, now);
 }
 

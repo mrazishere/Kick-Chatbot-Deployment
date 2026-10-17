@@ -29,7 +29,7 @@ import { points as pointsCommand, SUBCOMMAND_ALIASES } from '../bot-commands/poi
 import { moveFish, takeItems, addItem, FishData, initialData, isTrophy, rarityOf, stealChance, stealCharges, stealRollChance, ITEMS, landsFish, loadFish, parseSellList, recordCatch, saveFish, sellPrice, weightedCatch } from '../community/fishing';
 import { openCommunityDb } from '../community/store';
 import { markOverlaySeen, readOverlay } from '../community/fish-overlay';
-import { drawSnipeMs, resetBites, startBite, takeBite as takeBiteForTest } from '../community/big-bite';
+import { biteFor, drawSnipeMs, resetBites, snipeOpen, SNIPE_PENDING, startBite, takeBite as takeBiteForTest } from '../community/big-bite';
 import { fish as fishCommand, SUBCOMMANDS as FISH_SUBCOMMANDS, BOARDS as FISH_BOARD_MAP, BOARD_SHORT as FISH_BOARD_SHORT } from '../bot-commands/fish';
 import { publicCommands, FISH_BOARDS } from '../points/public-commands';
 import { duelBoard, publicLedgerText } from '../points/store';
@@ -629,6 +629,16 @@ async function main(): Promise<void> {
     takeBiteForTest('delaych2', 'settled');
     await new Promise(r => setTimeout(r, 50));
     takeBiteForTest('delaych', 'opened');
+    // While the line is being posted nobody can snipe yet; once Kick has it, snipes open.
+    let post: () => void = () => {};
+    const slow = startBite({ ...ctxAt(Date.now() - bb.windowSeconds * 1000 + 2_000), channel: 'delaych3', sendMessage: (m: string) => m.includes('SNIPE OPEN') ? new Promise<void>(r => { post = r; }) : Promise.resolve() }, 'slow', 5);
+    await new Promise(r => setTimeout(r, 50));
+    const pending = slow.snipeAt === SNIPE_PENDING && !snipeOpen(slow, Date.now());
+    post();
+    await new Promise(r => setTimeout(r, 10));
+    const opened = slow.snipeAt !== undefined && slow.snipeAt <= Date.now() && snipeOpen(slow, Date.now());
+    takeBiteForTest('delaych3', 'slow');
+    check('snipes open only once the SNIPE OPEN line is posted: not while it is being sent', pending && opened, { pending, opened, snipeAt: slow.snipeAt });
     const opens = said.filter(m => m.includes('SNIPE OPEN'));
     check('chat says the moment snipes open, and stays quiet for a bite settled first',
       opens.length === 1 && opens[0].includes("@opened's big bite") && opens[0].includes('$don fish reel') && said.some(m => m.includes("I'll say so in chat")), said);
@@ -1395,9 +1405,10 @@ async function main(): Promise<void> {
       // Sniping: the first code's last seconds are open to everyone else, one try each.
       await fire();
       const s1 = lastBite()!;
+      const s1bite = biteFor(ch, 'biter')!;
       // 20s asked, capped at half the 30s window, then up to 3s shorter at random (never past the cap).
-      check('the first code opens to snipers for about its last 15s, never more than half the window', s1.username === 'biter'
-        && s1.until! - s1.snipeAt! >= 12_000 && s1.until! - s1.snipeAt! <= 15_000
+      check('the first code opens to snipers for about its last 15s, never more than half the window, and the overlay isn\'t told when', s1.username === 'biter'
+        && s1bite.until - s1bite.snipeAt! >= 12_000 && s1bite.until - s1bite.snipeAt! <= 15_000 && s1.snipeAt === undefined
         && sent[sent.length - 1].includes('about the last 15s anyone can snipe'), { s1, chat: sent[sent.length - 1] });
       const draws = Array.from({ length: 400 }, () => drawSnipeMs({ ...DEFAULT_BIG_BITE, windowSeconds: 30, snipeSeconds: 10 }));
       check('each bite\'s snipe window is the set seconds ±3s at random', Math.min(...draws) >= 7_000 && Math.max(...draws) <= 13_000
