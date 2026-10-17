@@ -108,6 +108,8 @@ function writeGame(db: PointsDb, game: Game): void {
 
 const board = (game: Game): string => game.guesses.map(g => `${g.word.toUpperCase()} ${g.marks}`).join(' | ');
 
+/** When each channel last said no game is on, so `$don w` can't be spammed. */
+const lastNoGame = new Map<string, number>();
 /** When each viewer last guessed, by "channel|name". */
 const lastGuess = new Map<string, number>();
 
@@ -153,7 +155,7 @@ export const wordle: CommandFn = async function wordle(client, message, channel,
     });
     if (started) return void say(`@${me} a Wordle is already on (${started.guesses.length}/${w.maxGuesses}): $${cmd} w shows the board.`);
     console.log(`[WORDLE] ${me} started a game in ${chan}`);
-    return void say(`🟩🟨⬛ Wordle! Guess the 5-letter word with $${cmd} w <word>. ${w.maxGuesses} guesses for the whole chat.${prize}`);
+    return void say(`🟩🟨⬛ Wordle! Guess the 5-letter word with $${cmd} w WORD. ${w.maxGuesses} guesses for the whole chat.${prize}`);
   }
 
   if (command === 'stop') {
@@ -172,14 +174,18 @@ export const wordle: CommandFn = async function wordle(client, message, channel,
 
   if (!arg && !explicit) {
     const g = readGame(db);
+    // With none on, say so at most every 30s per channel: it's easy to spam.
+    if ((!g || g.over) && Date.now() - (lastNoGame.get(chan) ?? 0) < 30_000) return;
+    if (!g || g.over) lastNoGame.set(chan, Date.now());
     if (!g || g.over) return void say(`No Wordle is on.${isMod ? ` Start one with $${cmd} w s.` : ' A mod can start one.'}`);
-    if (!g.guesses.length) return void say(`Wordle: no guesses yet, ${w.maxGuesses} for the whole chat. $${cmd} w <word>`);
+    if (!g.guesses.length) return void say(`Wordle: no guesses yet, ${w.maxGuesses} for the whole chat. $${cmd} w WORD`);
     return void say(`${board(g)} | ${status(g, w.maxGuesses)}`);
   }
 
-  // A guess.
+  // A guess. With no game on there's nothing to answer: stay quiet rather than fill chat.
+  if (!gameOn) return;
   if (isExcluded(svc.exclusions(), Number(tags.senderId) || null, meLc)) return;
-  if (!/^[a-z]{5}$/.test(arg)) return void say(`@${me} guesses are 5 letters: $${cmd} w <word>`);
+  if (!/^[a-z]{5}$/.test(arg)) return void say(`@${me} guesses are 5 letters: $${cmd} w WORD`);
   const now = Date.now();
   const cdKey = `${chan}|${meLc}`;
   if (now - (lastGuess.get(cdKey) ?? 0) < w.guessCooldownSeconds * 1000) return;

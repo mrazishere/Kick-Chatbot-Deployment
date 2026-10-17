@@ -312,11 +312,11 @@ export const fx: CommandFn = async function fx(client, message, channel, tags, c
             const toStr = locationObjToString(freshLoc?.home ?? config.location?.home);
 
             if (!fromStr) {
-                client.say(channel, `@${username}, current location not set. Use !location current set <place>.`);
+                client.say(channel, `@${username}, current location not set. Use !location current set PLACE.`);
                 return;
             }
             if (!toStr) {
-                client.say(channel, `@${username}, home location not set. Use !location home set <place>.`);
+                client.say(channel, `@${username}, home location not set. Use !location home set PLACE.`);
                 return;
             }
 
@@ -349,7 +349,7 @@ export const fx: CommandFn = async function fx(client, message, channel, tags, c
                 return;
             }
             if (!toStr) {
-                client.say(channel, `@${username}, home location not set. Use !location home set <place>.`);
+                client.say(channel, `@${username}, home location not set. Use !location home set PLACE.`);
                 return;
             }
 

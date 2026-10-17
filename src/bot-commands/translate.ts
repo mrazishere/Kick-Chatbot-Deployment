@@ -226,7 +226,7 @@ export const translate: CommandFn = async function translate(client, message, ch
 
         // Command for displaying the commands (in english)
         if (cmd === "lang" || cmd === "translate") {
-            await client.say(channel, `@${tags.username}, I can translate your messages in many languages. Use !<language_code> <text> (e.g., !en Bonjour). Supported codes: en, de, fr, es, pt, ja, zh, ko, etc.`);
+            await client.say(channel, `@${tags.username}, I can translate your messages in many languages. Use !LANGCODE TEXT (e.g., !en Bonjour). Supported codes: en, de, fr, es, pt, ja, zh, ko, etc.`);
             return;
         }
 

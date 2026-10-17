@@ -425,7 +425,7 @@ export const points: CommandFn = async function points(client, message, channel,
         const on = playing && playing.started_at !== null && now < playing.started_at + playing.seconds * 1000
           ? `📺 Playing @${playing.username}'s ${playing.title} (${clock(Math.max(0, playing.seconds - Math.floor((now - playing.started_at) / 1000)))} left). `
           : '📺 Nothing playing. ';
-        return void say(`${on}${waiting ? `${waiting} waiting. ` : ''}Share one: $${cmd} video <youtube link> (${price})`);
+        return void say(`${on}${waiting ? `${waiting} waiting. ` : ''}Share one: $${cmd} video YOUTUBE-LINK (${price})`);
       }
 
       if (checkPending()) return void say(`@${me} answer your fishing question first ($${cmd} fish answer), then you can share a video.`);
@@ -433,7 +433,7 @@ export const points: CommandFn = async function points(client, message, channel,
       const apiKey = process.env.YOUTUBE_API_KEY;
       if (!apiKey) return void say(`@${me} video sharing isn't set up yet`);
       const link = parseYouTubeLink(arg);
-      if (!link) return void say(`@${me} send a YouTube link: $${cmd} video <youtube link> (${price})`);
+      if (!link) return void say(`@${me} send a YouTube link: $${cmd} video YOUTUBE-LINK (${price})`);
       if (!self) return void say(`@${me} you have no ${cur} to pay for a video`);
       if (v.onlyWhileLive && (await svc.isLiveNow()) !== true) return void say(`@${me} videos only play while the stream is live`);
       if (!videoOverlayShowing(db, now)) return void say(`@${me} the video overlay isn't on stream right now`);

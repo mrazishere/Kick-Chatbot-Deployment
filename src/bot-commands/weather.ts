@@ -194,7 +194,7 @@ export const weather: CommandFn = async function weather(client, message, channe
             // Use channel's current location
             const locationStr = locationObjToString(config.location?.current);
             if (!locationStr) {
-                await client.say(channel, `@${username}, current location not set. Use !location current set <place>.`);
+                await client.say(channel, `@${username}, current location not set. Use !location current set PLACE.`);
                 return;
             }
             locationQuery = locationStr;

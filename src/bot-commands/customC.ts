@@ -387,7 +387,7 @@ export const customC: CommandFn = async function customC(client, message, channe
 
     if (input[0] === "!acomm") {
         if (input.length < 4) {
-            client.say(channel, `@${tags.username}, !acomm <modOnly(n/y/v)> <commandName> <commandResponse>`);
+            client.say(channel, `@${tags.username}, !acomm MODONLY(n/y/v) NAME RESPONSE`);
             return;
         }
 
@@ -417,7 +417,7 @@ export const customC: CommandFn = async function customC(client, message, channe
 
     if (input[0] === "!ecomm") {
         if (input.length < 4) {
-            client.say(channel, `@${tags.username}, !ecomm <modOnly(n/y/v)> <commandName> <commandResponse>`);
+            client.say(channel, `@${tags.username}, !ecomm MODONLY(n/y/v) NAME RESPONSE`);
             return;
         }
 
@@ -455,7 +455,7 @@ export const customC: CommandFn = async function customC(client, message, channe
 
     if (input[0] === "!dcomm") {
         if (input.length < 2) {
-            client.say(channel, `@${tags.username}, !dcomm <commandName>`);
+            client.say(channel, `@${tags.username}, !dcomm NAME`);
             return;
         }
 
@@ -477,7 +477,7 @@ export const customC: CommandFn = async function customC(client, message, channe
     // Update command counter
     if (input[0] === "!countcomm") {
         if (input.length < 3) {
-            client.say(channel, `@${tags.username}, !countcomm <commandName> <commandCounter>`);
+            client.say(channel, `@${tags.username}, !countcomm NAME COUNT`);
             return;
         }
 

@@ -1123,7 +1123,7 @@ async function main(): Promise<void> {
       const catVideo = playingVideo(vdb)!;
       check('a video the overlay can\'t play is refunded, once', failVideo(vdb, catVideo.id) && balance(ch, 63) === 5000 && !failVideo(vdb, catVideo.id) && advanceVideos(vdb) === null);
       const info = await run('$don video', ['dan', 64]);
-      check('$don video says what is on and how to share', info.includes('Nothing playing') && info.includes('$don video <youtube link>') && info.includes('10 $DON a second'), info);
+      check('$don video says what is on and how to share', info.includes('Nothing playing') && info.includes('$don video YOUTUBE-LINK') && info.includes('10 $DON a second'), info);
       const rows = publicCommands(effectivePointsConfig({ enabled: true, video: { enabled: true } })).sections[0].rows.filter(r => r.usage.includes('video'));
       check('the Commands tab lists video where it is on', rows.length === 3 && rows[0].short === '$points v <link>' && !publicCommands(effectivePointsConfig({ enabled: true })).sections[0].rows.some(r => r.usage.includes('video')), rows);
     } finally {
@@ -1151,7 +1151,7 @@ async function main(): Promise<void> {
     const setWord = (word: string) => runWrite(wdb, () => wdb.prepare("UPDATE meta SET value = json_set(value, '$.word', ?) WHERE key = 'wordle_game'").run(word));
     check('viewers can\'t start one; there\'s none yet', (await run('$don wordle start', ['ann', 91])) === '' && (await run('$don wordle', ['ann', 91])).includes('No Wordle is on'));
     const started = await run('$don wordle start', ['modder', 92], true);
-    check('a mod starts one, with the rules', started.includes('Wordle!') && started.includes('$don w <word>') && started.includes('3 guesses for the whole chat') && started.includes('wins 500 $DON'), started);
+    check('a mod starts one, with the rules', started.includes('Wordle!') && started.includes('$don w WORD') && started.includes('3 guesses for the whole chat') && started.includes('wins 500 $DON'), started);
     setWord('crane');
     check('$don w s is start: one is on already', (await run('$don w s', ['modder', 92], true)).includes('already on'));
     const startGuess = await run('$don w start', ['ann', 91]);
@@ -1164,7 +1164,7 @@ async function main(): Promise<void> {
     check('$don wordle shows the board', boardNow.startsWith('START ') && boardNow.includes('REACT 🟨🟨🟩🟨⬜') && boardNow.includes('Guesses: 2/3'), boardNow);
     const won = await run('$don wordle crane', ['ben', 93]);
     check('the first right guess wins the prize', won.includes('🎉 @ben got it in 3/3: CRANE 🟩🟩🟩🟩🟩 +500 $DON') && balance(ch, 93) === 500, won);
-    check('a won game takes no more guesses', (await run('$don wordle crane', ['ann', 91])).toLowerCase().includes('no wordle is on'));
+    check('with no game on, a guess gets no reply at all', (await run('$don wordle crane', ['ann', 91])) === '' && (await run('$don w scammer', ['ann', 91])) === '');
     await run('$don wordle start', ['modder', 92], true);
     setWord('crane');
     await run('$don wordle slate', ['ann', 91]);
