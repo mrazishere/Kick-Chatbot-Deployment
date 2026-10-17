@@ -2943,11 +2943,13 @@ app.get('/internal/bot/:channel/overlay/fishing', internalGuard(false), (req, re
   // clear: the bottom-right corner the overlay keeps out of, as shares of its width and height.
   const { overlayClearWidthPercent: w, overlayClearHeightPercent: h } = cfg.games;
   const clear = w > 0 && h > 0 ? { w, h } : undefined;
-  if (!db) return res.json({ lastId: 0, events: [], demo, size, clear });
+  // leadMs: how far the overlay runs its clock ahead, the stream's delay (games.streamDelaySeconds).
+  const leadMs = cfg.games.streamDelaySeconds * 1000;
+  if (!db) return res.json({ lastId: 0, events: [], demo, size, clear, leadMs });
   try {
     markOverlaySeen(db);
     // The bot's clock, so the overlay counts a big bite down to the real deadline.
-    return res.json({ ...readOverlay(db), now: Date.now(), demo, size, clear });
+    return res.json({ ...readOverlay(db), now: Date.now(), demo, size, clear, leadMs });
   } catch (e) {
     return pointsUnavailable(res, channel, e);
   }

@@ -325,6 +325,15 @@ export interface PointsGamesConfig {
   overlayClearWidthPercent: number;
   overlayClearHeightPercent: number;
   /**
+   * How far the stream runs behind chat, in seconds (0–30). The overlay is drawn into
+   * the stream, so viewers see it this late: the overlay runs its clock this far ahead
+   * (big bite countdowns and the snipe label show what holds when viewers see them), a
+   * big bite's time starts once viewers can see the code, and chat waits this long
+   * before posting a wheel or duel result the overlay is still playing. Set it a little
+   * under the real delay: over it, viewers see the snipe label before snipes open.
+   */
+  streamDelaySeconds: number;
+  /**
    * Every fish and junk item with its odds and price as they apply. Stored as
    * overrides only (StoredFishCatches); an item without one keeps supibot's weight
    * and its price scaled by sellPricePercent.

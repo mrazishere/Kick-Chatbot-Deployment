@@ -87,6 +87,7 @@ export function defaultPointsConfig(): PointsConfig {
       overlaySizePercent: 100,
       overlayClearWidthPercent: 0,
       overlayClearHeightPercent: 0,
+      streamDelaySeconds: 0,
       catches: effectiveCatches(undefined, 100),
       reels: DEFAULT_REELS.map(r => ({ ...r })),
       steal: { ...DEFAULT_STEAL },
@@ -466,6 +467,7 @@ export function internalPointsConfig(raw: unknown): InternalPointsConfig {
     overlaySizePercent: num(ga.overlaySizePercent, d.games.overlaySizePercent, 50, 300, true),
     overlayClearWidthPercent: num(ga.overlayClearWidthPercent, d.games.overlayClearWidthPercent, 0, 80, true),
     overlayClearHeightPercent: num(ga.overlayClearHeightPercent, d.games.overlayClearHeightPercent, 0, 80, true),
+    streamDelaySeconds: num(ga.streamDelaySeconds, d.games.streamDelaySeconds, 0, 30, true),
     catches: [],
     reels: effectiveReels(ga.reels),
     steal: effectiveSteal(ga.steal),
@@ -594,7 +596,8 @@ const GAMES_NUMBERS: Record<string, Rule> = {
   baitPricePercent: { min: 0, max: 1000, integer: true },
   overlaySizePercent: { min: 50, max: 300, integer: true },
   overlayClearWidthPercent: { min: 0, max: 80, integer: true },
-  overlayClearHeightPercent: { min: 0, max: 80, integer: true }
+  overlayClearHeightPercent: { min: 0, max: 80, integer: true },
+  streamDelaySeconds: { min: 0, max: 30, integer: true }
 };
 /**
  * The whole set of per-item overrides, replacing the stored one: each key an item's

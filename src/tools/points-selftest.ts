@@ -29,7 +29,7 @@ import { points as pointsCommand, SUBCOMMAND_ALIASES } from '../bot-commands/poi
 import { moveFish, takeItems, addItem, FishData, initialData, isTrophy, rarityOf, stealChance, stealCharges, stealRollChance, ITEMS, landsFish, loadFish, parseSellList, recordCatch, saveFish, sellPrice, weightedCatch } from '../community/fishing';
 import { openCommunityDb } from '../community/store';
 import { markOverlaySeen, readOverlay } from '../community/fish-overlay';
-import { drawSnipeMs, resetBites, takeBite as takeBiteForTest } from '../community/big-bite';
+import { drawSnipeMs, resetBites, startBite, takeBite as takeBiteForTest } from '../community/big-bite';
 import { fish as fishCommand, SUBCOMMANDS as FISH_SUBCOMMANDS, BOARDS as FISH_BOARD_MAP, BOARD_SHORT as FISH_BOARD_SHORT } from '../bot-commands/fish';
 import { publicCommands, FISH_BOARDS } from '../points/public-commands';
 import { duelBoard, publicLedgerText } from '../points/store';
@@ -603,6 +603,24 @@ async function main(): Promise<void> {
     check('the overlay keeps no corner clear unless set, and at most 80% each way',
       effectivePointsConfig({}).games.overlayClearWidthPercent === 0 && effectivePointsConfig({}).games.overlayClearHeightPercent === 0 && cleared.errors.length === 0
       && effectivePointsConfig(cleared.next).games.overlayClearWidthPercent === 26 && effectivePointsConfig(cleared.next).games.overlayClearHeightPercent === 46 && overCleared.errors.length === 1, { cleared, overCleared });
+    const delayed = validatePointsPatch({}, { games: { streamDelaySeconds: 4 } });
+    const tooLate = validatePointsPatch({}, { games: { streamDelaySeconds: 31 } });
+    check('streamDelaySeconds is 0 unless set, and kept within 0–30',
+      effectivePointsConfig({}).games.streamDelaySeconds === 0 && delayed.errors.length === 0 && effectivePointsConfig(delayed.next).games.streamDelaySeconds === 4
+      && tooLate.errors.length === 1 && validatePointsPatch({}, { games: { streamDelaySeconds: 1.5 } }).errors.length === 1, { delayed, tooLate });
+    // A big bite's time runs from when viewers can see the code: the delay later.
+    const ddb = openPointsDb('delaych', { create: true })!;
+    const bb = effectivePointsConfig({ games: { bigBite: { enabled: true } } }).games.bigBite;
+    const t0 = Date.now();
+    const plain = startBite({ channel: 'delaych', db: ddb, bigBite: bb, command: 'don', sendMessage: async () => {}, now: t0 }, 'plain', 1);
+    const plainUntil = plain.until;
+    takeBiteForTest('delaych', 'plain');
+    const late = startBite({ channel: 'delaych', db: ddb, bigBite: bb, command: 'don', sendMessage: async () => {}, now: t0, delayMs: 4_000 }, 'late', 2);
+    const lateUntil = late.until, lateSnipe = late.snipeAt;
+    takeBiteForTest('delaych', 'late');
+    check('a stream delay moves a big bite\'s deadline and snipe window that much later',
+      plainUntil === t0 + bb.windowSeconds * 1000 && lateUntil === plainUntil + 4_000
+      && lateSnipe !== undefined && lateUntil - lateSnipe >= 1_000 && lateUntil - lateSnipe <= bb.windowSeconds * 500, { plainUntil, lateUntil, lateSnipe, t0 });
   }
 
   // onlyWhileOffline: casting and trapping are shut while live, open offline; never on with onlyWhileLive

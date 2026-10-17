@@ -348,7 +348,7 @@ export class PointsService {
       const live = (await this.isLiveNow()) === true;
       const ex = this.exclusions();
       return bigBite.tick({
-        channel: this.channel, db, bigBite: cfg.games.bigBite, command: effectiveCommand(cfg), live, now: this.now(), random,
+        channel: this.channel, db, bigBite: cfg.games.bigBite, delayMs: cfg.games.streamDelaySeconds * 1000, command: effectiveCommand(cfg), live, now: this.now(), random,
         excluded: (id, name) => isExcluded(ex, id, name),
         sendMessage: m => this.deps.sendMessage(m)
       });

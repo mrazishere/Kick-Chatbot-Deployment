@@ -28,6 +28,8 @@ import { markWheelBusy, wheelBusy } from '../community/wheel-state';
 
 /** How long a spin waits for a big bite already on the line, at most. */
 const BITE_WAIT_MS = 90_000;
+/** How often the overlay polls its feed (POLL_MS in the dashboard's FishOverlay): it can draw a spin this much late. */
+const OVERLAY_POLL_MS = 1_500;
 /** Kick cuts chat messages at 500 characters. */
 const CHAT_MAX = 480;
 
@@ -131,18 +133,20 @@ export const wheel: CommandFn = async function wheel(client, message, channel, t
     if (channelHasBite(chan)) return void say(`@${me} 🎡 the big bite is still going: spin again once it's done.`);
     if (wheelBusy(chan)) return;
   }
-  spin(chan, me, readWheel(chan), db, say);
+  spin(chan, me, readWheel(chan), db, say, svc.config().games.streamDelaySeconds * 1000);
 };
 
 /** Put a spin on the overlay now, and the result in chat once the stream has shown it. */
-function spin(chan: string, by: string, w: Wheel, db: Parameters<typeof pushOverlay>[0], say: (t: string) => unknown): void {
+function spin(chan: string, by: string, w: Wheel, db: Parameters<typeof pushOverlay>[0], say: (t: string) => unknown, delayMs = 0): void {
   if (w.items.length < 2) return void say(`@${by} 🎡 the wheel needs at least 2 items to spin.`);
   const now = Date.now();
   const spinMs = w.spinSeconds * 1000;
   const winner = pickWinner(w.items.length);
   const landed = w.items[winner];
-  // Busy through the spin, the result on screen, and the stream's delay behind chat.
-  markWheelBusy(chan, now + spinMs + RESULT_HOLD_MS + STREAM_GRACE_MS);
+  // Busy through the spin, the result on screen, and the stream's delay behind chat:
+  // the channel's own (games.streamDelaySeconds, plus a poll of the overlay) where it's longer.
+  const behindMs = Math.max(STREAM_GRACE_MS, delayMs + OVERLAY_POLL_MS);
+  markWheelBusy(chan, now + spinMs + RESULT_HOLD_MS + behindMs);
   console.log(`[WHEEL] ${by} spun the wheel in ${chan}: "${landed.label}" (${winner + 1} of ${w.items.length})`);
   pushOverlay(db, { username: by, kind: 'wheel', text: `${by} spun the wheel!`, wheel: { items: w.items, winner, spinMs } }, now);
   const t = setTimeout(() => {
@@ -152,6 +156,6 @@ function spin(chan: string, by: string, w: Wheel, db: Parameters<typeof pushOver
       const r = removeItem(cur, landed.label);
       return r.removed ? r.wheel : 'gone already';
     }).catch(err => console.error(`[WHEEL] Removing the winner in ${chan} failed: ${err instanceof Error ? err.message : String(err)}`));
-  }, spinMs + STREAM_GRACE_MS);
+  }, spinMs + behindMs);
   t.unref?.();
 }

@@ -146,6 +146,8 @@ export interface BiteContext {
   command: string;
   sendMessage: (message: string) => Promise<unknown>;
   now?: number;
+  /** games.streamDelaySeconds, in ms: a code's time starts once viewers can see it. */
+  delayMs?: number;
 }
 
 /** A big bite lost: the overlay and chat say so (chat's result line). Nothing else changes. */
@@ -177,7 +179,9 @@ function arm(ctx: BiteContext, bite: Bite, windowMs: number, text: string, now: 
   while (code === bite.code) code = pullCode(bite.pull); // a new pull always has a new code
   bite.code = code;
   bite.startedAt = now;
-  bite.until = now + windowMs;
+  // The stream shows the code this much later, so its time runs from then.
+  const delayMs = ctx.delayMs ?? 0;
+  bite.until = now + delayMs + windowMs;
   const snipeMs = bite.pull === 1 ? drawSnipeMs(ctx.bigBite) : 0;
   if (snipeMs > 0) bite.snipeAt = bite.until - snipeMs;
   else delete bite.snipeAt;
@@ -185,7 +189,7 @@ function arm(ctx: BiteContext, bite: Bite, windowMs: number, text: string, now: 
     if (bites.get(k) !== bite || bite.code !== code) return;
     bites.delete(k);
     getAway(ctx, bite.username, bite.pull > 1 ? 'It pulled too hard and swam off!' : 'It was too strong and swam off!');
-  }, windowMs + STREAM_GRACE_MS + 500);
+  }, delayMs + windowMs + STREAM_GRACE_MS + 500);
   bite.timer.unref?.();
   // From the second pull the code flashes: the overlay hides it flashSeconds after it first
   // draws it (not after now: the overlay only sees it on its next poll), the clock keeps running.

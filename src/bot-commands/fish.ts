@@ -326,7 +326,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
 
   // ── big bite ──
   const biteCtx = (): BiteContext => ({
-    channel: chan, db: db!, bigBite: g.bigBite, command: cmd.replace(/^\$/, ''),
+    channel: chan, db: db!, bigBite: g.bigBite, delayMs: g.streamDelaySeconds * 1000, command: cmd.replace(/^\$/, ''),
     sendMessage: (m: string) => client.say(channel, m)
   });
 
@@ -1234,7 +1234,8 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     pushOverlay(db!, { username: fought.winner, kind: 'duel', text: fought.text.replace(/@/g, ''), duel: overlayDuel(...fought.shown) });
     if (!playing) return void announce(fought.text);
     await announce(`⚔️ ${c.challenger} vs ${me}: the fish duel is on! Watch the stream.`);
-    setTimeout(() => void announce(fought.text), playMs(fought.turns)).unref();
+    // The stream shows the fight streamDelaySeconds behind chat.
+    setTimeout(() => void announce(fought.text), playMs(fought.turns) + g.streamDelaySeconds * 1000).unref();
   }
 
   /** Turn down the duel waiting for this viewer, or take back the one they asked for. */
