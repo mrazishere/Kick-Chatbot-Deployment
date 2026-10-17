@@ -14,7 +14,15 @@ const POLL_MS = 1000;
 /** The bot's slot for a video includes this long for the player to load (LOAD_PAD_MS in the bot). */
 const LOAD_PAD_S = 4;
 
-type Current = { id: number; videoId: string; title: string; username: string; start: number; seconds: number; startedAt: number };
+/**
+ * The video on now. A paid one (id a number) plays from `start` for `seconds` from `startedAt`.
+ * A media share one (id StreamElements' key) follows `sync` instead: it ends at `seconds` into the video.
+ */
+type Current = { id: number | string; videoId: string; title: string; username: string; start: number; seconds: number; startedAt: number; sync?: boolean };
+/** What StreamElements media share is playing, as the bot keeps it (community/mediashare.ts). */
+type MediaShare = { key: string; videoId: string; title: string; username: string; end: number; position: number; at: number; paused: boolean };
+/** Seek when the overlay is this far off media share. */
+const DRIFT_S = 1.5;
 
 interface YTPlayer {
   destroy(): void;
@@ -25,10 +33,12 @@ interface YTPlayer {
   playVideo(): void;
   pauseVideo(): void;
   getPlayerState(): number;
+  getCurrentTime(): number;
+  seekTo(seconds: number, allowSeekAhead: boolean): void;
 }
 declare global {
   interface Window {
-    YT?: { Player: new (el: HTMLElement, opts: unknown) => YTPlayer; PlayerState: { ENDED: number; PLAYING: number; BUFFERING: number; PAUSED: number } };
+    YT?: { Player: new (el: HTMLElement, opts: unknown) => YTPlayer; PlayerState: { ENDED: number; PLAYING: number; BUFFERING: number; PAUSED: number; CUED: number } };
     onYouTubeIframeAPIReady?: () => void;
   }
 }
@@ -54,7 +64,9 @@ function loadApi(): Promise<void> {
  */
 export default function VideoOverlay({ channel, overlayKey, embedded = false }: { channel: string; overlayKey: string; embedded?: boolean }) {
   const [current, setCurrent] = useState<Current | null>(null);
-  const [ended, setEnded] = useState<number | null>(null);
+  const [ended, setEnded] = useState<number | string | null>(null);
+  /** The media share position as the bot last said, for following it between polls. */
+  const sync = useRef<MediaShare | null>(null);
   /** The browser wouldn't play it with sound (a normal tab, before any click): it plays muted until clicked. OBS never needs this. */
   const [muted, setMuted] = useState(false);
   const holder = useRef<HTMLDivElement>(null);
@@ -68,6 +80,7 @@ export default function VideoOverlay({ channel, overlayKey, embedded = false }: 
   const wheel = useWheel({ fontPx: 64 });
   const takeWheel = wheel.take;
   const wheelBusy = wheel.busy;
+  const wheelShowing = wheel.isShowing;
   /** The newest spin already seen; null until the first poll, which only notes it (no replays on load). */
   const wheelSeen = useRef<number | null>(null);
 
@@ -91,14 +104,23 @@ export default function VideoOverlay({ channel, overlayKey, embedded = false }: 
           setCurrent(null);
           return;
         }
-        const data = (await res.json()) as { now: number; current: Current | null; build?: string; volume?: number; wheels?: FishOverlayEvent[] };
+        const data = (await res.json()) as { now: number; current: Current | null; mediashare?: MediaShare | null; build?: string; volume?: number; wheels?: FishOverlayEvent[] };
         if (!alive) return;
         offset.current = data.now - Date.now();
         if (typeof data.volume === "number" && data.volume !== volume.current) {
           volume.current = Math.max(0, Math.min(100, data.volume));
           if (player.current && !player.current.isMuted()) player.current.setVolume(volume.current);
         }
-        setCurrent((c) => (c?.id === data.current?.id ? c : data.current));
+        if (data.mediashare !== undefined) {
+          // Following media share: a new video only when its key changes; play, pause and position each poll.
+          const ms = data.mediashare;
+          sync.current = ms;
+          setCurrent((c) => (ms ? (c?.id === ms.key ? c : { id: ms.key, videoId: ms.videoId, title: ms.title, username: ms.username, start: 0, seconds: ms.end, startedAt: 0, sync: true }) : null));
+          follow();
+        } else {
+          sync.current = null;
+          setCurrent((c) => (c?.id === data.current?.id ? c : data.current));
+        }
         const spins = data.wheels ?? [];
         const newest = spins.reduce((m, e) => Math.max(m, e.id), wheelSeen.current ?? 0);
         if (wheelSeen.current !== null) {
@@ -122,6 +144,31 @@ export default function VideoOverlay({ channel, overlayKey, embedded = false }: 
     };
   }, [url, embedded, takeWheel, wheelBusy]);
 
+  /** Where media share is in its video now, by the bot's clock, in seconds. */
+  const syncTarget = (): number | null => {
+    const ms = sync.current;
+    if (!ms) return null;
+    return ms.paused ? ms.position : ms.position + (Date.now() + offset.current - ms.at) / 1000;
+  };
+  /** Keep the player where media share is: paused with it, playing with it, and within DRIFT_S of it. */
+  const follow = () => {
+    const p = player.current;
+    const ms = sync.current;
+    const target = syncTarget();
+    // A wheel spin holds the video where it is; it catches up after.
+    if (!p || !ms || target === null || !window.YT || wheelShowing()) return;
+    const st = p.getPlayerState();
+    // For checking from outside: the player's state and second, against where media share is.
+    holder.current?.setAttribute("data-follow", `${st}@${Math.round(p.getCurrentTime())}/${Math.round(target)}`);
+    if (ms.paused) {
+      if (st === window.YT.PlayerState.PLAYING || st === window.YT.PlayerState.BUFFERING) p.pauseVideo();
+      if (Math.abs(p.getCurrentTime() - target) > DRIFT_S) p.seekTo(target, true);
+      return;
+    }
+    if (Math.abs(p.getCurrentTime() - target) > DRIFT_S) p.seekTo(target, true);
+    if (st === window.YT.PlayerState.PAUSED || st === window.YT.PlayerState.CUED) p.playVideo();
+  };
+
   // A spin pauses the video; it carries on once the wheel is gone (the bot stretched its slot to match).
   useEffect(() => {
     const p = player.current;
@@ -137,7 +184,10 @@ export default function VideoOverlay({ channel, overlayKey, embedded = false }: 
     player.current = null;
     setMuted(false);
     if (!current || !holder.current) return;
-    const into = Math.max(0, (Date.now() + offset.current - current.startedAt) / 1000 - LOAD_PAD_S);
+    // Media share: start where it is. A paid video: as far into its slot as it already is.
+    const into = current.sync
+      ? Math.max(0, syncTarget() ?? 0)
+      : Math.max(0, (Date.now() + offset.current - current.startedAt) / 1000 - LOAD_PAD_S);
     if (into >= current.seconds) return;
     const el = document.createElement("div");
     holder.current.replaceChildren(el);
@@ -150,13 +200,15 @@ export default function VideoOverlay({ channel, overlayKey, embedded = false }: 
         videoId: current.videoId,
         playerVars: {
           autoplay: 1, controls: 0, disablekb: 1, fs: 0, iv_load_policy: 3, modestbranding: 1, rel: 0, playsinline: 1,
-          start: Math.floor(current.start + into), end: current.start + current.seconds,
+          start: Math.floor(current.start + into), ...(current.seconds > 0 ? { end: current.start + current.seconds } : {}),
         },
         events: {
           onReady: (e: { target: YTPlayer }) => {
             e.target.unMute();
             e.target.setVolume(volume.current);
             e.target.playVideo();
+            // Media share may have moved on (or paused) while the player loaded.
+            if (current.sync) setTimeout(() => !gone && follow(), 300);
             // A browser that blocks sound without a click leaves it paused: play it muted instead.
             setTimeout(() => {
               if (gone) return;
@@ -171,9 +223,10 @@ export default function VideoOverlay({ channel, overlayKey, embedded = false }: 
           onStateChange: (e: { data: number }) => {
             if (e.data === window.YT?.PlayerState.ENDED) setEnded(current.id);
           },
-          // Removed, private, or no longer embeddable: the bot ends it and refunds the viewer.
+          // Removed, private, or no longer embeddable: the bot ends it and refunds the viewer (a paid one).
           onError: () => {
             setEnded(current.id);
+            if (current.sync) return;
             void fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: current.id }) }).catch(() => {});
           },
         },
