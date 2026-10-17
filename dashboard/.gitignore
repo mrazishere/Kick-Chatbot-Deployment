@@ -1,0 +1,11 @@
+.next/
+node_modules/
+.env.local
+logs/
+*.tsbuildinfo
+.backups/
+.next-a/
+.next-b/
+.next-live
+.deploy.lock
+next-env.d.ts

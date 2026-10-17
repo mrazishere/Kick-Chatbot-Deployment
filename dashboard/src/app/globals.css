@@ -1,0 +1,12 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --kick: #53FC18;
+}
+
+body {
+  background-color: #0a0a0a;
+  color: #e5e5e5;
+}
