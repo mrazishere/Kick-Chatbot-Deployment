@@ -621,6 +621,17 @@ async function main(): Promise<void> {
     check('a stream delay moves a big bite\'s deadline and snipe window that much later',
       plainUntil === t0 + bb.windowSeconds * 1000 && lateUntil === plainUntil + 4_000
       && lateSnipe !== undefined && lateUntil - lateSnipe >= 1_000 && lateUntil - lateSnipe <= bb.windowSeconds * 500, { plainUntil, lateUntil, lateSnipe, t0 });
+    // Chat says the moment snipes open (it has no stream delay), and nothing if the bite is settled first.
+    const said: string[] = [];
+    const ctxAt = (now: number) => ({ channel: 'delaych', db: ddb, bigBite: bb, command: 'don', sendMessage: async (m: string) => { said.push(m); }, now });
+    startBite(ctxAt(Date.now() - bb.windowSeconds * 1000 + 500), 'opened', 3); // snipes already due: the line fires at once
+    startBite({ ...ctxAt(Date.now() - bb.windowSeconds * 1000 + 500), channel: 'delaych2' }, 'settled', 4);
+    takeBiteForTest('delaych2', 'settled');
+    await new Promise(r => setTimeout(r, 50));
+    takeBiteForTest('delaych', 'opened');
+    const opens = said.filter(m => m.includes('SNIPE OPEN'));
+    check('chat says the moment snipes open, and stays quiet for a bite settled first',
+      opens.length === 1 && opens[0].includes("@opened's big bite") && opens[0].includes('$don fish reel') && said.some(m => m.includes("I'll say so in chat")), said);
   }
 
   // onlyWhileOffline: casting and trapping are shut while live, open offline; never on with onlyWhileLive

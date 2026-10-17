@@ -185,6 +185,16 @@ function arm(ctx: BiteContext, bite: Bite, windowMs: number, text: string, now: 
   const snipeMs = bite.pull === 1 ? drawSnipeMs(ctx.bigBite) : 0;
   if (snipeMs > 0) bite.snipeAt = bite.until - snipeMs;
   else delete bite.snipeAt;
+  // Chat says the moment snipes open: chat has no stream delay, so everyone hears it at once,
+  // however far behind their stream runs. Nothing if the bite was settled, sniped or moved on first.
+  if (bite.snipeAt !== undefined) {
+    const t = setTimeout(() => {
+      if (bites.get(k) !== bite || bite.code !== code || bite.pull !== 1 || bite.snipeAt === undefined) return;
+      console.log(`[FISH] snipes open on ${bite.username}'s big bite in ${ctx.channel}`);
+      void ctx.sendMessage(`🪝 SNIPE OPEN! @${bite.username}'s big bite is up for grabs: first to type $${ctx.command} fish reel and the code on stream takes it!`).catch(() => {});
+    }, Math.max(0, bite.snipeAt - Date.now()));
+    t.unref?.();
+  }
   bite.timer = setTimeout(() => {
     if (bites.get(k) !== bite || bite.code !== code) return;
     bites.delete(k);
@@ -212,7 +222,7 @@ export function startBite(ctx: BiteContext, name: string, userId: number): Bite 
     `🎣 Something BIG is tugging at your line! Reel it in with $${ctx.command} fish reel <code> within ${ctx.bigBite.windowSeconds}s!${pulls}`, now);
   // The one chat line: who, and where to look. The code and everything after are on stream.
   const snipeS = snipeWindowMs(ctx.bigBite) / 1000;
-  const snipers = snipeS > 0 ? ` For about the last ${snipeS}s anyone can snipe it: first right code takes it!` : '';
+  const snipers = snipeS > 0 ? ` For about the last ${snipeS}s anyone can snipe it: I'll say so in chat, and the first right code then takes it!` : '';
   void ctx.sendMessage(`@${name} 🎣 Something BIG is on your line! A code is showing on stream now: type $${ctx.command} fish reel and that code within ${ctx.bigBite.windowSeconds}s to reel it in!${snipers}`).catch(() => {});
   return bite;
 }
