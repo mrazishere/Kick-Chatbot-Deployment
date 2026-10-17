@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Check, ChevronDown, Coins, Copy, ExternalLink, Loader2, Search } from "lucide-react";
 import type { OverlayLink } from "@/lib/fish-overlay";
 import { Button, Card, Checkbox, Stat, Toggle } from "./ui";
+import MediaShareSetup from "./MediaShareSetup";
 
 const BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
 
@@ -29,6 +30,8 @@ export interface PointsVideo {
   queueMax: number;
   onlyWhileLive: boolean;
   volumePercent?: number;
+  /** The video overlay plays the channel's StreamElements media share. */
+  mediashare?: boolean;
 }
 
 export interface PointsGive {
@@ -440,6 +443,7 @@ interface SettingsForm {
   videoQueue: string;
   videoLiveOnly: boolean;
   videoVolume: string;
+  videoMediashare: boolean;
   modMaxAdjust: string;
   publicLeaderboard: boolean;
   penaltyEnabled: boolean;
@@ -531,6 +535,7 @@ function formFromConfig(c: PointsConfig): SettingsForm {
     videoQueue: String(c.video?.queueMax ?? 5),
     videoLiveOnly: c.video?.onlyWhileLive !== false,
     videoVolume: String(c.video?.volumePercent ?? 50),
+    videoMediashare: c.video?.mediashare === true,
     modMaxAdjust: String(c.modMaxAdjust),
     publicLeaderboard: c.publicLeaderboard,
     penaltyEnabled: c.timeoutPenalty.enabled,
@@ -735,6 +740,7 @@ function buildPatch(f: SettingsForm): { patch: PointsSettingsPatch } | { error: 
       queueMax: whole(f.videoQueue, "Videos waiting", 1, 50),
       onlyWhileLive: f.videoLiveOnly,
       volumePercent: whole(f.videoVolume, "Video volume", 0, 100),
+      mediashare: f.videoMediashare,
     },
     timeoutPenalty: {
       enabled: f.penaltyEnabled,
@@ -1990,6 +1996,18 @@ export default function PointsCard({
                   Viewers are turned away (and not charged) while it isn&apos;t open. Mods can end one early with ${commandPreview || "…"} video skip, without a refund;
                   one YouTube won&apos;t play is refunded. Livestreams, age-restricted videos and ones their owner keeps on YouTube are refused.
                 </p>
+                <div className="mt-3 space-y-2">
+                  <Checkbox
+                    label="Play my StreamElements media share on the video overlay"
+                    checked={form.videoMediashare}
+                    disabled={readOnly || !!busy}
+                    onChange={(v) => set("videoMediashare", v)}
+                  />
+                  <p className="pl-6 text-xs text-neutral-500">
+                    The overlay follows your media share (connect it below) instead of {form.currencyName.trim() || "points"}-paid videos; works with paid videos off.
+                  </p>
+                  <MediaShareSetup channel={channel} canAdminister={canAdminister} />
+                </div>
                 <div className="mt-3">
                   <FishOverlayLinks links={videoOverlays} title="Video overlay" blurb="Add it as a Browser Source in OBS, sized 16:9, and set its volume there. Keep the link private: anyone with it could show this channel's videos." />
                 </div>

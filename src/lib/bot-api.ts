@@ -978,6 +978,22 @@ export function getVideoOverlay(channel: string, inFishing = false): Promise<Vid
   return request(`/internal/bot/${encodeURIComponent(channel)}/overlay/video${inFishing ? "?in=fishing" : ""}`, { timeoutMs: 5_000 });
 }
 
+/** Whether the channel has a StreamElements token saved for mirroring media share (never the token itself). */
+export interface MediaShareStatus { configured: boolean; channelId: string | null; savedAt: string | null }
+
+export function getMediaShareStatus(channel: string): Promise<MediaShareStatus> {
+  return request(`/internal/bot/${encodeURIComponent(channel)}/mediashare`);
+}
+
+/** The bot checks the token against StreamElements before keeping it; refused with 400 and why. */
+export function saveMediaShareToken(channel: string, jwt: string): Promise<MediaShareStatus> {
+  return request(`/internal/bot/${encodeURIComponent(channel)}/mediashare`, { method: "PUT", body: { jwt }, timeoutMs: 15_000 });
+}
+
+export function removeMediaShareToken(channel: string): Promise<MediaShareStatus> {
+  return request(`/internal/bot/${encodeURIComponent(channel)}/mediashare`, { method: "DELETE" });
+}
+
 /** The overlay couldn't play this video: the bot ends it and refunds the viewer. */
 export function reportVideoFailed(channel: string, id: number): Promise<{ ok: boolean; refunded: boolean }> {
   return request(`/internal/bot/${encodeURIComponent(channel)}/overlay/video/failed`, { method: "POST", body: { id }, timeoutMs: 5_000 });
