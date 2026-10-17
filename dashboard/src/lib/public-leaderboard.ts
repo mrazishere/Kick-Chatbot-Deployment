@@ -1,5 +1,5 @@
 import "server-only";
-import { BotApiError, getPointsLeaderboard, getPublicHistory, getPublicViewers, type PublicHistory, type PublicViewer, type PointsLeaderboard, type PublicCommands, type PublicCommandRow, type PublicCommandSection, type PointsLeaderboardEntry, type PublicCatch, type PublicDuels, type PublicFishing, type PublicHeists, type PublicHeldFish, type PublicHolder, type PublicRareCatch } from "./bot-api";
+import { BotApiError, getPointsLeaderboard, getPublicHistory, getPublicViewers, type PublicHistory, type PublicViewer, type PointsLeaderboard, type PublicCommands, type PublicCommandRow, type PublicCommandSection, type PointsLeaderboardEntry, type PublicCatch, type PublicDuels, type PublicFishing, type PublicHeists, type PublicHeldFish, type PublicHolder, type PublicStealRules, type PublicRareCatch } from "./bot-api";
 
 /**
  * The public leaderboard page is the one page anyone can open signed out, so it
@@ -45,7 +45,7 @@ function publicCatches(rows: unknown): PublicCatch[] {
   if (!Array.isArray(rows)) return [];
   return rows.slice(0, 50).flatMap((row) => {
     const r = row as Partial<PublicCatch> | null;
-    if (!r || typeof r.emoji !== "string" || r.emoji.length > 8 || typeof r.chance !== "number" || typeof r.price !== "number") return [];
+    if (!r || typeof r.emoji !== "string" || r.emoji.length > 25 || typeof r.chance !== "number" || typeof r.price !== "number") return [];
     if (typeof r.rarity !== "string" || !RARITIES.has(r.rarity)) return [];
     return [{ emoji: r.emoji, chance: r.chance, rarity: r.rarity, price: r.price, ...(r.trophy === true ? { trophy: true } : {}) }];
   });
@@ -58,7 +58,7 @@ function publicRarest(rows: unknown): PublicRareCatch[] {
   if (!Array.isArray(rows)) return [];
   return rows.slice(0, 5).flatMap((row) => {
     const r = row as Partial<PublicRareCatch> | null;
-    if (!r || typeof r.emoji !== "string" || r.emoji.length > 8 || typeof r.chance !== "number" || typeof r.times !== "number") return [];
+    if (!r || typeof r.emoji !== "string" || r.emoji.length > 25 || typeof r.chance !== "number" || typeof r.times !== "number") return [];
     if (typeof r.rarity !== "string" || !RARITIES.has(r.rarity)) return [];
     if (typeof r.firstBy !== "string" || !USERNAME.test(r.firstBy) || typeof r.lastBy !== "string" || !USERNAME.test(r.lastBy)) return [];
     if (typeof r.firstAt !== "string" || typeof r.lastAt !== "string") return [];
@@ -76,7 +76,7 @@ function publicHeists(raw: unknown): PublicHeists | null {
   if (!h || typeof h !== "object" || !h.totals) return null;
   const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
   const name = (v: unknown) => typeof v === "string" && USERNAME.test(v);
-  const fish = (v: unknown) => typeof v === "string" && v.length <= 8;
+  const fish = (v: unknown) => typeof v === "string" && v.length <= 80;
   const iso = (v: unknown) => (typeof v === "string" ? v.slice(0, 40) : "");
   const list = <T,>(rows: unknown, max: number, keep: (r: Record<string, unknown>) => T | null): T[] =>
     (Array.isArray(rows) ? rows : []).slice(0, max).flatMap((r) => {
@@ -108,7 +108,7 @@ function publicDuels(raw: unknown): PublicDuels | null {
   if (!d || typeof d !== "object" || !d.totals) return null;
   const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
   const name = (v: unknown) => typeof v === "string" && USERNAME.test(v);
-  const fish = (v: unknown) => typeof v === "string" && v.length <= 8;
+  const fish = (v: unknown) => typeof v === "string" && v.length <= 80;
   const rows = <T,>(list: unknown, keep: (r: Record<string, unknown>) => T | null): T[] =>
     (Array.isArray(list) ? list : []).slice(0, 5).flatMap((r) => {
       const out = r && typeof r === "object" ? keep(r as Record<string, unknown>) : null;
@@ -141,9 +141,45 @@ function heldEach(raw: unknown): { each?: PublicHeldFish[] } {
     const cm = x.cm === null ? null : num(x.cm, 1000);
     const k = num(x.n, 1e6), hp = num(x.hp, 1e5), attack = num(x.attack, 1e5), worth = num(x.worth, 1e12);
     if ((cm === null && x.cm !== null) || !k || hp === null || attack === null || worth === null) return [];
-    return [{ cm: cm === null ? null : Math.floor(cm), n: Math.floor(k), hp: Math.round(hp), attack, worth: Math.floor(worth) }];
+    const level = num(x.level, 10);
+    return [{ cm: cm === null ? null : Math.floor(cm), n: Math.floor(k), hp: Math.round(hp), attack, worth: Math.floor(worth), ...(level ? { level: Math.floor(level) } : {}) }];
   });
   return each.length ? { each } : {};
+}
+
+/** Custom fish emote images: names as the bot sends them, and only Kick's or 7TV's image hosts. */
+function fishEmotes(raw: unknown): { emotes?: Record<string, string> } {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const out: Record<string, string> = {};
+  for (const [name, url] of Object.entries(raw as Record<string, unknown>).slice(0, 40)) {
+    if (/^\w{2,25}$/.test(name) && typeof url === "string" && /^https:\/\/(files\.kick\.com|cdn\.7tv\.app)\/[\w./-]+$/.test(url)) out[name] = url;
+  }
+  return Object.keys(out).length ? { emotes: out } : {};
+}
+
+/** The steal explainer's numbers, every one checked; {} when any is missing. */
+function stealRules(raw: unknown): { stealRules?: PublicStealRules } {
+  const r = raw as Record<string, unknown> | null | undefined;
+  if (!r || typeof r !== "object") return {};
+  const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= 1e12 ? v : null);
+  const keys = ["hookPrice", "hookUses", "feePercent", "feeMinimum", "fineMinimum", "edgePercent", "luckPercent", "graceMinutes", "protectMinutes", "guardPercent", "guardMinimum", "guardHours", "cooldownMinutes"] as const;
+  const out: Record<string, number> = {};
+  for (const k of keys) {
+    const v = n(r[k]);
+    if (v === null) return {};
+    out[k] = v;
+  }
+  const o = r.odds as Record<string, unknown> | null | undefined;
+  const odds = { Common: n(o?.Common), Uncommon: n(o?.Uncommon), Rare: n(o?.Rare), Epic: n(o?.Epic), Legendary: n(o?.Legendary) };
+  if (Object.values(odds).some((v) => v === null)) return {};
+  return {
+    stealRules: {
+      ...(out as Omit<PublicStealRules, "odds" | "onlyWhileLive" | "offlineOnly">),
+      odds: odds as PublicStealRules["odds"],
+      onlyWhileLive: r.onlyWhileLive === true,
+      offlineOnly: r.offlineOnly === true,
+    },
+  };
 }
 
 /** Who holds what, keeping only well-formed rows. */
@@ -154,7 +190,7 @@ function publicHolders(rows: unknown): PublicHolder[] {
     const r = row as Partial<PublicHolder> | null;
     if (!r || typeof r.name !== "string" || !USERNAME.test(r.name) || !Array.isArray(r.fish)) return [];
     const fish = r.fish.slice(0, 40).flatMap((f) =>
-      f && typeof f.emoji === "string" && f.emoji.length <= 8 && n(f.n) > 0 && typeof f.rarity === "string" && RARITIES.has(f.rarity)
+      f && typeof f.emoji === "string" && f.emoji.length <= 25 && n(f.n) > 0 && typeof f.rarity === "string" && RARITIES.has(f.rarity)
         ? [{ emoji: f.emoji, n: n(f.n), rarity: f.rarity, ...(f.type && DUEL_TYPES.has(f.type) ? { type: f.type } : {}), ...heldEach(f.each) }]
         : [],
     );
@@ -166,7 +202,7 @@ function publicFishing(raw: unknown): PublicFishing | null {
   const f = raw as Partial<PublicFishing> | null | undefined;
   if (!f || typeof f.catchOdds !== "number") return null;
   const fish = publicCatches(f.fish);
-  return fish.length ? { catchOdds: f.catchOdds, fish, junk: publicCatches(f.junk), rarest: publicRarest(f.rarest), holders: publicHolders(f.holders), steal: f.steal === true, heists: publicHeists(f.heists), duel: f.duel === true, duels: publicDuels(f.duels),
+  return fish.length ? { catchOdds: f.catchOdds, fish, junk: publicCatches(f.junk), rarest: publicRarest(f.rarest), holders: publicHolders(f.holders), steal: f.steal === true, ...stealRules(f.stealRules), ...fishEmotes(f.emotes), heists: publicHeists(f.heists), duel: f.duel === true, duels: publicDuels(f.duels),
     trophies: publicCatches(f.trophies),
     bigBite: f.bigBite && typeof f.bigBite.everyMinutes === "number" ? { everyMinutes: f.bigBite.everyMinutes } : null } : null;
 }

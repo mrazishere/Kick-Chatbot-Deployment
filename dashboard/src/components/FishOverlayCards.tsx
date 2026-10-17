@@ -176,7 +176,11 @@ function CardView({ card, side }: { card: Card; side: "left" | "right" }) {
       <div className={`fo-card fo-${ev.kind} ${rarity ? `fo-${rarity.toLowerCase()}` : ""}`}>
         {rarity === "Legendary" || rarity === "Mythic" ? <span className="fo-shine" /> : null}
         <div className="fo-icon">
-          <span className={ev.kind === "catch" ? "fo-pop" : ""}>{ev.kind === "catch" && ev.item ? ev.item : ICON[ev.kind]}</span>
+          <span className={ev.kind === "catch" ? "fo-pop" : ""}>
+            {ev.kind === "catch" && ev.item && ev.emotes?.[ev.item] ? (
+              <img src={ev.emotes[ev.item]} alt={ev.item} style={{ height: "1em", verticalAlign: "middle" }} />
+            ) : ev.kind === "catch" && ev.item ? ev.item : ICON[ev.kind]}
+          </span>
         </div>
         <div className="fo-body">
           <div className="fo-head">

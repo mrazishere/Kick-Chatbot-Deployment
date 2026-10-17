@@ -25,7 +25,7 @@
 
 import * as crypto from 'crypto';
 import type { PointsGamesConfig } from '../types';
-import { CatchItem, FishData, HeldFish, ITEMS, itemByWord, rarityOf, sellPrice } from './fishing';
+import { CatchItem, FishData, HeldFish, ITEMS, itemByWord, LEVEL_STATS, levelOf, rarityOf, sellPrice } from './fishing';
 
 export type DuelType = 'Predator' | 'Swift' | 'Armored';
 
@@ -43,7 +43,7 @@ const TYPES: Record<string, DuelType> = {
   '🦭': 'Swift', '🦦': 'Predator', '🦕': 'Armored', '💎': 'Armored', '👑': 'Swift', '🐉': 'Predator'
 };
 
-export const typeOf = (name: string): DuelType => TYPES[name] ?? 'Swift';
+export const typeOf = (name: string): DuelType => TYPES[name] ?? ITEMS.find(i => i.name === name)?.duelType ?? 'Swift';
 
 /** A fish's level, by its rarity as the channel's odds name it. */
 const LEVEL: Record<string, number> = { Common: 1, Uncommon: 1.12, Rare: 1.25, Epic: 1.4, Legendary: 1.6, Mythic: 1.8 };
@@ -69,20 +69,25 @@ export interface Fighter {
   rarity: string;
   hp: number;
   attack: number;
+  /** Levels from feeding (0 for none): each adds LEVEL_STATS to hp and attack. */
+  level: number;
 }
 
 export function fighterOf(g: PointsGamesConfig, item: CatchItem, held?: HeldFish): Fighter {
   const rarity = rarityOf(g, item.name) ?? 'Common';
   const level = LEVEL[rarity] ?? 1;
   const cm = Math.min(100, Math.max(1, held?.cm ?? UNSIZED_CM));
+  const fed = levelOf(held);
+  const boost = 1 + LEVEL_STATS * fed;
   return {
     fish: item.name,
     cm: held ? held.cm : null,
     type: typeOf(item.name),
     rarity,
-    hp: Math.round((70 + cm * 0.3) * level),
+    hp: Math.round((70 + cm * 0.3) * level * boost),
     // 0.3% more for each cm over 50, as much less for each under.
-    attack: Math.round(BASE_ATTACK * (1 + (cm - UNSIZED_CM) * 0.003) * level * 10) / 10
+    attack: Math.round(BASE_ATTACK * (1 + (cm - UNSIZED_CM) * 0.003) * level * boost * 10) / 10,
+    level: fed
   };
 }
 
@@ -149,9 +154,9 @@ export function pickForKeeps(mine: FishData | null | undefined, theirs: FishData
   return best;
 }
 
-/** That exact fish, by kind and length (no length: one without), or null when it's gone. */
+/** That exact fish, by kind and length (no length: one without), or null when it's gone. Of several that long, the highest level. */
 export const sameFish = (d: FishData | null | undefined, g: PointsGamesConfig, name: string, cm: number | undefined): Picked | null =>
-  heldFish(d, g, name).find(p => p.held?.cm === cm) ?? null;
+  heldFish(d, g, name).filter(p => p.held?.cm === cm).sort((a, b) => b.fighter.level - a.fighter.level)[0] ?? null;
 
 /**
  * The fish someone sends: their biggest of `name`, or with no name their strongest
@@ -166,8 +171,9 @@ export function pickFighter(d: FishData | null | undefined, g: PointsGamesConfig
     const have = d.catch.types[item.name] ?? 0;
     if (have <= 0) continue;
     const sized = (d.catch.sizes?.[item.name] ?? []).slice(0, have);
+    // The strongest of the kind: length and level both count.
     let index = -1;
-    for (let i = 0; i < sized.length; i++) if (index < 0 || sized[i].cm > sized[index].cm) index = i;
+    for (let i = 0; i < sized.length; i++) if (index < 0 || might(fighterOf(g, item, sized[i])) > might(fighterOf(g, item, sized[index]))) index = i;
     // Only fish with no length left: that one fights at the middle length.
     const held = index >= 0 ? sized[index] : undefined;
     const fighter = fighterOf(g, item, held);
@@ -446,11 +452,11 @@ export function fishesNamed(words: readonly string[]): string[] {
 export const teamValue = (g: PointsGamesConfig, team: readonly Picked[]): number => team.reduce((sum, p) => sum + fishValue(g, p), 0);
 
 /** "🦈 87 cm, 🐢, 🐬 66 cm": a team in chat. */
-export const describeTeam = (team: readonly Fighter[]): string => team.map(f => `${f.fish}${f.cm !== null ? ` ${f.cm} cm` : ''}`).join(', ');
+export const describeTeam = (team: readonly Fighter[]): string => team.map(f => `${f.fish}${f.cm !== null ? ` ${f.cm} cm` : ''}${f.level ? ` Lv${f.level}` : ''}`).join(', ');
 
 /** "🦈 87 cm · 🦷 Predator · Epic", for a challenge and the result. */
 export function describe(f: Fighter): string {
-  return `${f.fish}${f.cm !== null ? ` ${f.cm} cm` : ''} · ${TYPE_EMOJI[f.type]} ${f.type} · ${f.rarity}`;
+  return `${f.fish}${f.cm !== null ? ` ${f.cm} cm` : ''}${f.level ? ` Lv${f.level}` : ''} · ${TYPE_EMOJI[f.type]} ${f.type} · ${f.rarity}`;
 }
 
 // ─── What the overlay plays ─────────────────────────────────────────────────

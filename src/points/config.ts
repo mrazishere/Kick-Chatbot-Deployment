@@ -9,8 +9,8 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { FishBigBiteSetting, FishTrapCheckSetting, FishDuelSetting, PointsAntiSpamConfig, FishCatchSetting, FishReelSetting, FishStealSetting, PointsBonusesConfig, PointsConfig, PointsDuelConfig, PointsGambleConfig, PointsGamesConfig, PointsGiveConfig, PointsVideoConfig, PointsWordleConfig, PointsRaffleConfig, StoredFishCatches, StoredPointsConfig, PointsTimeoutPenaltyConfig } from '../types';
-import { defaultSellPrice, ITEMS } from '../community/fishing';
+import { CustomFishSetting, FishBigBiteSetting, FishTrapCheckSetting, FishDuelSetting, PointsAntiSpamConfig, FishCatchSetting, FishReelSetting, FishStealSetting, PointsBonusesConfig, PointsConfig, PointsDuelConfig, PointsGambleConfig, PointsGamesConfig, PointsGiveConfig, PointsVideoConfig, PointsWordleConfig, PointsRaffleConfig, StoredFishCatches, StoredPointsConfig, PointsTimeoutPenaltyConfig } from '../types';
+import { builtInName, defaultSellPrice, ITEMS, registerCustomFish } from '../community/fishing';
 
 export function defaultPointsConfig(): PointsConfig {
   return {
@@ -86,6 +86,10 @@ export function defaultPointsConfig(): PointsConfig {
       stories: true,
       giveEnabled: false,
       giveCooldownSeconds: 30,
+      maxFish: 100,
+      maxJunk: 100,
+      feedEnabled: true,
+      feedFailPercent: 10,
       chatReplies: true,
       overlayDemo: true,
       overlaySizePercent: 100,
@@ -93,6 +97,7 @@ export function defaultPointsConfig(): PointsConfig {
       overlayClearHeightPercent: 0,
       streamDelaySeconds: 0,
       catches: effectiveCatches(undefined, 100),
+      customFish: [],
       reels: DEFAULT_REELS.map(r => ({ ...r })),
       steal: { ...DEFAULT_STEAL },
       duel: { ...DEFAULT_FISH_DUEL },
@@ -269,6 +274,72 @@ export function effectiveReels(stored: unknown): FishReelSetting[] {
   });
 }
 
+export const MAX_CUSTOM_FISH = 20;
+const DUEL_TYPES = new Set(['Predator', 'Swift', 'Armored']);
+/** An emote's name: letters, digits and _, starting with a letter. */
+const CUSTOM_WORD_RE = /^[A-Za-z]\w{1,24}$/;
+/** An emoji: pictographs, joiners and skin tones, nothing else. */
+const CUSTOM_EMOJI_RE = /^\p{Extended_Pictographic}[\p{Extended_Pictographic}\p{Emoji_Modifier}\u200d]{0,7}$/u;
+/** Words the fish commands already mean something by. */
+const RESERVED_WORDS = new Set(['fish', 'junk', 'all', 'duplicate', 'dup', 'random', 'rand', 'rng', 'keep', 'keeps', 'me', 'global', 'cm',
+  'worm', 'fly', 'cricket', 'reel', 'hook', 'guard', 'cancel', 'reset', 'stats', 'top', 'sell', 'show', 'give', 'duel', 'accept', 'deny', 'trap', 'remove']);
+
+/** Why a custom fish name won't do, or null when it will. Emoji pickers' variation selectors are dropped first. */
+export function customFishNameProblem(raw: string): string | null {
+  const name = raw.replace(/\uFE0F/g, '').trim();
+  if (!CUSTOM_WORD_RE.test(name) && !CUSTOM_EMOJI_RE.test(name)) return 'needs to be one emoji, or an emote\'s name (2 to 25 letters, digits or _, starting with a letter)';
+  if (builtInName(name)) return 'is already one of the built-in catches';
+  if (RESERVED_WORDS.has(name.toLowerCase()) || /^x?\d|^\d|^[1-9]v[1-9]$/i.test(name)) return 'is a word the fish commands already use';
+  return null;
+}
+
+/** The stored custom fish, cleaned: bad or repeated names dropped, numbers clamped. */
+export function effectiveCustomFish(stored: unknown): CustomFishSetting[] {
+  if (!Array.isArray(stored)) return [];
+  const seen = new Set<string>();
+  return stored.slice(0, MAX_CUSTOM_FISH).flatMap(raw => {
+    const f = obj(raw);
+    const name = typeof f.name === 'string' ? f.name.replace(/\uFE0F/g, '').trim() : '';
+    if (customFishNameProblem(name) || seen.has(name.toLowerCase())) return [];
+    seen.add(name.toLowerCase());
+    return [{
+      name,
+      weight: roundWeight(num(f.weight, 1, 0, CATCH_WEIGHT_MAX, false)),
+      price: num(f.price, 50, 0, CATCH_PRICE_MAX, true),
+      type: typeof f.type === 'string' && DUEL_TYPES.has(f.type) ? f.type as CustomFishSetting['type'] : 'Swift'
+    }];
+  });
+}
+
+/** The whole custom fish list, replacing the stored one. */
+function validateCustomFish(raw: unknown, errors: string[]): CustomFishSetting[] | undefined {
+  if (!Array.isArray(raw)) {
+    errors.push('games.customFish must be a list');
+    return undefined;
+  }
+  if (raw.length > MAX_CUSTOM_FISH) {
+    errors.push(`There can be at most ${MAX_CUSTOM_FISH} custom fish`);
+    return undefined;
+  }
+  const out: CustomFishSetting[] = [];
+  const seen = new Set<string>();
+  raw.forEach((v, i) => {
+    const f = obj(v);
+    const name = typeof f.name === 'string' ? f.name.replace(/\uFE0F/g, '').trim() : '';
+    const label = `Custom fish ${i + 1}${name ? ` (${name})` : ''}`;
+    const problem = customFishNameProblem(name);
+    if (problem) errors.push(`${label} ${problem}`);
+    else if (seen.has(name.toLowerCase())) errors.push(`Two custom fish are called ${name}`);
+    seen.add(name.toLowerCase());
+    const weight = checkNumber(`${label} odds`, f.weight, { min: 0, max: CATCH_WEIGHT_MAX, integer: false }, errors);
+    const price = checkNumber(`${label} price`, f.price, { min: 0, max: CATCH_PRICE_MAX, integer: true }, errors);
+    const type = typeof f.type === 'string' && DUEL_TYPES.has(f.type) ? f.type as CustomFishSetting['type'] : null;
+    if (!type) errors.push(`${label} needs a duel type: Predator, Swift or Armored`);
+    out.push({ name, weight: roundWeight(weight ?? 0), price: price ?? 0, type: type ?? 'Swift' });
+  });
+  return out;
+}
+
 const CATCH_WEIGHT_MAX = 1_000_000;
 /** Odds keep two decimals, so 0.01 is the rarest an item can be short of never. */
 const roundWeight = (w: number): number => Math.round(w * 100) / 100;
@@ -279,9 +350,10 @@ const CATCH_PRICE_MAX = 1_000_000_000;
  * are clamped; a type whose weights all end up 0 could never be caught, so it
  * falls back to supibot's weights.
  */
-export function effectiveCatches(stored: unknown, sellPricePercent: number): FishCatchSetting[] {
+export function effectiveCatches(stored: unknown, sellPricePercent: number, customFish: readonly CustomFishSetting[] = []): FishCatchSetting[] {
   const o = obj(stored);
-  const list = ITEMS.map(item => {
+  // Built-in items with their overrides, then this channel's own fish as set (others' never).
+  const list: FishCatchSetting[] = ITEMS.filter(item => !item.custom).map(item => {
     const ov = obj(o[item.name]);
     const defaultPrice = defaultSellPrice(item, sellPricePercent);
     return {
@@ -294,6 +366,9 @@ export function effectiveCatches(stored: unknown, sellPricePercent: number): Fis
       ...(item.trophy ? { trophy: true } : {})
     };
   });
+  for (const f of customFish) {
+    list.push({ name: f.name, type: 'fish', weight: f.weight, price: f.price, defaultWeight: f.weight, defaultPrice: f.price, custom: true });
+  }
   // Each pool keeps at least one catch it can roll: fish, junk, and big bite trophies.
   const pools = [list.filter(c => c.type === 'fish' && !c.trophy), list.filter(c => c.type === 'junk'), list.filter(c => c.trophy)];
   for (const pool of pools) {
@@ -487,6 +562,10 @@ export function internalPointsConfig(raw: unknown): InternalPointsConfig {
     stories: bool(ga.stories, d.games.stories),
     giveEnabled: bool(ga.giveEnabled, d.games.giveEnabled),
     giveCooldownSeconds: num(ga.giveCooldownSeconds, d.games.giveCooldownSeconds, 0, 3600, true),
+    maxFish: num(ga.maxFish, d.games.maxFish, 0, 100000, true),
+    maxJunk: num(ga.maxJunk, d.games.maxJunk, 0, 100000, true),
+    feedEnabled: bool(ga.feedEnabled, d.games.feedEnabled),
+    feedFailPercent: num(ga.feedFailPercent, d.games.feedFailPercent, 0, 100, true),
     chatReplies: bool(ga.chatReplies, d.games.chatReplies),
     overlayDemo: bool(ga.overlayDemo, d.games.overlayDemo),
     overlaySizePercent: num(ga.overlaySizePercent, d.games.overlaySizePercent, 50, 300, true),
@@ -494,13 +573,16 @@ export function internalPointsConfig(raw: unknown): InternalPointsConfig {
     overlayClearHeightPercent: num(ga.overlayClearHeightPercent, d.games.overlayClearHeightPercent, 0, 80, true),
     streamDelaySeconds: num(ga.streamDelaySeconds, d.games.streamDelaySeconds, 0, 30, true),
     catches: [],
+    customFish: effectiveCustomFish(ga.customFish),
     reels: effectiveReels(ga.reels),
     steal: effectiveSteal(ga.steal),
     duel: effectiveFishDuel(ga.duel),
     bigBite: effectiveBigBite(ga.bigBite),
     trapCheck: effectiveTrapCheck(ga.trapCheck)
   };
-  games.catches = effectiveCatches(ga.catches, games.sellPricePercent);
+  // Custom fish join the item list before the catch table is built from it.
+  registerCustomFish(games.customFish);
+  games.catches = effectiveCatches(ga.catches, games.sellPricePercent, games.customFish);
 
   return {
     enabled: bool(r.enabled, d.enabled),
@@ -636,7 +718,11 @@ const GAMES_NUMBERS: Record<string, Rule> = {
   overlayClearWidthPercent: { min: 0, max: 80, integer: true },
   overlayClearHeightPercent: { min: 0, max: 80, integer: true },
   streamDelaySeconds: { min: 0, max: 30, integer: true },
-  giveCooldownSeconds: { min: 0, max: 3600, integer: true }
+  giveCooldownSeconds: { min: 0, max: 3600, integer: true },
+  // 0 is no cap.
+  maxFish: { min: 0, max: 100000, integer: true },
+  maxJunk: { min: 0, max: 100000, integer: true },
+  feedFailPercent: { min: 0, max: 100, integer: true }
 };
 /**
  * The whole set of per-item overrides, replacing the stored one: each key an item's
@@ -651,9 +737,9 @@ function validateCatches(raw: unknown, sellPricePercent: number, errors: string[
   const out: StoredFishCatches = {};
   const weights = new Map<string, number>();
   for (const [name, v] of Object.entries(raw as Record<string, unknown>)) {
-    const item = ITEMS.find(i => i.name === name);
+    const item = ITEMS.find(i => i.name === name && !i.custom);
     if (!item) {
-      errors.push(`games.catches: ${name} isn't a fish or junk item`);
+      errors.push(`games.catches: ${name} isn't a built-in fish or junk item (custom fish are set in games.customFish)`);
       continue;
     }
     const ov = obj(v);
@@ -971,7 +1057,7 @@ export function validatePointsPatch(current: unknown, patch: unknown): { next?: 
         const v = checkNumber(`games.${key}`, ga[key], rule, errors);
         if (v !== undefined) (next.games as Record<string, unknown>)[key] = v;
       }
-      for (const key of ['enabled', 'onlyWhileLive', 'onlyWhileOffline', 'stories', 'chatReplies', 'overlayDemo', 'giveEnabled'] as const) {
+      for (const key of ['enabled', 'onlyWhileLive', 'onlyWhileOffline', 'stories', 'chatReplies', 'overlayDemo', 'giveEnabled', 'feedEnabled'] as const) {
         if (ga[key] === undefined) continue;
         if (typeof ga[key] !== 'boolean') errors.push(`games.${key} must be true or false`);
         else next.games![key] = ga[key] as boolean;
@@ -1066,6 +1152,14 @@ export function validatePointsPatch(current: unknown, patch: unknown): { next?: 
           for (const key of Object.keys(out) as Array<keyof FishDuelSetting>) if (out[key] === DEFAULT_FISH_DUEL[key]) delete out[key];
           if (Object.keys(out).length) next.games!.duel = out;
           else delete next.games!.duel;
+        }
+      }
+      if (ga.customFish === null) delete next.games!.customFish;
+      else if (ga.customFish !== undefined) {
+        const custom = validateCustomFish(ga.customFish, errors);
+        if (custom) {
+          if (custom.length) next.games!.customFish = custom;
+          else delete next.games!.customFish;
         }
       }
       if (ga.catches === null) delete next.games!.catches;

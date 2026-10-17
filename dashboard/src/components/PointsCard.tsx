@@ -130,6 +130,12 @@ export interface PointsGames {
   /** `fish give` on, and seconds between a viewer's gives. Absent from an older bot service. */
   giveEnabled?: boolean;
   giveCooldownSeconds?: number;
+  /** The most fish and junk one viewer holds, 0 for no cap. Absent from an older bot service. */
+  maxFish?: number;
+  maxJunk?: number;
+  /** fish feed on, and the chance (%) a feeding fails. Absent from an older bot service. */
+  feedEnabled?: boolean;
+  feedFailPercent?: number;
   /** Fishing replies go to chat. They always go to the fishing overlay; off, chat only gets them offline or with no overlay showing. Absent from an older bot service. */
   chatReplies?: boolean;
   /** The fishing overlay's &demo=1 may play; off, overlays ignore it. Absent from an older bot service. */
@@ -143,6 +149,8 @@ export interface PointsGames {
   streamDelaySeconds?: number;
   /** Every fish and junk item's odds and price. Absent from a bot service older than per-item settings. */
   catches?: FishCatch[];
+  /** The channel's own fish. Absent from a bot service older than them. */
+  customFish?: CustomFish[];
   /** Reels in buying order. Absent from a bot service older than reels. */
   reels?: FishReel[];
   /** `fish steal`. Absent from a bot service older than stealing. */
@@ -244,6 +252,14 @@ export interface FishReel {
   valueMultiplier: number;
 }
 
+export interface CustomFish {
+  /** An emoji or an emote's name. */
+  name: string;
+  weight: number;
+  price: number;
+  type: "Predator" | "Swift" | "Armored";
+}
+
 export interface FishCatch {
   name: string;
   type: "fish" | "junk";
@@ -255,6 +271,8 @@ export interface FishCatch {
   defaultPrice: number;
   /** A big bite trophy: its odds are a share of big bites. */
   trophy?: boolean;
+  /** One of the channel's custom fish: set under Custom fish, not here. */
+  custom?: boolean;
 }
 
 /** Big bites: live casts that land a trophy if the angler types the code shown on stream. Mirrors the bot's FishBigBiteSetting. */
@@ -504,6 +522,10 @@ interface SettingsForm {
   fishStories: boolean;
   fishGive: boolean;
   fishGiveCooldown: string;
+  fishMaxFish: string;
+  fishMaxJunk: string;
+  fishFeed: boolean;
+  fishFeedFail: string;
   fishChatReplies: boolean;
   fishOverlayDemo: boolean;
   fishOverlaySize: string;
@@ -511,6 +533,8 @@ interface SettingsForm {
   fishOverlayClearH: string;
   fishStreamDelay: string;
   fishCatches: { name: string; type: "fish" | "junk"; weight: string; price: string; defaultWeight: number; defaultPrice: number; trophy?: boolean }[];
+  /** null: a bot service older than custom fish, so none are sent. */
+  fishCustom: { name: string; weight: string; price: string; type: CustomFish["type"] }[] | null;
   /** null when the bot service doesn't report big bites. */
   fishBigBite: { enabled: boolean; everyMinutes: string; activeMinutes: string; windowSeconds: string; pulls: string; pullSeconds: string; flashSeconds: string; snipeSeconds: string } | null;
   fishTrapCheck: { enabled: boolean; chancePercent: string; castChancePercent: string; finePercent: string; answerSeconds: string; tries: string } | null;
@@ -600,13 +624,18 @@ function formFromConfig(c: PointsConfig): SettingsForm {
     fishStories: (c.games ?? GAMES_DEFAULTS).stories,
     fishGive: c.games?.giveEnabled === true,
     fishGiveCooldown: String(c.games?.giveCooldownSeconds ?? 30),
+    fishMaxFish: String(c.games?.maxFish ?? 100),
+    fishMaxJunk: String(c.games?.maxJunk ?? 100),
+    fishFeed: c.games?.feedEnabled !== false,
+    fishFeedFail: String(c.games?.feedFailPercent ?? 10),
     fishChatReplies: (c.games ?? GAMES_DEFAULTS).chatReplies !== false,
     fishOverlayDemo: (c.games ?? GAMES_DEFAULTS).overlayDemo !== false,
     fishOverlaySize: String((c.games ?? GAMES_DEFAULTS).overlaySizePercent ?? 100),
     fishOverlayClearW: String(c.games?.overlayClearWidthPercent ?? 0),
     fishOverlayClearH: String(c.games?.overlayClearHeightPercent ?? 0),
     fishStreamDelay: String(c.games?.streamDelaySeconds ?? 0),
-    fishCatches: (c.games?.catches ?? []).map((x) => ({ ...x, weight: String(x.weight), price: String(x.price) })),
+    fishCatches: (c.games?.catches ?? []).filter((x) => !x.custom).map((x) => ({ ...x, weight: String(x.weight), price: String(x.price) })),
+    fishCustom: c.games?.customFish ? c.games.customFish.map((x) => ({ name: x.name, weight: String(x.weight), price: String(x.price), type: x.type })) : c.games ? [] : null,
     fishBigBite: c.games?.bigBite
       ? {
           enabled: c.games.bigBite.enabled,
@@ -837,6 +866,10 @@ function buildPatch(f: SettingsForm): { patch: PointsSettingsPatch } | { error: 
     stories: f.fishStories,
     giveEnabled: f.fishGive,
     giveCooldownSeconds: whole(f.fishGiveCooldown, "Gift cooldown", 0, 3600),
+    maxFish: whole(f.fishMaxFish, "Most fish held", 0, 100000),
+    maxJunk: whole(f.fishMaxJunk, "Most junk held", 0, 100000),
+    feedEnabled: f.fishFeed,
+    feedFailPercent: whole(f.fishFeedFail, "Feeding fail chance", 0, 100),
     chatReplies: f.fishChatReplies,
     overlayDemo: f.fishOverlayDemo,
     overlaySizePercent: whole(f.fishOverlaySize, "Overlay size", 50, 300),
@@ -861,6 +894,22 @@ function buildPatch(f: SettingsForm): { patch: PointsSettingsPatch } | { error: 
       if (pool.length && pool.every((c) => Number(c.weight) === 0)) errors.push(`At least one ${label} needs odds above 0`);
     }
     patch.games.catches = catches;
+  }
+  if (f.fishCustom) {
+    const names = new Set<string>();
+    patch.games.customFish = f.fishCustom.map((x, i) => {
+      const name = x.name.replace(/\uFE0F/g, "").trim();
+      const label = `Custom fish ${i + 1}${name ? ` (${name})` : ""}`;
+      if (!name) errors.push(`${label} needs a name: an emoji or an emote's name`);
+      else if (names.has(name.toLowerCase())) errors.push(`Two custom fish are called ${name}`);
+      names.add(name.toLowerCase());
+      return {
+        name,
+        weight: Math.round(decimal(x.weight, `${label} odds`, 0, 1_000_000) * 100) / 100,
+        price: whole(x.price, `${label} price`, 0, 1_000_000_000),
+        type: x.type,
+      };
+    });
   }
   if (f.fishReels) {
     const names = new Set<string>();
@@ -1413,6 +1462,117 @@ function CatchTable({ rows, currency, disabled, onChange }: {
             Reset to defaults
           </button>
         </div>
+      </div>
+    </details>
+  );
+}
+
+const MAX_CUSTOM_FISH = 20;
+
+/**
+ * The channel's own fish: a name (an emoji or an emote's name), odds on the same scale as
+ * the built-in fish, a price at 50 cm, and a duel type. Caught, sold and duelled like the rest.
+ */
+function CustomFishTable({ rows, builtInTotal, currency, command, disabled, onChange }: {
+  rows: NonNullable<SettingsForm["fishCustom"]>;
+  builtInTotal: number;
+  currency: string;
+  command: string;
+  disabled: boolean;
+  onChange: (rows: NonNullable<SettingsForm["fishCustom"]>) => void;
+}) {
+  const total = builtInTotal + rows.reduce((sum, r) => sum + (Number(r.weight) > 0 ? Number(r.weight) : 0), 0);
+  const edit = (i: number, patch: Partial<(typeof rows)[number]>) => onChange(rows.map((r, j) => (j === i ? { ...r, ...patch } : r)));
+  return (
+    <details className="mt-3 rounded-lg border border-neutral-800" open={rows.length > 0}>
+      <summary className="cursor-pointer select-none px-3 py-2 text-sm text-neutral-300">
+        Custom fish
+        <span className="ml-2 text-xs text-neutral-500">{rows.length ? `${rows.length} of ${MAX_CUSTOM_FISH}` : "none yet"}</span>
+      </summary>
+      <div className="border-t border-neutral-800 p-3">
+        {rows.length ? (
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[34rem] text-sm">
+              <thead>
+                <tr className="text-xs text-neutral-500">
+                  <th className="pb-1 text-left font-normal">Name</th>
+                  <th className="w-20 pb-1 text-right font-normal">Odds</th>
+                  <th className="w-16 pb-1 text-right font-normal">Chance</th>
+                  <th className="w-28 pb-1 text-right font-normal">Sells for</th>
+                  <th className="w-28 pb-1 pl-2 text-left font-normal">Duel type</th>
+                  <th className="w-8" />
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r, i) => {
+                  const w = Number(r.weight);
+                  const share = total > 0 ? (w / total) * 100 : 0;
+                  const chance = !(w > 0) || total === 0 ? "never" : `${share.toFixed(share < 1 ? 2 : share < 10 ? 1 : 0)}%`;
+                  return (
+                    <tr key={i}>
+                      <td className="py-0.5 pr-2">
+                        <input
+                          aria-label={`Custom fish ${i + 1} name`}
+                          value={r.name}
+                          placeholder="🦄 or an emote's name"
+                          maxLength={25}
+                          disabled={disabled}
+                          onChange={(e) => edit(i, { name: e.target.value })}
+                          className="w-full rounded-md border border-neutral-800 bg-neutral-900 px-2 py-1 text-sm text-neutral-200"
+                        />
+                      </td>
+                      <td className="py-0.5 pl-2">
+                        <input aria-label={`Custom fish ${i + 1} odds`} inputMode="decimal" value={r.weight} disabled={disabled} onChange={(e) => edit(i, { weight: e.target.value })} className={CELL_INPUT} />
+                      </td>
+                      <td className="py-0.5 text-right text-xs tabular-nums text-neutral-500">{chance}</td>
+                      <td className="py-0.5 pl-2">
+                        <input aria-label={`Custom fish ${i + 1} sell price`} inputMode="numeric" value={r.price} disabled={disabled} onChange={(e) => edit(i, { price: e.target.value })} className={CELL_INPUT} />
+                      </td>
+                      <td className="py-0.5 pl-2">
+                        <select
+                          aria-label={`Custom fish ${i + 1} duel type`}
+                          value={r.type}
+                          disabled={disabled}
+                          onChange={(e) => edit(i, { type: e.target.value as CustomFish["type"] })}
+                          className="w-full rounded-md border border-neutral-800 bg-neutral-900 px-1 py-1 text-sm text-neutral-200"
+                        >
+                          <option value="Predator">🦷 Predator</option>
+                          <option value="Swift">💨 Swift</option>
+                          <option value="Armored">🪨 Armored</option>
+                        </select>
+                      </td>
+                      <td className="py-0.5 pl-2 text-right">
+                        <button
+                          type="button"
+                          aria-label={`Remove custom fish ${i + 1}`}
+                          disabled={disabled}
+                          onClick={() => onChange(rows.filter((_, j) => j !== i))}
+                          className="text-neutral-500 hover:text-red-400 disabled:opacity-40"
+                        >
+                          ✕
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        ) : null}
+        <div className="mt-3 flex flex-wrap items-start justify-between gap-3">
+          <p className="max-w-xl text-xs text-neutral-500">
+            {`Your own fish, caught by casts and traps like the rest. The name is an emoji or one of your emotes' names (then it shows as the emote on the overlay, and viewers type it: ${command ? `$${command}` : ""} fish sell KEKLEO). Odds are on the same scale as the built-in fish (🐟 is 10, 🦈 0.5), and chance is its share of all fish. The price is for a 50 cm one; length scales it like any fish. The duel type decides what it beats: Predator beats Swift, Swift beats Armored, Armored beats Predator. Taking one off the list stops it being caught; anyone holding one can still sell it at its last price.`}
+          </p>
+          <button
+            type="button"
+            onClick={() => onChange([...rows, { name: "", weight: "0.5", price: "500", type: "Swift" }])}
+            disabled={disabled || rows.length >= MAX_CUSTOM_FISH}
+            className="rounded-lg border border-neutral-700 px-3 py-1.5 text-xs text-neutral-300 transition hover:border-neutral-500 hover:text-neutral-100 disabled:opacity-40"
+          >
+            Add a custom fish
+          </button>
+        </div>
+        <p className="mt-2 text-xs text-neutral-600">{`Prices are in ${currency}.`}</p>
       </div>
     </details>
   );
@@ -2170,6 +2330,8 @@ export default function PointsCard({
                     <Field label="Sell prices (%)" hint="100 = fish 50, junk 1–20">{text("fishSellPct", { inputMode: "numeric" })}</Field>
                   ) : null}
                   <Field label="Bait prices (%)" hint="100 = worm 2, fly 5, cricket 8">{text("fishBaitPct", { inputMode: "numeric" })}</Field>
+                  <Field label="Most fish held" hint="Per viewer; past it new fish sell on the spot, warned from 90%. 0 = no cap">{text("fishMaxFish", { inputMode: "numeric" })}</Field>
+                  <Field label="Most junk held" hint="Per viewer; past it new junk is thrown away. 0 = no cap">{text("fishMaxJunk", { inputMode: "numeric" })}</Field>
                 </div>
                 {form.fishReels ? (
                   <ReelTable
@@ -2223,6 +2385,16 @@ export default function PointsCard({
                     onChange={(rows) => set("fishCatches", rows)}
                   />
                 ) : null}
+                {form.fishCustom ? (
+                  <CustomFishTable
+                    rows={form.fishCustom}
+                    builtInTotal={form.fishCatches.filter((c) => c.type === "fish" && !c.trophy).reduce((sum, c) => sum + (Number(c.weight) > 0 ? Number(c.weight) : 0), 0)}
+                    currency={form.currencyName.trim() || "points"}
+                    command={commandPreview || "…"}
+                    disabled={readOnly || !!busy}
+                    onChange={(rows) => set("fishCustom", rows)}
+                  />
+                ) : null}
                 <div className="mt-3 space-y-2">
                   <Checkbox
                     label="Only fish and lay traps while the stream is live"
@@ -2258,6 +2430,19 @@ export default function PointsCard({
                     <div className="pl-6 sm:w-1/3">
                       <Field label="Seconds between gives" hint="Per viewer. Anyone can receive, fished before or not; oldest fish go first, and a record bonus stays with whoever caught it.">
                         {text("fishGiveCooldown", { inputMode: "numeric" })}
+                      </Field>
+                    </div>
+                  ) : null}
+                  <Checkbox
+                    label={`Let viewers level up a fish by feeding it others (${commandPreview ? `$${commandPreview}` : "…"} fish feed 🦈 72cm 🐟 🐟)`}
+                    checked={form.fishFeed}
+                    disabled={readOnly || !!busy}
+                    onChange={(v) => set("fishFeed", v)}
+                  />
+                  {form.fishFeed ? (
+                    <div className="pl-6 sm:w-1/3">
+                      <Field label="Chance a feeding fails (%)" hint="The food is lost and no XP gained. Food gives its sell value as XP; each level (up to 10) adds 10% duel health and attack and 25% value.">
+                        {text("fishFeedFail", { inputMode: "numeric" })}
                       </Field>
                     </div>
                   ) : null}

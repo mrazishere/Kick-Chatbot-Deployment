@@ -9,7 +9,7 @@ import { loadPublicLeaderboard, loadPublicViewers } from "@/lib/public-leaderboa
 import PublicViewers from "@/components/PublicViewers";
 import Heists, { formatDay } from "@/components/Heists";
 import Duels from "@/components/Duels";
-import type { PublicCatch, PublicCommands, PublicFishing, PublicHolder, PublicRareCatch } from "@/lib/bot-api";
+import type { PublicCatch, PublicCommands, PublicFishing, PublicHolder, PublicRareCatch, PublicStealRules } from "@/lib/bot-api";
 
 export const dynamic = "force-dynamic";
 
@@ -65,7 +65,17 @@ function formatChance(p: number): string {
   return `${p < 1 ? p.toFixed(2) : p < 10 ? p.toFixed(1) : Math.round(p)}%`;
 }
 
-function CatchTable({ title, rows, currency }: { title: string; rows: PublicCatch[]; currency: string }) {
+type Emotes = Record<string, string>;
+
+/** A catch by its emoji, or the emote image for a custom fish named after one of the channel's emotes. */
+function FishIcon({ name, emotes }: { name: string; emotes?: Emotes }) {
+  const url = emotes?.[name];
+  if (!url) return <>{name}</>;
+  // eslint-disable-next-line @next/next/no-img-element
+  return <img src={url} alt={name} title={name} className="inline-block h-[1.25em] w-auto align-middle" loading="lazy" />;
+}
+
+function CatchTable({ title, rows, currency, emotes }: { title: string; rows: PublicCatch[]; currency: string; emotes?: Emotes }) {
   return (
     <section className="overflow-hidden rounded-xl border border-neutral-800 bg-neutral-950/60">
       {/* Fixed columns, so the Fish and Junk tables line up with each other. */}
@@ -81,7 +91,7 @@ function CatchTable({ title, rows, currency }: { title: string; rows: PublicCatc
         <tbody className="divide-y divide-neutral-800">
           {rows.map((r) => (
             <tr key={r.emoji}>
-              <td className="px-5 py-2.5 text-xl leading-none">{r.emoji}</td>
+              <td className="px-5 py-2.5 text-xl leading-none"><FishIcon name={r.emoji} emotes={emotes} /></td>
               <td className="px-3 py-2.5">
                 <span className={`rounded-md border px-1.5 py-0.5 text-xs ${RARITY_CLASS[r.rarity]}`}>{r.rarity}</span>
               </td>
@@ -98,7 +108,7 @@ function CatchTable({ title, rows, currency }: { title: string; rows: PublicCatc
 }
 
 
-function RarestCatches({ rows, channel }: { rows: PublicRareCatch[]; channel: string }) {
+function RarestCatches({ rows, channel, emotes }: { rows: PublicRareCatch[]; channel: string; emotes?: Emotes }) {
   const who = (name: string) => (
     <a href={`${BASE_PATH}/${channel}/leaderboard?user=${encodeURIComponent(name)}`} className="text-neutral-200 hover:underline">
       {name}
@@ -110,7 +120,7 @@ function RarestCatches({ rows, channel }: { rows: PublicRareCatch[]; channel: st
       <ol className="divide-y divide-neutral-800">
         {rows.map((r) => (
           <li key={r.emoji} className="flex items-center gap-4 px-5 py-3 text-sm">
-            <span className="w-8 shrink-0 text-xl leading-none">{r.emoji}</span>
+            <span className="w-8 shrink-0 text-xl leading-none"><FishIcon name={r.emoji} emotes={emotes} /></span>
             <span className="min-w-0 flex-1">
               <span className="flex flex-wrap items-center gap-2">
                 <span className={`rounded-md border px-1.5 py-0.5 text-xs ${RARITY_CLASS[r.rarity]}`}>{r.rarity}</span>
@@ -129,27 +139,93 @@ function RarestCatches({ rows, channel }: { rows: PublicRareCatch[]; channel: st
   );
 }
 
+/** How stealing works here: hooks, the odds, fees and fines, and guards, from the channel's settings. */
+function StealGuide({ rules: r, currency, command }: { rules: PublicStealRules; currency: string; command: string }) {
+  const n = (v: number) => v.toLocaleString("en-US");
+  const mins = (m: number) => (m >= 60 && m % 60 === 0 ? `${m / 60} hour${m === 60 ? "" : "s"}` : `${m} minutes`);
+  const luck = (p: number) => Math.min(100, Math.round(p * (100 + r.luckPercent)) / 100);
+  const code = (t: string) => <code className="rounded bg-neutral-900 px-1 py-0.5 text-[0.8em] text-neutral-200">{t}</code>;
+  const when = r.onlyWhileLive ? "only while the stream is live" : r.offlineOnly ? "only while the stream is offline" : "any time";
+  return (
+    <section className="overflow-hidden rounded-xl border border-neutral-800 bg-neutral-950/60">
+      <h2 className="border-b border-neutral-800 px-5 py-2 text-xs text-neutral-500">
+        <span className="text-neutral-300">🪝 How stealing works</span> · hooks, guards, odds and fines
+      </h2>
+      <div className="grid gap-5 px-5 py-4 text-sm text-neutral-300 sm:grid-cols-2">
+        <div className="space-y-2">
+          <h3 className="font-medium text-neutral-100">🪝 Grappling hook</h3>
+          <p>
+            {code(`${command} fish buy hook`)} costs <b>{n(r.hookPrice)} {currency}</b> for <b>{r.hookUses} tr{r.hookUses === 1 ? "y" : "ies"}</b>. You need one to steal, and every try uses one up,
+            caught or not. A hook that hits a guard, or fumbles because you can&apos;t cover the costs, uses a try too.
+          </p>
+          <h3 className="pt-1 font-medium text-neutral-100">🎣 Stealing</h3>
+          <p>
+            {code(`${command} fish steal @user`)} reaches for one random fish they&apos;ve held for over {mins(r.graceMinutes)} (a fresh catch is safe, so it can be sold
+            first). It works {when}, and uses your {r.cooldownMinutes}-minute fishing cooldown. Your bucket needs room for the fish.
+          </p>
+          <table className="w-full max-w-xs text-xs">
+            <thead>
+              <tr className="text-neutral-500">
+                <th className="pb-1 text-left font-normal">The fish grabbed</th>
+                <th className="pb-1 text-right font-normal">Chance it works</th>
+              </tr>
+            </thead>
+            <tbody className="tabular-nums">
+              {(["Common", "Uncommon", "Rare", "Epic", "Legendary"] as const).map((k) => (
+                <tr key={k}>
+                  <td className="py-0.5">{k}{k === "Legendary" ? " & trophies" : ""}</td>
+                  <td className="py-0.5 text-right">{luck(r.odds[k])}%</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div className="space-y-2">
+          <h3 className="font-medium text-neutral-100">💸 Fees and fines</h3>
+          <p>
+            Every try that goes ahead costs a fee of <b>{r.feePercent}%</b> of the grabbed fish&apos;s value (at least {n(r.feeMinimum)} {currency}), win or lose. Get caught and you
+            also pay a fine (at least {n(r.fineMinimum)} {currency}).{" "}
+            {r.luckPercent > 0
+              ? `Fines are priced so thieves would lose about ${r.edgePercent}% on average at the base odds, but every chance here gets a +${r.luckPercent}% boost (already in the table), so thieves come out a little ahead on average.`
+              : `Fines are priced so that thieves lose about ${r.edgePercent}% of what they'd hope to win, on average.`}{" "}
+            You need enough {currency} on hand to cover the fee and fine for their most valuable fish, or your hook fumbles.
+          </p>
+          <p>
+            After a try on someone, they&apos;re on alert for {mins(r.protectMinutes)}: nobody can try them. You can try the same person once a day.
+          </p>
+          <h3 className="pt-1 font-medium text-neutral-100">💂 Guard</h3>
+          <p>
+            {code(`${command} fish buy guard`)} protects all your fish for <b>{r.guardHours} hours</b>. It costs {r.guardPercent}% of what your fish are worth when you buy it (at least {n(r.guardMinimum)} {currency});
+            buying again adds more time. A thief&apos;s hook bounces off a guard and loses a try. How long your guard has left is never shown in chat, so thieves can&apos;t time it.
+          </p>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 const TYPE_EMOJI: Record<string, string> = { Predator: "🦷", Swift: "💨", Armored: "🪨" };
 
 /** One viewer's fish, each kind by length: duel stats (❤️ health, ⚔️ attack) and what it sells for. */
-function HeldList({ fish, currency, duel }: { fish: PublicHolder["fish"]; currency: string; duel: boolean }) {
+function HeldList({ fish, currency, duel, emotes }: { fish: PublicHolder["fish"]; currency: string; duel: boolean; emotes?: Emotes }) {
   return (
-    <div className="space-y-2 border-t border-neutral-800/60 bg-neutral-900/30 px-5 py-3 sm:pl-14">
+    <div className="space-y-2 bg-neutral-900/20 px-5 py-3 sm:pl-14">
       {fish.map((f) => (
         <div key={f.emoji} className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
           <span className="w-full text-xs text-neutral-400 sm:w-44 sm:shrink-0">
-            <span className="mr-1 text-base">{f.emoji}</span>
+            <span className="mr-1 text-base"><FishIcon name={f.emoji} emotes={emotes} /></span>
             {f.type ? `${TYPE_EMOJI[f.type] ?? ""} ${f.type} · ` : ""}
             {f.rarity}
           </span>
           <span className="flex min-w-0 flex-1 flex-wrap gap-1.5">
             {(f.each ?? []).map((e) => (
               <span
-                key={`${e.cm}-${e.worth}`}
+                key={`${e.cm}-${e.worth}-${e.level ?? 0}`}
                 title={`${e.worth.toLocaleString("en-US")} ${currency} each`}
                 className="rounded-md border border-neutral-800 bg-neutral-950/60 px-1.5 py-0.5 text-xs tabular-nums text-neutral-300"
               >
                 <span className="text-neutral-100">{e.cm === null ? "no size" : `${e.cm} cm`}</span>
+                {e.level ? <span className="ml-1 rounded bg-amber-500/15 px-1 text-amber-300">Lv{e.level}</span> : null}
                 {e.n > 1 ? <span className="text-neutral-500"> ×{e.n}</span> : null}
                 <span className="ml-1.5 text-neutral-500">❤️{e.hp} ⚔️{e.attack} 💰{e.worth.toLocaleString("en-US")}</span>
               </span>
@@ -165,49 +241,44 @@ function HeldList({ fish, currency, duel }: { fish: PublicHolder["fish"]; curren
 }
 
 /** The fish each viewer holds unsold, the most valuable haul first. */
-function Holders({ rows, currency, channel, duel }: { rows: PublicHolder[]; currency: string; channel: string; duel: boolean }) {
+function Holders({ rows, currency, channel, duel, emotes }: { rows: PublicHolder[]; currency: string; channel: string; duel: boolean; emotes?: Emotes }) {
   const total = rows.reduce((sum, r) => sum + r.count, 0);
   return (
     <section className="overflow-hidden rounded-xl border border-neutral-800 bg-neutral-950/60">
       <h2 className="border-b border-neutral-800 px-5 py-2 text-xs text-neutral-500">
         <span className="text-neutral-300">🪣 Holding right now</span>
-        {` · ${total.toLocaleString("en-US")} unsold fish, by what they'd sell for. Tap someone for each fish's length and stats.`}
+        {` · ${total.toLocaleString("en-US")} unsold fish, by what they'd sell for. Tap someone to see their fish, each with its length and stats.`}
       </h2>
       <ol className="divide-y divide-neutral-800">
         {rows.map((r, i) => {
           const detailed = r.fish.some((f) => f.each?.length);
-          const row = (
-            <>
-              <span className="w-6 shrink-0 pt-0.5 text-xs tabular-nums text-neutral-600">{i + 1}</span>
-              <span className="min-w-0 flex-1">
-                <a href={`${BASE_PATH}/${channel}/leaderboard?user=${encodeURIComponent(r.name)}`} className="text-neutral-200 hover:underline">
-                  {r.name}
-                </a>
-                <span className="mt-1.5 flex flex-wrap gap-1.5">
-                  {r.fish.map((f) => (
-                    <span key={f.emoji} title={f.rarity} className={`rounded-md border px-1.5 py-0.5 leading-none ${RARITY_CLASS[f.rarity]}`}>
-                      <span className="text-base leading-none">{f.emoji}</span>
-                      {f.n > 1 ? <span className="ml-1 text-xs tabular-nums">×{f.n}</span> : null}
-                    </span>
-                  ))}
-                </span>
-              </span>
-              <span className="shrink-0 text-right tabular-nums text-neutral-300">
-                {r.worth.toLocaleString("en-US")} {currency}
-                <span className="block text-xs text-neutral-500">
-                  {`${r.count} fish`}
-                  {detailed ? <span className="ml-1 inline-block transition group-open:rotate-90">▸</span> : null}
-                </span>
-              </span>
-            </>
-          );
-          if (!detailed) return <li key={r.name} className="flex items-start gap-3 px-5 py-3 text-sm">{row}</li>;
-          // Tap a row for each fish by length, as `fish show 🦈` lists them in chat.
+          // Collapsed: who and what it's worth. Open: every kind they hold, then each fish by length.
           return (
             <li key={r.name} className="text-sm">
               <details className="group">
-                <summary className="flex cursor-pointer list-none items-start gap-3 px-5 py-3 hover:bg-neutral-900/40 [&::-webkit-details-marker]:hidden">{row}</summary>
-                <HeldList fish={r.fish} currency={currency} duel={duel} />
+                <summary className="flex cursor-pointer list-none items-center gap-3 px-5 py-2.5 hover:bg-neutral-900/40 [&::-webkit-details-marker]:hidden">
+                  <span className="w-6 shrink-0 text-xs tabular-nums text-neutral-600">{i + 1}</span>
+                  <span className="min-w-0 flex-1 truncate text-neutral-200">{r.name}</span>
+                  <span className="shrink-0 text-right tabular-nums text-neutral-300">
+                    {r.worth.toLocaleString("en-US")} {currency}
+                    <span className="ml-2 text-xs text-neutral-500">{`${r.count} fish`}</span>
+                    <span className="ml-2 inline-block text-xs text-neutral-500 transition group-open:rotate-90">▸</span>
+                  </span>
+                </summary>
+                <div className="border-t border-neutral-800/60 bg-neutral-900/20 px-5 pb-1 pt-3 sm:pl-14">
+                  <span className="flex flex-wrap gap-1.5">
+                    {r.fish.map((f) => (
+                      <span key={f.emoji} title={f.rarity} className={`rounded-md border px-1.5 py-0.5 leading-none ${RARITY_CLASS[f.rarity]}`}>
+                        <span className="text-base leading-none"><FishIcon name={f.emoji} emotes={emotes} /></span>
+                        {f.n > 1 ? <span className="ml-1 text-xs tabular-nums">×{f.n}</span> : null}
+                      </span>
+                    ))}
+                  </span>
+                  <a href={`${BASE_PATH}/${channel}/leaderboard?user=${encodeURIComponent(r.name)}`} className="mt-2 inline-block text-xs text-neutral-500 hover:text-neutral-300 hover:underline">
+                    {`${r.name}'s ${currency} history →`}
+                  </a>
+                </div>
+                {detailed ? <HeldList fish={r.fish} currency={currency} duel={duel} emotes={emotes} /> : null}
               </details>
             </li>
           );
@@ -225,7 +296,7 @@ function hasBigBiteVideo(channel: string): boolean {
   return /^[a-z0-9_]+$/.test(channel) && fs.existsSync(path.join(process.cwd(), "public", "videos", `big-bite-${channel}.mp4`));
 }
 
-function FishingTab({ fishing, currency, channel }: { fishing: PublicFishing; currency: string; channel: string }) {
+function FishingTab({ fishing, currency, channel, command }: { fishing: PublicFishing; currency: string; channel: string; command: string }) {
   return (
     <div className="space-y-4">
       {fishing.bigBite && hasBigBiteVideo(channel) ? (
@@ -245,11 +316,12 @@ function FishingTab({ fishing, currency, channel }: { fishing: PublicFishing; cu
         {`A cast lands a fish 1 time in ${fishing.catchOdds}; bait and reels improve that. Chance is how often a catch is that fish. `}
         {`Prices are for an average 50 cm fish: length scales it from half (1 cm) to double (100 cm), and beating your record adds 50%.`}
       </p>
-      {fishing.rarest.length ? <RarestCatches rows={fishing.rarest} channel={channel} /> : null}
-      {fishing.holders?.length ? <Holders rows={fishing.holders} currency={currency} channel={channel} duel={!!fishing.duel} /> : null}
+      {fishing.rarest.length ? <RarestCatches rows={fishing.rarest} channel={channel} emotes={fishing.emotes} /> : null}
+      {fishing.holders?.length ? <Holders rows={fishing.holders} currency={currency} channel={channel} duel={!!fishing.duel} emotes={fishing.emotes} /> : null}
+      {fishing.stealRules ? <StealGuide rules={fishing.stealRules} currency={currency} command={command} /> : null}
       {fishing.steal || fishing.heists ? <Heists heists={fishing.heists ?? null} currency={currency} channel={channel} /> : null}
       {fishing.duel || fishing.duels ? <Duels duels={fishing.duels ?? null} currency={currency} channel={channel} /> : null}
-      <CatchTable title="Fish" rows={fishing.fish} currency={currency} />
+      <CatchTable title="Fish" rows={fishing.fish} currency={currency} emotes={fishing.emotes} />
       {fishing.bigBite && fishing.trophies?.length ? (
         <>
           <p className="text-xs text-neutral-500">
@@ -455,7 +527,7 @@ export default async function LeaderboardPage({ params, searchParams }: Props) {
               )
             ) : tab === "fishing" ? (
               fishing ? (
-                <FishingTab fishing={fishing} currency={currency} channel={slug} />
+                <FishingTab fishing={fishing} currency={currency} channel={slug} command={commands?.command ?? "$points"} />
               ) : (
                 <p className="rounded-xl border border-neutral-800 bg-neutral-950/60 px-5 py-8 text-center text-sm text-neutral-500">
                   Fishing isn&apos;t on in this channel.

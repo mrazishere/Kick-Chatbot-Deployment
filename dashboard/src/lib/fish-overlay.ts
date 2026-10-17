@@ -86,7 +86,7 @@ function duelOf(raw: unknown): FishDuel | null {
   const side = (v: unknown): FishDuelSide | null => {
     if (!v || typeof v !== "object") return null;
     const s = v as Record<string, unknown>;
-    if (typeof s.user !== "string" || !s.user || typeof s.fish !== "string" || !s.fish || s.fish.length > 8) return null;
+    if (typeof s.user !== "string" || !s.user || typeof s.fish !== "string" || !s.fish || s.fish.length > 25) return null;
     if (typeof s.type !== "string" || !DUEL_TYPES.has(s.type) || typeof s.rarity !== "string" || s.rarity.length > 12) return null;
     if (typeof s.hp !== "number" || !Number.isInteger(s.hp) || s.hp < 1 || s.hp > 10_000) return null;
     const cm = typeof s.cm === "number" && s.cm >= 1 && s.cm <= 1000 ? Math.round(s.cm) : null;
@@ -144,7 +144,7 @@ function shape(raw: FishOverlayFeed): FishOverlayFeed {
       username: e.username.slice(0, 30),
       kind: e.kind,
       text: e.text.slice(0, 500),
-      ...(typeof e.item === "string" && e.item.length <= 8 ? { item: e.item } : {}),
+      ...(typeof e.item === "string" && e.item.length <= 25 ? { item: e.item } : {}),
       ...(typeof e.rarity === "string" && e.rarity.length <= 12 ? { rarity: e.rarity } : {}),
       ...(e.kind === "bite" && (typeof e.code === "string" || typeof e.code === "number") && /^[A-Z0-9]{1,8}$/.test(String(e.code)) ? { code: String(e.code) } : {}),
       ...(e.kind === "bite" && typeof e.flashMs === "number" && e.flashMs > 0 ? { flashMs: Math.min(60_000, e.flashMs) } : {}),

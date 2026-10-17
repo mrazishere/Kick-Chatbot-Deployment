@@ -23,6 +23,7 @@ import { markOverlaySeen, readOverlay } from './community/fish-overlay';
 import { publicUserHistory, publicViewerSearch } from './points/store';
 import { ITEMS, rarityName, sellPrice } from './community/fishing';
 import { fighterOf } from './community/fish-duel';
+import { channelEmotes } from './community/emotes';
 import { adjustPoints, backupPoints, caughtFish, duelBoard, heistBoard, heldCatches, getPointsUserDetail, pointsLeaderboard, pointsSummary, resetAllPoints, searchPointsUsers } from './points/store';
 import { RULES as CHEAT_RULES, suspects as cheatSuspects } from './community/cheat-signals';
 import { recentSpins } from './community/wheel-history';
@@ -2916,7 +2917,7 @@ app.post('/internal/bot/:channel/points/reset', internalGuard(true), async (req,
  * A 404 unless the channel is enrolled with points and the public page on. Kept
  * clear of summariseChannel, which lists pm2, because anyone can load the page.
  */
-app.get('/internal/bot/:channel/points/leaderboard', internalGuard(false), (req, res) => {
+app.get('/internal/bot/:channel/points/leaderboard', internalGuard(false), async (req, res) => {
   const channelRaw = req.params['channel'];
   const channel = (typeof channelRaw === 'string' ? channelRaw : '').toLowerCase();
   if (!validateChannelName(channel)) return res.status(400).json({ error: 'Invalid channel name' });
@@ -2932,7 +2933,12 @@ app.get('/internal/bot/:channel/points/leaderboard', internalGuard(false), (req,
 
   try {
     const board = pointsLeaderboard(channel, cfg, limit, broadcasterIdOf(config));
-    return res.json({ channel, currencyName: cfg.currencyName, updatedAt: new Date().toISOString(), ...board, fishing: publicFishing(channel, cfg, broadcasterIdOf(config)), commands: publicCommands(cfg, { channel: config as BotCommandChannel, custom: customCommandsForPublic(channel) }) });
+    const fishing = publicFishing(channel, cfg, broadcasterIdOf(config));
+    if (fishing) {
+      const images = await customFishImages(channel, cfg, broadcasterIdOf(config));
+      if (Object.keys(images).length) fishing.emotes = images;
+    }
+    return res.json({ channel, currencyName: cfg.currencyName, updatedAt: new Date().toISOString(), ...board, fishing, commands: publicCommands(cfg, { channel: config as BotCommandChannel, custom: customCommandsForPublic(channel) }) });
   } catch (e) {
     return pointsUnavailable(res, channel, e);
   }
@@ -3104,6 +3110,24 @@ app.get('/internal/bot/:channel/points/public-history', internalGuard(false), (r
 });
 
 /**
+ * Images for the channel's custom fish named after one of its emotes (Kick or 7TV), so the
+ * leaderboard can show the emote. The emote list is cached an hour; the first load after a
+ * start gets 3s, and past that the page just shows the names this once.
+ */
+async function customFishImages(channel: string, cfg: ReturnType<typeof effectivePointsConfig>, broadcasterUserId: number | null): Promise<Record<string, string>> {
+  const names = new Set(cfg.games.customFish.map(f => f.name));
+  if (!names.size) return {};
+  try {
+    const emotes = await Promise.race([channelEmotes(channel, broadcasterUserId), new Promise<[]>(r => setTimeout(() => r([]), 3000).unref())]);
+    const out: Record<string, string> = {};
+    for (const e of emotes) if (names.has(e.name) && e.url && !out[e.name]) out[e.name] = e.url;
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+/**
  * What the public leaderboard's Fishing tab shows: every catch with its share of
  * catches, a rarity name and its sell price as the channel has them set, the big
  * bite trophies, the rarest fish anyone has landed, and the fish each viewer holds
@@ -3154,14 +3178,14 @@ function publicFishing(channel: string, cfg: ReturnType<typeof effectivePointsCo
         count += n;
         // Each one, as `fish show 🦈` lists them: by length, biggest first, with its duel
         // stats and price, so a viewer can see which to name. One length and price is one line.
-        const each: Array<{ cm: number | null; n: number; hp: number; attack: number; worth: number }> = [];
-        const add = (held: { cm: number; record: boolean } | undefined, k: number) => {
+        const each: Array<{ cm: number | null; n: number; hp: number; attack: number; worth: number; level?: number }> = [];
+        const add = (held: { cm: number; record: boolean; level?: number } | undefined, k: number) => {
           const cm = held ? held.cm : null;
           const value = sellPrice(item, g, held);
           const same = each.find(e => e.cm === cm && e.worth === value);
           if (same) return void (same.n += k);
           const f = fighterOf(g, item, held);
-          each.push({ cm, n: k, hp: f.hp, attack: f.attack, worth: value });
+          each.push({ cm, n: k, hp: f.hp, attack: f.attack, worth: value, ...(f.level ? { level: f.level } : {}) });
         };
         for (const one of sized) add(one, 1);
         if (n > sized.length) add(undefined, n - sized.length);
@@ -3175,7 +3199,18 @@ function publicFishing(channel: string, cfg: ReturnType<typeof effectivePointsCo
     .sort((a, b) => b.worth - a.worth || b.count - a.count || a.name.localeCompare(b.name))
     .slice(0, 100);
   return {
-    catchOdds: g.catchOdds, fish, junk: list(c => c.type === 'junk'), rarest, holders, steal: g.steal.enabled, heists: heistBoard(channel, cfg, broadcasterUserId), duel: g.duel.enabled, duels: duelBoard(channel, cfg, broadcasterUserId),
+    catchOdds: g.catchOdds, fish, junk: list(c => c.type === 'junk'), rarest, holders, steal: g.steal.enabled,
+    // How hooks, guards and stealing work here, for the tab's explainer. Only where stealing is on.
+    ...(g.steal.enabled ? {
+      stealRules: {
+        hookPrice: g.steal.hookPrice, hookUses: g.steal.hookUses, feePercent: g.steal.feePercent, feeMinimum: g.steal.feeMinimum,
+        fineMinimum: g.steal.fineMinimum, edgePercent: g.steal.edgePercent, luckPercent: g.steal.luckPercent,
+        odds: { Common: g.steal.oddsCommon, Uncommon: g.steal.oddsUncommon, Rare: g.steal.oddsRare, Epic: g.steal.oddsEpic, Legendary: g.steal.oddsLegendary },
+        graceMinutes: g.steal.graceMinutes, protectMinutes: g.steal.protectMinutes,
+        guardPercent: g.steal.guardPercent, guardMinimum: g.steal.guardMinimum, guardHours: g.steal.guardHours,
+        onlyWhileLive: g.steal.onlyWhileLive, offlineOnly: g.onlyWhileOffline, cooldownMinutes: g.catchCooldownMinutes
+      }
+    } : {}), heists: heistBoard(channel, cfg, broadcasterUserId), duel: g.duel.enabled, duels: duelBoard(channel, cfg, broadcasterUserId),
     trophies, bigBite: g.bigBite.enabled ? { everyMinutes: g.bigBite.everyMinutes } : null
   };
 }

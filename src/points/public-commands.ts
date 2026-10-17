@@ -134,7 +134,9 @@ export function publicCommands(cfg: PointsConfig, opts: { channel?: BotCommandCh
     ].filter(Boolean).join(' ');
     sections.push({
       title: 'Fishing',
-      note: [`${s} is short for ${f}.`, when, `Selling, show, stats, top${g.giveEnabled ? ', gifts' : ''} and the shop work any time.`].filter(Boolean).join(' '),
+      note: [`${s} is short for ${f}.`, when, `Selling, show, stats, top${g.giveEnabled ? ', gifts' : ''} and the shop work any time.`,
+        g.maxFish > 0 || g.maxJunk > 0 ? `You can hold ${[g.maxFish > 0 ? `${g.maxFish} fish` : '', g.maxJunk > 0 ? `${g.maxJunk} junk` : ''].filter(Boolean).join(' and ')}: past that, new fish sell on the spot and new junk is binned (you're warned from 90%).` : ''
+      ].filter(Boolean).join(' '),
       rows: [
         { usage: f, short: s, does: 'Cast your line' },
         { usage: `${f} worm | fly | cricket`, short: `${s} w | f | c`, does: 'Buy bait and cast with it, for better odds' },
@@ -151,6 +153,9 @@ export function publicCommands(cfg: PointsConfig, opts: { channel?: BotCommandCh
         { usage: `${f} show [@user] [fish | junk | 🦈]`, short: `${s} sh 🦈`, does: 'A collection, reel and purse; name a fish to list each one you hold by length, with its duel stats (❤️ health, ⚔️ attack) and price' },
         ...(g.giveEnabled ? [
           { usage: `${f} give @user 🐟 [count] [length]`, short: `${s} gv @user 🐟`, does: `Give one kind of fish or junk to someone, by emoji or name (2 sharks), oldest first, or a certain fish by its length (🦈 72cm)${g.giveCooldownSeconds > 0 ? `; ${g.giveCooldownSeconds}s between gives` : ''}` }
+        ] : []),
+        ...(g.feedEnabled ? [
+          { usage: `${f} feed 🦈 72cm 🐟 🐟 🦀`, short: `${s} fd 🦈 🐟`, does: `Level a fish up: the first fish eats the rest and gains their sell value as XP. Each level (up to 10) adds 10% duel health and attack and 25% value${g.feedFailPercent > 0 ? `; ${g.feedFailPercent}% of feedings fail and the food is lost` : ''}` }
         ] : []),
         { usage: `${f} stats [@user | global]`, short: `${s} st`, does: 'Attempts, catches, traps, bait, sales and streaks' },
         { usage: `${f} top [board]`, short: `${s} tp`, does: `Top 10 on a board, fish by default: ${fishBoards('catch')}` },

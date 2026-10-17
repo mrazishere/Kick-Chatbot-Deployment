@@ -24,7 +24,7 @@ const LANE_EM = 7.5;
  * rest wait, and while anything waits each scene plays faster.
  */
 type Scene =
-  | { v: "catch"; item: string; rarity: string | null; cm: number | null }
+  | { v: "catch"; item: string; rarity: string | null; cm: number | null; icon?: string }
   | { v: "miss"; junk: string | null }
   | { v: "trap"; haul: string[] }
   | { v: "bite"; code: string; windowSec: number; pull: number; pulls: number; until?: number; flashMs?: number; snipeAt?: number }
@@ -63,7 +63,8 @@ function sceneOf(ev: FishOverlayEvent): Scene | null {
   const t = ev.text;
   if (ev.kind === "catch" && ev.item) {
     const cm = /It is (\d+) cm/.exec(t);
-    return { v: "catch", item: ev.item, rarity: ev.rarity ?? null, cm: cm ? Number(cm[1]) : null };
+    // A custom fish named after an emote shows as the emote.
+    return { v: "catch", item: ev.item, rarity: ev.rarity ?? null, cm: cm ? Number(cm[1]) : null, ...(ev.emotes?.[ev.item] ? { icon: ev.emotes[ev.item] } : {}) };
   }
   if (ev.kind === "bite" && typeof ev.code === "string") {
     // The window, measured on the bot's clock, so a skewed viewer clock doesn't matter.
@@ -250,7 +251,7 @@ function LaneView({ lane }: { lane: Lane }) {
           {rarity ? <div className="fo-aura" /> : null}
           {rarity === "legendary" || rarity === "mythic" ? <div className="fo-rays" /> : null}
           <div className="fo-fish">
-            <span>{scene.item}</span>
+            {scene.icon ? <img src={scene.icon} alt={scene.item} style={{ height: "1em", verticalAlign: "middle" }} /> : <span>{scene.item}</span>}
           </div>
           {rarity || scene.cm ? (
             <div className="fo-tag">

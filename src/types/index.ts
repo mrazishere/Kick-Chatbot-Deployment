@@ -352,6 +352,17 @@ export interface PointsGamesConfig {
   /** Seconds a viewer waits between fish gives (0–3600). */
   giveCooldownSeconds: number;
   /**
+   * The most fish, and junk, one viewer can hold (0: no cap). Past it a new fish is sold
+   * on the spot and new junk thrown away; from 90% of it, catches warn. What's held over
+   * it already stays.
+   */
+  maxFish: number;
+  maxJunk: number;
+  /** `fish feed`: level a fish up by feeding it others (community/fishing.ts addXp). */
+  feedEnabled: boolean;
+  /** The chance (%) a feeding fails: the food is gone and no XP is gained. */
+  feedFailPercent: number;
+  /**
    * Post fishing replies in chat. Every one always goes to the fishing overlay (a
    * browser source), so a channel can turn this off and show them on stream only:
    * off, chat gets a reply only while the stream is offline or no overlay is
@@ -386,6 +397,8 @@ export interface PointsGamesConfig {
    * and its price scaled by sellPricePercent.
    */
   catches: FishCatchSetting[];
+  /** The channel's own fish, caught like the rest; up to 20. Their odds and prices show in `catches` too. */
+  customFish: CustomFishSetting[];
   /** Reels in the order they're bought with `fish buy reel`. Empty: nothing to buy. */
   reels: FishReelSetting[];
   /** `fish steal`: taking a fish from another viewer, and guards against it. */
@@ -534,6 +547,19 @@ export interface FishCatchSetting {
   defaultPrice: number;
   /** A big bite trophy: its weight is a share of big bites, not of casts. */
   trophy?: boolean;
+  /** One of the channel's own fish (games.customFish), set there rather than here. */
+  custom?: boolean;
+}
+
+/**
+ * A fish the channel adds: an emoji or an emote's name (a word), its odds (a weight among
+ * the fish, as the catch table has them), what it sells for at 50 cm, and how it fights.
+ */
+export interface CustomFishSetting {
+  name: string;
+  weight: number;
+  price: number;
+  type: 'Predator' | 'Swift' | 'Armored';
 }
 
 /** Per-item overrides by emoji. */

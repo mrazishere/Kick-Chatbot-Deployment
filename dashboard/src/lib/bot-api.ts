@@ -406,6 +406,10 @@ export interface PublicFishing {
   holders?: PublicHolder[];
   /** Whether viewers can steal fish here. Absent from a bot service older than stealing. */
   steal?: boolean;
+  /** How hooks, guards and stealing work here; only where stealing is on. Absent from an older bot service. */
+  stealRules?: PublicStealRules;
+  /** Images for custom fish named after the channel's Kick or 7TV emotes, by name. Absent when there are none. */
+  emotes?: Record<string, string>;
   /** Every steal ranked; null before the first one. Absent from a bot service older than it. */
   heists?: PublicHeists | null;
   /** Whether viewers can duel their fish here. Absent from a bot service older than duels. */
@@ -420,7 +424,27 @@ export interface PublicFishing {
 
 /** One viewer's unsold fish: each kind with how many, rarest first, and what the lot would sell for. */
 /** One fish held, or several just alike: its length (null: none), duel stats and sell price. */
-export interface PublicHeldFish { cm: number | null; n: number; hp: number; attack: number; worth: number }
+export interface PublicHeldFish { cm: number | null; n: number; hp: number; attack: number; worth: number; /** Levels from feeding; absent is 0. */ level?: number }
+
+export interface PublicStealRules {
+  hookPrice: number;
+  hookUses: number;
+  feePercent: number;
+  feeMinimum: number;
+  fineMinimum: number;
+  edgePercent: number;
+  luckPercent: number;
+  /** Success chance (%) by rarity; trophies go as Legendary. */
+  odds: { Common: number; Uncommon: number; Rare: number; Epic: number; Legendary: number };
+  graceMinutes: number;
+  protectMinutes: number;
+  guardPercent: number;
+  guardMinimum: number;
+  guardHours: number;
+  onlyWhileLive: boolean;
+  offlineOnly: boolean;
+  cooldownMinutes: number;
+}
 
 export interface PublicHolder {
   name: string;

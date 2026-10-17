@@ -56,14 +56,14 @@ import { gameInvocation } from '../community/stakes';
 import { addReminder, cancelSelfRemindersStartingWith, openCommunityDb } from '../community/store';
 import { bestEmote, broadcasterIdFor, emoteImages } from '../community/emotes';
 import { OverlayKind, overlayShowing, pushOverlay } from '../community/fish-overlay';
-import { addChallenge, challengeBy, challengeFor, closeInValue, describe, describeTeam, dropChallenge, fight, findTeam, fishSpecs, fishNamed, heldFish, TYPE_EMOJI, isLength, specText, splitLengths, fishValue, keepsRange, overlayDuel, overlayTeamDuel, pickByValue, pickFighter, pickForKeeps, pickTeam, sameFish, playMs, randomFish, switchesIn, teamFight, teamSizeOf, teamValue, wantsRandom, type Challenge, type DuelStake, type OverlayDuel, type Picked } from '../community/fish-duel';
+import { addChallenge, challengeBy, challengeFor, closeInValue, describe, fighterOf, describeTeam, dropChallenge, fight, findTeam, fishSpecs, fishNamed, heldFish, TYPE_EMOJI, isLength, specText, splitLengths, fishValue, keepsRange, overlayDuel, overlayTeamDuel, pickByValue, pickFighter, pickForKeeps, pickTeam, sameFish, playMs, randomFish, switchesIn, teamFight, teamSizeOf, teamValue, wantsRandom, type Challenge, type DuelStake, type OverlayDuel, type Picked } from '../community/fish-duel';
 import { parseBet } from './points';
 import { answerMatches, makeTrapCheck, type TrapCheck } from '../community/trap-check';
 import { wheelBusy } from '../community/wheel-state';
 import { recordSignal } from '../community/cheat-signals';
 import { BITE_TOO_FAST_MS, STREAM_GRACE_MS, biteFor, canBite, channelBite, channelHasBite, codeMatches, getAway, nextPull, pickChatter, snipeBite, snipeOpen, startBite, takeBite, type BiteContext } from '../community/big-bite';
 import {
-  addItem, giveItems, baitPrice, baitRoll, currentReel, heldFishValue, landsFish, moveFish, pickHeld, stealableFish, stealChance, stealCharges, stealRollChance, worstStealCharges, parseSellList, takeSized, CatchItem, CatchType, FAILURE_EMOTES, FishData, findBait, hasFishedBefore, initialData, rarityOf, recordCatch,
+  addItem, giveItems, baitPrice, baitRoll, currentReel, heldFishValue, landsFish, moveFish, pickHeld, stealableFish, stealChance, stealCharges, stealRollChance, worstStealCharges, parseSellList, takeSized, addXp, levelCost, levelOf, MAX_LEVEL, capOf, emoteWord, isWordName, nearCap, overflow, CatchItem, CatchType, FAILURE_EMOTES, FishData, findBait, hasFishedBefore, initialData, rarityOf, recordCatch,
   ITEMS, JUNK_MESSAGES, loadFish, MISS_DELAY_MS, pick, randomInt, rollCatch, saveFish, sellPrice, STORY_STYLES, SUCCESS_EMOTES,
   takeItems, TYPE_DESCRIPTIONS, weightedCatch
 } from '../community/fishing';
@@ -77,13 +77,15 @@ const pointer = makeCooldown(60_000);
 /** The timer that ends each waiting trap check when its time runs out, by channel and user id. */
 const checkTimers = new Map<string, NodeJS.Timeout>();
 
-export const SUBCOMMANDS: Record<string, 'buy' | 'sell' | 'show' | 'stats' | 'top' | 'trap' | 'steal' | 'give' | 'duel' | 'accept' | 'deny' | 'reel' | 'bigbite' | 'answer' | 'remove'> = {
+export const SUBCOMMANDS: Record<string, 'buy' | 'sell' | 'show' | 'stats' | 'top' | 'trap' | 'steal' | 'give' | 'duel' | 'accept' | 'deny' | 'reel' | 'bigbite' | 'answer' | 'remove' | 'feed'> = {
   buy: 'buy', b: 'buy', sell: 'sell', s: 'sell',
   show: 'show', sh: 'show', count: 'show', display: 'show', collection: 'show',
   stats: 'stats', st: 'stats', top: 'top', tp: 'top', leaderboard: 'top',
   trap: 'trap', t: 'trap', net: 'trap', trawl: 'trap',
   steal: 'steal', sl: 'steal', rob: 'steal',
   give: 'give', gv: 'give', gift: 'give',
+  // Level a fish up by feeding it others.
+  feed: 'feed', fd: 'feed', eat: 'feed', evolve: 'feed',
   // The streamer or the bot owner: take fish off a viewer.
   remove: 'remove', rm: 'remove', confiscate: 'remove',
   duel: 'duel', d: 'duel', battle: 'duel', fight: 'duel', accept: 'accept', a: 'accept', deny: 'deny', dn: 'deny', decline: 'deny',
@@ -154,6 +156,11 @@ function shortOf(d: FishData, want: ReturnType<typeof lengthsWanted>): string[] 
 const STORY_MODEL = 'claude-haiku-4-5-20251001';
 /** supibot asks for 150 characters; allow some overrun before trimming. */
 const STORY_MAX = 220;
+/** "✨🐟✨", or "✨ KEKLEO ✨" for an emote's name, which needs spaces to show as the emote. */
+const sparkle = (name: string): string => isWordName(name) ? `✨ ${name} ✨` : `✨${name}✨`;
+/** Names run together, as emoji read fine ("🐟🦐"); an emote's name gets spaces. */
+const runOf = (names: string[]): string => names.map(n => /^[A-Za-z_]|[A-Za-z_]$/.test(n) ? ` ${n} ` : n).join('').replace(/ {2,}/g, ' ').trim();
+
 const groupDigits = (n: number): string => Math.round(n).toLocaleString('en-US');
 
 // ─── Leaderboards ───────────────────────────────────────────────────────────
@@ -316,7 +323,8 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
   };
 
   let skipStory = false;
-  const args = call.args.filter(a => {
+  // An emote from Kick's picker arrives as "[emote:123:NAME]": a custom fish named NAME.
+  const args = call.args.map(emoteWord).filter(a => {
     const m = /^skipstory:(true|false)$/i.exec(a);
     if (m) skipStory = m[1].toLowerCase() === 'true';
     return !m;
@@ -384,6 +392,53 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     return sizeString;
   }
 
+  /**
+   * After a catch is added: past the cap for its kind (games.maxFish, maxJunk) it goes again,
+   * a fish sold on the spot (paid here) and junk binned; from 90% of the cap, a warning.
+   * Returns the line to add to the reply, or ''. Inside a write transaction, the user row there.
+   */
+  function fitCatch(d: FishData, uid: number, item: CatchItem, value: number, now: number): string {
+    const cap = capOf(g, item.type);
+    const coins = overflow(d, item, g, value);
+    if (coins !== null) {
+      if (coins > 0) creditTx(db!, { userId: uid, username: me, amount: coins, reason: 'game:fish_sell', actor: `chat:${me}`, note: 'bucket full', now });
+      console.log(`[FISH] ${me}'s ${item.type} is at the cap of ${cap} in ${chan}: ${item.name} ${item.type === 'fish' ? `sold for ${coins}` : 'binned'}`);
+      return item.type === 'fish'
+        ? ` 🪣 Your bucket is full (${cap} fish), so it sold on the spot for ${groupDigits(coins)} ${cur}.`
+        : ` 🪣 Your junk pile is full (${cap}), so it went straight in the bin.`;
+    }
+    return capWarning(d, item.type);
+  }
+
+  /**
+   * Fish won for keeps that don't fit the winner's bucket sell on the spot, at their plain
+   * price, paid to the winner. Returns the line for the result, or ''.
+   */
+  function keptOver(d: FishData, items: CatchItem[], winnerId: number, winner: string, now: number): string {
+    let coins = 0;
+    let n = 0;
+    // Newest first: the ones just won, last in.
+    for (const item of [...items].reverse()) {
+      const c = overflow(d, item, g);
+      if (c === null) continue;
+      coins += c;
+      n++;
+    }
+    if (!n) return '';
+    if (coins > 0) creditTx(db!, { userId: winnerId, username: winner, amount: coins, reason: 'game:fish_sell', actor: `chat:${me}`, note: 'bucket full', now });
+    return ` Their bucket is full, so ${n === 1 ? 'it' : `${n} of them`} sold on the spot for ${groupDigits(coins)} ${cur}.`;
+  }
+
+  /** From 90% of a cap: how close, and what happens at it. '' below that, or with no cap. */
+  function capWarning(d: FishData, type: CatchType): string {
+    const n = d.catch[type] ?? 0;
+    if (!nearCap(g, type, n)) return '';
+    const cap = capOf(g, type);
+    return type === 'fish'
+      ? ` ⚠️ Your bucket holds ${n}/${cap} fish: sell some (${cmd} fish sell) or from ${cap} new fish sell on the spot.`
+      : ` ⚠️ Your junk pile is at ${n}/${cap}: sell it (${cmd} fish sell all junk) or from ${cap} new junk is binned.`;
+  }
+
   // ── big bite ──
   const biteCtx = (): BiteContext => ({
     channel: chan, db: db!, bigBite: g.bigBite, delayMs: g.streamDelaySeconds * 1000, command: cmd.replace(/^\$/, ''),
@@ -430,7 +485,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     const item = weightedCatch('trophy', g);
     if (randomInt(1, 100) > (item.landPercent ?? 100)) {
       console.log(`[FISH] ${me}'s trophy ${item.name} snapped free in ${chan}`);
-      const snapped = `So close! It was a ✨${item.name}✨! It thrashed free on the last pull and snapped the line! 😱`;
+      const snapped = `So close! It was a ${sparkle(item.name)}! It thrashed free on the last pull and snapped the line! 😱`;
       pushOverlay(db!, { username: me, kind: 'miss', text: snapped, item: item.name, rarity: 'Mythic' });
       return void client.say(channel, `@${me} ${snapped}`);
     }
@@ -438,13 +493,14 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       ensureUserTx(db!, uid, me, now);
       const d = loadFish(db!, uid) ?? initialData();
       const sizeString = land(d, uid, item, currentReel(d, g), now, false);
+      const bucket = fitCatch(d, uid, item, currentReel(d, g)?.valueMultiplier ?? 1, now);
       saveFish(db!, uid, d, now);
-      return { item, sizeString };
+      return { item, sizeString: sizeString + bucket };
     });
     if (!out) return;
     console.log(`[FISH] ${me} reeled in a trophy ${out.item.name} in ${chan}`);
     // The result line: to chat as well as the overlay, whatever the chat-replies setting.
-    const text = `🏆 You reeled it in! A MYTHIC ✨${out.item.name}✨! ${out.sizeString}`;
+    const text = `🏆 You reeled it in! A MYTHIC ${sparkle(out.item.name)}! ${out.sizeString}`;
     pushOverlay(db!, { username: me, kind: 'catch', text, item: out.item.name, rarity: 'Mythic' });
     void client.say(channel, `@${me} ${text}`);
   }
@@ -470,7 +526,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     type Outcome =
       | { kind: 'reply'; text: string }
       | { kind: 'miss'; text: string; delay: number; appendix: string; streak: string }
-      | { kind: 'catch'; item: CatchItem; sizeString: string; appendix: string };
+      | { kind: 'catch'; item: CatchItem; sizeString: string; appendix: string; bucket: string };
 
     const out = once<Outcome>(now => {
       ensureUserTx(db!, uid, me, now);
@@ -534,7 +590,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
         if (randomInt(1, 100) <= 25) {
           const item = weightedCatch('junk', g);
           addItem(d, item);
-          text = `${pick(JUNK_MESSAGES)} You reel out a ${item.name}`;
+          text = `${pick(JUNK_MESSAGES)} You reel out a ${item.name}${fitCatch(d, uid, item, 1, now)}`;
         } else {
           text = `Your fishing line landed ${randomInt(1, 500)} cm away.`;
         }
@@ -547,8 +603,9 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
 
       const item = weightedCatch('fish', g, reel?.rarityMultiplier ?? 1);
       const sizeString = land(d, uid, item, reel, now);
+      const bucket = fitCatch(d, uid, item, reel?.valueMultiplier ?? 1, now);
       saveFish(db!, uid, d, now);
-      return { kind: 'catch', item, sizeString, appendix };
+      return { kind: 'catch', item, sizeString, appendix, bucket };
     });
     if (!out) return;
     const asked = askedCheck as TrapCheck | null;
@@ -565,14 +622,14 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     if (g.stories && !skipStory && randomInt(1, 3) === 1) {
       try {
         const text = await story(me, out.item.name, out.sizeString);
-        if (text) return void say(`✨${out.item.name}✨ ${text} (${minutes}m cooldown${out.appendix})`, { kind: 'catch', item: out.item.name });
+        if (text) return void say(`${sparkle(out.item.name)} ${text} (${minutes}m cooldown${out.appendix})${out.bucket}`, { kind: 'catch', item: out.item.name });
       } catch (err) {
         console.error(`[FISH] Story for ${me} failed: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
     const emote = await emotesFor(SUCCESS_EMOTES, '😃');
     const size = out.sizeString ? ` ${out.sizeString}` : '';
-    return void say(`You caught a ✨${out.item.name}✨${size} ${emote} Now, go do something productive! (${minutes} minute fishing cooldown after a successful catch)`, { kind: 'catch', item: out.item.name });
+    return void say(`You caught a ${sparkle(out.item.name)}${size} ${emote} Now, go do something productive! (${minutes} minute fishing cooldown after a successful catch)${out.bucket}`, { kind: 'catch', item: out.item.name });
   }
 
   /**
@@ -690,6 +747,8 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
         let fishAmount = 0;
         const results: string[] = [];
         const reel = currentReel(d, g);
+        let soldFor = 0;
+        let dumped = 0;
         for (let i = 0; i < rolls; i++) {
           const r = rollCatch(g, reel);
           if (!r.item) continue;
@@ -703,10 +762,15 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
             const cm = r.item.size ? randomInt(1, 100) : null;
             if (cm !== null) (((d.catch.sizes ??= {})[r.item.name]) ??= []).push({ cm, record: false });
             recordCatch(db!, uid, r.item.name, 'trap', cm, now);
-            results.push(cm !== null ? `${r.item.name} (${cm} cm)` : r.item.name);
+            // Past the cap it sells on the spot.
+            const sold = overflow(d, r.item, g, reel?.valueMultiplier ?? 1);
+            if (sold !== null) soldFor += sold;
+            results.push(`${r.item.name}${cm !== null ? ` (${cm} cm${sold !== null ? ', sold' : ''})` : sold !== null ? ' (sold)' : ''}`);
           } else if (r.type === 'junk') {
             addItem(d, r.item);
-            results.push(r.item.name);
+            const binned = overflow(d, r.item, g) !== null;
+            if (binned) dumped++;
+            results.push(binned ? `${r.item.name} (binned)` : r.item.name);
           }
         }
         d.lifetime.trap.times++;
@@ -714,9 +778,13 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
         d.trap = { active: false, start: 0, end: 0, duration: 0 };
         after = { laidUntil: null };
         if (fishAmount > d.lifetime.trap.bestFishCatch) d.lifetime.trap.bestFishCatch = fishAmount;
+        if (soldFor > 0) creditTx(db!, { userId: uid, username: me, amount: soldFor, reason: 'game:fish_sell', actor: `chat:${me}`, note: 'bucket full', now });
+        const full = (soldFor > 0 || results.some(x => x.includes('(sold') || x.includes(', sold')) ? ` 🪣 Your bucket is full (${capOf(g, 'fish')} fish): sold for ${groupDigits(soldFor)} ${cur}.` : '')
+          + (dumped ? ` 🪣 Your junk pile is full (${capOf(g, 'junk')}): ${dumped} binned.` : '');
+        const warn = (full.includes('bucket') ? '' : capWarning(d, 'fish')) + (dumped ? '' : capWarning(d, 'junk'));
         if (!results.length) return 'You drag the traps out of the water... and find that there is nothing at all...!';
-        if (fishAmount === 0) return `You drag the traps out of the water... and find a bunch of junk. ${results.join('')}`;
-        return `You drag the traps out of the water... and you spot some fish! ${results.join(' ')}`;
+        if (fishAmount === 0) return `You drag the traps out of the water... and find a bunch of junk. ${results.join(' ')}${full}${warn}`;
+        return `You drag the traps out of the water... and you spot some fish! ${results.join(' ')}${full}${warn}`;
       };
 
       let reply: string;
@@ -875,8 +943,11 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
           for (const item of ITEMS) {
             if (item.type !== type) continue;
             const have = d.catch.types[item.name] ?? 0;
-            if (have <= threshold) continue;
-            const n = have - threshold;
+            // Duplicates never include a fed fish: those are kept, however many.
+            const fed = specifier === 'duplicate' ? (d.catch.sizes?.[item.name] ?? []).filter(h => levelOf(h)).length : 0;
+            const keep = Math.max(threshold, fed);
+            if (have <= keep) continue;
+            const n = have - keep;
             sold += n;
             // "duplicate" keeps the biggest of each, the one worth showing off.
             gained += takeItems(d, item, n, g, specifier === 'duplicate', value);
@@ -918,7 +989,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
         d.lifetime.coins += gained;
         const balance = pay(gained);
         saveFish(db!, uid, d, now);
-        const skipped = missing.length ? ` (you have no ${missing.join('')})` : '';
+        const skipped = missing.length ? ` (you have no ${runOf(missing)})` : '';
         return `Sold your ${soldParts.join(', ')} for ${groupDigits(gained)} ${cur} - now you have ${groupDigits(balance)} ${cur}${skipped}`;
       }
 
@@ -926,7 +997,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       const list = parseSellList(parts);
       if ('error' in list) {
         return list.error === 'unknown'
-          ? `You provided an unknown item type! Use one of: ${ITEMS.map(i => i.name).join('')}`
+          ? `You provided an unknown item type! Use one of: ${runOf(ITEMS.filter(i => !i.custom || g.catches.some(c => c.name === i.name)).map(i => i.name))}`
           : 'You provided an invalid amount of items to sell! Put a whole number after a single emoji, like 🐟 3 🦐 2.';
       }
       if (list.items.length === 0) return `Tell me what to sell, like ${cmd} fish sell 🐟 🦐 or ${cmd} fish sell all fish`;
@@ -943,11 +1014,11 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
         gained += takeItems(d, item, n, g, false, value);
         soldParts.push(`${item.name}${n > 1 ? ` x${n}` : ''}`);
       }
-      if (soldParts.length === 0) return `You have no ${missing.join('')} to sell!`;
+      if (soldParts.length === 0) return `You have no ${runOf(missing)} to sell!`;
       d.lifetime.coins += gained;
       const balance = pay(gained);
       saveFish(db!, uid, d, now);
-      const skipped = missing.length ? ` (you have no ${missing.join('')})` : '';
+      const skipped = missing.length ? ` (you have no ${runOf(missing)})` : '';
       return `Sold your ${soldParts.join(', ')} for ${gained} ${cur} - now you have ${balance} ${cur}${skipped}`;
     });
     if (text) say(text);
@@ -1101,6 +1172,10 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       if (cm !== undefined && ofLength < n) return `You only have ${ofLength} ${item.name} ${cm} cm.`;
       // Anyone the bot knows can take a gift, fished before or not: their collection starts here.
       const r = loadFish(db!, to.user_id) ?? initialData();
+      // A gift never goes past their cap: it's refused, and stays the giver's.
+      const cap = capOf(g, item.type);
+      const room = cap > 0 ? Math.max(0, cap - (r.catch[item.type] ?? 0)) : Infinity;
+      if (room < n) return room === 0 ? `@${to.username}'s ${item.type === 'fish' ? 'bucket' : 'junk pile'} is full (${cap}), so they can't take it.` : `@${to.username} only has room for ${room} more ${item.type}.`;
       let moved: number;
       if (cm === undefined) moved = giveItems(d, r, item, n);
       else {
@@ -1147,6 +1222,8 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       ensureUserTx(db!, uid, me, now);
       const d = loadFish(db!, uid) ?? initialData();
       if (!hasFishedBefore(d)) return 'Go fishing at least once before you try stealing!';
+      // A full bucket can't take a stolen fish: nothing is spent.
+      if (capOf(g, 'fish') > 0 && d.catch.fish >= capOf(g, 'fish')) return `Your bucket is full (${capOf(g, 'fish')} fish): sell some before you steal more.`;
       if ((d.hook ?? 0) <= 0) return `You need a 🪝 grappling hook to steal. Get one with ${cmd} fish buy hook (${groupDigits(st.hookPrice)} ${cur} for ${tries(st.hookUses)}).`;
       if (!tester && d.readyTimestamp !== 0 && now < d.readyTimestamp) return `Hol' up partner! You can go fishing or stealing again in ${span(d.readyTimestamp - now)}!`;
       const v = loadFish(db!, victim.user_id);
@@ -1209,7 +1286,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
         overlay = { kind: 'steal', item: item.name };
         const size = picked.held ? ` (${picked.held.cm} cm)` : '';
         const left = d.hook > 0 ? `${tries(d.hook)} left on your hook` : 'your hook is used up';
-        return `🪝 You snuck up on @${victim.username} and made off with their ✨${item.name}✨${size}, worth ${groupDigits(worth)} ${cur}! (${groupDigits(fee)} ${cur} fee, ${left}, ${cooldown})`;
+        return `🪝 You snuck up on @${victim.username} and made off with their ${sparkle(item.name)}${size}, worth ${groupDigits(worth)} ${cur}! (${groupDigits(fee)} ${cur} fee, ${left}, ${cooldown})`;
       }
 
       if (fine > 0) debitTx(db!, { userId: uid, amount: fine, reason: 'game:fish_steal_fine', actor: `chat:${me}`, note: victim.username, now });
@@ -1218,7 +1295,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       log('caught', item.name, picked.held?.cm ?? null, { worth, fee, fine });
       overlay = { kind: 'caught', item: item.name };
       const hookLeft = d.hook > 0 ? `${tries(d.hook)} left on your 🪝 hook` : 'your 🪝 hook is used up';
-      return `🚨 @${victim.username} caught you red-handed reaching for their ✨${item.name}✨! You paid a ${groupDigits(fine)} ${cur} fine on top of the ${groupDigits(fee)} ${cur} fee. (${hookLeft}, ${cooldown})`;
+      return `🚨 @${victim.username} caught you red-handed reaching for their ${sparkle(item.name)}! You paid a ${groupDigits(fine)} ${cur} fine on top of the ${groupDigits(fee)} ${cur} fee. (${hookLeft}, ${cooldown})`;
     });
     const out = overlay as { kind: OverlayKind; item: string } | null;
     if (text) say(text, out ?? {});
@@ -1252,11 +1329,94 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
 
   /** Challenge someone: `duel @user [fish | random] [amount | keeps]`. */
   /** The reply for words parsePicks couldn't read. */
-  const pickError = (error: 'order' | 'length' | 'amount' | 'unknown', verb: 'sell' | 'remove @user'): string =>
+  const pickError = (error: 'order' | 'length' | 'amount' | 'unknown', verb: 'sell' | 'remove @user' | 'feed'): string =>
     error === 'order' ? `Name the fish before its length, like ${cmd} fish ${verb} 🦈 72cm`
       : error === 'length' ? 'Only fish have a length.'
-        : error === 'unknown' ? `You provided an unknown item type! Use one of: ${ITEMS.map(i => i.name).join('')}`
+        : error === 'unknown' ? `You provided an unknown item type! Use one of: ${runOf(ITEMS.filter(i => !i.custom || g.catches.some(c => c.name === i.name)).map(i => i.name))}`
           : `You provided an invalid amount of items to ${verb.split(' ')[0]}! Put a whole number after a single fish or length, like 🦈 72cm 2.`;
+
+  // ── feed ──
+  /**
+   * `fish feed 🦈 72cm 🐟 🐟 🦀`: the first fish named eats the rest and gains what they're
+   * worth as XP, levelling up (community/fishing.ts addXp): stronger in duels and worth
+   * more. Named without a length, it's the highest-level, then longest, of its kind. Food
+   * is named as for sell, all or nothing; it can't be the fish itself. A feeding can fail
+   * (games.feedFailPercent): the food is gone and no XP is gained.
+   */
+  function feed(parts: string[], uid: number): void {
+    if (!g.feedEnabled) return void say('Feeding fish is off here.');
+    const usage = `Usage: ${cmd} fish feed 🦈 72cm 🐟 🐟 🦀 (the first fish eats the rest and levels up)`;
+    const parsed = parsePicks(parts);
+    if ('error' in parsed) return void say(pickError(parsed.error, 'feed'));
+    const [head, ...food] = parsed.picks;
+    if (!head || !food.length || head.counted) return void say(usage);
+    if (head.item.type !== 'fish') return void say('Only a fish can eat. Name it first, like 🦈 72cm.');
+    if (food.some(p => p.item.type !== 'fish')) return void say('Fish only eat fish, not junk.');
+    const text = once(now => {
+      const d = loadFish(db!, uid);
+      const name = head.item.name;
+      const list = d?.catch.sizes?.[name] ?? [];
+      // The one that eats: of those that long (or any), the highest level, then the longest.
+      let at = -1;
+      list.slice(0, d?.catch.types[name] ?? 0).forEach((h, i) => {
+        if (head.cm !== undefined && h.cm !== head.cm) return;
+        if (at < 0 || levelOf(h) > levelOf(list[at]) || (levelOf(h) === levelOf(list[at]) && h.cm > list[at].cm)) at = i;
+      });
+      if (!d || at < 0) return `You don't have a ${name}${head.cm !== undefined ? ` ${head.cm} cm` : ''}. ${cmd} fish show ${name} lists yours.`;
+      if (levelOf(list[at]) >= MAX_LEVEL) return `Your ${name} ${list[at].cm} cm is already Lv${MAX_LEVEL}, the top level.`;
+      // Out of the way while the food is taken, so it can't eat itself.
+      const [eater] = list.splice(at, 1);
+      d.catch.types[name]--;
+      d.catch.fish--;
+      const putBack = () => {
+        ((d.catch.sizes ??= {})[name] ??= []).splice(at, 0, eater);
+        d.catch.types[name] = (d.catch.types[name] ?? 0) + 1;
+        d.catch.fish++;
+      };
+      const want = lengthsWanted(food);
+      const short = shortOf(d, want);
+      const kinds = food.filter(p => p.cm === undefined);
+      // Kinds named without a length come from what's left once the lengths named are taken.
+      const byKind = new Map<string, number>();
+      for (const p of kinds) byKind.set(p.item.name, (byKind.get(p.item.name) ?? 0) + p.n);
+      const shortKinds = [...byKind].flatMap(([n, k]) => {
+        const spare = (d.catch.types[n] ?? 0) - [...want.values()].filter(w => w.item.name === n).reduce((sum, w) => sum + w.n, 0);
+        return spare < k ? [spare > 0 ? `only ${spare} ${n}` : `no ${n}`] : [];
+      });
+      if (short.length || shortKinds.length) {
+        putBack();
+        return `Nothing eaten: you have ${[...short, ...shortKinds].join(', ')}${food.some(p => p.item.name === name) ? ` besides the ${name} eating` : ''}.`;
+      }
+      // Its food is worth what it would sell for, before any reel bonus.
+      const sold = d.lifetime.sold;
+      let xp = 0;
+      const eaten: string[] = [];
+      for (const w of want.values()) {
+        xp += takeSized(d, w.item, w.cm, w.n, g)!;
+        eaten.push(`${w.item.name} ${w.cm} cm${w.n > 1 ? ` x${w.n}` : ''}`);
+      }
+      for (const [n, k] of byKind) {
+        xp += takeItems(d, ITEMS.find(i => i.name === n)!, k, g);
+        eaten.push(`${n}${k > 1 ? ` x${k}` : ''}`);
+      }
+      d.lifetime.sold = sold;
+      putBack();
+      const label = `${name} ${eater.cm} cm`;
+      if (randomInt(1, 100) <= g.feedFailPercent) {
+        saveFish(db!, uid, d, now);
+        console.log(`[FISH] ${me}'s ${label} failed to eat ${eaten.join(' ')} in ${chan}`);
+        return `💥 Your ${label} choked on ${eaten.join(', ')}! The food is gone and it gained nothing.`;
+      }
+      const gained = addXp(head.item, g, eater, xp);
+      saveFish(db!, uid, d, now);
+      const lv = levelOf(eater);
+      const f = fighterOf(g, head.item, eater);
+      console.log(`[FISH] ${me}'s ${label} ate ${eaten.join(' ')} in ${chan}: +${xp} XP, Lv${lv}`);
+      const next = lv < MAX_LEVEL ? ` ${groupDigits(eater.xp ?? 0)}/${groupDigits(levelCost(head.item, g, eater, lv))} XP to Lv${lv + 1}.` : ' That\'s the top level!';
+      return `🍽️ Your ${label} ate ${eaten.join(', ')} (+${groupDigits(xp)} XP)${gained ? ` and grew to Lv${lv}! 🎉` : `. It's Lv${lv}.`}${next} ❤️${f.hp} ⚔️${f.attack} 💰${groupDigits(sellPrice(head.item, g, eater))}`;
+    });
+    if (text) say(text);
+  }
 
   // ── remove ──
   /**
@@ -1493,7 +1653,8 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
         moveFish(sides[l], sides[w], picks[l].item, picks[l]);
         sides[w].lifetime.duel.fishWon++;
         sides[l].lifetime.duel.fishLost++;
-        prize = ` ${names[w]} takes the ${picks[l].item.name}${picks[l].held ? ` (${picks[l].held!.cm} cm)` : ''} for keeps!`;
+        const sold = keptOver(sides[w], [picks[l].item], ids[w], names[w], now);
+        prize = ` ${names[w]} takes the ${picks[l].item.name}${picks[l].held ? ` (${picks[l].held!.cm} cm)` : ''} for keeps!${sold}`;
       }
       saveFish(db!, ids[0], sides[0], now);
       saveFish(db!, ids[1], sides[1], now);
@@ -1581,7 +1742,8 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
         sides[w].lifetime.duel.fishWon++;
         sides[l].lifetime.duel.fishLost++;
       }
-      prize = ` ${names[w]} takes ${describeTeam(teams[l].map(p => p.fighter))} for keeps!`;
+      const sold = keptOver(sides[w], teams[l].map(p => p.item), ids[w], names[w], now);
+      prize = ` ${names[w]} takes ${describeTeam(teams[l].map(p => p.fighter))} for keeps!${sold}`;
     }
     saveFish(db!, ids[0], sides[0], now);
     saveFish(db!, ids[1], sides[1], now);
@@ -1668,9 +1830,9 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       for (const [emoji, count] of Object.entries(d.catch.types)) {
         if (count <= 0) continue;
         if (ITEMS.find(i => i.name === emoji)?.type !== type) continue;
-        list.push(count < 5 ? emoji.repeat(count) : `${count}x ${emoji}`);
+        list.push(count < 5 && !isWordName(emoji) ? emoji.repeat(count) : count < 5 ? Array(count).fill(emoji).join(' ') : `${count}x ${emoji}`);
       }
-      return list.join('');
+      return runOf(list);
     };
     if (bothTypes) {
       const fish = d.catch.fish ?? 0;
@@ -1712,7 +1874,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     const MAX = 10;
     const f = all[0].fighter;
     const line = groups.slice(0, MAX).map(({ p, n }) =>
-      `${p.held ? `${p.held.cm} cm` : 'no size'}${n > 1 ? ` ×${n}` : ''} ❤️${p.fighter.hp} ⚔️${p.fighter.attack} 💰${groupDigits(fishValue(g, p))}`).join(' | ');
+      `${p.held ? `${p.held.cm} cm${p.fighter.level ? ` Lv${p.fighter.level}` : ''}` : 'no size'}${n > 1 ? ` ×${n}` : ''} ❤️${p.fighter.hp} ⚔️${p.fighter.attack} 💰${groupDigits(fishValue(g, p))}`).join(' | ');
     const more = groups.length > MAX ? ` | +${groups.slice(MAX).reduce((x, y) => x + y.n, 0)} more` : '';
     const pick = g.duel.enabled && groups.some(x => x.p.held) ? ` Duel a certain one with ${cmd} fish duel @user ${item.name} ${groups.find(x => x.p.held)!.p.held!.cm}cm` : '';
     return `${have} ${item.name} (${TYPE_EMOJI[f.type]} ${f.type} · ${f.rarity}): ${line}${more}.${pick}`;
@@ -1805,6 +1967,9 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
         if (userId === null || excluded) return ignore('no account or excluded');
         duelReply = true;
         return give(rest, userId);
+      case 'feed':
+        if (userId === null || excluded) return ignore('no account or excluded');
+        return feed(rest, userId);
       case 'remove':
         // The streamer and the bot owner only; the answer goes to chat, whatever the reply settings.
         if (!(tags.isBroadcaster || isBotOwner(me))) return ignore('remove is for the streamer and the bot owner');

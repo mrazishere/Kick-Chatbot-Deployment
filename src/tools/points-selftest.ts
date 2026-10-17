@@ -28,7 +28,7 @@ import { WebhookPoller } from '../channels/webhook-poller';
 import { points as pointsCommand, SUBCOMMAND_ALIASES } from '../bot-commands/points';
 import { marksFor, wordle as wordleCommand } from '../bot-commands/wordle';
 import { advanceVideos, enqueueVideo, failVideo, hasVideoInLine, isoDurationSeconds, LOAD_PAD_MS, markVideoOverlaySeen, parseYouTubeLink, playingVideo } from '../community/video-share';
-import { moveFish, takeItems, addItem, FishData, initialData, isTrophy, rarityOf, stealChance, stealCharges, stealRollChance, ITEMS, landsFish, loadFish, parseSellList, recordCatch, saveFish, sellPrice, weightedCatch } from '../community/fishing';
+import { moveFish, takeItems, addItem, overflow, nearCap, addXp, levelCost, takeSized, FishData, initialData, isTrophy, rarityOf, stealChance, stealCharges, stealRollChance, ITEMS, landsFish, loadFish, parseSellList, recordCatch, saveFish, sellPrice, weightedCatch } from '../community/fishing';
 import { openCommunityDb } from '../community/store';
 import { markOverlaySeen, readOverlay } from '../community/fish-overlay';
 import { biteFor, drawSnipeMs, openSnipes, resetBites, snipeOpen, SNIPE_PENDING, startBite, takeBite as takeBiteForTest } from '../community/big-bite';
@@ -1926,6 +1926,191 @@ async function main(): Promise<void> {
       const fishKinds = Object.entries(held.types).filter(([n, k]) => k > 0 && ITEMS.find(x => x.name === n)?.type === 'fish');
       check('every fish from a trap has a length, shown in the haul', fishKinds.length > 0 && fishKinds.every(([n, k]) => (held.sizes?.[n] ?? []).length === k)
         && hauls.filter(h => h.includes('spot some fish')).every(h => / \(\d+ cm\)/.test(h)), { hauls, held });
+    } finally {
+      Date.now = realNow;
+    }
+  }
+
+  // Custom fish: a channel's own, by emoji or an emote's name
+  {
+    const ok = validatePointsPatch({}, { games: { customFish: [{ name: 'KEKLEO', weight: 1000000, price: 500, type: 'Predator' }, { name: '🦄\uFE0F', weight: 2, price: 900, type: 'Armored' }] } });
+    const bad = (name: string, extra: Record<string, unknown> = {}) => validatePointsPatch({}, { games: { customFish: [{ name, weight: 1, price: 1, type: 'Swift', ...extra }] } }).errors.join(' ');
+    check('custom fish: an emote\'s name or an emoji; not a built-in, a command word, a number or a bad type', ok.errors.length === 0
+      && JSON.stringify(ok.next?.games?.customFish?.map(f => f.name)) === JSON.stringify(['KEKLEO', '🦄'])
+      && bad('🐟').includes('built-in') && bad('shark').includes('built-in') && bad('Sharks').includes('built-in') && bad('junk').includes('already use') && bad('keeps').includes('already use')
+      && bad('3v3').includes('emoji') && bad('a b').includes('emoji') && bad('K').includes('emoji') && bad('KEK', { type: 'Fire' }).includes('duel type')
+      && validatePointsPatch({}, { games: { customFish: [{ name: 'KEK', weight: 1, price: 1, type: 'Swift' }, { name: 'kek', weight: 1, price: 1, type: 'Swift' }] } }).errors.join(' ').includes('Two custom fish'),
+      [ok.errors, bad('🐟'), bad('fish'), bad('3v3')]);
+    const gk = effectivePointsConfig(ok.next!).games;
+    const kek = ITEMS.find(i => i.name === 'KEKLEO');
+    const rolls = Array.from({ length: 50 }, () => weightedCatch('fish', gk).name);
+    check('a custom fish joins the catches: sized, its odds and price, its rarity and duel type', !!kek?.custom && kek.size && gk.catches.some(c => c.name === 'KEKLEO' && c.custom && c.price === 500)
+      && rolls.filter(n => n === 'KEKLEO').length > 45 && rarityOf(gk, 'KEKLEO') === 'Common' && typeOf('KEKLEO') === 'Predator' && sellPrice(kek!, gk, { cm: 50, record: false }) === 500, rolls.slice(0, 5));
+    const other = effectivePointsConfig({ games: { enabled: true } }).games;
+    check('another channel never catches it', Array.from({ length: 3000 }, () => weightedCatch('fish', other).name).every(n => n !== 'KEKLEO' && n !== '🦄') && !other.catches.some(c => c.custom));
+    const sl = parseSellList(['kekleo', '2', '[emote:37225:KEKLEO]', '🦄']);
+    check('it\'s typed by name in any case, from Kick\'s emote picker, or as its emoji', !('error' in sl) && sl.items.map(x => `${x.item.name}${x.n}`).join() === 'KEKLEO3,🦄1'
+      && fishNamed(['[emote:1:KEKLEO]']) === 'KEKLEO' && fishNamed(['Kekleo']) === 'KEKLEO', sl);
+
+    const ch = 'customfishch';
+    writeConfig(root, ch, { enabled: true, currencyName: '$DON', games: { enabled: true, onlyWhileLive: false, customFish: [{ name: 'KEKLEO', weight: 1, price: 500, type: 'Predator' }] } });
+    makeService(ch, { broadcaster: 999, live: async () => ({ isLive: false, startedAt: null }) });
+    const pdb = openPointsDb(ch, { create: true })!;
+    runWrite(pdb, () => {
+      ensureUserTx(pdb, 35, 'kekfan', 1);
+      const d = initialData();
+      d.lifetime.attempts = 1;
+      for (const cm of [80, 30]) { addItem(d, kek!); ((d.catch.sizes ??= {}).KEKLEO ??= []).push({ cm, record: false }); }
+      addItem(d, ITEMS.find(i => i.name === '🐟')!);
+      (d.catch.sizes!['🐟'] ??= []).push({ cm: 50, record: false });
+      saveFish(pdb, 35, d, 1);
+    });
+    const realNow = Date.now;
+    let shift = 0;
+    Date.now = () => realNow() + shift;
+    const say = async (msg: string) => {
+      shift += 6_000;
+      const out: string[] = [];
+      const t: KickTags = { username: 'kekfan', 'display-name': 'kekfan', badges: {}, isBroadcaster: false, isModUp: false, isVIPUp: false, rawBadges: [], senderId: 35 };
+      await fishCommand({ say: async (_c, m) => { out.push(m); } }, msg, `#${ch}`, t, { channelName: ch } as ChannelConfig);
+      return out[0] ?? '';
+    };
+    const shown = await say('$don fish show');
+    const kinds = await say('$don fish show kekleo');
+    const sold = await say('$don fish sell [emote:37225:KEKLEO] 30cm');
+    check('viewers show and sell it like any fish, its name spaced so it shows as the emote', /KEKLEO KEKLEO/.test(shown) && !/KEKLEOKEKLEO|🐟KEKLEO|KEKLEO🐟/.test(shown)
+      && kinds.includes('2 KEKLEO (🦷 Predator') && kinds.includes('80 cm') && sold.includes('Sold your KEKLEO 30 cm for') && loadFish(pdb, 35)!.catch.types.KEKLEO === 1, { shown, kinds, sold });
+    Date.now = realNow;
+  }
+
+  // Feeding: a fish eats others, gains their value as XP, and levels up
+  {
+    const gf = effectivePointsConfig({ games: { enabled: true } }).games;
+    const it = (n: string) => ITEMS.find(x => x.name === n)!;
+    const shark = { cm: 50, record: false } as { cm: number; record: boolean; level?: number; xp?: number };
+    const base = sellPrice(it('🦈'), gf, { cm: 50, record: false });
+    const plain = fighterOf(gf, it('🦈'), { cm: 50, record: false });
+    check('a level costs the fish\'s own value times the level it\'s going to', levelCost(it('🦈'), gf, shark, 0) === base && levelCost(it('🦈'), gf, shark, 2) === base * 3);
+    const up1 = addXp(it('🦈'), gf, shark, base * 3 - 1);
+    check('XP levels it as far as it reaches, the rest carried', up1 === 1 && shark.level === 1 && shark.xp === base * 2 - 1, shark);
+    addXp(it('🦈'), gf, shark, 1);
+    const f2 = fighterOf(gf, it('🦈'), shark);
+    check('each level adds 10% duel stats and 25% value', shark.level === 2 && !shark.xp && f2.level === 2 && f2.hp === Math.round(plain.hp * 1.2) && Math.abs(f2.attack - plain.attack * 1.2) < 0.2
+      && sellPrice(it('🦈'), gf, shark) === Math.round(base * 1.5), { shark, f2, plain });
+    addXp(it('🦈'), gf, shark, 1e9);
+    check('it stops at Lv10, the XP past it lost', shark.level === 10 && !shark.xp);
+    const from = initialData(), to = initialData();
+    addItem(from, it('🦈')); addItem(from, it('🦈'));
+    from.catch.sizes = { '🦈': [{ cm: 50, record: false, level: 3, xp: 7 }, { cm: 50, record: false }] };
+    takeSized(from, it('🦈'), 50, 1, gf);
+    check('picking by length takes the lowest level first', from.catch.sizes['🦈'].length === 1 && from.catch.sizes['🦈'][0].level === 3);
+    moveFish(from, to, it('🦈'), { index: 0, held: from.catch.sizes['🦈'][0] });
+    check('a fish keeps its level and XP when it changes hands', to.catch.sizes!['🦈'][0].level === 3 && to.catch.sizes!['🦈'][0].xp === 7);
+    const oldest = initialData();
+    for (let i = 0; i < 3; i++) addItem(oldest, it('🐟'));
+    oldest.catch.sizes = { '🐟': [{ cm: 90, record: false, level: 2 }, { cm: 10, record: false }, { cm: 20, record: false }] };
+    takeItems(oldest, it('🐟'), 1, gf);
+    const dup = initialData();
+    for (let i = 0; i < 4; i++) addItem(dup, it('🐟'));
+    dup.catch.sizes = { '🐟': [{ cm: 10, record: false, level: 1 }, { cm: 90, record: false }, { cm: 20, record: false, level: 3 }, { cm: 30, record: false }] };
+    takeItems(dup, it('🐟'), 2, gf, true);
+    check('taking the oldest skips fed fish; keeping the biggest keeps the fed ones', oldest.catch.sizes['🐟'].map(h => h.cm).join() === '20,90'
+      && dup.catch.sizes['🐟'].map(h => `${h.cm}:${h.level ?? 0}`).join() === '10:1,20:3', [oldest.catch.sizes, dup.catch.sizes]);
+
+    const ch = 'feedch';
+    writeConfig(root, ch, { enabled: true, currencyName: '$DON', games: { enabled: true, onlyWhileLive: false, feedFailPercent: 0 } });
+    makeService(ch, { broadcaster: 999, live: async () => ({ isLive: false, startedAt: null }) });
+    const ch2 = 'feedfailch';
+    writeConfig(root, ch2, { enabled: true, currencyName: '$DON', games: { enabled: true, onlyWhileLive: false, feedFailPercent: 100 } });
+    makeService(ch2, { broadcaster: 999, live: async () => ({ isLive: false, startedAt: null }) });
+    const seedFeed = (c: string) => {
+      const db = openPointsDb(c, { create: true })!;
+      runWrite(db, () => {
+        ensureUserTx(db, 36, 'feeder', 1);
+        const d = initialData();
+        d.lifetime.attempts = 1;
+        for (const [n, cm] of [['🦈', 50], ['🦈', 80], ['🐟', 20], ['🐟', 30], ['🐟', 40]] as const) { addItem(d, it(n)); ((d.catch.sizes ??= {})[n] ??= []).push({ cm, record: false }); }
+        saveFish(db, 36, d, 1);
+      });
+      return db;
+    };
+    const fdb = seedFeed(ch), fdb2 = seedFeed(ch2);
+    const realNow = Date.now;
+    let shift = 0;
+    Date.now = () => realNow() + shift;
+    try {
+      const say = async (c: string, msg: string) => {
+        shift += 6_000;
+        const out: string[] = [];
+        const t: KickTags = { username: 'feeder', 'display-name': 'feeder', badges: {}, isBroadcaster: false, isModUp: false, isVIPUp: false, rawBadges: [], senderId: 36 };
+        await fishCommand({ say: async (_c, m) => { out.push(m); } }, msg, `#${c}`, t, { channelName: c } as ChannelConfig);
+        return out[0] ?? '';
+      };
+      const food = ['🐟 20', '🐟 30', '🐟 40'].reduce((sum, x) => sum + sellPrice(it('🐟'), gf, { cm: Number(x.split(' ')[1]), record: false }), 0);
+      const notHeld = await say(ch, '$don fish feed 🦈 50cm 🐟 4');
+      const itself = await say(ch, '$don fish feed 🦈 50cm 🦈 80cm 🦈');
+      const ate = await say(ch, '$don fish feed 🦈 50cm 🐟 3');
+      const d = loadFish(fdb, 36)!.catch;
+      const eater = d.sizes!['🦈'].find(h => h.cm === 50)!;
+      check('feed: the first fish eats the rest, gaining their sell value as XP; food not held and the fish itself are refused',
+        notHeld.includes('Nothing eaten: you have only 3 🐟') && itself.includes('Nothing eaten: you have no 🦈 besides the 🦈 eating')
+        && ate.includes(`Your 🦈 50 cm ate 🐟 x3 (+${food} XP)`) && (d.types['🐟'] ?? 0) === 0 && d.types['🦈'] === 2 && eater.xp === food && !eater.level, { notHeld, itself, ate, eater });
+      const failed = await say(ch2, '$don fish feed 🦈 🐟 🐟');
+      const d2 = loadFish(fdb2, 36)!.catch;
+      check('a failed feeding loses the food and gains nothing', failed.includes('Your 🦈 80 cm choked on 🐟 x2') && d2.types['🐟'] === 1 && d2.sizes!['🦈'].every(h => !h.xp && !h.level), { failed, d2 });
+      runWrite(fdb, () => { const x = loadFish(fdb, 36)!; x.catch.sizes!['🦈'][0].level = 4; saveFish(fdb, 36, x, 1); });
+      const shown = await say(ch, '$don fish show 🦈');
+      check('show lists a fish\'s level', /50 cm Lv4 ❤️/.test(shown), shown);
+    } finally {
+      Date.now = realNow;
+    }
+  }
+
+  // A cap on what one viewer holds: past it new fish sell on the spot, new junk is binned
+  {
+    const gc = effectivePointsConfig({ games: { enabled: true, maxFish: 3, maxJunk: 2 } }).games;
+    const it = (n: string) => ITEMS.find(x => x.name === n)!;
+    const d = initialData();
+    for (const cm of [10, 20, 30]) { addItem(d, it('🐟')); ((d.catch.sizes ??= {})['🐟'] ??= []).push({ cm, record: false }); }
+    check('under the cap nothing goes', overflow(d, it('🐟'), gc) === null && d.catch.fish === 3);
+    addItem(d, it('🐟'));
+    d.catch.sizes!['🐟'].push({ cm: 90, record: false });
+    const coins = overflow(d, it('🐟'), gc, 1);
+    check('past the cap the fish just added sells, at its own price', coins === sellPrice(it('🐟'), gc, { cm: 90, record: false }) && d.catch.fish === 3 && d.catch.types['🐟'] === 3
+      && d.catch.sizes!['🐟'].map(h => h.cm).join() === '10,20,30' && d.lifetime.sold === 1 && d.lifetime.coins === coins, { coins, d: d.catch });
+    for (let i = 0; i < 3; i++) addItem(d, it('🥫'));
+    check('junk past its cap is binned for nothing; what was over before stays', overflow(d, it('🥫'), gc) === 0 && d.catch.junk === 2 && d.lifetime.scrapped === 1
+      && overflow(d, it('🥫'), gc) === null);
+    const g100 = effectivePointsConfig({ games: { enabled: true } }).games;
+    check('caps are 100 by default, warned from 90; 0 is no cap', g100.maxFish === 100 && g100.maxJunk === 100 && nearCap(g100, 'fish', 90) && !nearCap(g100, 'fish', 89)
+      && !nearCap(effectivePointsConfig({ games: { enabled: true, maxFish: 0 } }).games, 'fish', 5000));
+    check('the Commands tab says so', publicCommands(effectivePointsConfig({ enabled: true, games: { enabled: true } })).sections.find(sec => sec.title === 'Fishing')!.note!.includes('hold 100 fish and 100 junk'));
+
+    const ch = 'bucketch';
+    writeConfig(root, ch, { enabled: true, currencyName: '$DON', games: { enabled: true, onlyWhileLive: false, trapMinutes: 60, catchOdds: 2, maxFish: 1, maxJunk: 1, giveEnabled: true, giveCooldownSeconds: 0 } });
+    makeService(ch, { broadcaster: 999, live: async () => ({ isLive: false, startedAt: null }) });
+    const pdb = openPointsDb(ch, { create: true })!;
+    const realNow = Date.now;
+    let shift = 0;
+    Date.now = () => realNow() + shift;
+    try {
+      const run = async (msg: string, who: [string, number] = ['bucketeer', 33]) => {
+        shift += 6_000;
+        const out: string[] = [];
+        const t: KickTags = { username: who[0], 'display-name': who[0], badges: {}, isBroadcaster: false, isModUp: false, isVIPUp: false, rawBadges: [], senderId: who[1] };
+        await fishCommand({ say: async (_c, m) => { out.push(m); } }, msg, `#${ch}`, t, { channelName: ch } as ChannelConfig);
+        return out[0] ?? '';
+      };
+      runWrite(pdb, () => { ensureUserTx(pdb, 33, 'bucketeer', 1); ensureUserTx(pdb, 34, 'donor', 1); });
+      const hauls: string[] = [];
+      for (let i = 0; i < 8; i++) { await run('$don fish trap'); shift += 61 * 60_000; hauls.push(await run('$don fish trap')); }
+      const b = loadFish(pdb, 33)!.catch;
+      const paid = balance(ch, 33);
+      check('traps past the cap sell the fish and bin the junk, paying for the fish', b.fish === 1 && b.junk <= 1 && hauls.some(h => h.includes(', sold)') && h.includes('Your bucket is full (1 fish): sold for'))
+        && paid > 0, { hauls, b, paid });
+      runWrite(pdb, () => { const d = loadFish(pdb, 34) ?? initialData(); d.lifetime.attempts = 1; addItem(d, it('🦀')); ((d.catch.sizes ??= {})['🦀'] ??= []).push({ cm: 40, record: false }); saveFish(pdb, 34, d, 1); });
+      const refused = await run('$don fish give @bucketeer 🦀', ['donor', 34]);
+      check('a gift to a full bucket is refused and stays the giver\'s', refused.includes("bucket is full (1), so they can't take it") && loadFish(pdb, 34)!.catch.types['🦀'] === 1, refused);
     } finally {
       Date.now = realNow;
     }

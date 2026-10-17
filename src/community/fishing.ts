@@ -31,9 +31,21 @@ export interface CatchItem {
   trophy?: boolean;
   /** A trophy's chance (%) that the last pull lands it rather than snapping the line: rarer, lower. */
   landPercent?: number;
+  /**
+   * A fish a channel added on its dashboard (games.customFish): an emoji or an emote's
+   * name. Only the channels that list it catch it; anyone holding one can still sell it.
+   */
+  custom?: boolean;
+  /** A custom fish's type in a duel; built-in fish have theirs in fish-duel.ts. */
+  duelType?: 'Predator' | 'Swift' | 'Armored';
 }
 
-export const ITEMS: readonly CatchItem[] = [
+/**
+ * Every catch item. The built-in ones, then each custom fish as a channel's settings are
+ * first read (registerCustomFish): items are looked up by name from code that doesn't
+ * know the channel, and one that's removed from the settings stays sellable.
+ */
+export const ITEMS: CatchItem[] = [
   { name: '🥫', type: 'junk', price: 8, weight: 25, size: false },
   { name: '💀', type: 'junk', price: 5, weight: 10, size: false },
   { name: '🥾', type: 'junk', price: 20, weight: 5, size: false },
@@ -55,6 +67,41 @@ export const ITEMS: readonly CatchItem[] = [
   { name: '👑', type: 'fish', price: 6_000, weight: 10, size: true, trophy: true, landPercent: 50 },
   { name: '🐉', type: 'fish', price: 25_000, weight: 5, size: true, trophy: true, landPercent: 40 }
 ];
+
+/** Custom fish by lowercase name, for typing an emote's name in any case. */
+const CUSTOM_WORDS = new Map<string, string>();
+
+/**
+ * Add a channel's custom fish to ITEMS (or update their price and odds there): sized, like
+ * every fish. A name already built in is skipped; the settings never allow one.
+ */
+export function registerCustomFish(list: ReadonlyArray<{ name: string; weight: number; price: number; type?: 'Predator' | 'Swift' | 'Armored' }>): void {
+  for (const f of list) {
+    const known = ITEMS.find(i => i.name === f.name);
+    if (known && !known.custom) continue;
+    if (known) {
+      known.price = f.price;
+      known.weight = f.weight;
+      known.duelType = f.type;
+    } else {
+      ITEMS.push({ name: f.name, type: 'fish', price: f.price, weight: f.weight, size: true, custom: true, ...(f.type ? { duelType: f.type } : {}) });
+    }
+    if (/^\w+$/.test(f.name)) CUSTOM_WORDS.set(f.name.toLowerCase(), f.name);
+  }
+}
+
+/** Kick's emote picker sends "[emote:123:NAME]": that's NAME. Anything else is as it is. */
+export const emoteWord = (word: string): string => /^\[emote:\d+:([^\]\s]+)\]$/.exec(word)?.[1] ?? word;
+
+/** Whether a name is already a built-in item's, or a word that names one ("shark", "boots"). */
+export function builtInName(name: string): boolean {
+  if (ITEMS.some(i => !i.custom && i.name === name)) return true;
+  const w = name.toLowerCase();
+  return w in ITEM_WORDS || w.replace(/es$/, '') in ITEM_WORDS || w.replace(/s$/, '') in ITEM_WORDS;
+}
+
+/** Whether a name is a word (an emote's name), not an emoji: it needs spaces around it in chat. */
+export const isWordName = (name: string): boolean => /^\w+$/.test(name);
 
 /** Casts and traps roll from these; trophies come only from big bites. */
 export const isTrophy = (name: string): boolean => ITEMS.some(i => i.name === name && i.trophy);
@@ -119,7 +166,23 @@ export const STORY_STYLES = ['exciting', 'spooky', 'smug', 'radical', 'mysteriou
  * with the holder's reel bonus (the owner, 2026-10-14: reels have no effect on
  * stealing), whoever holds it after.
  */
-export interface HeldFish { cm: number; record: boolean; stolen?: boolean }
+export interface HeldFish {
+  cm: number;
+  record: boolean;
+  stolen?: boolean;
+  /** Our addition: levels from feeding it other fish (fish feed), 0 to MAX_LEVEL; absent is 0. */
+  level?: number;
+  /** XP toward the next level; absent is 0. */
+  xp?: number;
+}
+
+/** Feeding: the highest level, and what each level adds to a fish's duel stats and its value. */
+export const MAX_LEVEL = 10;
+export const LEVEL_STATS = 0.1;
+export const LEVEL_VALUE = 0.25;
+
+/** A held fish's level, 0 for none. */
+export const levelOf = (held: HeldFish | undefined): number => Math.min(MAX_LEVEL, Math.max(0, Math.floor(held?.level ?? 0)));
 
 export interface FishData {
   catch: {
@@ -196,7 +259,8 @@ export function pick<T>(list: readonly T[]): T {
 
 /** The channel's weight for an item: its dashboard override, else supibot's. */
 function weightOf(item: CatchItem, g: PointsGamesConfig): number {
-  return g.catches.find(c => c.name === item.name)?.weight ?? item.weight;
+  // Another channel's custom fish is never caught here.
+  return g.catches.find(c => c.name === item.name)?.weight ?? (item.custom ? 0 : item.weight);
 }
 
 /** The reel a viewer fishes with: the last one bought, or null. */
@@ -286,7 +350,7 @@ export function sellPrice(item: CatchItem, g: PointsGamesConfig, held?: HeldFish
   const listed = g.catches.find(c => c.name === item.name)?.price ?? defaultSellPrice(item, g.sellPricePercent);
   const base = item.type === 'fish' ? listed * value : listed;
   if (!held) return Math.round(base);
-  return Math.round(base * sizeMultiplier(held.cm) * (held.record ? 1.5 : 1));
+  return Math.round(base * sizeMultiplier(held.cm) * (held.record ? 1.5 : 1) * (1 + LEVEL_VALUE * levelOf(held)));
 }
 
 /**
@@ -304,7 +368,10 @@ export function takeItems(d: FishData, item: CatchItem, n: number, g: PointsGame
     let list = [...(d.catch.sizes[item.name] ?? [])];
     // Unsized fish (traps, older catches) count toward `have` but have no entry.
     const unsized = have - list.length;
-    if (keepBiggest) list.sort((a, b) => a.cm - b.cm);
+    // Fed fish (a level) go last, so taking "the oldest" never takes one by surprise;
+    // keeping the biggest keeps the highest level, then the longest.
+    if (keepBiggest) list.sort((a, b) => levelOf(a) - levelOf(b) || a.cm - b.cm);
+    else list = [...list.filter(h => !levelOf(h)), ...list.filter(h => levelOf(h))];
     // Sell unsized ones first when keeping the biggest, so the kept one is a real size.
     // Unsized ones that weren't stolen sell first, at the reel's value; stolen ones at the plain price.
     let ownUnsized = Math.max(0, unsized - stolenUnsized(d, item.name));
@@ -345,7 +412,9 @@ export function takeSized(d: FishData, item: CatchItem, cm: number, n: number, g
   if (item.type !== 'fish' || list.filter(h => h.cm === cm).length < n) return null;
   let total = 0;
   for (let i = 0; i < n; i++) {
-    const at = list.findIndex(h => h.cm === cm);
+    // Of fish that long, the lowest level goes first: a fed one is kept unless it's the only one.
+    let at = -1;
+    list.forEach((h, j) => { if (h.cm === cm && (at < 0 || levelOf(h) < levelOf(list[at]))) at = j; });
     const [held] = list.splice(at, 1);
     total += sellPrice(item, g, held, held.stolen ? 1 : value);
   }
@@ -353,6 +422,73 @@ export function takeSized(d: FishData, item: CatchItem, cm: number, n: number, g
   d.catch.fish -= n;
   d.lifetime.sold += n;
   return total;
+}
+
+/**
+ * XP a fish needs to go from `level` to the next: its own value at level 0 (its length and
+ * kind, no record bonus), times the level it's going to. Each level costs more than the last.
+ */
+export function levelCost(item: CatchItem, g: PointsGamesConfig, held: HeldFish, level: number): number {
+  return Math.max(1, sellPrice(item, g, { cm: held.cm, record: false })) * (level + 1);
+}
+
+/** Add XP to a held fish, levelling it up as far as it reaches; past MAX_LEVEL it's lost. Returns the levels gained. */
+export function addXp(item: CatchItem, g: PointsGamesConfig, held: HeldFish, xp: number): number {
+  let level = levelOf(held);
+  let have = (held.xp ?? 0) + Math.max(0, Math.floor(xp));
+  const from = level;
+  while (level < MAX_LEVEL && have >= levelCost(item, g, held, level)) {
+    have -= levelCost(item, g, held, level);
+    level++;
+  }
+  if (level >= MAX_LEVEL) have = 0;
+  if (level > 0) held.level = level; else delete held.level;
+  if (have > 0) held.xp = have; else delete held.xp;
+  return level - from;
+}
+
+/** The most of a kind of catch one viewer can hold (games.maxFish, maxJunk); 0 is no cap. */
+export const capOf = (g: PointsGamesConfig, type: CatchType): number => type === 'fish' ? g.maxFish : g.maxJunk;
+
+/** Whether holding `count` of this kind of catch calls for a warning: from 90% of the cap. */
+export const nearCap = (g: PointsGamesConfig, type: CatchType, count: number): boolean => {
+  const cap = capOf(g, type);
+  return cap > 0 && count >= Math.ceil(cap * 0.9);
+};
+
+/**
+ * Call right after adding `item`: past the cap for its kind, the newest one goes again. A
+ * fish is sold (at its price, the reel's `value` unless it was stolen; the caller pays the
+ * coins), junk thrown away. Returns the coins (0 for junk), or null when it fits. What's
+ * held over the cap from before stays: only the one just added can go.
+ */
+export function overflow(d: FishData, item: CatchItem, g: PointsGamesConfig, value = 1): number | null {
+  const cap = capOf(g, item.type);
+  if (cap <= 0 || (d.catch[item.type] ?? 0) <= cap) return null;
+  const have = d.catch.types[item.name] ?? 0;
+  if (have <= 0) return null;
+  d.catch.types[item.name] = have - 1;
+  d.catch[item.type] -= 1;
+  if (item.type === 'junk') {
+    d.lifetime.scrapped++;
+    return 0;
+  }
+  const list = d.catch.sizes?.[item.name] ?? [];
+  let price: number;
+  if (list.length >= have) {
+    // Sized fish are kept oldest first: the newest is the last.
+    const held = list.pop()!;
+    price = sellPrice(item, g, held, held.stolen ? 1 : value);
+  } else {
+    // One with no length (none are made any more, but a gift or a duel can still move one).
+    const hot = stolenUnsized(d, item.name);
+    const unsized = have - list.length;
+    price = sellPrice(item, g, undefined, hot >= unsized ? 1 : value);
+    setStolenUnsized(d, item.name, Math.min(hot, unsized - 1));
+  }
+  d.lifetime.sold++;
+  d.lifetime.coins += price;
+  return price;
 }
 
 /** Words for the items, so chat can type "shark" or "boot" instead of the emoji. */
@@ -368,7 +504,9 @@ const ITEM_WORDS: Record<string, string> = {
 
 /** The item a word names, any case, singular or plural ("Sharks", "dinos"); undefined if none. */
 export function itemByWord(word: string): CatchItem | undefined {
-  const w = word.toLowerCase();
+  const w = emoteWord(word).toLowerCase();
+  const custom = CUSTOM_WORDS.get(w);
+  if (custom) return ITEMS.find(i => i.name === custom);
   const name = ITEM_WORDS[w] ?? ITEM_WORDS[w.replace(/es$/, '')] ?? ITEM_WORDS[w.replace(/s$/, '')];
   return name ? ITEMS.find(i => i.name === name) : undefined;
 }
@@ -624,7 +762,12 @@ export function moveFish(from: FishData, to: FishData, item: CatchItem, picked: 
   to.catch.fish++;
   if (picked.held) {
     to.catch.sizes ??= {};
-    (to.catch.sizes[item.name] ??= []).push({ cm: picked.held.cm, record: false, ...(stolen || picked.held.stolen ? { stolen: true } : {}) });
+    // Its levels and XP go with it: they're the fish's, not its owner's.
+    const lv = levelOf(picked.held);
+    (to.catch.sizes[item.name] ??= []).push({
+      cm: picked.held.cm, record: false, ...(stolen || picked.held.stolen ? { stolen: true } : {}),
+      ...(lv > 0 ? { level: lv } : {}), ...(picked.held.xp ? { xp: picked.held.xp } : {})
+    });
   } else {
     const hot = stolen || (unsizedBefore > 0 && fromHot >= unsizedBefore);
     setStolenUnsized(from, item.name, Math.min(fromHot, Math.max(0, unsizedBefore - 1)));
@@ -642,7 +785,9 @@ export function giveItems(from: FishData, to: FishData, item: CatchItem, n: numb
   for (let i = 0; i < n; i++) {
     if (item.type === 'fish') {
       const sized = from.catch.sizes?.[item.name] ?? [];
-      moveFish(from, to, item, sized.length ? { index: 0, held: sized[0] } : { index: -1 });
+      // The oldest without a level: a fed fish goes only when it's all that's left.
+      const index = Math.max(0, sized.findIndex(h => !levelOf(h)));
+      moveFish(from, to, item, sized.length ? { index, held: sized[index] } : { index: -1 });
     } else {
       from.catch.types[item.name] = (from.catch.types[item.name] ?? 0) - 1;
       from.catch.junk = Math.max(0, from.catch.junk - 1);
