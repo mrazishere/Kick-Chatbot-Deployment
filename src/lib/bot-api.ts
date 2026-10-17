@@ -139,6 +139,9 @@ export interface PointsGames {
   baitPricePercent: number;
   /** A short AI story on 1 in 3 catches. */
   stories: boolean;
+  /** `fish give @user 🐟 [count]` on, and seconds between a viewer's gives. Absent from an older bot service. */
+  giveEnabled?: boolean;
+  giveCooldownSeconds?: number;
   /** Fishing replies go to chat. They always go to the fishing overlay; off, chat only gets them offline or with no overlay showing. Absent from an older bot service. */
   chatReplies?: boolean;
   /** The fishing overlay's &demo=1 may play; off, overlays ignore it. Absent from an older bot service. */

@@ -102,6 +102,9 @@ export interface PointsGames {
   baitPricePercent: number;
   /** A short AI story on 1 in 3 catches. */
   stories: boolean;
+  /** `fish give` on, and seconds between a viewer's gives. Absent from an older bot service. */
+  giveEnabled?: boolean;
+  giveCooldownSeconds?: number;
   /** Fishing replies go to chat. They always go to the fishing overlay; off, chat only gets them offline or with no overlay showing. Absent from an older bot service. */
   chatReplies?: boolean;
   /** The fishing overlay's &demo=1 may play; off, overlays ignore it. Absent from an older bot service. */
@@ -461,6 +464,8 @@ interface SettingsForm {
   fishSellPct: string;
   fishBaitPct: string;
   fishStories: boolean;
+  fishGive: boolean;
+  fishGiveCooldown: string;
   fishChatReplies: boolean;
   fishOverlayDemo: boolean;
   fishOverlaySize: string;
@@ -544,6 +549,8 @@ function formFromConfig(c: PointsConfig): SettingsForm {
     fishSellPct: String((c.games ?? GAMES_DEFAULTS).sellPricePercent),
     fishBaitPct: String((c.games ?? GAMES_DEFAULTS).baitPricePercent),
     fishStories: (c.games ?? GAMES_DEFAULTS).stories,
+    fishGive: c.games?.giveEnabled === true,
+    fishGiveCooldown: String(c.games?.giveCooldownSeconds ?? 30),
     fishChatReplies: (c.games ?? GAMES_DEFAULTS).chatReplies !== false,
     fishOverlayDemo: (c.games ?? GAMES_DEFAULTS).overlayDemo !== false,
     fishOverlaySize: String((c.games ?? GAMES_DEFAULTS).overlaySizePercent ?? 100),
@@ -764,6 +771,8 @@ function buildPatch(f: SettingsForm): { patch: PointsSettingsPatch } | { error: 
     sellPricePercent: whole(f.fishSellPct, "Sell prices", 0, 1000),
     baitPricePercent: whole(f.fishBaitPct, "Bait prices", 0, 1000),
     stories: f.fishStories,
+    giveEnabled: f.fishGive,
+    giveCooldownSeconds: whole(f.fishGiveCooldown, "Gift cooldown", 0, 3600),
     chatReplies: f.fishChatReplies,
     overlayDemo: f.fishOverlayDemo,
     overlaySizePercent: whole(f.fishOverlaySize, "Overlay size", 50, 300),
@@ -2097,6 +2106,19 @@ export default function PointsCard({
                     disabled={readOnly || !!busy}
                     onChange={(v) => set("fishStories", v)}
                   />
+                  <Checkbox
+                    label={`Let viewers give fish and junk to each other (${commandPreview ? `$${commandPreview}` : "…"} fish give @user 🐟 [count])`}
+                    checked={form.fishGive}
+                    disabled={readOnly || !!busy}
+                    onChange={(v) => set("fishGive", v)}
+                  />
+                  {form.fishGive ? (
+                    <div className="pl-6 sm:w-1/3">
+                      <Field label="Seconds between gives" hint="Per viewer. Only to someone who has fished before; oldest fish go first, and a record bonus stays with whoever caught it.">
+                        {text("fishGiveCooldown", { inputMode: "numeric" })}
+                      </Field>
+                    </div>
+                  ) : null}
                   <Checkbox
                     label="Post fishing replies in chat"
                     checked={form.fishChatReplies}
