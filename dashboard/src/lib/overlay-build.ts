@@ -19,20 +19,54 @@ function store(): Storage | null {
   }
 }
 
+/** The URL the page was opened with, before a page takes its key out of the address bar. */
+let openedAt: string | null = null;
+
+/** Call before changing the address bar: a reload goes back to this URL, key and all. */
+export function rememberUrl(): void {
+  if (openedAt === null && typeof window !== "undefined") openedAt = window.location.href;
+}
+
+/** Which build a reload was last made for: in storage, or (where a browser source has none) on the URL. */
+function reloadedFor(): string | null {
+  const s = store();
+  const kept = s?.getItem(RELOADED_FOR);
+  if (kept) return kept;
+  try {
+    return new URL(openedAt ?? window.location.href).searchParams.get("r");
+  } catch {
+    return null;
+  }
+}
+
+/** The poll URL with this page's build on it, so the feed can tell (and log) an overlay left on an old build. */
+export function withBuild(url: string): string {
+  return BUILD_ID ? `${url}${url.includes("?") ? "&" : "?"}v=${encodeURIComponent(BUILD_ID)}` : url;
+}
+
 /** Whether the feed is served by a newer build than this page's. */
 export function isStale(feedBuild: unknown): boolean {
   if (!BUILD_ID || typeof feedBuild !== "string" || !feedBuild || feedBuild === BUILD_ID) return false;
   // Reloaded for this build already and still stale (a cached page?): don't loop.
-  return store()?.getItem(RELOADED_FOR) !== feedBuild;
+  return reloadedFor() !== feedBuild;
 }
 
-/** Reload into the feed's build, resuming the feed after `cursor`. */
+/**
+ * Reload into the feed's build, resuming the feed after `cursor`. Where there's no
+ * storage (some browser sources), the build goes on the URL instead, as the loop guard,
+ * and the feed starts from the live end.
+ */
 export function reloadInto(feedBuild: string, feedKey: string, cursor: number): void {
   const s = store();
-  if (!s) return; // without storage a reload could loop and would lose the cursor
-  s.setItem(RELOADED_FOR, feedBuild);
-  s.setItem(CURSOR, JSON.stringify({ feedKey, cursor, at: Date.now() }));
-  window.location.reload();
+  const to = new URL(openedAt ?? window.location.href);
+  if (s) {
+    s.setItem(RELOADED_FOR, feedBuild);
+    s.setItem(CURSOR, JSON.stringify({ feedKey, cursor, at: Date.now() }));
+    to.searchParams.delete("r");
+  } else {
+    to.searchParams.set("r", feedBuild);
+  }
+  window.location.replace(to.toString());
 }
 
 /** The cursor saved by a reload into this build, once; null to start from the live end. */

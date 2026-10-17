@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { noteOverlayBuild } from "@/lib/overlay-stale-log";
 import { validChannel } from "@/lib/bot-auth";
 import { BotApiError, getVideoOverlay, reportVideoFailed } from "@/lib/bot-api";
 import { validVideoOverlayKey } from "@/lib/video-overlay";
@@ -21,7 +22,9 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ chan
   const slug = await check(req, params);
   if (!slug) return NextResponse.json({ error: "Not found" }, { status: 404, headers });
   try {
-    const feed = await getVideoOverlay(slug, req.nextUrl.searchParams.get("in") === "fishing");
+    const embedded = req.nextUrl.searchParams.get("in") === "fishing";
+    if (!embedded) noteOverlayBuild(slug, "video", req.nextUrl.searchParams.get("v"));
+    const feed = await getVideoOverlay(slug, embedded);
     // build: which dashboard build answered, so an overlay running older page code reloads.
     return NextResponse.json({ ...feed, build: process.env.DASH_BUILD_ID }, { headers });
   } catch (e) {

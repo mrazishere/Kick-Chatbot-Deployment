@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { isStale, reloadInto } from "@/lib/overlay-build";
+import { isStale, reloadInto, rememberUrl, withBuild } from "@/lib/overlay-build";
 import { useWheel } from "@/components/FishWheelStage";
 import type { FishOverlayEvent } from "@/lib/bot-api";
 
@@ -88,6 +88,8 @@ export default function VideoOverlay({ channel, overlayKey, embedded = false }: 
   // it. The feed is asked with the key from props, and OBS reloads its own saved link.
   useEffect(() => {
     // Inside the fishing overlay the address is the fishing page's, which keeps its own query.
+    // A reload into a new build goes back to the URL as opened, key and all.
+    if (!embedded) rememberUrl();
     if (!embedded && window.location.search) window.history.replaceState(null, "", window.location.pathname);
   }, [embedded]);
 
@@ -98,7 +100,7 @@ export default function VideoOverlay({ channel, overlayKey, embedded = false }: 
     const poll = async () => {
       let off = false;
       try {
-        const res = await fetch(url, { cache: "no-store" });
+        const res = await fetch(withBuild(url), { cache: "no-store" });
         off = !res.ok;
         if (!res.ok) {
           setCurrent(null);

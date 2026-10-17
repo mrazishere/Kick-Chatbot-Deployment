@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import type { FishOverlayEvent } from "@/lib/bot-api";
-import { isStale, reloadInto, takeCursor } from "@/lib/overlay-build";
+import { isStale, reloadInto, takeCursor, withBuild } from "@/lib/overlay-build";
 import { snipeIsOpen, syncClock, useCodeHidden, useCountdown } from "@/lib/overlay-clock";
 import { demoBigBite, demoGenerator, type DemoOdds } from "@/lib/fish-demo";
 import { useWheel } from "@/components/FishWheelStage";
@@ -518,7 +518,7 @@ export default function FishOverlay({
     let after: number | null = takeCursor(url);
     const poll = async () => {
       try {
-        const res = await fetch(url, { cache: "no-store" });
+        const res = await fetch(withBuild(url), { cache: "no-store" });
         if (!res.ok) {
           setDemoAllowed((a) => a ?? true); // no feed (fishing off, say): the demo still previews
           return;
