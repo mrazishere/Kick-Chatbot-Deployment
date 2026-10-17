@@ -22,6 +22,14 @@ export interface PointsBonuses {
   announce: boolean;
 }
 
+/** `$<cmd> wordle`: one Wordle for the whole chat. */
+export interface PointsWordle {
+  enabled: boolean;
+  prize: number;
+  maxGuesses: number;
+  guessCooldownSeconds: number;
+}
+
 /** `$<cmd> video <youtube link>`: paid videos on the video overlay. */
 export interface PointsVideo {
   enabled: boolean;
@@ -82,6 +90,8 @@ export interface PointsConfig {
   give: PointsGive;
   /** Absent from a bot service older than video sharing. */
   video?: PointsVideo;
+  /** Absent from a bot service older than Wordle. */
+  wordle?: PointsWordle;
   modMaxAdjust: number;
   publicLeaderboard: boolean;
   timeoutPenalty: PointsTimeoutPenalty;
@@ -356,10 +366,11 @@ interface PointsGambleStats {
   net: number;
 }
 
-type PointsSettingsPatch = Partial<Omit<PointsConfig, "effectiveCommand" | "bonuses" | "give" | "video" | "timeoutPenalty" | "antiSpam" | "gamble" | "games">> & {
+type PointsSettingsPatch = Partial<Omit<PointsConfig, "effectiveCommand" | "bonuses" | "give" | "video" | "wordle" | "timeoutPenalty" | "antiSpam" | "gamble" | "games">> & {
   bonuses?: Partial<PointsBonuses>;
   give?: Partial<PointsGive>;
   video?: Partial<PointsVideo>;
+  wordle?: Partial<PointsWordle>;
   timeoutPenalty?: Partial<PointsTimeoutPenalty>;
   antiSpam?: Partial<PointsAntiSpam>;
   gamble?: Partial<PointsGamble>;
@@ -444,6 +455,10 @@ interface SettingsForm {
   videoLiveOnly: boolean;
   videoVolume: string;
   videoMediashare: boolean;
+  wordleEnabled: boolean;
+  wordlePrize: string;
+  wordleGuesses: string;
+  wordleCooldown: string;
   modMaxAdjust: string;
   publicLeaderboard: boolean;
   penaltyEnabled: boolean;
@@ -536,6 +551,10 @@ function formFromConfig(c: PointsConfig): SettingsForm {
     videoLiveOnly: c.video?.onlyWhileLive !== false,
     videoVolume: String(c.video?.volumePercent ?? 50),
     videoMediashare: c.video?.mediashare === true,
+    wordleEnabled: c.wordle?.enabled === true,
+    wordlePrize: String(c.wordle?.prize ?? 1000),
+    wordleGuesses: String(c.wordle?.maxGuesses ?? 6),
+    wordleCooldown: String(c.wordle?.guessCooldownSeconds ?? 5),
     modMaxAdjust: String(c.modMaxAdjust),
     publicLeaderboard: c.publicLeaderboard,
     penaltyEnabled: c.timeoutPenalty.enabled,
@@ -741,6 +760,12 @@ function buildPatch(f: SettingsForm): { patch: PointsSettingsPatch } | { error: 
       onlyWhileLive: f.videoLiveOnly,
       volumePercent: whole(f.videoVolume, "Video volume", 0, 100),
       mediashare: f.videoMediashare,
+    },
+    wordle: {
+      enabled: f.wordleEnabled,
+      prize: whole(f.wordlePrize, "Wordle prize", 0, 1_000_000_000),
+      maxGuesses: whole(f.wordleGuesses, "Wordle guesses", 1, 30),
+      guessCooldownSeconds: whole(f.wordleCooldown, "Wordle guess cooldown", 0, 600),
     },
     timeoutPenalty: {
       enabled: f.penaltyEnabled,
@@ -1958,6 +1983,27 @@ export default function PointsCard({
                   <Field label="Minimum">{text("giveMin", { inputMode: "numeric" })}</Field>
                   <Field label="Maximum (0 = none)">{text("giveMax", { inputMode: "numeric" })}</Field>
                   <Field label="Cooldown (s)">{text("giveCooldown", { inputMode: "numeric" })}</Field>
+                </div>
+              </div>
+
+              <div>
+                <h4 className={LABEL}>Wordle</h4>
+                <Checkbox
+                  label={`Let chat play Wordle ($${commandPreview || "…"} wordle <word>; mods start it with $${commandPreview || "…"} wordle start)`}
+                  checked={form.wordleEnabled}
+                  disabled={readOnly || !!busy}
+                  onChange={(v) => set("wordleEnabled", v)}
+                />
+                <div className="mt-3 grid gap-4 sm:grid-cols-3">
+                  <Field label={`Prize (${form.currencyName.trim() || "points"})`} hint="For the first right guess. 0 plays for glory.">
+                    {text("wordlePrize", { inputMode: "numeric" })}
+                  </Field>
+                  <Field label="Guesses per game" hint="For the whole chat together. Wordle's own is 6.">
+                    {text("wordleGuesses", { inputMode: "numeric" })}
+                  </Field>
+                  <Field label="Seconds between a viewer's guesses" hint="Keeps one viewer from using up the board.">
+                    {text("wordleCooldown", { inputMode: "numeric" })}
+                  </Field>
                 </div>
               </div>
 
