@@ -149,7 +149,8 @@ function shape(raw: FishOverlayFeed): FishOverlayFeed {
   });
   return { lastId: typeof raw.lastId === "number" ? raw.lastId : 0, events, ...(typeof raw.now === "number" ? { now: raw.now } : {}), ...(raw.demo === false ? { demo: false } : {}),
     ...(typeof raw.size === "number" && raw.size >= 50 && raw.size <= 300 && raw.size !== 100 ? { size: raw.size } : {}),
-    ...(clearOf(raw.clear) ? { clear: clearOf(raw.clear)! } : {}) };
+    ...(clearOf(raw.clear) ? { clear: clearOf(raw.clear)! } : {}),
+    ...(typeof raw.leadMs === "number" && raw.leadMs > 0 && raw.leadMs <= 30_000 ? { leadMs: raw.leadMs } : {}) };
 }
 
 export type OverlayResult = { kind: "ok"; data: FishOverlayFeed } | { kind: "not-found" } | { kind: "unavailable" };
