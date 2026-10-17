@@ -21,6 +21,15 @@ export interface PointsBonuses {
   announce: boolean;
 }
 
+/** `$<cmd> video <youtube link>`: paid videos on the video overlay. */
+export interface PointsVideo {
+  enabled: boolean;
+  pricePerSecond: number;
+  maxSeconds: number;
+  queueMax: number;
+  onlyWhileLive: boolean;
+}
+
 export interface PointsGive {
   enabled: boolean;
   minAmount: number;
@@ -67,6 +76,8 @@ export interface PointsConfig {
   ignoreUsers: string[];
   bonuses: PointsBonuses;
   give: PointsGive;
+  /** Absent from a bot service older than video sharing. */
+  video?: PointsVideo;
   modMaxAdjust: number;
   publicLeaderboard: boolean;
   timeoutPenalty: PointsTimeoutPenalty;
@@ -341,9 +352,10 @@ interface PointsGambleStats {
   net: number;
 }
 
-type PointsSettingsPatch = Partial<Omit<PointsConfig, "effectiveCommand" | "bonuses" | "give" | "timeoutPenalty" | "antiSpam" | "gamble" | "games">> & {
+type PointsSettingsPatch = Partial<Omit<PointsConfig, "effectiveCommand" | "bonuses" | "give" | "video" | "timeoutPenalty" | "antiSpam" | "gamble" | "games">> & {
   bonuses?: Partial<PointsBonuses>;
   give?: Partial<PointsGive>;
+  video?: Partial<PointsVideo>;
   timeoutPenalty?: Partial<PointsTimeoutPenalty>;
   antiSpam?: Partial<PointsAntiSpam>;
   gamble?: Partial<PointsGamble>;
@@ -421,6 +433,11 @@ interface SettingsForm {
   giveMin: string;
   giveMax: string;
   giveCooldown: string;
+  videoEnabled: boolean;
+  videoPrice: string;
+  videoMax: string;
+  videoQueue: string;
+  videoLiveOnly: boolean;
   modMaxAdjust: string;
   publicLeaderboard: boolean;
   penaltyEnabled: boolean;
@@ -506,6 +523,11 @@ function formFromConfig(c: PointsConfig): SettingsForm {
     giveMin: String(c.give.minAmount),
     giveMax: String(c.give.maxAmount),
     giveCooldown: String(c.give.cooldownSeconds),
+    videoEnabled: c.video?.enabled === true,
+    videoPrice: String(c.video?.pricePerSecond ?? 100),
+    videoMax: String(c.video?.maxSeconds ?? 180),
+    videoQueue: String(c.video?.queueMax ?? 5),
+    videoLiveOnly: c.video?.onlyWhileLive !== false,
     modMaxAdjust: String(c.modMaxAdjust),
     publicLeaderboard: c.publicLeaderboard,
     penaltyEnabled: c.timeoutPenalty.enabled,
@@ -702,6 +724,13 @@ function buildPatch(f: SettingsForm): { patch: PointsSettingsPatch } | { error: 
       minAmount: whole(f.giveMin, "Minimum give", 1, 1_000_000),
       maxAmount: whole(f.giveMax, "Maximum give", 0, 1_000_000_000),
       cooldownSeconds: whole(f.giveCooldown, "Give cooldown", 0, 3600),
+    },
+    video: {
+      enabled: f.videoEnabled,
+      pricePerSecond: whole(f.videoPrice, "Video price per second", 0, 1_000_000),
+      maxSeconds: whole(f.videoMax, "Longest video", 5, 3600),
+      queueMax: whole(f.videoQueue, "Videos waiting", 1, 50),
+      onlyWhileLive: f.videoLiveOnly,
     },
     timeoutPenalty: {
       enabled: f.penaltyEnabled,
@@ -1358,7 +1387,7 @@ function CatchTable({ rows, currency, disabled, onChange }: {
  * The fishing overlay's browser-source links. Shown whatever the chat setting:
  * a channel can keep replies in chat and show the overlay too.
  */
-function FishOverlayLinks({ links }: { links: OverlayLink[] }) {
+function FishOverlayLinks({ links, title = "Fishing overlay", blurb }: { links: OverlayLink[]; title?: string; blurb?: string }) {
   const [copied, setCopied] = useState<string | null>(null);
   if (!links.length) return null;
   const copy = async (url: string) => {
@@ -1372,10 +1401,14 @@ function FishOverlayLinks({ links }: { links: OverlayLink[] }) {
   };
   return (
     <div className="rounded-lg border border-neutral-800 bg-neutral-950/40 p-3">
-      <p className="text-sm text-neutral-200">Fishing overlay</p>
+      <p className="text-sm text-neutral-200">{title}</p>
       <p className="mt-0.5 text-xs text-neutral-500">
-        Add one as a Browser Source in OBS. It shows fishing on stream whether or not replies also go to chat. Keep the links
-        private: anyone with one can show this channel&apos;s fishing. Add &amp;demo=1 to preview a burst, unless the demo is turned off above.
+        {blurb ?? (
+          <>
+            Add one as a Browser Source in OBS. It shows fishing on stream whether or not replies also go to chat. Keep the links
+            private: anyone with one can show this channel&apos;s fishing. Add &amp;demo=1 to preview a burst, unless the demo is turned off above.
+          </>
+        )}
       </p>
       <div className="mt-3 space-y-3">
         {links.map((l) => (
@@ -1415,7 +1448,7 @@ function FishOverlayLinks({ links }: { links: OverlayLink[] }) {
 }
 
 export default function PointsCard({
-  channel, canAdminister, points, fishOverlays, onSaved,
+  channel, canAdminister, points, fishOverlays, videoOverlays, onSaved,
 }: {
   channel: string;
   /** Owner/admin edit the settings; managers see them read-only but can still adjust balances. */
@@ -1424,6 +1457,7 @@ export default function PointsCard({
   points: PointsConfig | null;
   /** The fishing overlay's browser-source links, one per look. */
   fishOverlays: OverlayLink[];
+  videoOverlays: OverlayLink[];
   /** Receives the updated channel after a settings save, so the rest of the page stays current. */
   onSaved: (bot: { points?: PointsConfig | null }) => void;
 }) {
@@ -1914,6 +1948,43 @@ export default function PointsCard({
                   <Field label="Minimum">{text("giveMin", { inputMode: "numeric" })}</Field>
                   <Field label="Maximum (0 = none)">{text("giveMax", { inputMode: "numeric" })}</Field>
                   <Field label="Cooldown (s)">{text("giveCooldown", { inputMode: "numeric" })}</Field>
+                </div>
+              </div>
+
+              <div>
+                <h4 className={LABEL}>Video sharing</h4>
+                <Checkbox
+                  label={`Let viewers pay to play a YouTube video on stream ($${commandPreview || "…"} video <link>)`}
+                  checked={form.videoEnabled}
+                  disabled={readOnly || !!busy}
+                  onChange={(v) => set("videoEnabled", v)}
+                />
+                <div className="mt-3 grid gap-4 sm:grid-cols-3">
+                  <Field label={`${form.currencyName.trim() || "Points"} per second`} hint="A video costs this for each second it plays, paid when it's queued.">
+                    {text("videoPrice", { inputMode: "numeric" })}
+                  </Field>
+                  <Field label="Longest video (s)" hint="Longer ones play this long from their start time, and cost that much.">
+                    {text("videoMax", { inputMode: "numeric" })}
+                  </Field>
+                  <Field label="Videos waiting" hint="The line's length, the one playing aside. One each per viewer.">
+                    {text("videoQueue", { inputMode: "numeric" })}
+                  </Field>
+                </div>
+                <div className="mt-3">
+                  <Checkbox
+                    label="Only while the stream is live"
+                    checked={form.videoLiveOnly}
+                    disabled={readOnly || !!busy}
+                    onChange={(v) => set("videoLiveOnly", v)}
+                  />
+                </div>
+                <p className="mt-2 text-xs text-neutral-500">
+                  Videos play in the order paid for, with sound, on the video overlay below: a browser source of its own, so the fishing overlay is untouched.
+                  Viewers are turned away (and not charged) while it isn&apos;t open. Mods can end one early with ${commandPreview || "…"} video skip, without a refund;
+                  one YouTube won&apos;t play is refunded. Livestreams, age-restricted videos and ones their owner keeps on YouTube are refused.
+                </p>
+                <div className="mt-3">
+                  <FishOverlayLinks links={videoOverlays} title="Video overlay" blurb="Add it as a Browser Source in OBS, sized 16:9, and set its volume there. Keep the link private: anyone with it could show this channel's videos." />
                 </div>
               </div>
 

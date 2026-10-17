@@ -5,6 +5,7 @@ import { fetchChannelInfo, fetchUserAvatar } from "@/lib/kick-api";
 import { notFound, redirect } from "next/navigation";
 import BotManager from "@/components/BotManager";
 import { overlayLinks } from "@/lib/fish-overlay";
+import { videoOverlayLinks } from "@/lib/video-overlay";
 
 export const dynamic = "force-dynamic";
 
@@ -128,6 +129,7 @@ export default async function BotPage({
       initialCustomCommands={customCommands}
       customCommandsError={customCommandsError}
       fishOverlays={overlayLinks(slug)}
+      videoOverlays={videoOverlayLinks(slug)}
     />
   );
 }

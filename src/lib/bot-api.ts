@@ -961,6 +961,23 @@ export interface FishOverlayFeed {
   graceMs?: number;
 }
 
+/** The video overlay's feed: the paid video to play now (points.video). */
+export interface VideoOverlayFeed {
+  /** The bot's clock (ms), to tell how far into its slot the current video is. */
+  now: number;
+  current: { id: number; videoId: string; title: string; username: string; start: number; seconds: number; startedAt: number } | null;
+  waiting: number;
+}
+
+export function getVideoOverlay(channel: string): Promise<VideoOverlayFeed> {
+  return request(`/internal/bot/${encodeURIComponent(channel)}/overlay/video`, { timeoutMs: 5_000 });
+}
+
+/** The overlay couldn't play this video: the bot ends it and refunds the viewer. */
+export function reportVideoFailed(channel: string, id: number): Promise<{ ok: boolean; refunded: boolean }> {
+  return request(`/internal/bot/${encodeURIComponent(channel)}/overlay/video/failed`, { method: "POST", body: { id }, timeoutMs: 5_000 });
+}
+
 export function getFishOverlay(channel: string): Promise<FishOverlayFeed> {
   return request(`/internal/bot/${encodeURIComponent(channel)}/overlay/fishing`, { timeoutMs: 5_000 });
 }

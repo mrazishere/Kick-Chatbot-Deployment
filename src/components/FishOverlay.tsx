@@ -523,7 +523,7 @@ export default function FishOverlay({
           setDemoAllowed((a) => a ?? true); // no feed (fishing off, say): the demo still previews
           return;
         }
-        const data = (await res.json()) as { lastId: number; events: FishOverlayEvent[]; now?: number; build?: string; demo?: boolean; size?: number; clear?: { w: number; h: number; leadMs?: number }; leadMs?: number; graceMs?: number };
+        const data = (await res.json()) as { lastId: number; events: FishOverlayEvent[]; now?: number; build?: string; demo?: boolean; size?: number; clear?: { w: number; h: number }; leadMs?: number; graceMs?: number };
         syncClock(data.now, data.leadMs, data.graceMs);
         setDemoAllowed(data.demo !== false);
         setSize((data.size ?? 100) / 100);

@@ -412,7 +412,7 @@ function StatusPill({ status }: { status: string }) {
 export default function BotManager({
   channel, username, avatarUrl, channelAvatarUrl, isAdmin, role, canAdminister,
   initialBot, availableCommands, initialManagers, managerSuggestions, managersError, switcher,
-  isLive, viewerCount, loadError, initialCustomCommands, customCommandsError, fishOverlays,
+  isLive, viewerCount, loadError, initialCustomCommands, customCommandsError, fishOverlays, videoOverlays,
 }: {
   channel: string;
   username: string;
@@ -439,6 +439,7 @@ export default function BotManager({
   customCommandsError: string | null;
   /** The fishing overlay's browser-source links, one per look. */
   fishOverlays: OverlayLink[];
+  videoOverlays: OverlayLink[];
 }) {
   const [bot, setBot] = useState<BotChannel | null>(initialBot);
   const [error, setError] = useState<string | null>(loadError);
@@ -2134,6 +2135,7 @@ export default function BotManager({
             canAdminister={canAdminister}
             points={bot.points ?? null}
             fishOverlays={fishOverlays}
+            videoOverlays={videoOverlays}
             onSaved={(data) => setBot(data as unknown as BotChannel)}
           />
 
