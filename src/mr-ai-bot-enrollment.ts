@@ -29,7 +29,7 @@ import { noteSocketClose, PUSHER_BAD_KEY_CODES, pusherUrl, refreshPusherKey, wat
 import { toHandleChatFormat } from './channels/webhook-poller';
 import { STREAM_GRACE_MS } from './community/big-bite';
 import { advanceVideos, failVideo, markVideoOverlaySeen, waitingVideos } from './community/video-share';
-import { mediaShareNow } from './community/mediashare';
+import { mediaShareNow, mediaShareStatus, removeMediaShareToken, saveMediaShareToken } from './community/mediashare';
 
 /* eslint-disable @typescript-eslint/no-var-requires, @typescript-eslint/no-explicit-any */
 const puppeteer = require('puppeteer-extra');
@@ -3004,6 +3004,35 @@ app.get('/internal/bot/:channel/overlay/video', internalGuard(false), (req, res)
   } catch (e) {
     return pointsUnavailable(res, channel, e);
   }
+});
+
+// StreamElements media share: the channel's JWT, for mirroring media share on the video
+// overlay (community/mediashare.ts). The token is never sent back: only whether one is
+// saved and for which StreamElements account.
+app.get('/internal/bot/:channel/mediashare', internalGuard(false), (req, res) => {
+  const channel = String(req.params['channel'] ?? '').toLowerCase();
+  if (!validateChannelName(channel)) return res.status(400).json({ error: 'Invalid channel name' });
+  return res.json(mediaShareStatus(channel));
+});
+
+app.put('/internal/bot/:channel/mediashare', internalGuard(true), async (req, res) => {
+  const channel = String(req.params['channel'] ?? '').toLowerCase();
+  if (!validateChannelName(channel)) return res.status(400).json({ error: 'Invalid channel name' });
+  if (!readChannelConfig(channel)) return res.status(404).json({ error: 'Not enrolled' });
+  const jwt = (req.body as { jwt?: unknown } | undefined)?.jwt;
+  if (typeof jwt !== 'string' || !jwt.trim()) return res.status(400).json({ error: 'Paste the JWT token' });
+  const out = await saveMediaShareToken(channel, jwt);
+  if (!out.ok) return res.status(400).json({ error: out.error });
+  console.log(`[INTERNAL] ${channel} saved a StreamElements media share token (account ${out.channelId})`);
+  return res.json(mediaShareStatus(channel));
+});
+
+app.delete('/internal/bot/:channel/mediashare', internalGuard(true), (req, res) => {
+  const channel = String(req.params['channel'] ?? '').toLowerCase();
+  if (!validateChannelName(channel)) return res.status(400).json({ error: 'Invalid channel name' });
+  removeMediaShareToken(channel);
+  console.log(`[INTERNAL] ${channel} removed its StreamElements media share token`);
+  return res.json(mediaShareStatus(channel));
 });
 
 // The video overlay couldn't play a video (removed, or embedding turned off since it was
