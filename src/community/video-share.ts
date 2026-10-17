@@ -175,6 +175,13 @@ export function advanceVideos(db: PointsDb, now = Date.now()): QueuedVideo | nul
   });
 }
 
+/** The video overlay pauses the one playing (for a wheel spin): its slot ends this much later. */
+export function extendVideo(db: PointsDb, ms: number): void {
+  runWrite(db, () => {
+    db.prepare("UPDATE video_queue SET started_at = started_at + ? WHERE status = 'playing'").run(Math.max(0, Math.round(ms)));
+  });
+}
+
 /** A mod skipped the one playing: it ends now, unrefunded. Returns it, or undefined if nothing was playing. */
 export function skipVideo(db: PointsDb, now = Date.now()): QueuedVideo | undefined {
   return runWrite(db, () => {

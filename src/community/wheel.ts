@@ -28,6 +28,11 @@ export interface WheelSettings {
   spinSeconds: number;
   /** Take a landed item off the wheel, like a raffle wheel. */
   removeWinner: boolean;
+  /**
+   * Spin on the video overlay (the one $<cmd> video plays on) instead of the fishing
+   * one. A video playing there pauses for the spin and its slot stretches by as much.
+   */
+  onVideoOverlay: boolean;
 }
 
 export interface Wheel extends WheelSettings {
@@ -36,7 +41,7 @@ export interface Wheel extends WheelSettings {
   version: number;
 }
 
-export const WHEEL_DEFAULTS: Readonly<WheelSettings> = { spinSeconds: 6, removeWinner: false };
+export const WHEEL_DEFAULTS: Readonly<WheelSettings> = { spinSeconds: 6, removeWinner: false, onVideoOverlay: false };
 export const SPIN_SECONDS = { min: 3, max: 20 } as const;
 /** Enough for a readable wheel on stream. */
 export const MAX_ITEMS = 30;
@@ -70,6 +75,7 @@ function settle(raw: unknown): Wheel {
     items,
     spinSeconds: Number.isInteger(secs) && secs >= SPIN_SECONDS.min && secs <= SPIN_SECONDS.max ? secs : WHEEL_DEFAULTS.spinSeconds,
     removeWinner: typeof r.removeWinner === 'boolean' ? r.removeWinner : WHEEL_DEFAULTS.removeWinner,
+    onVideoOverlay: typeof r.onVideoOverlay === 'boolean' ? r.onVideoOverlay : WHEEL_DEFAULTS.onVideoOverlay,
     version: Number.isInteger(r.version) ? Number(r.version) : 0
   };
 }
@@ -104,7 +110,7 @@ export async function changeWheel(channel: string, fn: (w: Wheel) => Wheel | str
  * The dashboard's save: the whole wheel, checked. Returns the errors, or the wheel to
  * store. `version` must be the one loaded; otherwise chat changed it since.
  */
-export function validateWheel(body: unknown): { wheel: Omit<Wheel, 'version'>; version: number } | { errors: string[] } {
+export function validateWheel(body: unknown): { wheel: Omit<Wheel, 'version' | 'onVideoOverlay'> & { onVideoOverlay?: boolean }; version: number } | { errors: string[] } {
   const errors: string[] = [];
   const b = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>;
   if (!Number.isInteger(b.version)) errors.push('version is required');
@@ -127,8 +133,13 @@ export function validateWheel(body: unknown): { wheel: Omit<Wheel, 'version'>; v
     errors.push(`Spin length must be ${SPIN_SECONDS.min}–${SPIN_SECONDS.max} seconds`);
   }
   if (typeof b.removeWinner !== 'boolean') errors.push('removeWinner must be true or false');
+  // Optional: a dashboard without the setting leaves it as it is.
+  if (b.onVideoOverlay !== undefined && typeof b.onVideoOverlay !== 'boolean') errors.push('onVideoOverlay must be true or false');
   if (errors.length) return { errors };
-  return { wheel: { items, spinSeconds: secs as number, removeWinner: b.removeWinner as boolean }, version: b.version as number };
+  return {
+    wheel: { items, spinSeconds: secs as number, removeWinner: b.removeWinner as boolean, ...(typeof b.onVideoOverlay === 'boolean' ? { onVideoOverlay: b.onVideoOverlay } : {}) },
+    version: b.version as number
+  };
 }
 
 /** Add labels from chat. Returns what was added and what was skipped (already on, or no room). */

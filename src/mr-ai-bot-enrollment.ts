@@ -2959,7 +2959,10 @@ app.get('/internal/bot/:channel/overlay/fishing', internalGuard(false), (req, re
   try {
     markOverlaySeen(db);
     // The bot's clock, so the overlay counts a big bite down to the real deadline.
-    return res.json({ ...readOverlay(db), now: Date.now(), demo, size, clear, leadMs, graceMs });
+    // Spins on the video overlay instead (wheel onVideoOverlay) aren't the fishing overlay's to show.
+    const feed = readOverlay(db);
+    const events = readWheel(channel).onVideoOverlay ? feed.events.filter(e => e.kind !== 'wheel') : feed.events;
+    return res.json({ lastId: feed.lastId, events, now: Date.now(), demo, size, clear, leadMs, graceMs });
   } catch (e) {
     return pointsUnavailable(res, channel, e);
   }
@@ -2974,7 +2977,9 @@ app.get('/internal/bot/:channel/overlay/video', internalGuard(false), (req, res)
   const config = readChannelConfig(channel);
   if (!config) return res.status(404).json({ error: 'Not enrolled' });
   const cfg = effectivePointsConfig(config['points']);
-  if (!cfg.enabled || !cfg.video.enabled) return res.status(404).json({ error: 'Video sharing is off in this channel' });
+  // Answers for paid videos, and for a wheel that spins here (wheel onVideoOverlay) even without them.
+  const wheelHere = cfg.enabled && cfg.games.enabled && readWheel(channel).onVideoOverlay;
+  if (!cfg.enabled || (!cfg.video.enabled && !wheelHere)) return res.status(404).json({ error: 'Video sharing is off in this channel' });
   // ?in=fishing: the player inside the fishing overlay, only while the channel tests videos there.
   if (req.query['in'] === 'fishing' && !cfg.video.onFishOverlay) return res.status(404).json({ error: 'Videos are not on the fishing overlay' });
   const db = openPointsDb(channel, { create: false });
@@ -2986,7 +2991,9 @@ app.get('/internal/bot/:channel/overlay/video', internalGuard(false), (req, res)
     markVideoOverlaySeen(db, now);
     const v = advanceVideos(db, now);
     const current = v ? { id: v.id, videoId: v.video_id, title: v.title, username: v.username, start: v.start_s, seconds: v.seconds, startedAt: v.started_at } : null;
-    return res.json({ now, current, waiting: waitingVideos(db).length, volume });
+    // wheels: the latest spins (overlay_feed's wheel events); the overlay plays the ones newer than it has seen.
+    const wheels = wheelHere ? readOverlay(db, now).events.filter(e => e.kind === 'wheel' && now - e.ts < 60_000) : [];
+    return res.json({ now, current, waiting: waitingVideos(db).length, volume, wheels });
   } catch (e) {
     return pointsUnavailable(res, channel, e);
   }

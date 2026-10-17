@@ -25,6 +25,7 @@ import { overlayShowing, pushOverlay } from '../community/fish-overlay';
 import { channelHasBite, STREAM_GRACE_MS } from '../community/big-bite';
 import { addItems, changeWheel, pickWinner, readWheel, removeItem, RESULT_HOLD_MS, type Wheel } from '../community/wheel';
 import { markWheelBusy, wheelBusy } from '../community/wheel-state';
+import { extendVideo, videoOverlayShowing } from '../community/video-share';
 
 /** How long a spin waits for a big bite already on the line, at most. */
 const BITE_WAIT_MS = 90_000;
@@ -121,10 +122,12 @@ export const wheel: CommandFn = async function wheel(client, message, channel, t
   if (waitingSpin.has(chan)) return void say(`@${me} 🎡 a spin is already waiting for the big bite to finish.`);
   const w = readWheel(chan);
   if (w.items.length < 2) return void say(`@${me} 🎡 the wheel needs at least 2 items to spin (it has ${w.items.length}). Add some with !wheel add Item | Another item.`);
-  if (!overlayShowing(db)) return void say(`@${me} 🎡 open the fishing overlay first: the wheel spins there.`);
+  if (w.onVideoOverlay ? !videoOverlayShowing(db) : !overlayShowing(db)) {
+    return void say(`@${me} 🎡 open the ${w.onVideoOverlay ? 'video' : 'fishing'} overlay first: the wheel spins there.`);
+  }
 
-  // A big bite's code is on the overlay against a clock: the spin waits for it.
-  if (channelHasBite(chan)) {
+  // A big bite's code is on the fishing overlay against a clock: a spin there waits for it.
+  if (!w.onVideoOverlay && channelHasBite(chan)) {
     waitingSpin.add(chan);
     void say(`@${me} 🎡 a big bite is on the line: the wheel spins as soon as it's over.`);
     const deadline = Date.now() + BITE_WAIT_MS;
@@ -147,7 +150,9 @@ function spin(chan: string, by: string, w: Wheel, db: Parameters<typeof pushOver
   // the channel's own (games.streamDelaySeconds, plus a poll of the overlay) where it's longer.
   const behindMs = Math.max(STREAM_GRACE_MS, delayMs + OVERLAY_POLL_MS);
   markWheelBusy(chan, now + spinMs + RESULT_HOLD_MS + behindMs);
-  console.log(`[WHEEL] ${by} spun the wheel in ${chan}: "${landed.label}" (${winner + 1} of ${w.items.length})`);
+  console.log(`[WHEEL] ${by} spun the wheel in ${chan}: "${landed.label}" (${winner + 1} of ${w.items.length})${w.onVideoOverlay ? ' on the video overlay' : ''}`);
+  // On the video overlay a playing video pauses for the spin and the result: its slot stretches by as much.
+  if (w.onVideoOverlay) extendVideo(db, spinMs + RESULT_HOLD_MS + OVERLAY_POLL_MS);
   pushOverlay(db, { username: by, kind: 'wheel', text: `${by} spun the wheel!`, wheel: { items: w.items, winner, spinMs } }, now);
   const t = setTimeout(() => {
     void say(`🎡 The wheel landed on: ${landed.label}!`);

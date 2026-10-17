@@ -26,7 +26,7 @@ import {
 } from '../points/store';
 import { WebhookPoller } from '../channels/webhook-poller';
 import { points as pointsCommand, SUBCOMMAND_ALIASES } from '../bot-commands/points';
-import { advanceVideos, failVideo, hasVideoInLine, isoDurationSeconds, LOAD_PAD_MS, markVideoOverlaySeen, parseYouTubeLink, playingVideo } from '../community/video-share';
+import { advanceVideos, enqueueVideo, failVideo, hasVideoInLine, isoDurationSeconds, LOAD_PAD_MS, markVideoOverlaySeen, parseYouTubeLink, playingVideo } from '../community/video-share';
 import { moveFish, takeItems, addItem, FishData, initialData, isTrophy, rarityOf, stealChance, stealCharges, stealRollChance, ITEMS, landsFish, loadFish, parseSellList, recordCatch, saveFish, sellPrice, weightedCatch } from '../community/fishing';
 import { openCommunityDb } from '../community/store';
 import { markOverlaySeen, readOverlay } from '../community/fish-overlay';
@@ -1684,6 +1684,36 @@ async function main(): Promise<void> {
     const landedLabel = result?.replace(/^.*landed on: (.*)!$/, '$1');
     check('the result goes to chat, and with removeWinner the item leaves the wheel', !!result && readWheel(ch).items.length === 1
       && !readWheel(ch).items.some(i => i.label === landedLabel), { said, items: readWheel(ch).items });
+    resetWheelBusy();
+  }
+
+  // The wheel on the video overlay: spins there, and a playing video waits for it
+  {
+    const ch = 'wheelvidch';
+    writeConfig(root, ch, { enabled: true, currencyName: '$DON', games: { enabled: true, onlyWhileLive: false }, video: { enabled: true, onlyWhileLive: false } });
+    makeService(ch, { broadcaster: 999 });
+    const wdb = openPointsDb(ch, { create: true })!;
+    const said: string[] = [];
+    const mod: KickTags = { username: 'modder', 'display-name': 'modder', badges: {}, isBroadcaster: false, isModUp: true, isVIPUp: true, rawBadges: [], senderId: 70 };
+    const say = async (msg: string) => {
+      const before = said.length;
+      await wheelCommand({ say: async (_c, m) => { said.push(m); } }, msg, `#${ch}`, mod, { channelName: ch } as ChannelConfig);
+      return said.slice(before).join(' | ');
+    };
+    resetWheelBusy();
+    await changeWheel(ch, w => ({ ...w, items: [{ label: 'A' }, { label: 'B' }], onVideoOverlay: true }));
+    check('a wheel on the video overlay needs that overlay open', (await say('!spin')).includes('open the video overlay'));
+    markVideoOverlaySeen(wdb);
+    runWrite(wdb, () => { creditTx(wdb, { userId: 80, username: 'viewer', amount: 100, reason: 'mod_add', now: 1 }); enqueueVideo(wdb, { ts: Date.now(), user_id: 80, username: 'viewer', video_id: 'AAAAAAAAAAA', title: 'T', start_s: 0, seconds: 30, cost: 0 }); });
+    const started = advanceVideos(wdb)!.started_at!;
+    const spun = await say('!spin');
+    const after = playingVideo(wdb)!.started_at!;
+    check('it spins there, and the playing video\'s slot stretches by the spin and its result', spun === '' && readOverlay(wdb).events.some(e => e.kind === 'wheel')
+      && after - started === 6_000 + 5_000 + 500, { spun, stretch: after - started });
+    check('the setting is kept by a dashboard save that doesn\'t name it', (() => {
+      const v = validateWheel({ version: readWheel(ch).version, items: [{ label: 'A' }, { label: 'B' }], spinSeconds: 6, removeWinner: false });
+      return !('errors' in v) && v.wheel.onVideoOverlay === undefined && readWheel(ch).onVideoOverlay === true;
+    })());
     resetWheelBusy();
   }
 
