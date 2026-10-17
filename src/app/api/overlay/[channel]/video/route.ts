@@ -21,7 +21,7 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ chan
   const slug = await check(req, params);
   if (!slug) return NextResponse.json({ error: "Not found" }, { status: 404, headers });
   try {
-    const feed = await getVideoOverlay(slug);
+    const feed = await getVideoOverlay(slug, req.nextUrl.searchParams.get("in") === "fishing");
     // build: which dashboard build answered, so an overlay running older page code reloads.
     return NextResponse.json({ ...feed, build: process.env.DASH_BUILD_ID }, { headers });
   } catch (e) {

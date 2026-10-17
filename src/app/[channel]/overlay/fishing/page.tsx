@@ -6,6 +6,8 @@ import { loadPublicLeaderboard } from "@/lib/public-leaderboard";
 import type { DemoOdds } from "@/lib/fish-demo";
 import FishOverlay from "@/components/FishOverlay";
 import FishOverlayCards from "@/components/FishOverlayCards";
+import VideoOverlay from "@/components/VideoOverlay";
+import { videoOverlayKey } from "@/lib/video-overlay";
 
 export const dynamic = "force-dynamic";
 
@@ -44,6 +46,7 @@ export default async function FishOverlayPage({ params, searchParams }: Props) {
     const review = one(q.steals) === "1";
     if (f) demoOdds = { catchOdds: f.catchOdds, fish: f.fish, junk: f.junk, steal: f.steal || review, ...(review ? { stealShare: 0.3 } : {}) };
   }
+  const videoKey = videoOverlayKey(slug);
   return (
     <>
       <style>{"html,body{background:transparent!important;overflow:hidden}"}</style>
@@ -71,6 +74,8 @@ export default async function FishOverlayPage({ params, searchParams }: Props) {
           wheelDemo={wheelDemo}
         />
       )}
+      {/* Paid videos, while the channel tests them here before adding the video overlay to OBS (points.video.onFishOverlay). */}
+      {videoKey ? <VideoOverlay channel={slug} overlayKey={videoKey} embedded /> : null}
     </>
   );
 }

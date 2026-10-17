@@ -969,8 +969,9 @@ export interface VideoOverlayFeed {
   waiting: number;
 }
 
-export function getVideoOverlay(channel: string): Promise<VideoOverlayFeed> {
-  return request(`/internal/bot/${encodeURIComponent(channel)}/overlay/video`, { timeoutMs: 5_000 });
+/** `inFishing`: the player inside the fishing overlay, which the bot only feeds while the channel tests videos there. */
+export function getVideoOverlay(channel: string, inFishing = false): Promise<VideoOverlayFeed> {
+  return request(`/internal/bot/${encodeURIComponent(channel)}/overlay/video${inFishing ? "?in=fishing" : ""}`, { timeoutMs: 5_000 });
 }
 
 /** The overlay couldn't play this video: the bot ends it and refunds the viewer. */

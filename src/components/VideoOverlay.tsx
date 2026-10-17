@@ -16,13 +16,16 @@ type Current = { id: number; videoId: string; title: string; username: string; s
 
 interface YTPlayer {
   destroy(): void;
+  mute(): void;
   unMute(): void;
+  isMuted(): boolean;
   setVolume(v: number): void;
   playVideo(): void;
+  getPlayerState(): number;
 }
 declare global {
   interface Window {
-    YT?: { Player: new (el: HTMLElement, opts: unknown) => YTPlayer; PlayerState: { ENDED: number } };
+    YT?: { Player: new (el: HTMLElement, opts: unknown) => YTPlayer; PlayerState: { ENDED: number; PLAYING: number; BUFFERING: number } };
     onYouTubeIframeAPIReady?: () => void;
   }
 }
@@ -41,51 +44,68 @@ function loadApi(): Promise<void> {
   return apiReady;
 }
 
-export default function VideoOverlay({ channel, overlayKey }: { channel: string; overlayKey: string }) {
+/**
+ * `embedded`: inside the fishing overlay, for a channel testing videos before it adds the
+ * video overlay to OBS. A centered 16:9 box 60% wide, fed only while the channel has
+ * points.video.onFishOverlay on; otherwise it stays empty and asks rarely.
+ */
+export default function VideoOverlay({ channel, overlayKey, embedded = false }: { channel: string; overlayKey: string; embedded?: boolean }) {
   const [current, setCurrent] = useState<Current | null>(null);
   const [ended, setEnded] = useState<number | null>(null);
+  /** The browser wouldn't play it with sound (a normal tab, before any click): it plays muted until clicked. OBS never needs this. */
+  const [muted, setMuted] = useState(false);
   const holder = useRef<HTMLDivElement>(null);
   const player = useRef<YTPlayer | null>(null);
-  const url = `${BASE_PATH}/api/overlay/${encodeURIComponent(channel)}/video?key=${encodeURIComponent(overlayKey)}`;
+  const url = `${BASE_PATH}/api/overlay/${encodeURIComponent(channel)}/video?key=${encodeURIComponent(overlayKey)}${embedded ? "&in=fishing" : ""}`;
   /** How far the bot's clock is ahead of this machine's, from the last poll. */
   const offset = useRef(0);
 
   // YouTube's player reports the page's address to YouTube: keep the overlay key out of
   // it. The feed is asked with the key from props, and OBS reloads its own saved link.
   useEffect(() => {
-    if (window.location.search) window.history.replaceState(null, "", window.location.pathname);
-  }, []);
+    // Inside the fishing overlay the address is the fishing page's, which keeps its own query.
+    if (!embedded && window.location.search) window.history.replaceState(null, "", window.location.pathname);
+  }, [embedded]);
 
   // Follow the bot: what's on, every second.
   useEffect(() => {
     let alive = true;
+    let t: ReturnType<typeof setTimeout> | undefined;
     const poll = async () => {
+      let off = false;
       try {
         const res = await fetch(url, { cache: "no-store" });
-        if (!res.ok) return;
+        off = !res.ok;
+        if (!res.ok) {
+          setCurrent(null);
+          return;
+        }
         const data = (await res.json()) as { now: number; current: Current | null; build?: string };
         if (!alive) return;
         offset.current = data.now - Date.now();
         setCurrent((c) => (c?.id === data.current?.id ? c : data.current));
-        // A newer dashboard build is live: reload into it between videos.
-        if (!data.current && isStale(data.build)) reloadInto(data.build!, url, 0);
+        // A newer dashboard build is live: reload into it between videos (the fishing overlay does its own).
+        if (!embedded && !data.current && isStale(data.build)) reloadInto(data.build!, url, 0);
       } catch {
         // offline for a moment; the next poll catches up
+      } finally {
+        // Embedded and switched off: ask again now and then, in case the test starts.
+        if (alive) t = setTimeout(poll, off && embedded ? 10_000 : POLL_MS);
       }
     };
     void poll();
-    const t = setInterval(poll, POLL_MS);
     return () => {
       alive = false;
-      clearInterval(t);
+      clearTimeout(t);
     };
-  }, [url]);
+  }, [url, embedded]);
 
   // Play the current video: from its start time, or as far in as its slot already is
   // (a page that loads mid-video picks it up), and only to its last paid second.
   useEffect(() => {
     player.current?.destroy();
     player.current = null;
+    setMuted(false);
     if (!current || !holder.current) return;
     const into = Math.max(0, (Date.now() + offset.current - current.startedAt) / 1000 - LOAD_PAD_S);
     if (into >= current.seconds) return;
@@ -107,6 +127,16 @@ export default function VideoOverlay({ channel, overlayKey }: { channel: string;
             e.target.unMute();
             e.target.setVolume(100);
             e.target.playVideo();
+            // A browser that blocks sound without a click leaves it paused: play it muted instead.
+            setTimeout(() => {
+              if (gone) return;
+              const st = e.target.getPlayerState();
+              if (st !== window.YT?.PlayerState.PLAYING && st !== window.YT?.PlayerState.BUFFERING && st !== window.YT?.PlayerState.ENDED) {
+                e.target.mute();
+                e.target.playVideo();
+                setMuted(true);
+              }
+            }, 1500);
           },
           onStateChange: (e: { data: number }) => {
             if (e.data === window.YT?.PlayerState.ENDED) setEnded(current.id);
@@ -125,9 +155,29 @@ export default function VideoOverlay({ channel, overlayKey }: { channel: string;
   }, [current, url]);
 
   const showing = current !== null && ended !== current.id;
+  const sound = () => {
+    if (!muted) return;
+    player.current?.unMute();
+    player.current?.setVolume(100);
+    setMuted(false);
+  };
   return (
-    <div style={{ position: "fixed", inset: 0, opacity: showing ? 1 : 0, transition: "opacity .4s", fontFamily: "Inter, system-ui, sans-serif" }}>
+    <div
+      onClick={sound}
+      style={{
+        position: "fixed", opacity: showing ? 1 : 0, transition: "opacity .4s", fontFamily: "Inter, system-ui, sans-serif", zIndex: 50,
+        pointerEvents: showing ? "auto" : "none",
+        ...(embedded
+          ? { left: "20%", width: "60%", top: "50%", transform: "translateY(-50%)", aspectRatio: "16 / 9", borderRadius: 12, overflow: "hidden", boxShadow: "0 8px 40px rgba(0,0,0,.6)" }
+          : { inset: 0 }),
+      }}
+    >
       <div ref={holder} style={{ position: "absolute", inset: 0, background: "#000" }} />
+      {muted && showing ? (
+        <div style={{ position: "absolute", inset: 0, display: "grid", placeItems: "center", cursor: "pointer" }}>
+          <span style={{ background: "rgba(0,0,0,.7)", color: "#fff", padding: "1vh 2vw", borderRadius: 8, fontSize: "3vh", fontWeight: 700 }}>🔇 Click for sound</span>
+        </div>
+      ) : null}
       {current ? (
         <div style={{ position: "absolute", left: 0, right: 0, bottom: 0, padding: "1.2vh 1.6vw", background: "linear-gradient(transparent, rgba(0,0,0,.75))", color: "#fff", fontSize: "2.6vh", fontWeight: 700, textShadow: "0 1px 3px #000", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
           📺 <span style={{ color: "#53FC18" }}>{current.username}</span> · {current.title}
