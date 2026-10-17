@@ -82,6 +82,8 @@ export function defaultPointsConfig(): PointsConfig {
       sellPricePercent: 100,
       baitPricePercent: 100,
       stories: true,
+      giveEnabled: false,
+      giveCooldownSeconds: 30,
       chatReplies: true,
       overlayDemo: true,
       overlaySizePercent: 100,
@@ -462,6 +464,8 @@ export function internalPointsConfig(raw: unknown): InternalPointsConfig {
     sellPricePercent: num(ga.sellPricePercent, d.games.sellPricePercent, 0, 1000, true),
     baitPricePercent: num(ga.baitPricePercent, d.games.baitPricePercent, 0, 1000, true),
     stories: bool(ga.stories, d.games.stories),
+    giveEnabled: bool(ga.giveEnabled, d.games.giveEnabled),
+    giveCooldownSeconds: num(ga.giveCooldownSeconds, d.games.giveCooldownSeconds, 0, 3600, true),
     chatReplies: bool(ga.chatReplies, d.games.chatReplies),
     overlayDemo: bool(ga.overlayDemo, d.games.overlayDemo),
     overlaySizePercent: num(ga.overlaySizePercent, d.games.overlaySizePercent, 50, 300, true),
@@ -597,7 +601,8 @@ const GAMES_NUMBERS: Record<string, Rule> = {
   overlaySizePercent: { min: 50, max: 300, integer: true },
   overlayClearWidthPercent: { min: 0, max: 80, integer: true },
   overlayClearHeightPercent: { min: 0, max: 80, integer: true },
-  streamDelaySeconds: { min: 0, max: 30, integer: true }
+  streamDelaySeconds: { min: 0, max: 30, integer: true },
+  giveCooldownSeconds: { min: 0, max: 3600, integer: true }
 };
 /**
  * The whole set of per-item overrides, replacing the stored one: each key an item's
@@ -897,7 +902,7 @@ export function validatePointsPatch(current: unknown, patch: unknown): { next?: 
         const v = checkNumber(`games.${key}`, ga[key], rule, errors);
         if (v !== undefined) (next.games as Record<string, unknown>)[key] = v;
       }
-      for (const key of ['enabled', 'onlyWhileLive', 'onlyWhileOffline', 'stories', 'chatReplies', 'overlayDemo'] as const) {
+      for (const key of ['enabled', 'onlyWhileLive', 'onlyWhileOffline', 'stories', 'chatReplies', 'overlayDemo', 'giveEnabled'] as const) {
         if (ga[key] === undefined) continue;
         if (typeof ga[key] !== 'boolean') errors.push(`games.${key} must be true or false`);
         else next.games![key] = ga[key] as boolean;

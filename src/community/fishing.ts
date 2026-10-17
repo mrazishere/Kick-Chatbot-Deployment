@@ -559,6 +559,27 @@ export function moveFish(from: FishData, to: FishData, item: CatchItem, picked: 
   }
 }
 
+/**
+ * Hand `n` of a fish or junk item to another viewer as a gift: sized fish oldest
+ * first, then unsized ones, each as moveFish moves it (a stolen one stays stolen).
+ * Returns how many moved: never more than `from` holds.
+ */
+export function giveItems(from: FishData, to: FishData, item: CatchItem, n: number): number {
+  n = Math.min(n, from.catch.types[item.name] ?? 0);
+  for (let i = 0; i < n; i++) {
+    if (item.type === 'fish') {
+      const sized = from.catch.sizes?.[item.name] ?? [];
+      moveFish(from, to, item, sized.length ? { index: 0, held: sized[0] } : { index: -1 });
+    } else {
+      from.catch.types[item.name] = (from.catch.types[item.name] ?? 0) - 1;
+      from.catch.junk = Math.max(0, from.catch.junk - 1);
+      to.catch.types[item.name] = (to.catch.types[item.name] ?? 0) + 1;
+      to.catch.junk++;
+    }
+  }
+  return Math.max(0, n);
+}
+
 /** Call inside a write transaction; the user row must exist (ensureUserTx). */
 export function saveFish(db: PointsDb, userId: number, d: FishData, now: number): void {
   db.prepare('INSERT INTO fish (user_id, data, updated_at) VALUES (?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET data = excluded.data, updated_at = excluded.updated_at')

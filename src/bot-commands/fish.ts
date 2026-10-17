@@ -63,24 +63,27 @@ import { wheelBusy } from '../community/wheel-state';
 import { recordSignal } from '../community/cheat-signals';
 import { BITE_TOO_FAST_MS, STREAM_GRACE_MS, biteFor, canBite, channelBite, channelHasBite, codeMatches, getAway, nextPull, pickChatter, snipeBite, snipeOpen, startBite, takeBite, type BiteContext } from '../community/big-bite';
 import {
-  addItem, baitPrice, baitRoll, currentReel, heldFishValue, landsFish, moveFish, pickHeld, stealableFish, stealChance, stealCharges, stealRollChance, worstStealCharges, parseSellList, CatchItem, CatchType, FAILURE_EMOTES, FishData, findBait, hasFishedBefore, initialData, rarityOf, recordCatch,
+  addItem, giveItems, baitPrice, baitRoll, currentReel, heldFishValue, landsFish, moveFish, pickHeld, stealableFish, stealChance, stealCharges, stealRollChance, worstStealCharges, parseSellList, CatchItem, CatchType, FAILURE_EMOTES, FishData, findBait, hasFishedBefore, initialData, rarityOf, recordCatch,
   ITEMS, JUNK_MESSAGES, loadFish, MISS_DELAY_MS, pick, randomInt, rollCatch, saveFish, sellPrice, STORY_STYLES, SUCCESS_EMOTES,
   takeItems, TYPE_DESCRIPTIONS, weightedCatch
 } from '../community/fishing';
 
 const cooldown = makeCooldown(5000);
+/** When each viewer last gave fish, by "channel|name" (games.giveCooldownSeconds). */
+const lastGive = new Map<string, number>();
 /** When each viewer last challenged someone to a fish duel, by channel and name. */
 const lastChallenge = new Map<string, number>();
 const pointer = makeCooldown(60_000);
 /** The timer that ends each waiting trap check when its time runs out, by channel and user id. */
 const checkTimers = new Map<string, NodeJS.Timeout>();
 
-export const SUBCOMMANDS: Record<string, 'buy' | 'sell' | 'show' | 'stats' | 'top' | 'trap' | 'steal' | 'duel' | 'accept' | 'deny' | 'reel' | 'bigbite' | 'answer'> = {
+export const SUBCOMMANDS: Record<string, 'buy' | 'sell' | 'show' | 'stats' | 'top' | 'trap' | 'steal' | 'give' | 'duel' | 'accept' | 'deny' | 'reel' | 'bigbite' | 'answer'> = {
   buy: 'buy', b: 'buy', sell: 'sell', s: 'sell',
   show: 'show', sh: 'show', count: 'show', display: 'show', collection: 'show',
   stats: 'stats', st: 'stats', top: 'top', tp: 'top', leaderboard: 'top',
   trap: 'trap', t: 'trap', net: 'trap', trawl: 'trap',
   steal: 'steal', sl: 'steal', rob: 'steal',
+  give: 'give', gv: 'give', gift: 'give',
   duel: 'duel', d: 'duel', battle: 'duel', fight: 'duel', accept: 'accept', a: 'accept', deny: 'deny', dn: 'deny', decline: 'deny',
   reel: 'reel', r: 'reel',
   // A trap check's answer (community/trap-check.ts).
@@ -956,6 +959,51 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     if (text) say(text);
   }
 
+  // ── give ──
+  /**
+   * `fish give @user 🦭 [count]`: one kind of fish or junk to another viewer who has
+   * fished before, oldest sized ones first. Free; games.giveCooldownSeconds between gives.
+   */
+  function give(parts: string[], uid: number): void {
+    if (!g.giveEnabled) return void say('Fish gifts are switched off here.');
+    const usage = `Give what to whom? ${cmd} fish give @user 🐟 (add a number for more than one)`;
+    const name = parseUsername(parts[0]);
+    if (!name) return void say(usage);
+    const list = parseSellList(parts.slice(1));
+    if ('error' in list) {
+      return void say(list.error === 'unknown'
+        ? `That's not an item I know! Use one of: ${ITEMS.map(i => i.name).join('')}`
+        : 'Put a whole number after the emoji, like 🐟 3.');
+    }
+    if (list.items.length === 0) return void say(usage);
+    if (list.items.length > 1) return void say('One kind at a time, like 🐟 3.');
+    const { item, n } = list.items[0];
+    const nameLc = name.toLowerCase();
+    if (isBotSender(name) || SYSTEM_BOTS.has(nameLc)) return void say("Bots don't keep fish. Find a human!");
+    const to = findUserByName(db!, nameLc);
+    if (!to) return void say('No such user exists!');
+    if (to.user_id === uid) return void say("You can't give fish to yourself!");
+    if (offLimits(to.user_id, nameLc)) return void say(`${to.username} can't take fish.`);
+    const wait = (lastGive.get(`${chan}|${meLc}`) ?? 0) + g.giveCooldownSeconds * 1000 - Date.now();
+    if (wait > 0) return void say(`You can give fish again in ${span(wait)}.`);
+
+    const text = once(now => {
+      const d = loadFish(db!, uid);
+      const have = d?.catch.types[item.name] ?? 0;
+      if (!d || have === 0) return `You don't have any ${item.name} to give!`;
+      if (have < n) return `You only have ${have} ${item.name}.`;
+      const r = loadFish(db!, to.user_id);
+      if (!r || !hasFishedBefore(r)) return `${to.username} has to go fishing at least once before they can take fish.`;
+      const moved = giveItems(d, r, item, n);
+      saveFish(db!, uid, d, now);
+      saveFish(db!, to.user_id, r, now);
+      lastGive.set(`${chan}|${meLc}`, now);
+      console.log(`[FISH] ${me} gave ${moved} ${item.name} to ${to.username} in ${chan}`);
+      return `🎁 You gave @${to.username} ${moved > 1 ? `${moved} ` : ''}${item.name}! You have ${have - moved} left.`;
+    });
+    if (text) say(text);
+  }
+
   // ── steal ──
   /**
    * Reach for one random fish the target has held past the grace time, weighted by
@@ -1406,6 +1454,9 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       case 'steal':
         if (userId === null || excluded) return ignore('no account or excluded');
         return await steal(rest[0], userId);
+      case 'give':
+        if (userId === null || excluded) return ignore('no account or excluded');
+        return give(rest, userId);
       case 'duel':
         if (userId === null || excluded) return ignore('no account or excluded');
         duelReply = g.duel.enabled;

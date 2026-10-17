@@ -1037,6 +1037,63 @@ async function main(): Promise<void> {
   }
 
   // Stealing: a hook to try, rarity odds, a burned fine, guards, grace and protection
+  // fish give: one kind to someone who has fished before, on a cooldown, only where it's on
+  {
+    const ch = 'fishgive';
+    const cfgWith = (games: Record<string, unknown>) => writeConfig(root, ch, { enabled: true, currencyName: '$DON', games: { enabled: true, onlyWhileLive: false, ...games } });
+    cfgWith({ giveEnabled: false });
+    makeService(ch, { broadcaster: 999 });
+    const gdb = openPointsDb(ch, { create: true })!;
+    const fishOf = (id: number) => loadFish(gdb, id)!;
+    const seed = (id: number, name: string, fished: boolean, extra: (d: FishData) => void = () => {}) => runWrite(gdb, () => {
+      creditTx(gdb, { userId: id, username: name, amount: 10, reason: 'mod_add', now: 1 });
+      const d = initialData();
+      if (fished) d.lifetime.attempts = 1;
+      extra(d);
+      saveFish(gdb, id, d, 1);
+    });
+    const fish = (n: string) => ITEMS.find(x => x.name === n)!;
+    seed(51, 'giver', true, d => {
+      for (let i = 0; i < 3; i++) addItem(d, fish('🐟'));
+      d.catch.sizes = { '🐟': [{ cm: 20, record: false }, { cm: 70, record: true }] }; // 2 sized, oldest 20 cm, and 1 unsized
+      addItem(d, fish('🥫'));
+    });
+    seed(52, 'friend', true);
+    seed(53, 'newbie', false);
+    const realNow = Date.now;
+    let shift = 0;
+    Date.now = () => realNow() + shift;
+    try {
+      const run = async (msg: string, who: [string, number] = ['giver', 51]) => {
+        shift += 6_000;
+        const out: string[] = [];
+        const t: KickTags = { username: who[0], 'display-name': who[0], badges: {}, isBroadcaster: false, isModUp: false, isVIPUp: false, rawBadges: [], senderId: who[1] };
+        await fishCommand({ say: async (_c, m) => { out.push(m); } }, msg, `#${ch}`, t, { channelName: ch } as ChannelConfig);
+        return out[0] ?? '';
+      };
+      check('fish give is off unless the channel turns it on', (await run('$don fish give @friend 🐟')).includes('switched off') && fishOf(51).catch.types['🐟'] === 3);
+      cfgWith({ giveEnabled: true, giveCooldownSeconds: 30 });
+      shift += 20_000; // the service re-reads its settings
+      check('not to someone who has never fished', (await run('$don fish give @newbie 🐟')).includes('at least once') && fishOf(51).catch.types['🐟'] === 3);
+      check('not more than you hold, nor to yourself', (await run('$don fish give @friend 🐟 4')).includes('only have 3') && (await run('$don fish give @giver 🐟')).includes('yourself'));
+      const gave = await run('$don f gv @friend 🐟 2');
+      check('a give moves that many, oldest sized first, lengths kept and the record bonus left behind', gave.includes('You gave @friend 2 🐟') && gave.includes('1 left')
+        && fishOf(51).catch.types['🐟'] === 1 && fishOf(51).catch.fish === 1 && fishOf(52).catch.types['🐟'] === 2 && fishOf(52).catch.fish === 2
+        && JSON.stringify(fishOf(52).catch.sizes?.['🐟']) === JSON.stringify([{ cm: 20, record: false }, { cm: 70, record: false }]), { gave, from: fishOf(51).catch, to: fishOf(52).catch });
+      check('one give per cooldown', (await run('$don fish give @friend 🥫')).includes('give fish again in') && fishOf(51).catch.types['🥫'] === 1);
+      shift += 30_000;
+      const junk = await run('$don fish give @friend 🥫');
+      check('junk moves too, and counts as junk', junk.includes('You gave @friend 🥫') && fishOf(51).catch.junk === 0 && fishOf(52).catch.junk === 1 && fishOf(52).catch.types['🥫'] === 1, { junk, to: fishOf(52).catch });
+      shift += 30_000;
+      check('one kind at a time, and a clear usage line', (await run('$don fish give @friend 🐟 🥫')).includes('One kind at a time') && (await run('$don fish give')).includes('Give what to whom'));
+      const row = publicCommands(effectivePointsConfig({ enabled: true, games: { enabled: true, giveEnabled: true } })).sections.find(sec => sec.title === 'Fishing')!.rows.find(r => r.usage.includes('fish give'));
+      check('the Commands tab lists fish give where it is on, and only there', row?.short === '$points f gv @user 🐟'
+        && !publicCommands(effectivePointsConfig({ enabled: true, games: { enabled: true } })).sections.find(sec => sec.title === 'Fishing')!.rows.some(r => r.usage.includes('fish give')), row);
+    } finally {
+      Date.now = realNow;
+    }
+  }
+
   {
     const ch = 'fishsteal';
     const cfgWith = (steal: Record<string, unknown>) => writeConfig(root, ch, {

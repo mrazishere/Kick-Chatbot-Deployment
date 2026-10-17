@@ -120,7 +120,7 @@ export function publicCommands(cfg: PointsConfig, opts: { channel?: BotCommandCh
     ].filter(Boolean).join(' ');
     sections.push({
       title: 'Fishing',
-      note: [`${s} is short for ${f}.`, when, 'Selling, show, stats, top and the shop work any time.'].filter(Boolean).join(' '),
+      note: [`${s} is short for ${f}.`, when, `Selling, show, stats, top${g.giveEnabled ? ', gifts' : ''} and the shop work any time.`].filter(Boolean).join(' '),
       rows: [
         { usage: f, short: s, does: 'Cast your line' },
         { usage: `${f} worm | fly | cricket`, short: `${s} w | f | c`, does: 'Buy bait and cast with it, for better odds' },
@@ -134,6 +134,9 @@ export function publicCommands(cfg: PointsConfig, opts: { channel?: BotCommandCh
         { usage: `${f} sell all fish junk`, short: `${s} s a f j`, does: 'Sell every fish, every piece of junk, or both' },
         { usage: `${f} sell duplicate fish`, short: `${s} s d f`, does: 'Sell your duplicates, keeping the biggest of each' },
         { usage: `${f} show [@user] [fish | junk]`, short: `${s} sh`, does: 'A collection, reel and purse' },
+        ...(g.giveEnabled ? [
+          { usage: `${f} give @user 🐟 [count]`, short: `${s} gv @user 🐟`, does: `Give one kind of fish or junk to someone who has fished before, oldest first${g.giveCooldownSeconds > 0 ? `; ${g.giveCooldownSeconds}s between gives` : ''}` }
+        ] : []),
         { usage: `${f} stats [@user | global]`, short: `${s} st`, does: 'Attempts, catches, traps, bait, sales and streaks' },
         { usage: `${f} top [board]`, short: `${s} tp`, does: `Top 10 on a board, fish by default: ${fishBoards('catch')}` },
         { usage: `${f} top total-fish`, short: `${s} tp tf`, does: `All-time boards: ${fishBoards('total')}` },

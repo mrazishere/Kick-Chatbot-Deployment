@@ -304,6 +304,10 @@ export interface PointsGamesConfig {
   baitPricePercent: number;
   /** A short AI story on 1 in 3 catches. */
   stories: boolean;
+  /** `fish give @user 🐟 [count]`: hand fish or junk to another viewer who has fished before. Any time, live or not. */
+  giveEnabled: boolean;
+  /** Seconds a viewer waits between fish gives (0–3600). */
+  giveCooldownSeconds: number;
   /**
    * Post fishing replies in chat. Every one always goes to the fishing overlay (a
    * browser source), so a channel can turn this off and show them on stream only:
