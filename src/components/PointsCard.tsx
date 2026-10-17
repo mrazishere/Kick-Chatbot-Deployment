@@ -2114,7 +2114,7 @@ export default function PointsCard({
                   />
                   {form.fishGive ? (
                     <div className="pl-6 sm:w-1/3">
-                      <Field label="Seconds between gives" hint="Per viewer. Only to someone who has fished before; oldest fish go first, and a record bonus stays with whoever caught it.">
+                      <Field label="Seconds between gives" hint="Per viewer. Anyone can receive, fished before or not; oldest fish go first, and a record bonus stays with whoever caught it.">
                         {text("fishGiveCooldown", { inputMode: "numeric" })}
                       </Field>
                     </div>
