@@ -51,10 +51,10 @@ export interface OverlayLink {
 }
 
 /**
- * Every open overlay polls every couple of seconds; one call to the bot a second
- * per channel serves them all.
+ * Every open overlay polls twice a second; one call to the bot per 400ms per
+ * channel serves them all.
  */
-const TTL_MS = 1_000;
+const TTL_MS = 400;
 const cache = new Map<string, { at: number; data: FishOverlayFeed }>();
 const inFlight = new Map<string, Promise<FishOverlayFeed>>();
 
@@ -150,7 +150,8 @@ function shape(raw: FishOverlayFeed): FishOverlayFeed {
   return { lastId: typeof raw.lastId === "number" ? raw.lastId : 0, events, ...(typeof raw.now === "number" ? { now: raw.now } : {}), ...(raw.demo === false ? { demo: false } : {}),
     ...(typeof raw.size === "number" && raw.size >= 50 && raw.size <= 300 && raw.size !== 100 ? { size: raw.size } : {}),
     ...(clearOf(raw.clear) ? { clear: clearOf(raw.clear)! } : {}),
-    ...(typeof raw.leadMs === "number" && raw.leadMs > 0 && raw.leadMs <= 30_000 ? { leadMs: raw.leadMs } : {}) };
+    ...(typeof raw.leadMs === "number" && raw.leadMs > 0 && raw.leadMs <= 30_000 ? { leadMs: raw.leadMs } : {}),
+    ...(typeof raw.graceMs === "number" && raw.graceMs > 0 && raw.graceMs <= 30_000 ? { graceMs: raw.graceMs } : {}) };
 }
 
 export type OverlayResult = { kind: "ok"; data: FishOverlayFeed } | { kind: "not-found" } | { kind: "unavailable" };

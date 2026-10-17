@@ -10,7 +10,7 @@ import { useDuels } from "@/components/FishDuelStage";
 
 const BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
 
-const POLL_MS = 1500;
+const POLL_MS = 500;
 const TICK_MS = 100;
 /** Past this many waiting, misses go first so the overlay catches up. */
 const QUEUE_CAP = 20;
@@ -199,7 +199,7 @@ function nameColor(name: string): string {
 
 /** A big bite's lane: the code, which pull it is, and the time left on the bot's clock. */
 function BiteView({ scene }: { scene: Extract<Scene, { v: "bite" }> }) {
-  const { frac, secs } = useCountdown(scene.until, scene.windowSec * 1000);
+  const { frac, label } = useCountdown(scene.until, scene.windowSec * 1000);
   const hidden = useCodeHidden(scene.flashMs);
   const color = frac > 0.6 ? "#fde047" : frac > 0.3 ? "#fbbf24" : "#ef4444";
   const sniping = snipeIsOpen(scene.snipeAt);
@@ -212,7 +212,7 @@ function BiteView({ scene }: { scene: Extract<Scene, { v: "bite" }> }) {
       <div className="fo-codebox">
         <span className="fo-codelabel" style={sniping ? { color: "#f87171" } : undefined}>{sniping ? "Anyone can snipe!" : scene.pulls > 1 ? `Pull ${scene.pull}/${scene.pulls}` : "Reel code"}</span>
         {hidden ? <b className="fo-codegone">• • •</b> : <b className={scene.code.length > 2 ? "fo-codelong" : ""}>{scene.code}</b>}
-        <span className="fo-codesecs" style={{ color }}>{secs > 0 ? `${secs}s left` : "time's up!"}</span>
+        <span className="fo-codesecs" style={{ color }}>{label}</span>
       </div>
       <div className="fo-timer" style={{ transform: `scaleX(${frac})`, background: color }} />
     </>
@@ -523,8 +523,8 @@ export default function FishOverlay({
           setDemoAllowed((a) => a ?? true); // no feed (fishing off, say): the demo still previews
           return;
         }
-        const data = (await res.json()) as { lastId: number; events: FishOverlayEvent[]; now?: number; build?: string; demo?: boolean; size?: number; clear?: { w: number; h: number; leadMs?: number }; leadMs?: number };
-        syncClock(data.now, data.leadMs);
+        const data = (await res.json()) as { lastId: number; events: FishOverlayEvent[]; now?: number; build?: string; demo?: boolean; size?: number; clear?: { w: number; h: number; leadMs?: number }; leadMs?: number; graceMs?: number };
+        syncClock(data.now, data.leadMs, data.graceMs);
         setDemoAllowed(data.demo !== false);
         setSize((data.size ?? 100) / 100);
         const c = data.clear ?? null;

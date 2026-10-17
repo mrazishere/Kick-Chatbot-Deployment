@@ -954,6 +954,8 @@ export interface FishOverlayFeed {
   clear?: { w: number; h: number };
   /** How far ahead to run the overlay's clock (ms): the stream's delay (games.streamDelaySeconds); absent means 0. */
   leadMs?: number;
+  /** How long the bot still takes a big bite answer past its deadline (ms), so the overlay says "last chance!" then; absent means 0. */
+  graceMs?: number;
 }
 
 export function getFishOverlay(channel: string): Promise<FishOverlayFeed> {

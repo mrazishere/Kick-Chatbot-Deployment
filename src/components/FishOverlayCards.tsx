@@ -13,7 +13,7 @@ import { useDuels } from "@/components/FishDuelStage";
 
 const BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
 
-const POLL_MS = 1500;
+const POLL_MS = 500;
 const TICK_MS = 100;
 const EXIT_MS = 520;
 /** Past this many waiting, misses (then other chatter) are dropped so the overlay catches up. */
@@ -199,13 +199,13 @@ function CardView({ card, side }: { card: Card; side: "left" | "right" }) {
 
 /** A big bite card's code, which pull it is, and the time left on the bot's clock. */
 function BiteCode({ ev }: { ev: FishOverlayEvent }) {
-  const { secs } = useCountdown(ev.until, biteMs(ev));
+  const { label } = useCountdown(ev.until, biteMs(ev));
   const hidden = useCodeHidden(ev.flashMs);
   const sniping = snipeIsOpen(ev.snipeAt);
   return (
     <div className={`fo-bigcode ${sniping ? "fo-sniping" : ""}`}>
       {sniping ? "Anyone can snipe it!" : ev.pulls && ev.pulls > 1 ? `Pull ${ev.pull}/${ev.pulls}` : "Reel code"} <b>{hidden ? "• • •" : ev.code}</b>
-      <span className="fo-bigsecs">{secs > 0 ? `${secs}s left` : "time's up!"}</span>
+      <span className="fo-bigsecs">{label}</span>
     </div>
   );
 }
@@ -307,8 +307,8 @@ export default function FishOverlayCards({
           setDemoAllowed((a) => a ?? true); // no feed (fishing off, say): the demo still previews
           return;
         }
-        const data = (await res.json()) as { lastId: number; events: FishOverlayEvent[]; now?: number; build?: string; demo?: boolean; size?: number; clear?: Clear; leadMs?: number };
-        syncClock(data.now, data.leadMs);
+        const data = (await res.json()) as { lastId: number; events: FishOverlayEvent[]; now?: number; build?: string; demo?: boolean; size?: number; clear?: Clear; leadMs?: number; graceMs?: number };
+        syncClock(data.now, data.leadMs, data.graceMs);
         setDemoAllowed(data.demo !== false);
         setSize((data.size ?? 100) / 100);
         const c = data.clear ?? null;

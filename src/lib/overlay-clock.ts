@@ -11,11 +11,13 @@ import { useEffect, useState } from "react";
 
 let offset = 0;
 let lead = 0;
+let grace = 0;
 
-/** Note the bot's clock, and how far ahead to run it, from a feed answer. */
-export function syncClock(botNow: unknown, leadMs?: unknown): void {
+/** Note the bot's clock, how far ahead to run it, and how long answers count past a deadline, from a feed answer. */
+export function syncClock(botNow: unknown, leadMs?: unknown, graceMs?: unknown): void {
   if (typeof botNow === "number" && Number.isFinite(botNow)) offset = botNow - Date.now();
   lead = typeof leadMs === "number" && Number.isFinite(leadMs) && leadMs > 0 ? Math.min(leadMs, 30_000) : 0;
+  grace = typeof graceMs === "number" && Number.isFinite(graceMs) && graceMs > 0 ? Math.min(graceMs, 30_000) : 0;
 }
 
 /** The bot's time as viewers will see this frame: its clock now, plus the stream's delay. */
@@ -34,7 +36,7 @@ export function useCodeHidden(flashMs: number | undefined): boolean {
 export const snipeIsOpen = (snipeAt: number | undefined): boolean => snipeAt !== undefined && botNow() >= snipeAt;
 
 /** Time left to a big bite's deadline, ticking a few times a second. `total` is the whole window. */
-export function useCountdown(until: number | undefined, total: number): { left: number; frac: number; secs: number } {
+export function useCountdown(until: number | undefined, total: number): { left: number; frac: number; secs: number; label: string } {
   const [, tick] = useState(0);
   useEffect(() => {
     const t = setInterval(() => tick((v) => v + 1), 250);
@@ -43,6 +45,10 @@ export function useCountdown(until: number | undefined, total: number): { left: 
   // Without a deadline (the demo), count the window from now.
   const [start] = useState(() => botNow());
   const end = until ?? start + total;
-  const left = Math.max(0, end - botNow());
-  return { left, frac: total > 0 ? Math.min(1, left / total) : 0, secs: Math.ceil(left / 1000) };
+  const now = botNow();
+  const left = Math.max(0, end - now);
+  const secs = Math.ceil(left / 1000);
+  // Past the deadline the bot still takes answers for its grace (the feed's graceMs): say so, not "time's up".
+  const label = secs > 0 ? `${secs}s left` : now - end < grace ? "last chance!" : "time's up!";
+  return { left, frac: total > 0 ? Math.min(1, left / total) : 0, secs, label };
 }
