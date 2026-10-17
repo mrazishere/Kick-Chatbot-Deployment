@@ -28,6 +28,7 @@ export default function WheelCard({ channel, fishingOn }: { channel: string; fis
   const [rows, setRows] = useState<Row[]>([]);
   const [spinSeconds, setSpinSeconds] = useState("6");
   const [removeWinner, setRemoveWinner] = useState(false);
+  const [onVideo, setOnVideo] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -37,6 +38,7 @@ export default function WheelCard({ channel, fishingOn }: { channel: string; fis
     setRows(rowsOf(w.items));
     setSpinSeconds(String(w.spinSeconds));
     setRemoveWinner(w.removeWinner);
+    setOnVideo(w.onVideoOverlay === true);
   }, []);
 
   const load = useCallback(async () => {
@@ -60,6 +62,7 @@ export default function WheelCard({ channel, fishingOn }: { channel: string; fis
     !!loaded &&
     (Number(spinSeconds) !== loaded.spinSeconds ||
       removeWinner !== loaded.removeWinner ||
+      onVideo !== (loaded.onVideoOverlay === true) ||
       JSON.stringify(rows.map(({ label, color }) => ({ label: label.trim(), ...(color ? { color } : {}) }))) !== JSON.stringify(loaded.items));
 
   const save = async () => {
@@ -75,6 +78,7 @@ export default function WheelCard({ channel, fishingOn }: { channel: string; fis
           items: rows.map(({ label, color }) => ({ label, ...(color ? { color } : {}) })),
           spinSeconds: Number(spinSeconds),
           removeWinner,
+          onVideoOverlay: onVideo,
           version: loaded.version,
         }),
       });
@@ -190,6 +194,13 @@ export default function WheelCard({ channel, fishingOn }: { channel: string; fis
               description="Take the item the wheel lands on off the wheel, like a raffle wheel. It goes once chat has the result."
               checked={removeWinner}
               onChange={() => setRemoveWinner((v) => !v)}
+            />
+
+            <Toggle
+              label="Spin on the video overlay"
+              description="Spins play on the video overlay (the one $don video uses) instead of the fishing overlay, so that one has to be open in OBS. A video playing there pauses for the spin and carries on after."
+              checked={onVideo}
+              onChange={() => setOnVideo((v) => !v)}
             />
 
             <div className="flex flex-wrap items-center gap-3">

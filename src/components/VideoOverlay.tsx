@@ -2,6 +2,8 @@
 
 import { useEffect, useRef, useState } from "react";
 import { isStale, reloadInto } from "@/lib/overlay-build";
+import { useWheel } from "@/components/FishWheelStage";
+import type { FishOverlayEvent } from "@/lib/bot-api";
 
 // The video overlay (a browser source): plays the YouTube video the bot says is on,
 // with sound, through YouTube's IFrame player, and is clear when nothing is. The bot
@@ -21,11 +23,12 @@ interface YTPlayer {
   isMuted(): boolean;
   setVolume(v: number): void;
   playVideo(): void;
+  pauseVideo(): void;
   getPlayerState(): number;
 }
 declare global {
   interface Window {
-    YT?: { Player: new (el: HTMLElement, opts: unknown) => YTPlayer; PlayerState: { ENDED: number; PLAYING: number; BUFFERING: number } };
+    YT?: { Player: new (el: HTMLElement, opts: unknown) => YTPlayer; PlayerState: { ENDED: number; PLAYING: number; BUFFERING: number; PAUSED: number } };
     onYouTubeIframeAPIReady?: () => void;
   }
 }
@@ -61,6 +64,12 @@ export default function VideoOverlay({ channel, overlayKey, embedded = false }: 
   const offset = useRef(0);
   /** The channel's player volume (0–100), from the feed; applied as it changes. */
   const volume = useRef(50);
+  // The prize wheel, where the channel spins it here (wheel onVideoOverlay): over the video, which pauses meanwhile.
+  const wheel = useWheel({ fontPx: 64 });
+  const takeWheel = wheel.take;
+  const wheelBusy = wheel.busy;
+  /** The newest spin already seen; null until the first poll, which only notes it (no replays on load). */
+  const wheelSeen = useRef<number | null>(null);
 
   // YouTube's player reports the page's address to YouTube: keep the overlay key out of
   // it. The feed is asked with the key from props, and OBS reloads its own saved link.
@@ -82,7 +91,7 @@ export default function VideoOverlay({ channel, overlayKey, embedded = false }: 
           setCurrent(null);
           return;
         }
-        const data = (await res.json()) as { now: number; current: Current | null; build?: string; volume?: number };
+        const data = (await res.json()) as { now: number; current: Current | null; build?: string; volume?: number; wheels?: FishOverlayEvent[] };
         if (!alive) return;
         offset.current = data.now - Date.now();
         if (typeof data.volume === "number" && data.volume !== volume.current) {
@@ -90,8 +99,15 @@ export default function VideoOverlay({ channel, overlayKey, embedded = false }: 
           if (player.current && !player.current.isMuted()) player.current.setVolume(volume.current);
         }
         setCurrent((c) => (c?.id === data.current?.id ? c : data.current));
-        // A newer dashboard build is live: reload into it between videos (the fishing overlay does its own).
-        if (!embedded && !data.current && isStale(data.build)) reloadInto(data.build!, url, 0);
+        const spins = data.wheels ?? [];
+        const newest = spins.reduce((m, e) => Math.max(m, e.id), wheelSeen.current ?? 0);
+        if (wheelSeen.current !== null) {
+          const fresh = spins.filter((e) => e.id > wheelSeen.current!);
+          if (fresh.length) takeWheel(fresh);
+        }
+        wheelSeen.current = newest;
+        // A newer dashboard build is live: reload into it between videos and spins (the fishing overlay does its own).
+        if (!embedded && !data.current && !wheelBusy() && isStale(data.build)) reloadInto(data.build!, url, 0);
       } catch {
         // offline for a moment; the next poll catches up
       } finally {
@@ -104,7 +120,15 @@ export default function VideoOverlay({ channel, overlayKey, embedded = false }: 
       alive = false;
       clearTimeout(t);
     };
-  }, [url, embedded]);
+  }, [url, embedded, takeWheel, wheelBusy]);
+
+  // A spin pauses the video; it carries on once the wheel is gone (the bot stretched its slot to match).
+  useEffect(() => {
+    const p = player.current;
+    if (!p) return;
+    if (wheel.showing) p.pauseVideo();
+    else if (p.getPlayerState() === window.YT?.PlayerState.PAUSED) p.playVideo();
+  }, [wheel.showing]);
 
   // Play the current video: from its start time, or as far in as its slot already is
   // (a page that loads mid-video picks it up), and only to its last paid second.
@@ -168,6 +192,7 @@ export default function VideoOverlay({ channel, overlayKey, embedded = false }: 
     setMuted(false);
   };
   return (
+    <>
     <div
       onClick={sound}
       style={{
@@ -190,5 +215,7 @@ export default function VideoOverlay({ channel, overlayKey, embedded = false }: 
         </div>
       ) : null}
     </div>
+      <div style={{ position: "relative", zIndex: 100 }}>{wheel.stage}</div>
+    </>
   );
 }

@@ -46,7 +46,8 @@ export async function PUT(req: Request, { params }: Params): Promise<NextRespons
       const o = (it && typeof it === "object" ? it : {}) as Record<string, unknown>;
       return { label: typeof o.label === "string" ? o.label : "", ...(typeof o.color === "string" && o.color ? { color: o.color } : {}) };
     });
-    return NextResponse.json(await saveWheel(channel, { items, spinSeconds: body.spinSeconds, removeWinner: body.removeWinner, version: body.version }));
+    const onVideoOverlay = typeof body.onVideoOverlay === "boolean" ? { onVideoOverlay: body.onVideoOverlay } : {};
+    return NextResponse.json(await saveWheel(channel, { items, spinSeconds: body.spinSeconds, removeWinner: body.removeWinner, ...onVideoOverlay, version: body.version }));
   } catch (e) {
     return errorResponse(e);
   }

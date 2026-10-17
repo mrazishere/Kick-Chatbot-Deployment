@@ -624,6 +624,8 @@ export interface WheelConfig {
   items: WheelItem[];
   spinSeconds: number;
   removeWinner: boolean;
+  /** Spins on the video overlay instead of the fishing one. Absent from an older bot service. */
+  onVideoOverlay?: boolean;
   /** Bumped on every change, chat's included: a save names the one it loaded. */
   version: number;
   limits?: { maxItems: number; maxLabel: number; spinSeconds: { min: number; max: number } };
@@ -636,7 +638,7 @@ export function getWheel(channel: string): Promise<WheelConfig> {
 /** Refused with 409 when chat changed the wheel since `version` was loaded. */
 export function saveWheel(
   channel: string,
-  wheel: Pick<WheelConfig, "items" | "spinSeconds" | "removeWinner" | "version">,
+  wheel: Pick<WheelConfig, "items" | "spinSeconds" | "removeWinner" | "onVideoOverlay" | "version">,
 ): Promise<WheelConfig & { ok: true }> {
   return request(`/internal/bot/${encodeURIComponent(channel)}/wheel`, { method: "PUT", body: wheel });
 }
