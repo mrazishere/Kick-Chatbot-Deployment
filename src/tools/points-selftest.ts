@@ -1121,6 +1121,13 @@ async function main(): Promise<void> {
       check('a count typed onto the emoji works too (🐟1)', glued.includes('You gave @giver 🐟') && fishOf(51).catch.types['🐟'] === 1 && fishOf(54).catch.types['🐟'] === 0, glued);
       shift += 30_000;
       check('a number with no fish says to name the fish', (await run('$don fish give @friend 1')).includes('Name the fish'));
+      runWrite(gdb, () => { const d = fishOf(51); for (let i = 0; i < 3; i++) addItem(d, fish('🦈')); saveFish(gdb, 51, d, 1); });
+      const byName = await run('$don fish give @friend 2 Sharks');
+      shift += 30_000;
+      const after = await run('$don fish give shark @friend');
+      check('fish can be named by word, plural, count first, and the @user can come last', byName.includes('You gave @friend 2 🦈') && after.includes('You gave @friend 🦈')
+        && fishOf(51).catch.types['🦈'] === 0 && fishOf(52).catch.types['🦈'] === 3, { byName, after });
+      shift += 30_000;
       check('one kind at a time, and a clear usage line', (await run('$don fish give @friend 🐟 🥫')).includes('One kind at a time') && (await run('$don fish give')).includes('Give what to whom'));
       const row = publicCommands(effectivePointsConfig({ enabled: true, games: { enabled: true, giveEnabled: true } })).sections.find(sec => sec.title === 'Fishing')!.rows.find(r => r.usage.includes('fish give'));
       check('the Commands tab lists fish give where it is on, and only there', row?.short === '$points f gv @user 🐟'

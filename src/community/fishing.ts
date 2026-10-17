@@ -335,6 +335,24 @@ export function takeItems(d: FishData, item: CatchItem, n: number, g: PointsGame
   else d.lifetime.scrapped += taken;
   return total;
 }
+/** Words for the items, so chat can type "shark" or "boot" instead of the emoji. */
+const ITEM_WORDS: Record<string, string> = {
+  fish: '🐟', shrimp: '🦐', prawn: '🦐', crab: '🦀', frog: '🐸', shell: '🐚', seashell: '🐚',
+  tropical: '🐠', tropicalfish: '🐠', puffer: '🐡', pufferfish: '🐡', blowfish: '🐡', lobster: '🦞', turtle: '🐢',
+  squid: '🦑', octopus: '🐙', scorpion: '🦂', dolphin: '🐬',
+  crocodile: '🐊', croc: '🐊', shark: '🦈',
+  whale: '🐳', bluewhale: '🐋',
+  seal: '🦭', otter: '🦦', dinosaur: '🦕', dino: '🦕', gem: '💎', diamond: '💎', crown: '👑', dragon: '🐉',
+  can: '🥫', tin: '🥫', skull: '💀', boot: '🥾', shoe: '🥾', weed: '🌿', seaweed: '🌿', herb: '🌿', leaf: '🍂', leaves: '🍂', sock: '🧦'
+};
+
+/** The item a word names, any case, singular or plural ("Sharks", "dinos"); undefined if none. */
+export function itemByWord(word: string): CatchItem | undefined {
+  const w = word.toLowerCase();
+  const name = ITEM_WORDS[w] ?? ITEM_WORDS[w.replace(/es$/, '')] ?? ITEM_WORDS[w.replace(/s$/, '')];
+  return name ? ITEMS.find(i => i.name === name) : undefined;
+}
+
 /**
  * What `sell` was asked to sell: one or more item emojis, spaced or run together,
  * each optionally followed by a count ("🐟 3 🦐" or "🐟🦐🦀"). The same item named
@@ -345,17 +363,38 @@ export function parseSellList(parts: string[]): { items: Array<{ item: CatchItem
   const counts = new Map<string, number>();
   // Longest names first, so a two-codepoint emoji isn't read as a shorter one.
   const names = [...ITEMS].sort((a, b) => b.name.length - a.name.length);
-  let last: CatchItem | null = null;
+  let last = null as CatchItem | null;
   let lastCounted = true;
+  // A count before anything is named ("2 sharks") is for the item that comes next.
+  let ahead: number | null = null;
+  const add = (item: CatchItem, n: number) => {
+    if (!counts.has(item.name)) order.push(item);
+    counts.set(item.name, (counts.get(item.name) ?? 0) + n);
+    last = item;
+  };
   for (const raw of parts) {
     // Emoji pickers add the variation selector; items are stored without it.
     const word = raw.replace(/\uFE0F/g, '');
-    const count = /^x?(\d+)$/i.exec(word);
+    const count = /^x?(\d+)x?$/i.exec(word);
     if (count) {
       const n = Number(count[1]);
-      if (!last || lastCounted || !Number.isInteger(n) || n < 1) return { error: 'amount' };
-      counts.set(last.name, (counts.get(last.name) ?? 0) - 1 + n);
-      lastCounted = true;
+      if (!Number.isInteger(n) || n < 1) return { error: 'amount' };
+      // After an uncounted item it counts that one ("🐟 3"); otherwise the next one ("2 sharks").
+      if (last && !lastCounted) {
+        counts.set(last.name, (counts.get(last.name) ?? 0) - 1 + n);
+        lastCounted = true;
+        continue;
+      }
+      if (ahead !== null) return { error: 'amount' };
+      ahead = n;
+      continue;
+    }
+    // A word for an item: "shark", "Boots".
+    const named = itemByWord(word);
+    if (named) {
+      add(named, ahead ?? 1);
+      lastCounted = ahead !== null;
+      ahead = null;
       continue;
     }
     // A count typed onto a lone emoji, no space: "🦕1" or "🦕x2".
@@ -363,25 +402,27 @@ export function parseSellList(parts: string[]): { items: Array<{ item: CatchItem
     const gluedItem = glued ? names.find(i => i.name === glued[1]) : undefined;
     if (glued && gluedItem) {
       const n = Number(glued[2]);
-      if (n < 1) return { error: 'amount' };
-      if (!counts.has(gluedItem.name)) order.push(gluedItem);
-      counts.set(gluedItem.name, (counts.get(gluedItem.name) ?? 0) + n);
-      last = gluedItem;
+      if (n < 1 || ahead !== null) return { error: 'amount' };
+      add(gluedItem, n);
       lastCounted = true;
       continue;
     }
     let rest = word;
+    let first = true;
     while (rest) {
       const item = names.find(i => rest.startsWith(i.name));
       if (!item) return { error: 'unknown' };
-      if (!counts.has(item.name)) order.push(item);
-      counts.set(item.name, (counts.get(item.name) ?? 0) + 1);
+      // A count typed before ("2 🦈") is for the first emoji after it.
+      add(item, first && ahead !== null ? ahead : 1);
       rest = rest.slice(item.name.length);
-      last = item;
       // A count may follow only a lone emoji: "🐟🦐 3" would be ambiguous.
-      lastCounted = rest.length > 0 || word.length > item.name.length;
+      lastCounted = (first && ahead !== null) || rest.length > 0 || word.length > item.name.length;
+      first = false;
     }
+    ahead = null;
   }
+  // A number with nothing after it to count.
+  if (ahead !== null) return { error: 'amount' };
   return { items: order.map(item => ({ item, n: counts.get(item.name)! })) };
 }
 

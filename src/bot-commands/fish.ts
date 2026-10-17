@@ -966,14 +966,17 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
    */
   function give(parts: string[], uid: number): void {
     if (!g.giveEnabled) return void say('Fish gifts are switched off here.');
-    const usage = `Give what to whom? ${cmd} fish give @user 🐟 (add a number for more than one)`;
-    const name = parseUsername(parts[0]);
+    const usage = `Give what to whom? ${cmd} fish give @user shark (an emoji or a name, and a number for more than one)`;
+    // The viewer anywhere: "@faye 2 sharks" or "🦈 2 @faye"; without an @, the first word.
+    const at = parts.findIndex(p => p.startsWith('@'));
+    const who = at >= 0 ? at : 0;
+    const name = parseUsername(parts[who]);
     if (!name) return void say(usage);
-    const list = parseSellList(parts.slice(1));
+    const list = parseSellList(parts.filter((_, i) => i !== who));
     if ('error' in list) {
       return void say(list.error === 'unknown'
-        ? `That's not an item I know! Use one of: ${ITEMS.map(i => i.name).join('')}`
-        : `Name the fish, then how many: ${cmd} fish give @user 🐟 3`);
+        ? `That's not an item I know! Use its emoji or a name like fish, shark, dino or boot.`
+        : `Name the fish and how many: ${cmd} fish give @user 2 sharks`);
     }
     if (list.items.length === 0) return void say(usage);
     if (list.items.length > 1) return void say('One kind at a time, like 🐟 3.');

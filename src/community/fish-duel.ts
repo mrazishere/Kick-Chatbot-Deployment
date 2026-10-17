@@ -21,7 +21,7 @@
 
 import * as crypto from 'crypto';
 import type { PointsGamesConfig } from '../types';
-import { CatchItem, FishData, HeldFish, ITEMS, rarityOf, sellPrice } from './fishing';
+import { CatchItem, FishData, HeldFish, ITEMS, itemByWord, rarityOf, sellPrice } from './fishing';
 
 export type DuelType = 'Predator' | 'Swift' | 'Armored';
 
@@ -176,20 +176,11 @@ export function pickFighter(d: FishData | null | undefined, g: PointsGamesConfig
  * Fish by word, for when the emoji can't be typed or copied (while live, `show` may only be on the overlay).
  * 🐳 is the whale and 🐋 the blue whale.
  */
-const WORDS: Record<string, string> = {
-  fish: '🐟', shrimp: '🦐', prawn: '🦐', crab: '🦀', frog: '🐸', shell: '🐚',
-  tropical: '🐠', puffer: '🐡', pufferfish: '🐡', blowfish: '🐡', lobster: '🦞', turtle: '🐢',
-  squid: '🦑', octopus: '🐙', scorpion: '🦂', dolphin: '🐬',
-  crocodile: '🐊', croc: '🐊', shark: '🦈',
-  whale: '🐳', bluewhale: '🐋',
-  seal: '🦭', otter: '🦦', dinosaur: '🦕', dino: '🦕', gem: '💎', diamond: '💎', crown: '👑', dragon: '🐉'
-};
-
 /** The first fish named in `words`, by emoji (pickers add a variation selector) or by word, or undefined. */
 export function fishNamed(words: readonly string[]): string | undefined {
   for (const raw of words) {
     const word = raw.replace(/\uFE0F/g, '');
-    const name = WORDS[word.toLowerCase()] ?? word;
+    const name = itemByWord(word)?.name ?? word;
     const item = ITEMS.find(i => i.type === 'fish' && i.name === name);
     if (item) return item.name;
   }
