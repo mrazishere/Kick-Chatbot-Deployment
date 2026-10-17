@@ -165,6 +165,23 @@ export interface PointsBonusesConfig {
   announce: boolean;
 }
 
+/**
+ * `$<cmd> video <youtube link>`: a viewer pays to play a YouTube video, with sound, on
+ * the channel's video overlay (its own browser source). Priced per second played;
+ * videos queue and play one at a time; a mod can skip one (no refund).
+ */
+export interface PointsVideoConfig {
+  enabled: boolean;
+  /** Cost per second of video played. */
+  pricePerSecond: number;
+  /** The most of one video that plays, in seconds; longer ones play from their start time for this long. */
+  maxSeconds: number;
+  /** How many may wait in line, the one playing aside. */
+  queueMax: number;
+  /** Ignore `video` while the stream is offline. */
+  onlyWhileLive: boolean;
+}
+
 export interface PointsGiveConfig {
   enabled: boolean;
   minAmount: number;
@@ -511,6 +528,7 @@ export interface PointsConfig {
   ignoreUsers: string[];
   bonuses: PointsBonusesConfig;
   give: PointsGiveConfig;
+  video: PointsVideoConfig;
   modMaxAdjust: number;
   publicLeaderboard: boolean;
   /** What a timeout costs the viewer who got it. */
@@ -524,9 +542,10 @@ export interface PointsConfig {
 }
 
 /** The `points` block as stored in a channel config: any subset of the fields. */
-export type StoredPointsConfig = Partial<Omit<PointsConfig, 'bonuses' | 'give' | 'timeoutPenalty' | 'antiSpam' | 'gamble' | 'duel' | 'raffle' | 'games'>> & {
+export type StoredPointsConfig = Partial<Omit<PointsConfig, 'bonuses' | 'give' | 'video' | 'timeoutPenalty' | 'antiSpam' | 'gamble' | 'duel' | 'raffle' | 'games'>> & {
   bonuses?: Partial<PointsBonusesConfig>;
   give?: Partial<PointsGiveConfig>;
+  video?: Partial<PointsVideoConfig>;
   timeoutPenalty?: Partial<PointsTimeoutPenaltyConfig>;
   antiSpam?: Partial<PointsAntiSpamConfig>;
   gamble?: Partial<PointsGambleConfig>;

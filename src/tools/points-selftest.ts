@@ -26,6 +26,7 @@ import {
 } from '../points/store';
 import { WebhookPoller } from '../channels/webhook-poller';
 import { points as pointsCommand, SUBCOMMAND_ALIASES } from '../bot-commands/points';
+import { advanceVideos, failVideo, hasVideoInLine, isoDurationSeconds, LOAD_PAD_MS, markVideoOverlaySeen, parseYouTubeLink, playingVideo } from '../community/video-share';
 import { moveFish, takeItems, addItem, FishData, initialData, isTrophy, rarityOf, stealChance, stealCharges, stealRollChance, ITEMS, landsFish, loadFish, parseSellList, recordCatch, saveFish, sellPrice, weightedCatch } from '../community/fishing';
 import { openCommunityDb } from '../community/store';
 import { markOverlaySeen, readOverlay } from '../community/fish-overlay';
@@ -220,7 +221,7 @@ async function main(): Promise<void> {
   // Store basics
   {
     const db = openPointsDb('basics', { create: true })!;
-    check('migrated to user_version 11', db.pragma('user_version', { simple: true }) === 11);
+    check('migrated to user_version 12', db.pragma('user_version', { simple: true }) === 12);
     runWrite(db, () => creditTx(db, { userId: 1, username: 'alice', amount: 100, reason: 'mod_add', now: 1 }));
     const over = runWrite(db, () => debitTx(db, { userId: 1, amount: 150, reason: 'mod_remove', now: 2 }));
     check('debit beyond balance refused', !over.ok && over.balance === 100);
@@ -1058,6 +1059,78 @@ async function main(): Promise<void> {
   }
 
   // Stealing: a hook to try, rarity odds, a burned fine, guards, grace and protection
+  // $don video: pay per second to play a YouTube video on the video overlay, one at a time
+  {
+    check('YouTube links: watch, youtu.be, shorts, mobile, with t= and start=', JSON.stringify([
+      parseYouTubeLink('https://www.youtube.com/watch?v=dQw4w9WgXcQ'), parseYouTubeLink('youtu.be/dQw4w9WgXcQ?t=90'),
+      parseYouTubeLink('https://youtube.com/shorts/dQw4w9WgXcQ'), parseYouTubeLink('https://m.youtube.com/watch?v=dQw4w9WgXcQ&t=1m30s'),
+      parseYouTubeLink('https://www.youtube.com/embed/dQw4w9WgXcQ?start=5'), parseYouTubeLink('https://vimeo.com/123'), parseYouTubeLink('nonsense')
+    ]) === JSON.stringify([{ id: 'dQw4w9WgXcQ', start: 0 }, { id: 'dQw4w9WgXcQ', start: 90 }, { id: 'dQw4w9WgXcQ', start: 0 }, { id: 'dQw4w9WgXcQ', start: 90 }, { id: 'dQw4w9WgXcQ', start: 5 }, null, null])
+      && isoDurationSeconds('PT3M33S') === 213 && isoDurationSeconds('PT1H') === 3600 && isoDurationSeconds('P0D') === 0);
+
+    const ch = 'videoch';
+    writeConfig(root, ch, { enabled: true, currencyName: '$DON', video: { enabled: true, pricePerSecond: 10, maxSeconds: 60, queueMax: 3, onlyWhileLive: false } });
+    makeService(ch, { broadcaster: 999 });
+    const vdb = openPointsDb(ch, { create: true })!;
+    runWrite(vdb, () => {
+      for (const [id, name, bal] of [[61, 'ann', 5000], [62, 'ben', 5000], [63, 'cat', 5000], [64, 'dan', 5000], [65, 'eve', 100]] as const) creditTx(vdb, { userId: id, username: name, amount: bal, reason: 'mod_add', now: 1 });
+    });
+    // YouTube, faked: three videos and their states.
+    const VIDEOS: Record<string, unknown> = {
+      AAAAAAAAAAA: { snippet: { title: 'Funny cat <3 @you', liveBroadcastContent: 'none' }, contentDetails: { duration: 'PT45S' }, status: { embeddable: true, privacyStatus: 'public' } },
+      BBBBBBBBBBB: { snippet: { title: 'Long one', liveBroadcastContent: 'none' }, contentDetails: { duration: 'PT10M' }, status: { embeddable: true, privacyStatus: 'public' } },
+      CCCCCCCCCCC: { snippet: { title: 'No embed', liveBroadcastContent: 'none' }, contentDetails: { duration: 'PT1M' }, status: { embeddable: false, privacyStatus: 'public' } },
+      DDDDDDDDDDD: { snippet: { title: 'A stream', liveBroadcastContent: 'live' }, contentDetails: { duration: 'P0D' }, status: { embeddable: true, privacyStatus: 'public' } }
+    };
+    const realFetch = globalThis.fetch;
+    const realKey = process.env.YOUTUBE_API_KEY;
+    globalThis.fetch = (async (url: string) => {
+      const id = new URL(url).searchParams.get('id') ?? '';
+      return { ok: true, status: 200, json: async () => ({ items: VIDEOS[id] ? [VIDEOS[id]] : [] }) };
+    }) as unknown as typeof fetch;
+    process.env.YOUTUBE_API_KEY = 'test';
+    try {
+      const run = async (msg: string, who: [string, number], mod = false) => {
+        const out: string[] = [];
+        const t: KickTags = { username: who[0], 'display-name': who[0], badges: {}, isBroadcaster: false, isModUp: mod, isVIPUp: mod, rawBadges: [], senderId: who[1] };
+        await pointsCommand({ say: async (_c, m) => { out.push(m); } }, msg, `#${ch}`, t, { channelName: ch } as ChannelConfig);
+        return out[0] ?? '';
+      };
+      check('no video overlay open: turned away, nothing charged', (await run('$don video youtu.be/AAAAAAAAAAA', ['ann', 61])).includes("isn't on stream") && balance(ch, 61) === 5000);
+      markVideoOverlaySeen(vdb);
+      const q1 = await run('$don video https://youtu.be/AAAAAAAAAAA?t=5', ['ann', 61]);
+      check('a video is priced on the seconds it plays (from its start time) and queued', q1.includes('queued Funny cat 3 you (0:40) for 400 $DON') && q1.includes('plays now') && balance(ch, 61) === 4600, q1);
+      check('one in line each', (await run('$don v youtu.be/BBBBBBBBBBB', ['ann', 61])).includes('already have a video') && balance(ch, 61) === 4600);
+      const q2 = await run('$don video youtu.be/BBBBBBBBBBB', ['ben', 62]);
+      check('a long one plays up to maxSeconds and is priced on that', q2.includes('(1:00) for 600 $DON') && q2.includes('after 1 other') && balance(ch, 62) === 4400, q2);
+      check('no embed, livestreams, unknown videos and bad links are turned away uncharged',
+        (await run('$don video youtu.be/CCCCCCCCCCC', ['cat', 63])).includes("doesn't let it play") && (await run('$don video youtu.be/DDDDDDDDDDD', ['cat', 63])).includes('livestreams')
+        && (await run('$don video youtu.be/EEEEEEEEEEE', ['cat', 63])).includes("can't find") && (await run('$don video hello', ['cat', 63])).includes('send a YouTube link') && balance(ch, 63) === 5000);
+      check('too poor: told the price, nothing queued', (await run('$don video youtu.be/AAAAAAAAAAA', ['eve', 65])).includes('costs 450 $DON; you have 100') && balance(ch, 65) === 100 && !hasVideoInLine(vdb, 65));
+      await run('$don video youtu.be/AAAAAAAAAAA', ['cat', 63]);
+      check('the line holds queueMax', (await run('$don video youtu.be/AAAAAAAAAAA', ['dan', 64])).includes('line is full') && balance(ch, 64) === 5000);
+
+      // The overlay's feed moves the queue on.
+      const t0 = Date.now();
+      const first = advanceVideos(vdb, t0);
+      check('the first paid plays first, from its start time', first?.username === 'ann' && first.start_s === 5 && first.seconds === 40 && advanceVideos(vdb, t0 + 30_000)?.id === first.id, first);
+      const second = advanceVideos(vdb, t0 + 40_000 + LOAD_PAD_MS);
+      check('once its slot is over, the next starts', second?.username === 'ben' && (vdb.prepare('SELECT status FROM video_queue WHERE id = ?').get(first!.id) as { status: string }).status === 'done', second);
+      check('only mods skip', (await run('$don video skip', ['dan', 64])) === '' && playingVideo(vdb)?.username === 'ben');
+      const skipped = await run('$don video skip', ['modder', 66], true);
+      check('a mod skips the one playing, unrefunded', skipped.includes("Skipped @ben's video") && balance(ch, 62) === 4400 && advanceVideos(vdb)?.username === 'cat', skipped);
+      const catVideo = playingVideo(vdb)!;
+      check('a video the overlay can\'t play is refunded, once', failVideo(vdb, catVideo.id) && balance(ch, 63) === 5000 && !failVideo(vdb, catVideo.id) && advanceVideos(vdb) === null);
+      const info = await run('$don video', ['dan', 64]);
+      check('$don video says what is on and how to share', info.includes('Nothing playing') && info.includes('$don video <youtube link>') && info.includes('10 $DON a second'), info);
+      const rows = publicCommands(effectivePointsConfig({ enabled: true, video: { enabled: true } })).sections[0].rows.filter(r => r.usage.includes('video'));
+      check('the Commands tab lists video where it is on', rows.length === 3 && rows[0].short === '$points v <link>' && !publicCommands(effectivePointsConfig({ enabled: true })).sections[0].rows.some(r => r.usage.includes('video')), rows);
+    } finally {
+      globalThis.fetch = realFetch;
+      if (realKey === undefined) delete process.env.YOUTUBE_API_KEY; else process.env.YOUTUBE_API_KEY = realKey;
+    }
+  }
+
   // fish give: one kind to someone who has fished before, on a cooldown, only where it's on
   {
     const ch = 'fishgive';
@@ -2377,25 +2450,25 @@ async function main(): Promise<void> {
     const mch = 'migrate1ch';
     const mdb = openPointsDb(mch, { create: true })!;
     runWrite(mdb, () => creditTx(mdb, { userId: 1, username: 'old', amount: 77, reason: 'mod_add', now: 1 }));
-    mdb.exec('DROP TABLE fish_signals; DROP TABLE fish_duels; DROP TABLE steals; DROP TABLE overlay_feed; DROP TABLE catches; DROP TABLE fish; DROP TABLE duels; DROP TABLE raffle_entries; DROP TABLE raffles; DROP INDEX ledger_ref');
+    mdb.exec('DROP TABLE video_queue; DROP TABLE fish_signals; DROP TABLE fish_duels; DROP TABLE steals; DROP TABLE overlay_feed; DROP TABLE catches; DROP TABLE fish; DROP TABLE duels; DROP TABLE raffle_entries; DROP TABLE raffles; DROP INDEX ledger_ref');
     mdb.pragma('user_version = 1');
     closePointsDb(mch);
     const reopened = openPointsDb(mch, { create: false })!;
     const hasTable = (n: string) => !!reopened.prepare('SELECT 1 FROM sqlite_master WHERE name = ?').get(n);
     check('a v1 database migrates to the latest version keeping balances',
-      reopened.pragma('user_version', { simple: true }) === 11 && balance(mch, 1) === 77
+      reopened.pragma('user_version', { simple: true }) === 12 && balance(mch, 1) === 77 && hasTable('video_queue')
       && hasTable('duels') && hasTable('raffles') && hasTable('raffle_entries') && hasTable('fish') && hasTable('catches') && hasTable('overlay_feed') && hasTable('steals') && hasTable('fish_duels') && hasTable('fish_signals'));
 
     // v2 → v3 specifically: a database that already has duels gains the raffle tables.
     const m2 = 'migrate2ch';
     const m2db = openPointsDb(m2, { create: true })!;
     runWrite(m2db, () => creditTx(m2db, { userId: 1, username: 'old2', amount: 42, reason: 'mod_add', now: 1 }));
-    m2db.exec('DROP TABLE fish_signals; DROP TABLE fish_duels; DROP TABLE steals; DROP TABLE overlay_feed; DROP TABLE catches; DROP TABLE fish; DROP TABLE raffle_entries; DROP TABLE raffles; DROP INDEX ledger_ref');
+    m2db.exec('DROP TABLE video_queue; DROP TABLE fish_signals; DROP TABLE fish_duels; DROP TABLE steals; DROP TABLE overlay_feed; DROP TABLE catches; DROP TABLE fish; DROP TABLE raffle_entries; DROP TABLE raffles; DROP INDEX ledger_ref');
     m2db.pragma('user_version = 2');
     closePointsDb(m2);
     const re2 = openPointsDb(m2, { create: false })!;
     check('a v2 database gains the raffle tables and keeps its balances',
-      re2.pragma('user_version', { simple: true }) === 11 && balance(m2, 1) === 42
+      re2.pragma('user_version', { simple: true }) === 12 && balance(m2, 1) === 42
       && !!re2.prepare("SELECT 1 FROM sqlite_master WHERE name = 'raffles'").get());
     void svc;
     makeService(ch, { broadcaster: 999 });

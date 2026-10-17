@@ -9,7 +9,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { FishBigBiteSetting, FishTrapCheckSetting, FishDuelSetting, PointsAntiSpamConfig, FishCatchSetting, FishReelSetting, FishStealSetting, PointsBonusesConfig, PointsConfig, PointsDuelConfig, PointsGambleConfig, PointsGamesConfig, PointsGiveConfig, PointsRaffleConfig, StoredFishCatches, StoredPointsConfig, PointsTimeoutPenaltyConfig } from '../types';
+import { FishBigBiteSetting, FishTrapCheckSetting, FishDuelSetting, PointsAntiSpamConfig, FishCatchSetting, FishReelSetting, FishStealSetting, PointsBonusesConfig, PointsConfig, PointsDuelConfig, PointsGambleConfig, PointsGamesConfig, PointsGiveConfig, PointsVideoConfig, PointsRaffleConfig, StoredFishCatches, StoredPointsConfig, PointsTimeoutPenaltyConfig } from '../types';
 import { defaultSellPrice, ITEMS } from '../community/fishing';
 
 export function defaultPointsConfig(): PointsConfig {
@@ -34,6 +34,7 @@ export function defaultPointsConfig(): PointsConfig {
       announce: false
     },
     give: { enabled: false, minAmount: 10, maxAmount: 0, cooldownSeconds: 30 },
+    video: { enabled: false, pricePerSecond: 100, maxSeconds: 180, queueMax: 5, onlyWhileLive: true },
     modMaxAdjust: 1_000_000,
     publicLeaderboard: true,
     timeoutPenalty: {
@@ -379,6 +380,7 @@ export function internalPointsConfig(raw: unknown): InternalPointsConfig {
   const r = obj(raw);
   const b = obj(r.bonuses);
   const g = obj(r.give);
+  const vd = obj(r.video);
   const tp = obj(r.timeoutPenalty);
 
   const name = typeof r.currencyName === 'string' && r.currencyName.trim() ? r.currencyName.trim().slice(0, 24) : d.currencyName;
@@ -395,6 +397,13 @@ export function internalPointsConfig(raw: unknown): InternalPointsConfig {
     pointsPerKick: num(b.pointsPerKick, d.bonuses.pointsPerKick, 0, 1000, false),
     onlyWhileLive: bool(b.onlyWhileLive, d.bonuses.onlyWhileLive),
     announce: bool(b.announce, d.bonuses.announce)
+  };
+  const video: PointsVideoConfig = {
+    enabled: bool(vd.enabled, d.video.enabled),
+    pricePerSecond: num(vd.pricePerSecond, d.video.pricePerSecond, 0, 1_000_000, true),
+    maxSeconds: num(vd.maxSeconds, d.video.maxSeconds, 5, 3600, true),
+    queueMax: num(vd.queueMax, d.video.queueMax, 1, 50, true),
+    onlyWhileLive: bool(vd.onlyWhileLive, d.video.onlyWhileLive)
   };
   const give: PointsGiveConfig = {
     enabled: bool(g.enabled, d.give.enabled),
@@ -493,6 +502,7 @@ export function internalPointsConfig(raw: unknown): InternalPointsConfig {
     ignoreUsers: r.ignoreUsers === undefined ? d.ignoreUsers : normalizeIgnoreUsers(r.ignoreUsers),
     bonuses,
     give,
+    video,
     timeoutPenalty,
     antiSpam,
     gamble,
@@ -563,6 +573,11 @@ const GIVE_NUMBERS: Record<string, Rule> = {
   minAmount: { min: 1, max: 1_000_000, integer: true },
   maxAmount: { min: 0, max: 1_000_000_000, integer: true },
   cooldownSeconds: { min: 0, max: 3600, integer: true }
+};
+const VIDEO_NUMBERS: Record<string, Rule> = {
+  pricePerSecond: { min: 0, max: 1_000_000, integer: true },
+  maxSeconds: { min: 5, max: 3600, integer: true },
+  queueMax: { min: 1, max: 50, integer: true }
 };
 const DUEL_NUMBERS: Record<string, Rule> = {
   minAmount: { min: 1, max: 1_000_000_000, integer: true },
@@ -718,6 +733,7 @@ export function validatePointsPatch(current: unknown, patch: unknown): { next?: 
     ...cur,
     bonuses: { ...(cur.bonuses ?? {}) },
     give: { ...(cur.give ?? {}) },
+    video: { ...(cur.video ?? {}) },
     timeoutPenalty: { ...(cur.timeoutPenalty ?? {}) },
     antiSpam: { ...(cur.antiSpam ?? {}) },
     gamble: { ...(cur.gamble ?? {}) },
@@ -831,6 +847,23 @@ export function validatePointsPatch(current: unknown, patch: unknown): { next?: 
         if (g[key] === undefined) continue;
         const v = checkNumber(`give.${key}`, g[key], rule, errors);
         if (v !== undefined) (next.give as Record<string, unknown>)[key] = v;
+      }
+    }
+  }
+
+  if (p.video !== undefined) {
+    if (!p.video || typeof p.video !== 'object' || Array.isArray(p.video)) errors.push('video must be an object');
+    else {
+      const v = p.video as Record<string, unknown>;
+      for (const key of ['enabled', 'onlyWhileLive'] as const) {
+        if (v[key] === undefined) continue;
+        if (typeof v[key] !== 'boolean') errors.push(`video.${key} must be true or false`);
+        else next.video![key] = v[key] as boolean;
+      }
+      for (const [key, rule] of Object.entries(VIDEO_NUMBERS)) {
+        if (v[key] === undefined) continue;
+        const n = checkNumber(`video.${key}`, v[key], rule, errors);
+        if (n !== undefined) (next.video as Record<string, unknown>)[key] = n;
       }
     }
   }

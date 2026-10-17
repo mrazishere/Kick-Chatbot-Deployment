@@ -17,6 +17,8 @@
  *          $don top [activetime|gamble] - top 5 (gamble: by net winnings, 10+ gambles)
  *          $don leaderboard           - link to the public leaderboard
  *          $don give @user 100|5k|50%|all - send points to someone
+ *          $don video <youtube link>  - pay per second to play it on the video overlay
+ *          $don video                 - what's playing and how many wait; video skip (mods)
  *          $don gamble 100|5k|50%|all - even money at the channel's win chance
  *          $don gamble stats [@user]  - gambles, wins, win rate and net, all time
  *          $don duel @user 100        - challenge a viewer; 50/50, winner takes both
@@ -46,12 +48,13 @@ import { effectiveCommand } from '../points/config';
 import { reportDbError, runWrite } from '../points/db';
 import { getPointsService } from '../points/service';
 import { currentReel, loadFish } from '../community/fishing';
+import { clock, enqueueVideo, hasVideoInLine, lookupVideo, parseYouTubeLink, playingVideo, skipVideo, videoOverlayShowing, waitingVideos } from '../community/video-share';
 import {
   acceptDuel, applyOnce, countRanked, createDuel, creditTx, debitTx, ensureUserTx, findUserByName, gamble, gambleStatsFor, gambleTop, getUser,
   cancelRaffle, createRaffle, incomingDuels, isApplied, isExcluded, joinRaffle, openRaffle, outgoingDuel, rankBy, refundDuel, setTx, topBy, transfer
 } from '../points/store';
 
-const SUBCOMMANDS = new Set(['activetime', 'top', 'leaderboard', 'give', 'gamble', 'duel', 'accept', 'deny', 'cancel', 'raffle', 'sraffle', 'join', 'add', 'remove', 'set', 'fish', 'commands']);
+const SUBCOMMANDS = new Set(['activetime', 'top', 'leaderboard', 'give', 'video', 'gamble', 'duel', 'accept', 'deny', 'cancel', 'raffle', 'sraffle', 'join', 'add', 'remove', 'set', 'fish', 'commands']);
 /** Played through the currency command but answered by their own modules (see community/stakes.ts). */
 const GAME_SUBCOMMANDS = new Set(['fish']);
 /**
@@ -61,7 +64,7 @@ const GAME_SUBCOMMANDS = new Set(['fish']);
  */
 export const SUBCOMMAND_ALIASES: Record<string, string> = {
   g: 'gamble', gv: 'give', d: 'duel', a: 'accept', dn: 'deny', c: 'cancel',
-  rf: 'raffle', sr: 'sraffle', j: 'join', t: 'top', lb: 'leaderboard', at: 'activetime',
+  rf: 'raffle', sr: 'sraffle', j: 'join', t: 'top', lb: 'leaderboard', at: 'activetime', v: 'video', vid: 'video',
   ad: 'add', rm: 'remove', st: 'set', f: 'fish', cm: 'commands', help: 'commands'
 };
 /** The same for the word after a subcommand: `$<cmd> t g` is `top gamble`, `g st` is `gamble stats`, `rf c` is `raffle cancel`. An amount of `a` is `all`. */
@@ -389,6 +392,88 @@ export const points: CommandFn = async function points(client, message, channel,
       if (!s || s.gambles === 0) return void say(mine ? `@${me} you haven't gambled yet` : `${label} hasn't gambled yet`);
       const rate = (s.wins / s.gambles * 100).toFixed(1);
       return void say(`${label} ${s.gambles} gambles ${s.wins} won ${rate}% net ${s.net} ${cur}`);
+    }
+
+    if (sub === 'video') {
+      const v = cfg.video;
+      if (!v.enabled) {
+        if (!cooldownLeft(`${channelName}:${meLc}:video-off`, USER_COOLDOWN_MS, true)) say(`@${me} video sharing is turned off here`);
+        return;
+      }
+      if (isExcluded(ex, self?.user_id ?? null, meLc) || isBotSender(me, tags.senderId)) return;
+      const arg = args[1];
+      const now = Date.now();
+
+      // `$don video skip`: a mod ends the one playing (no refund).
+      if ((arg ?? '').toLowerCase() === 'skip') {
+        if (!isModUp && !tags.isBroadcaster) return;
+        const skipped = skipVideo(db, now);
+        if (!skipped) return void say(`@${me} no video is playing`);
+        console.log(`[POINTS] ${me} skipped video ${skipped.id} (${skipped.video_id}) by ${skipped.username}`);
+        return void say(`⏭️ Skipped @${skipped.username}'s video.`);
+      }
+
+      const price = `${v.pricePerSecond.toLocaleString('en-US')} ${cur} a second, up to ${clock(v.maxSeconds)}`;
+      // `$don video`: what's on, and how to send one.
+      if (arg === undefined) {
+        if (cooldownLeft(`${channelName}:${meLc}:video-info`, USER_COOLDOWN_MS, true)) return;
+        const playing = playingVideo(db);
+        const waiting = waitingVideos(db).length;
+        const on = playing && playing.started_at !== null && now < playing.started_at + playing.seconds * 1000
+          ? `📺 Playing @${playing.username}'s ${playing.title} (${clock(Math.max(0, playing.seconds - Math.floor((now - playing.started_at) / 1000)))} left). `
+          : '📺 Nothing playing. ';
+        return void say(`${on}${waiting ? `${waiting} waiting. ` : ''}Share one: $${cmd} video <youtube link> (${price})`);
+      }
+
+      if (checkPending()) return void say(`@${me} answer your fishing question first ($${cmd} fish answer), then you can share a video.`);
+      if (tags.messageId && isApplied(db, `chat:${tags.messageId}`)) return;
+      const apiKey = process.env.YOUTUBE_API_KEY;
+      if (!apiKey) return void say(`@${me} video sharing isn't set up yet`);
+      const link = parseYouTubeLink(arg);
+      if (!link) return void say(`@${me} send a YouTube link: $${cmd} video <youtube link> (${price})`);
+      if (!self) return void say(`@${me} you have no ${cur} to pay for a video`);
+      if (v.onlyWhileLive && (await svc.isLiveNow()) !== true) return void say(`@${me} videos only play while the stream is live`);
+      if (!videoOverlayShowing(db, now)) return void say(`@${me} the video overlay isn't on stream right now`);
+      if (hasVideoInLine(db, self.user_id)) return void say(`@${me} you already have a video in line: one at a time`);
+      if (waitingVideos(db).length >= v.queueMax) return void say(`@${me} the video line is full (${v.queueMax} waiting), try again soon`);
+
+      let info;
+      try {
+        info = await lookupVideo(link.id, apiKey);
+      } catch (err) {
+        console.error(`[POINTS] YouTube lookup for ${link.id} failed: ${err instanceof Error ? err.message : String(err)}`);
+        return void say(`@${me} I couldn't check that video right now, try again in a bit`);
+      }
+      if (!info) return void say(`@${me} I can't find that video (private or removed?)`);
+      if (info.live) return void say(`@${me} livestreams can't be shared, only videos`);
+      if (!info.embeddable) return void say(`@${me} that video's owner doesn't let it play outside YouTube`);
+      if (info.ageRestricted) return void say(`@${me} age-restricted videos can't be shared`);
+      if (link.start >= info.durationS) return void say(`@${me} that start time is past the end of the video (${clock(info.durationS)})`);
+      const seconds = Math.min(info.durationS - link.start, v.maxSeconds);
+      const cost = seconds * v.pricePerSecond;
+
+      const run = once(() => {
+        // Checked again under the write lock: the lookup above awaited.
+        if (hasVideoInLine(db, self.user_id)) return { error: 'inline' as const };
+        const ahead = waitingVideos(db).length;
+        if (ahead >= v.queueMax) return { error: 'full' as const };
+        const id = enqueueVideo(db, { ts: now, user_id: self.user_id, username: me, video_id: link.id, title: info.title, start_s: link.start, seconds, cost });
+        const paid = debitTx(db, { userId: self.user_id, amount: cost, reason: 'game:video', ref: `video:${id}`, actor: `chat:${me}`, note: link.id, now });
+        if (!paid.ok) {
+          db.prepare('DELETE FROM video_queue WHERE id = ?').run(id);
+          return { error: 'poor' as const, balance: paid.balance };
+        }
+        return { id, ahead: ahead + (playingVideo(db) ? 1 : 0) };
+      });
+      if (!run.applied) return;
+      const r = run.result!;
+      if ('error' in r) {
+        if (r.error === 'poor') return void say(`@${me} ${clock(seconds)} of that video costs ${cost.toLocaleString('en-US')} ${cur}; you have ${(r.balance ?? 0).toLocaleString('en-US')}`);
+        return void say(r.error === 'full' ? `@${me} the video line is full, try again soon` : `@${me} you already have a video in line: one at a time`);
+      }
+      console.log(`[POINTS] ${me} queued video ${r.id} (${link.id} from ${link.start}s, ${seconds}s) for ${cost} ${cur}`);
+      const when = r.ahead === 0 ? 'It plays now.' : `It plays after ${r.ahead} other${r.ahead === 1 ? '' : 's'}.`;
+      return void say(`📺 @${me} queued ${info.title} (${clock(seconds)}) for ${cost.toLocaleString('en-US')} ${cur}. ${when}`);
     }
 
     if (sub === 'gamble') {

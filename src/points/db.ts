@@ -285,7 +285,26 @@ CREATE INDEX fish_signals_ts ON fish_signals(ts);
 CREATE INDEX fish_signals_user ON fish_signals(user_id, ts);
 `;
 
-const SCHEMA_VERSION = 11;
+/** v12: video_queue, the paid YouTube videos for the video overlay. */
+const SCHEMA_V12 = `
+CREATE TABLE video_queue (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts INTEGER NOT NULL,
+  user_id INTEGER NOT NULL,
+  username TEXT NOT NULL,
+  video_id TEXT NOT NULL,
+  title TEXT NOT NULL,
+  start_s INTEGER NOT NULL,
+  seconds INTEGER NOT NULL,
+  cost INTEGER NOT NULL,
+  status TEXT NOT NULL,
+  started_at INTEGER,
+  ended_at INTEGER
+);
+CREATE INDEX video_queue_status ON video_queue(status, id);
+`;
+
+const SCHEMA_VERSION = 12;
 
 export function migrate(db: PointsDb): void {
   if ((db.pragma('user_version', { simple: true }) as number) >= SCHEMA_VERSION) return;
@@ -305,6 +324,7 @@ export function migrate(db: PointsDb): void {
     if (version < 9) db.exec(SCHEMA_V9);
     if (version < 10) db.exec(SCHEMA_V10);
     if (version < 11) db.exec(SCHEMA_V11);
+    if (version < 12) db.exec(SCHEMA_V12);
     if (version < SCHEMA_VERSION) db.pragma(`user_version = ${SCHEMA_VERSION}`);
   }).immediate();
 }

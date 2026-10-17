@@ -28,6 +28,7 @@ import { changeWheel, MAX_ITEMS as WHEEL_MAX_ITEMS, MAX_LABEL as WHEEL_MAX_LABEL
 import { noteSocketClose, PUSHER_BAD_KEY_CODES, pusherUrl, refreshPusherKey, watchChatSocket } from './channels/pusher-key';
 import { toHandleChatFormat } from './channels/webhook-poller';
 import { STREAM_GRACE_MS } from './community/big-bite';
+import { advanceVideos, failVideo, markVideoOverlaySeen, waitingVideos } from './community/video-share';
 
 /* eslint-disable @typescript-eslint/no-var-requires, @typescript-eslint/no-explicit-any */
 const puppeteer = require('puppeteer-extra');
@@ -2953,6 +2954,48 @@ app.get('/internal/bot/:channel/overlay/fishing', internalGuard(false), (req, re
     markOverlaySeen(db);
     // The bot's clock, so the overlay counts a big bite down to the real deadline.
     return res.json({ ...readOverlay(db), now: Date.now(), demo, size, clear, leadMs, graceMs });
+  } catch (e) {
+    return pointsUnavailable(res, channel, e);
+  }
+});
+
+// The video overlay's feed: the paid YouTube video to play now (points.video), for the
+// dashboard's video browser source. Asking moves the queue on (community/video-share.ts).
+app.get('/internal/bot/:channel/overlay/video', internalGuard(false), (req, res) => {
+  const channelRaw = req.params['channel'];
+  const channel = (typeof channelRaw === 'string' ? channelRaw : '').toLowerCase();
+  if (!validateChannelName(channel)) return res.status(400).json({ error: 'Invalid channel name' });
+  const config = readChannelConfig(channel);
+  if (!config) return res.status(404).json({ error: 'Not enrolled' });
+  const cfg = effectivePointsConfig(config['points']);
+  if (!cfg.enabled || !cfg.video.enabled) return res.status(404).json({ error: 'Video sharing is off in this channel' });
+  const db = openPointsDb(channel, { create: false });
+  if (!db) return res.json({ now: Date.now(), current: null, waiting: 0 });
+  try {
+    const now = Date.now();
+    markVideoOverlaySeen(db, now);
+    const v = advanceVideos(db, now);
+    const current = v ? { id: v.id, videoId: v.video_id, title: v.title, username: v.username, start: v.start_s, seconds: v.seconds, startedAt: v.started_at } : null;
+    return res.json({ now, current, waiting: waitingVideos(db).length });
+  } catch (e) {
+    return pointsUnavailable(res, channel, e);
+  }
+});
+
+// The video overlay couldn't play a video (removed, or embedding turned off since it was
+// queued): it ends and the viewer is refunded. Body: { id }.
+app.post('/internal/bot/:channel/overlay/video/failed', internalGuard(true), (req, res) => {
+  const channelRaw = req.params['channel'];
+  const channel = (typeof channelRaw === 'string' ? channelRaw : '').toLowerCase();
+  if (!validateChannelName(channel)) return res.status(400).json({ error: 'Invalid channel name' });
+  const id = Number((req.body as { id?: unknown } | undefined)?.id);
+  if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'id must be a video id' });
+  const db = openPointsDb(channel, { create: false });
+  if (!db) return res.status(404).json({ error: 'No points database' });
+  try {
+    const refunded = failVideo(db, id);
+    if (refunded) console.log(`[INTERNAL] ${channel} video ${id} failed to play on the overlay: refunded`);
+    return res.json({ ok: true, refunded });
   } catch (e) {
     return pointsUnavailable(res, channel, e);
   }
