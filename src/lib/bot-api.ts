@@ -148,6 +148,8 @@ export interface PointsGames {
   /** The bottom-right corner the fishing overlay keeps clear, as shares of its width and height (0–80; both above 0 to apply). Absent from an older bot service. */
   overlayClearWidthPercent?: number;
   overlayClearHeightPercent?: number;
+  /** How far the stream runs behind chat, in seconds (0–30): the overlay runs this far ahead, and big bite, wheel and duel timing allow for it. Absent from an older bot service. */
+  streamDelaySeconds?: number;
 }
 
 /**
@@ -950,6 +952,8 @@ export interface FishOverlayFeed {
   size?: number;
   /** The bottom-right corner the overlay keeps clear, as percentages of its width and height; absent means none. */
   clear?: { w: number; h: number };
+  /** How far ahead to run the overlay's clock (ms): the stream's delay (games.streamDelaySeconds); absent means 0. */
+  leadMs?: number;
 }
 
 export function getFishOverlay(channel: string): Promise<FishOverlayFeed> {

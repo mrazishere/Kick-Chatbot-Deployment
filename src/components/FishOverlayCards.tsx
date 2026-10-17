@@ -307,8 +307,8 @@ export default function FishOverlayCards({
           setDemoAllowed((a) => a ?? true); // no feed (fishing off, say): the demo still previews
           return;
         }
-        const data = (await res.json()) as { lastId: number; events: FishOverlayEvent[]; now?: number; build?: string; demo?: boolean; size?: number; clear?: Clear };
-        syncClock(data.now);
+        const data = (await res.json()) as { lastId: number; events: FishOverlayEvent[]; now?: number; build?: string; demo?: boolean; size?: number; clear?: Clear; leadMs?: number };
+        syncClock(data.now, data.leadMs);
         setDemoAllowed(data.demo !== false);
         setSize((data.size ?? 100) / 100);
         const c = data.clear ?? null;

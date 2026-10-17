@@ -4,16 +4,22 @@ import { useEffect, useState } from "react";
 
 // The overlays count a big bite down on the bot's clock, not the viewer's machine:
 // each poll of the feed carries the bot's time, and the difference is kept here.
+//
+// The overlay is drawn into the stream, so viewers see each frame the stream's delay
+// late. The feed's leadMs (games.streamDelaySeconds) runs this clock that far ahead:
+// what a frame shows is what holds on the bot when viewers see it.
 
 let offset = 0;
+let lead = 0;
 
-/** Note the bot's clock from a feed answer. */
-export function syncClock(botNow: unknown): void {
+/** Note the bot's clock, and how far ahead to run it, from a feed answer. */
+export function syncClock(botNow: unknown, leadMs?: unknown): void {
   if (typeof botNow === "number" && Number.isFinite(botNow)) offset = botNow - Date.now();
+  lead = typeof leadMs === "number" && Number.isFinite(leadMs) && leadMs > 0 ? Math.min(leadMs, 30_000) : 0;
 }
 
-/** The bot's time now, as best known. */
-export const botNow = (): number => Date.now() + offset;
+/** The bot's time as viewers will see this frame: its clock now, plus the stream's delay. */
+export const botNow = (): number => Date.now() + offset + lead;
 
 /**
  * Whether a flashing code has gone dark: `flashMs` after this viewer's overlay first
@@ -24,7 +30,7 @@ export function useCodeHidden(flashMs: number | undefined): boolean {
   return flashMs !== undefined && Date.now() - shownAt >= flashMs;
 }
 
-/** Whether a big bite's first code has opened to snipers, on the bot's clock. Re-evaluated on each countdown tick. */
+/** Whether a big bite's first code has opened to snipers by the time viewers see this frame. Re-evaluated on each countdown tick. */
 export const snipeIsOpen = (snipeAt: number | undefined): boolean => snipeAt !== undefined && botNow() >= snipeAt;
 
 /** Time left to a big bite's deadline, ticking a few times a second. `total` is the whole window. */

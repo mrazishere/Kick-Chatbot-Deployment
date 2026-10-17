@@ -111,6 +111,8 @@ export interface PointsGames {
   /** The bottom-right corner the fishing overlay keeps clear (0–80 each; both above 0 to apply). Absent from an older bot service. */
   overlayClearWidthPercent?: number;
   overlayClearHeightPercent?: number;
+  /** How far the stream runs behind chat, in seconds (0–30). Absent from an older bot service. */
+  streamDelaySeconds?: number;
   /** Every fish and junk item's odds and price. Absent from a bot service older than per-item settings. */
   catches?: FishCatch[];
   /** Reels in buying order. Absent from a bot service older than reels. */
@@ -464,6 +466,7 @@ interface SettingsForm {
   fishOverlaySize: string;
   fishOverlayClearW: string;
   fishOverlayClearH: string;
+  fishStreamDelay: string;
   fishCatches: { name: string; type: "fish" | "junk"; weight: string; price: string; defaultWeight: number; defaultPrice: number; trophy?: boolean }[];
   /** null when the bot service doesn't report big bites. */
   fishBigBite: { enabled: boolean; everyMinutes: string; activeMinutes: string; windowSeconds: string; pulls: string; pullSeconds: string; flashSeconds: string; snipeSeconds: string } | null;
@@ -546,6 +549,7 @@ function formFromConfig(c: PointsConfig): SettingsForm {
     fishOverlaySize: String((c.games ?? GAMES_DEFAULTS).overlaySizePercent ?? 100),
     fishOverlayClearW: String(c.games?.overlayClearWidthPercent ?? 0),
     fishOverlayClearH: String(c.games?.overlayClearHeightPercent ?? 0),
+    fishStreamDelay: String(c.games?.streamDelaySeconds ?? 0),
     fishCatches: (c.games?.catches ?? []).map((x) => ({ ...x, weight: String(x.weight), price: String(x.price) })),
     fishBigBite: c.games?.bigBite
       ? {
@@ -765,6 +769,7 @@ function buildPatch(f: SettingsForm): { patch: PointsSettingsPatch } | { error: 
     overlaySizePercent: whole(f.fishOverlaySize, "Overlay size", 50, 300),
     overlayClearWidthPercent: whole(f.fishOverlayClearW, "Clear corner width", 0, 80),
     overlayClearHeightPercent: whole(f.fishOverlayClearH, "Clear corner height", 0, 80),
+    streamDelaySeconds: whole(f.fishStreamDelay, "Stream delay", 0, 30),
   };
   if (f.fishCatches.length > 0) {
     // Only items that differ from their default are sent; the rest keep following it.
@@ -2128,6 +2133,11 @@ export default function PointsCard({
                   </Field>
                   <Field label="Clear corner height (%)" hint="And this share of its height. Replies then show above the corner, big bite codes to its left. Both must be above 0.">
                     {text("fishOverlayClearH", { inputMode: "numeric" })}
+                  </Field>
+                </div>
+                <div className="mt-4 grid gap-4 sm:grid-cols-3">
+                  <Field label="Stream delay (seconds)" hint="How far the stream runs behind chat. The overlay runs this far ahead, so big bite countdowns and the snipe label are right when viewers see them; a big bite's time starts once viewers can see the code, and wheel and duel results wait for the stream in chat. Set it a little under the real delay: over it, viewers see snipes open before they do. 0 = off.">
+                    {text("fishStreamDelay", { inputMode: "numeric" })}
                   </Field>
                 </div>
                 <div className="mt-4">
