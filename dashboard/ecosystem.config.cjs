@@ -2,7 +2,8 @@ module.exports = {
   apps: [
     {
       name: "kpp-dashboard",
-      cwd: "/home/you/projects/kpp-dashboard",
+      // The dashboard's own folder (dashboard/ in Kick-Chatbot-Deployment).
+      cwd: __dirname,
       script: "./node_modules/next/dist/bin/next",
       args: "start -p 3008 -H 127.0.0.1",
       instances: 1,

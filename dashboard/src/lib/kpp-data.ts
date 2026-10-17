@@ -3,8 +3,9 @@ import fs from "fs";
 import readline from "readline";
 import path from "path";
 
-const KPP_ROOT = process.env.KPP_ROOT ?? "/home/you/Kick-Chatbot-Deployment/data/kpp";
-const LOGS_DIR = process.env.LOGS_DIR ?? "/home/you/Kick-Chatbot-Deployment/logs";
+// The bot's data and logs: by default next to the dashboard, in the repo it lives in.
+const KPP_ROOT = process.env.KPP_ROOT ?? path.join(process.cwd(), "..", "data", "kpp");
+const LOGS_DIR = process.env.LOGS_DIR ?? path.join(process.cwd(), "..", "logs");
 
 // Log timestamps are in Asia/Singapore (UTC+8)
 const SGT_OFFSET_MS = 8 * 60 * 60 * 1000;
