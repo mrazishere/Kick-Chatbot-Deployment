@@ -29,7 +29,7 @@ import { markWheelBusy, wheelBusy } from '../community/wheel-state';
 /** How long a spin waits for a big bite already on the line, at most. */
 const BITE_WAIT_MS = 90_000;
 /** How often the overlay polls its feed (POLL_MS in the dashboard's FishOverlay): it can draw a spin this much late. */
-const OVERLAY_POLL_MS = 1_500;
+const OVERLAY_POLL_MS = 500;
 /** Kick cuts chat messages at 500 characters. */
 const CHAT_MAX = 480;
 

@@ -27,6 +27,7 @@ import { RULES as CHEAT_RULES, suspects as cheatSuspects } from './community/che
 import { changeWheel, MAX_ITEMS as WHEEL_MAX_ITEMS, MAX_LABEL as WHEEL_MAX_LABEL, readWheel, SPIN_SECONDS as WHEEL_SPIN_SECONDS, validateWheel } from './community/wheel';
 import { noteSocketClose, PUSHER_BAD_KEY_CODES, pusherUrl, refreshPusherKey, watchChatSocket } from './channels/pusher-key';
 import { toHandleChatFormat } from './channels/webhook-poller';
+import { STREAM_GRACE_MS } from './community/big-bite';
 
 /* eslint-disable @typescript-eslint/no-var-requires, @typescript-eslint/no-explicit-any */
 const puppeteer = require('puppeteer-extra');
@@ -2945,11 +2946,13 @@ app.get('/internal/bot/:channel/overlay/fishing', internalGuard(false), (req, re
   const clear = w > 0 && h > 0 ? { w, h } : undefined;
   // leadMs: how far the overlay runs its clock ahead, the stream's delay (games.streamDelaySeconds).
   const leadMs = cfg.games.streamDelaySeconds * 1000;
-  if (!db) return res.json({ lastId: 0, events: [], demo, size, clear, leadMs });
+  // graceMs: how long a big bite answer still counts past its deadline, so the overlay says "last chance!" then.
+  const graceMs = STREAM_GRACE_MS;
+  if (!db) return res.json({ lastId: 0, events: [], demo, size, clear, leadMs, graceMs });
   try {
     markOverlaySeen(db);
     // The bot's clock, so the overlay counts a big bite down to the real deadline.
-    return res.json({ ...readOverlay(db), now: Date.now(), demo, size, clear, leadMs });
+    return res.json({ ...readOverlay(db), now: Date.now(), demo, size, clear, leadMs, graceMs });
   } catch (e) {
     return pointsUnavailable(res, channel, e);
   }
