@@ -1085,6 +1085,10 @@ async function main(): Promise<void> {
       const junk = await run('$don fish give @friend 🥫');
       check('junk moves too, and counts as junk', junk.includes('You gave @friend 🥫') && fishOf(51).catch.junk === 0 && fishOf(52).catch.junk === 1 && fishOf(52).catch.types['🥫'] === 1, { junk, to: fishOf(52).catch });
       shift += 30_000;
+      const glued = await run('$don fish give @friend 🐟1');
+      check('a count typed onto the emoji works too (🐟1)', glued.includes('You gave @friend 🐟') && fishOf(51).catch.types['🐟'] === 0, glued);
+      shift += 30_000;
+      check('a number with no fish says to name the fish', (await run('$don fish give @friend 1')).includes('Name the fish'));
       check('one kind at a time, and a clear usage line', (await run('$don fish give @friend 🐟 🥫')).includes('One kind at a time') && (await run('$don fish give')).includes('Give what to whom'));
       const row = publicCommands(effectivePointsConfig({ enabled: true, games: { enabled: true, giveEnabled: true } })).sections.find(sec => sec.title === 'Fishing')!.rows.find(r => r.usage.includes('fish give'));
       check('the Commands tab lists fish give where it is on, and only there', row?.short === '$points f gv @user 🐟'

@@ -239,8 +239,8 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
    * Offline, or with no overlay open, chat still gets it, so nobody is left without
    * an answer.
    */
-  // A duel is played out in chat (it's between two viewers), so where duels are on, its usage and error
-  // lines go to chat too, whatever the reply settings say: on the overlay alone they're easy to miss.
+  // A duel or a gift is between two viewers and works live, so its usage and error lines go to chat
+  // too, whatever the reply settings say: on the overlay alone they're easy to miss.
   let duelReply = false;
   const say = async (text: string, meta: { kind?: OverlayKind; item?: string; code?: string; until?: number } = {}) => {
     const emotes = emoteImages(chan, text);
@@ -973,7 +973,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     if ('error' in list) {
       return void say(list.error === 'unknown'
         ? `That's not an item I know! Use one of: ${ITEMS.map(i => i.name).join('')}`
-        : 'Put a whole number after the emoji, like 🐟 3.');
+        : `Name the fish, then how many: ${cmd} fish give @user 🐟 3`);
     }
     if (list.items.length === 0) return void say(usage);
     if (list.items.length > 1) return void say('One kind at a time, like 🐟 3.');
@@ -1456,6 +1456,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
         return await steal(rest[0], userId);
       case 'give':
         if (userId === null || excluded) return ignore('no account or excluded');
+        duelReply = true;
         return give(rest, userId);
       case 'duel':
         if (userId === null || excluded) return ignore('no account or excluded');

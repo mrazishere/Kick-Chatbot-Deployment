@@ -358,6 +358,18 @@ export function parseSellList(parts: string[]): { items: Array<{ item: CatchItem
       lastCounted = true;
       continue;
     }
+    // A count typed onto a lone emoji, no space: "🦕1" or "🦕x2".
+    const glued = /^(\D+?)x?(\d+)$/i.exec(word);
+    const gluedItem = glued ? names.find(i => i.name === glued[1]) : undefined;
+    if (glued && gluedItem) {
+      const n = Number(glued[2]);
+      if (n < 1) return { error: 'amount' };
+      if (!counts.has(gluedItem.name)) order.push(gluedItem);
+      counts.set(gluedItem.name, (counts.get(gluedItem.name) ?? 0) + n);
+      last = gluedItem;
+      lastCounted = true;
+      continue;
+    }
     let rest = word;
     while (rest) {
       const item = names.find(i => rest.startsWith(i.name));
