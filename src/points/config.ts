@@ -34,7 +34,7 @@ export function defaultPointsConfig(): PointsConfig {
       announce: false
     },
     give: { enabled: false, minAmount: 10, maxAmount: 0, cooldownSeconds: 30 },
-    video: { enabled: false, pricePerSecond: 100, maxSeconds: 180, queueMax: 5, onlyWhileLive: true, ownerOnly: false, onFishOverlay: false },
+    video: { enabled: false, pricePerSecond: 100, maxSeconds: 180, queueMax: 5, onlyWhileLive: true, volumePercent: 50, ownerOnly: false, onFishOverlay: false },
     modMaxAdjust: 1_000_000,
     publicLeaderboard: true,
     timeoutPenalty: {
@@ -404,6 +404,7 @@ export function internalPointsConfig(raw: unknown): InternalPointsConfig {
     maxSeconds: num(vd.maxSeconds, d.video.maxSeconds, 5, 3600, true),
     queueMax: num(vd.queueMax, d.video.queueMax, 1, 50, true),
     onlyWhileLive: bool(vd.onlyWhileLive, d.video.onlyWhileLive),
+    volumePercent: num(vd.volumePercent, d.video.volumePercent, 0, 100, true),
     ownerOnly: bool(vd.ownerOnly, d.video.ownerOnly),
     onFishOverlay: bool(vd.onFishOverlay, d.video.onFishOverlay)
   };
@@ -579,7 +580,8 @@ const GIVE_NUMBERS: Record<string, Rule> = {
 const VIDEO_NUMBERS: Record<string, Rule> = {
   pricePerSecond: { min: 0, max: 1_000_000, integer: true },
   maxSeconds: { min: 5, max: 3600, integer: true },
-  queueMax: { min: 1, max: 50, integer: true }
+  queueMax: { min: 1, max: 50, integer: true },
+  volumePercent: { min: 0, max: 100, integer: true }
 };
 const DUEL_NUMBERS: Record<string, Rule> = {
   minAmount: { min: 1, max: 1_000_000_000, integer: true },

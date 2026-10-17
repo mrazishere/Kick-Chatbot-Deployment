@@ -180,6 +180,8 @@ export interface PointsVideoConfig {
   queueMax: number;
   /** Ignore `video` while the stream is offline. */
   onlyWhileLive: boolean;
+  /** The player's volume, 0–100 (YouTube's own scale; OBS's source volume applies on top). */
+  volumePercent: number;
   /** Testing: only the bot owner can send videos; everyone else is ignored. */
   ownerOnly: boolean;
   /** Testing: videos also play in a box on the fishing overlay, for a channel without the video overlay in OBS yet. */

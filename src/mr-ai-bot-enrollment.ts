@@ -2978,13 +2978,15 @@ app.get('/internal/bot/:channel/overlay/video', internalGuard(false), (req, res)
   // ?in=fishing: the player inside the fishing overlay, only while the channel tests videos there.
   if (req.query['in'] === 'fishing' && !cfg.video.onFishOverlay) return res.status(404).json({ error: 'Videos are not on the fishing overlay' });
   const db = openPointsDb(channel, { create: false });
-  if (!db) return res.json({ now: Date.now(), current: null, waiting: 0 });
+  // volume: the player's volume (points.video.volumePercent), applied live.
+  const volume = cfg.video.volumePercent;
+  if (!db) return res.json({ now: Date.now(), current: null, waiting: 0, volume });
   try {
     const now = Date.now();
     markVideoOverlaySeen(db, now);
     const v = advanceVideos(db, now);
     const current = v ? { id: v.id, videoId: v.video_id, title: v.title, username: v.username, start: v.start_s, seconds: v.seconds, startedAt: v.started_at } : null;
-    return res.json({ now, current, waiting: waitingVideos(db).length });
+    return res.json({ now, current, waiting: waitingVideos(db).length, volume });
   } catch (e) {
     return pointsUnavailable(res, channel, e);
   }
