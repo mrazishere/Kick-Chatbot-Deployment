@@ -3,7 +3,8 @@
  *
  * Description: a mod starts a game; anyone guesses the 5-letter word. The whole chat
  * shares points.wordle.maxGuesses (6, like Wordle); each guess is answered with its
- * squares, 🟩 right letter right place, 🟨 in the word elsewhere, ⬛ not in it. The first
+ * squares, 🟩 right letter right place, 🟨 in the word elsewhere, ⬜ not in it, and the
+ * letters so far: CRANE 🟨⬜🟩🟨⬜ | Guesses: 1/6 | Unused: B… | Wrong pos: CN | Not in word: ER. The first
  * right guess wins points.wordle.prize.
  *
  * Permission required: everyone guesses; the streamer, mods and the bot owner start and stop.
@@ -44,7 +45,7 @@ interface Game {
 
 /** Squares for a guess against the answer, Wordle's way: greens first, then yellows only for letters left over. */
 export function marksFor(guess: string, answer: string): string {
-  const out = Array<string>(5).fill('⬛');
+  const out = Array<string>(5).fill('⬜');
   const left: Record<string, number> = {};
   for (let i = 0; i < 5; i++) {
     if (guess[i] === answer[i]) out[i] = '🟩';
@@ -60,11 +61,34 @@ export function marksFor(guess: string, answer: string): string {
   return out.join('');
 }
 
-/** Letters guessed that aren't in the word, A–Z. */
-function lettersOut(game: Game): string {
-  const out = new Set<string>();
-  for (const g of game.guesses) for (const ch of g.word) if (!game.word.includes(ch)) out.add(ch.toUpperCase());
-  return [...out].sort().join(' ');
+/**
+ * The alphabet so far, as the original !wordle showed it: letters nobody has guessed,
+ * letters in the word but not yet placed (a green anywhere places one), and letters
+ * ruled out. Placed letters are in none of them.
+ */
+function letterState(game: Game): { unused: string; wrongPos: string; notIn: string } {
+  const placed = new Set<string>();
+  const guessed = new Set<string>();
+  for (const g of game.guesses) {
+    [...g.word].forEach((ch, i) => {
+      guessed.add(ch);
+      if (game.word[i] === ch) placed.add(ch);
+    });
+  }
+  const abc = 'abcdefghijklmnopqrstuvwxyz'.split('');
+  const up = (xs: string[]) => xs.join('').toUpperCase();
+  return {
+    unused: up(abc.filter(ch => !guessed.has(ch))),
+    wrongPos: up(abc.filter(ch => guessed.has(ch) && !placed.has(ch) && game.word.includes(ch))),
+    notIn: up(abc.filter(ch => guessed.has(ch) && !game.word.includes(ch)))
+  };
+}
+
+/** "| Guesses: 1/6 | Unused: … | Wrong pos: … | Not in word: …", empty parts left out. */
+function status(game: Game, max: number): string {
+  const s = letterState(game);
+  return [`Guesses: ${game.guesses.length}/${max}`, s.unused && `Unused: ${s.unused}`, s.wrongPos && `Wrong pos: ${s.wrongPos}`, s.notIn && `Not in word: ${s.notIn}`]
+    .filter(Boolean).join(' | ');
 }
 
 function readGame(db: PointsDb): Game | null {
@@ -82,7 +106,7 @@ function writeGame(db: PointsDb, game: Game): void {
   db.prepare('INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(GAME_KEY, JSON.stringify(game));
 }
 
-const board = (game: Game): string => game.guesses.map(g => `${g.word.toUpperCase()} ${g.marks}`).join(' · ');
+const board = (game: Game): string => game.guesses.map(g => `${g.word.toUpperCase()} ${g.marks}`).join(' | ');
 
 /** When each viewer last guessed, by "channel|name". */
 const lastGuess = new Map<string, number>();
@@ -139,8 +163,7 @@ export const wordle: CommandFn = async function wordle(client, message, channel,
     const g = readGame(db);
     if (!g || g.over) return void say(`No Wordle is on.${isMod ? ` Start one with $${cmd} wordle start.` : ' A mod can start one.'}`);
     if (!g.guesses.length) return void say(`Wordle: no guesses yet, ${w.maxGuesses} for the whole chat. $${cmd} wordle <word>`);
-    const out = lettersOut(g);
-    return void say(`Wordle ${g.guesses.length}/${w.maxGuesses}: ${board(g)}${out ? ` · not in it: ${out}` : ''}`);
+    return void say(`${board(g)} | ${status(g, w.maxGuesses)}`);
   }
 
   // A guess.
@@ -187,8 +210,7 @@ export const wordle: CommandFn = async function wordle(client, message, channel,
   }
   if (r.kind === 'lost') {
     console.log(`[WORDLE] game in ${chan} ran out of guesses (${r.game.word})`);
-    return void say(`@${me} ${arg.toUpperCase()} ${r.marks} · out of guesses! The word was ${r.game.word.toUpperCase()}.`);
+    return void say(`${arg.toUpperCase()} ${r.marks} | Guesses: ${n} | Out of guesses! The word was ${r.game.word.toUpperCase()}.`);
   }
-  const out = lettersOut(r.game);
-  return void say(`@${me} ${arg.toUpperCase()} ${r.marks} (${n})${out ? ` · not in it: ${out}` : ''}`);
+  return void say(`${arg.toUpperCase()} ${r.marks} | ${status(r.game, w.maxGuesses)}`);
 };
