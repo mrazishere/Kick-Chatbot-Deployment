@@ -993,7 +993,9 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       if (!d || have === 0) return `You don't have any ${item.name} to give!`;
       if (have < n) return `You only have ${have} ${item.name}.`;
       const r = loadFish(db!, to.user_id);
-      if (!r || !hasFishedBefore(r)) return `${to.username} has to go fishing at least once before they can take fish.`;
+      // Big bites count: a viewer who only ever reeled one in has caught fish without casting.
+      const fished = !!r && (hasFishedBefore(r) || r.lifetime.fish + r.lifetime.junk + r.catch.fish + r.catch.junk > 0);
+      if (!r || !fished) return `${to.username} has to go fishing at least once before they can take fish.`;
       const moved = giveItems(d, r, item, n);
       saveFish(db!, uid, d, now);
       saveFish(db!, to.user_id, r, now);

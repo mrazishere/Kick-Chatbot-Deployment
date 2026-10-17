@@ -1060,6 +1060,7 @@ async function main(): Promise<void> {
     });
     seed(52, 'friend', true);
     seed(53, 'newbie', false);
+    seed(54, 'biter', false, d => { addItem(d, fish('🦭')); d.lifetime.fish = 1; }); // only ever reeled in a big bite
     const realNow = Date.now;
     let shift = 0;
     Date.now = () => realNow() + shift;
@@ -1085,8 +1086,12 @@ async function main(): Promise<void> {
       const junk = await run('$don fish give @friend 🥫');
       check('junk moves too, and counts as junk', junk.includes('You gave @friend 🥫') && fishOf(51).catch.junk === 0 && fishOf(52).catch.junk === 1 && fishOf(52).catch.types['🥫'] === 1, { junk, to: fishOf(52).catch });
       shift += 30_000;
-      const glued = await run('$don fish give @friend 🐟1');
-      check('a count typed onto the emoji works too (🐟1)', glued.includes('You gave @friend 🐟') && fishOf(51).catch.types['🐟'] === 0, glued);
+      shift += 30_000;
+      const toBiter = await run('$don fish give @biter 🐟');
+      check('a viewer whose only catch was a big bite can take fish', toBiter.includes('You gave @biter 🐟') && fishOf(54).catch.types['🐟'] === 1, toBiter);
+      shift += 30_000;
+      const glued = await run('$don fish give @giver 🐟1', ['biter', 54]);
+      check('a count typed onto the emoji works too (🐟1)', glued.includes('You gave @giver 🐟') && fishOf(51).catch.types['🐟'] === 1 && fishOf(54).catch.types['🐟'] === 0, glued);
       shift += 30_000;
       check('a number with no fish says to name the fish', (await run('$don fish give @friend 1')).includes('Name the fish'));
       check('one kind at a time, and a clear usage line', (await run('$don fish give @friend 🐟 🥫')).includes('One kind at a time') && (await run('$don fish give')).includes('Give what to whom'));
