@@ -26,6 +26,7 @@
  *          $don cancel                - withdraw your challenge
  *          $don add|remove|set @user 500
  *          $don fish ...              - the fishing game, answered by fish.ts
+ *          $don wordle ...            - Wordle for the chat, answered by wordle.ts
  *
  * Gambling and duels stay silent when off, on cooldown, or the stream is offline
  * (the user's choice, to keep chat clean); the log says why each was ignored. A
@@ -54,9 +55,9 @@ import {
   cancelRaffle, createRaffle, incomingDuels, isApplied, isExcluded, joinRaffle, openRaffle, outgoingDuel, rankBy, refundDuel, setTx, topBy, transfer
 } from '../points/store';
 
-const SUBCOMMANDS = new Set(['activetime', 'top', 'leaderboard', 'give', 'video', 'gamble', 'duel', 'accept', 'deny', 'cancel', 'raffle', 'sraffle', 'join', 'add', 'remove', 'set', 'fish', 'commands']);
+const SUBCOMMANDS = new Set(['activetime', 'top', 'leaderboard', 'give', 'video', 'wordle', 'gamble', 'duel', 'accept', 'deny', 'cancel', 'raffle', 'sraffle', 'join', 'add', 'remove', 'set', 'fish', 'commands']);
 /** Played through the currency command but answered by their own modules (see community/stakes.ts). */
-const GAME_SUBCOMMANDS = new Set(['fish']);
+const GAME_SUBCOMMANDS = new Set(['fish', 'wordle']);
 /**
  * Short forms: `$<cmd> g 100` is `$<cmd> gamble 100`. One letter where it's free, two
  * where a letter is shared. A two-letter one hides a viewer of that exact name
@@ -64,7 +65,7 @@ const GAME_SUBCOMMANDS = new Set(['fish']);
  */
 export const SUBCOMMAND_ALIASES: Record<string, string> = {
   g: 'gamble', gv: 'give', d: 'duel', a: 'accept', dn: 'deny', c: 'cancel',
-  rf: 'raffle', sr: 'sraffle', j: 'join', t: 'top', lb: 'leaderboard', at: 'activetime', v: 'video', vid: 'video',
+  rf: 'raffle', sr: 'sraffle', j: 'join', t: 'top', lb: 'leaderboard', at: 'activetime', v: 'video', vid: 'video', w: 'wordle',
   ad: 'add', rm: 'remove', st: 'set', f: 'fish', cm: 'commands', help: 'commands'
 };
 /** The same for the word after a subcommand: `$<cmd> t g` is `top gamble`, `g st` is `gamble stats`, `rf c` is `raffle cancel`. An amount of `a` is `all`. */

@@ -166,6 +166,20 @@ export interface PointsBonusesConfig {
 }
 
 /**
+ * `$<cmd> wordle`: a Wordle for the whole chat. A mod starts one; anyone guesses, the
+ * whole chat sharing `maxGuesses`; the first right guess wins `prize`.
+ */
+export interface PointsWordleConfig {
+  enabled: boolean;
+  /** What the winner gets, minted like a raffle prize. 0 plays for glory. */
+  prize: number;
+  /** Guesses for the whole chat per game (Wordle's own is 6). */
+  maxGuesses: number;
+  /** Seconds a viewer waits between their own guesses. */
+  guessCooldownSeconds: number;
+}
+
+/**
  * `$<cmd> video <youtube link>`: a viewer pays to play a YouTube video, with sound, on
  * the channel's video overlay (its own browser source). Priced per second played;
  * videos queue and play one at a time; a mod can skip one (no refund).
@@ -541,6 +555,7 @@ export interface PointsConfig {
   bonuses: PointsBonusesConfig;
   give: PointsGiveConfig;
   video: PointsVideoConfig;
+  wordle: PointsWordleConfig;
   modMaxAdjust: number;
   publicLeaderboard: boolean;
   /** What a timeout costs the viewer who got it. */
@@ -554,10 +569,11 @@ export interface PointsConfig {
 }
 
 /** The `points` block as stored in a channel config: any subset of the fields. */
-export type StoredPointsConfig = Partial<Omit<PointsConfig, 'bonuses' | 'give' | 'video' | 'timeoutPenalty' | 'antiSpam' | 'gamble' | 'duel' | 'raffle' | 'games'>> & {
+export type StoredPointsConfig = Partial<Omit<PointsConfig, 'bonuses' | 'give' | 'video' | 'wordle' | 'timeoutPenalty' | 'antiSpam' | 'gamble' | 'duel' | 'raffle' | 'games'>> & {
   bonuses?: Partial<PointsBonusesConfig>;
   give?: Partial<PointsGiveConfig>;
   video?: Partial<PointsVideoConfig>;
+  wordle?: Partial<PointsWordleConfig>;
   timeoutPenalty?: Partial<PointsTimeoutPenaltyConfig>;
   antiSpam?: Partial<PointsAntiSpamConfig>;
   gamble?: Partial<PointsGambleConfig>;

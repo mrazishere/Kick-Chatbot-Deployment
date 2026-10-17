@@ -9,7 +9,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { FishBigBiteSetting, FishTrapCheckSetting, FishDuelSetting, PointsAntiSpamConfig, FishCatchSetting, FishReelSetting, FishStealSetting, PointsBonusesConfig, PointsConfig, PointsDuelConfig, PointsGambleConfig, PointsGamesConfig, PointsGiveConfig, PointsVideoConfig, PointsRaffleConfig, StoredFishCatches, StoredPointsConfig, PointsTimeoutPenaltyConfig } from '../types';
+import { FishBigBiteSetting, FishTrapCheckSetting, FishDuelSetting, PointsAntiSpamConfig, FishCatchSetting, FishReelSetting, FishStealSetting, PointsBonusesConfig, PointsConfig, PointsDuelConfig, PointsGambleConfig, PointsGamesConfig, PointsGiveConfig, PointsVideoConfig, PointsWordleConfig, PointsRaffleConfig, StoredFishCatches, StoredPointsConfig, PointsTimeoutPenaltyConfig } from '../types';
 import { defaultSellPrice, ITEMS } from '../community/fishing';
 
 export function defaultPointsConfig(): PointsConfig {
@@ -34,6 +34,7 @@ export function defaultPointsConfig(): PointsConfig {
       announce: false
     },
     give: { enabled: false, minAmount: 10, maxAmount: 0, cooldownSeconds: 30 },
+    wordle: { enabled: false, prize: 1000, maxGuesses: 6, guessCooldownSeconds: 5 },
     video: { enabled: false, pricePerSecond: 100, maxSeconds: 180, queueMax: 5, onlyWhileLive: true, volumePercent: 50, ownerOnly: false, onFishOverlay: false, mediashare: false },
     modMaxAdjust: 1_000_000,
     publicLeaderboard: true,
@@ -381,6 +382,7 @@ export function internalPointsConfig(raw: unknown): InternalPointsConfig {
   const b = obj(r.bonuses);
   const g = obj(r.give);
   const vd = obj(r.video);
+  const wd = obj(r.wordle);
   const tp = obj(r.timeoutPenalty);
 
   const name = typeof r.currencyName === 'string' && r.currencyName.trim() ? r.currencyName.trim().slice(0, 24) : d.currencyName;
@@ -408,6 +410,12 @@ export function internalPointsConfig(raw: unknown): InternalPointsConfig {
     ownerOnly: bool(vd.ownerOnly, d.video.ownerOnly),
     onFishOverlay: bool(vd.onFishOverlay, d.video.onFishOverlay),
     mediashare: bool(vd.mediashare, d.video.mediashare)
+  };
+  const wordle: PointsWordleConfig = {
+    enabled: bool(wd.enabled, d.wordle.enabled),
+    prize: num(wd.prize, d.wordle.prize, 0, 1_000_000_000, true),
+    maxGuesses: num(wd.maxGuesses, d.wordle.maxGuesses, 1, 30, true),
+    guessCooldownSeconds: num(wd.guessCooldownSeconds, d.wordle.guessCooldownSeconds, 0, 600, true)
   };
   const give: PointsGiveConfig = {
     enabled: bool(g.enabled, d.give.enabled),
@@ -507,6 +515,7 @@ export function internalPointsConfig(raw: unknown): InternalPointsConfig {
     bonuses,
     give,
     video,
+    wordle,
     timeoutPenalty,
     antiSpam,
     gamble,
@@ -577,6 +586,11 @@ const GIVE_NUMBERS: Record<string, Rule> = {
   minAmount: { min: 1, max: 1_000_000, integer: true },
   maxAmount: { min: 0, max: 1_000_000_000, integer: true },
   cooldownSeconds: { min: 0, max: 3600, integer: true }
+};
+const WORDLE_NUMBERS: Record<string, Rule> = {
+  prize: { min: 0, max: 1_000_000_000, integer: true },
+  maxGuesses: { min: 1, max: 30, integer: true },
+  guessCooldownSeconds: { min: 0, max: 600, integer: true }
 };
 const VIDEO_NUMBERS: Record<string, Rule> = {
   pricePerSecond: { min: 0, max: 1_000_000, integer: true },
@@ -739,6 +753,7 @@ export function validatePointsPatch(current: unknown, patch: unknown): { next?: 
     bonuses: { ...(cur.bonuses ?? {}) },
     give: { ...(cur.give ?? {}) },
     video: { ...(cur.video ?? {}) },
+    wordle: { ...(cur.wordle ?? {}) },
     timeoutPenalty: { ...(cur.timeoutPenalty ?? {}) },
     antiSpam: { ...(cur.antiSpam ?? {}) },
     gamble: { ...(cur.gamble ?? {}) },
@@ -852,6 +867,22 @@ export function validatePointsPatch(current: unknown, patch: unknown): { next?: 
         if (g[key] === undefined) continue;
         const v = checkNumber(`give.${key}`, g[key], rule, errors);
         if (v !== undefined) (next.give as Record<string, unknown>)[key] = v;
+      }
+    }
+  }
+
+  if (p.wordle !== undefined) {
+    if (!p.wordle || typeof p.wordle !== 'object' || Array.isArray(p.wordle)) errors.push('wordle must be an object');
+    else {
+      const w = p.wordle as Record<string, unknown>;
+      if (w.enabled !== undefined) {
+        if (typeof w.enabled !== 'boolean') errors.push('wordle.enabled must be true or false');
+        else next.wordle!.enabled = w.enabled;
+      }
+      for (const [key, rule] of Object.entries(WORDLE_NUMBERS)) {
+        if (w[key] === undefined) continue;
+        const n = checkNumber(`wordle.${key}`, w[key], rule, errors);
+        if (n !== undefined) (next.wordle as Record<string, unknown>)[key] = n;
       }
     }
   }

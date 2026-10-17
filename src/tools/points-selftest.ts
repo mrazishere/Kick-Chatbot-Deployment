@@ -26,6 +26,7 @@ import {
 } from '../points/store';
 import { WebhookPoller } from '../channels/webhook-poller';
 import { points as pointsCommand, SUBCOMMAND_ALIASES } from '../bot-commands/points';
+import { marksFor, wordle as wordleCommand } from '../bot-commands/wordle';
 import { advanceVideos, enqueueVideo, failVideo, hasVideoInLine, isoDurationSeconds, LOAD_PAD_MS, markVideoOverlaySeen, parseYouTubeLink, playingVideo } from '../community/video-share';
 import { moveFish, takeItems, addItem, FishData, initialData, isTrophy, rarityOf, stealChance, stealCharges, stealRollChance, ITEMS, landsFish, loadFish, parseSellList, recordCatch, saveFish, sellPrice, weightedCatch } from '../community/fishing';
 import { openCommunityDb } from '../community/store';
@@ -1129,6 +1130,51 @@ async function main(): Promise<void> {
       globalThis.fetch = realFetch;
       if (realKey === undefined) delete process.env.YOUTUBE_API_KEY; else process.env.YOUTUBE_API_KEY = realKey;
     }
+  }
+
+  // $don wordle: one shared board, first right guess wins the prize
+  {
+    check('wordle squares: greens first, yellows only for letters left over', marksFor('crane', 'crane') === '🟩🟩🟩🟩🟩'
+      && marksFor('react', 'crane') === '🟨🟨🟩🟨⬛' && marksFor('eerie', 'there') === '🟨⬛🟨⬛🟩' && marksFor('speed', 'abide') === '⬛⬛🟨⬛🟨'
+      && marksFor('llama', 'hello') === '🟨🟨⬛⬛⬛', [marksFor('react', 'crane'), marksFor('eerie', 'there'), marksFor('speed', 'abide'), marksFor('llama', 'hello')]);
+    const ch = 'wordlech';
+    writeConfig(root, ch, { enabled: true, currencyName: '$DON', wordle: { enabled: true, prize: 500, maxGuesses: 3, guessCooldownSeconds: 0 } });
+    makeService(ch, { broadcaster: 999 });
+    const wdb = openPointsDb(ch, { create: true })!;
+    let msgN = 0;
+    const run = async (msg: string, who: [string, number], mod = false) => {
+      const out: string[] = [];
+      const t: KickTags = { username: who[0], 'display-name': who[0], badges: {}, isBroadcaster: false, isModUp: mod, isVIPUp: mod, rawBadges: [], senderId: who[1], messageId: `w${++msgN}` };
+      await wordleCommand({ say: async (_c, m) => { out.push(m); } }, msg, `#${ch}`, t, { channelName: ch } as ChannelConfig);
+      return out[0] ?? '';
+    };
+    const setWord = (word: string) => runWrite(wdb, () => wdb.prepare("UPDATE meta SET value = json_set(value, '$.word', ?) WHERE key = 'wordle_game'").run(word));
+    check('viewers can\'t start one; there\'s none yet', (await run('$don wordle start', ['ann', 91])) === '' && (await run('$don wordle', ['ann', 91])).includes('No Wordle is on'));
+    const started = await run('$don wordle start', ['modder', 92], true);
+    check('a mod starts one, with the rules', started.includes('Wordle!') && started.includes('3 guesses for the whole chat') && started.includes('wins 500 $DON'), started);
+    setWord('crane');
+    check('a second start says one is on', (await run('$don w start', ['modder', 92], true)).includes('already on'));
+    check('not a word, or not 5 letters, uses no guess', (await run('$don wordle zzzzz', ['ann', 91])).includes("isn't in my word list") && (await run('$don wordle cat', ['ann', 91])).includes('5 letters'));
+    const g1 = await run('$don w react', ['ann', 91]);
+    check('a guess gets its squares, the count and the letters ruled out', g1 === '@ann REACT 🟨🟨🟩🟨⬛ (1/3) · not in it: T', g1);
+    check('the same word twice is turned away', (await run('$don wordle REACT', ['ben', 93])).includes('guessed already'));
+    const boardNow = await run('$don wordle', ['ben', 93]);
+    check('$don wordle shows the board', boardNow.includes('Wordle 1/3: REACT 🟨🟨🟩🟨⬛'), boardNow);
+    const won = await run('$don wordle crane', ['ben', 93]);
+    check('the first right guess wins the prize', won.includes('🎉 @ben got it in 2/3: CRANE 🟩🟩🟩🟩🟩 +500 $DON') && balance(ch, 93) === 500, won);
+    check('a won game takes no more guesses', (await run('$don wordle crane', ['ann', 91])).toLowerCase().includes('no wordle is on'));
+    await run('$don wordle start', ['modder', 92], true);
+    setWord('crane');
+    await run('$don wordle slate', ['ann', 91]);
+    await run('$don wordle pious', ['ann', 91]);
+    const lost = await run('$don wordle dumpy', ['ben', 93]);
+    check('out of guesses: the word is shown, no prize', lost.includes('out of guesses! The word was CRANE') && balance(ch, 93) === 500, lost);
+    await run('$don wordle start', ['modder', 92], true);
+    setWord('crane');
+    check('a mod can stop one, showing the word', (await run('$don wordle stop', ['modder', 92], true)).includes('The word was CRANE'));
+    const rows = publicCommands(effectivePointsConfig({ enabled: true, wordle: { enabled: true } })).sections.find(sec => sec.title === 'Games')?.rows.filter(r => r.usage.includes('wordle')) ?? [];
+    check('the Commands tab lists wordle where it is on', rows.length === 4 && rows[0].short === '$points w <word>'
+      && !(publicCommands(effectivePointsConfig({ enabled: true })).sections.find(sec => sec.title === 'Games')?.rows ?? []).some(r => r.usage.includes('wordle')), rows);
   }
 
   // fish give: one kind to someone who has fished before, on a cooldown, only where it's on
