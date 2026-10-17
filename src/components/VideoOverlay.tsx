@@ -59,6 +59,8 @@ export default function VideoOverlay({ channel, overlayKey, embedded = false }: 
   const url = `${BASE_PATH}/api/overlay/${encodeURIComponent(channel)}/video?key=${encodeURIComponent(overlayKey)}${embedded ? "&in=fishing" : ""}`;
   /** How far the bot's clock is ahead of this machine's, from the last poll. */
   const offset = useRef(0);
+  /** The channel's player volume (0–100), from the feed; applied as it changes. */
+  const volume = useRef(50);
 
   // YouTube's player reports the page's address to YouTube: keep the overlay key out of
   // it. The feed is asked with the key from props, and OBS reloads its own saved link.
@@ -80,9 +82,13 @@ export default function VideoOverlay({ channel, overlayKey, embedded = false }: 
           setCurrent(null);
           return;
         }
-        const data = (await res.json()) as { now: number; current: Current | null; build?: string };
+        const data = (await res.json()) as { now: number; current: Current | null; build?: string; volume?: number };
         if (!alive) return;
         offset.current = data.now - Date.now();
+        if (typeof data.volume === "number" && data.volume !== volume.current) {
+          volume.current = Math.max(0, Math.min(100, data.volume));
+          if (player.current && !player.current.isMuted()) player.current.setVolume(volume.current);
+        }
         setCurrent((c) => (c?.id === data.current?.id ? c : data.current));
         // A newer dashboard build is live: reload into it between videos (the fishing overlay does its own).
         if (!embedded && !data.current && isStale(data.build)) reloadInto(data.build!, url, 0);
@@ -125,7 +131,7 @@ export default function VideoOverlay({ channel, overlayKey, embedded = false }: 
         events: {
           onReady: (e: { target: YTPlayer }) => {
             e.target.unMute();
-            e.target.setVolume(100);
+            e.target.setVolume(volume.current);
             e.target.playVideo();
             // A browser that blocks sound without a click leaves it paused: play it muted instead.
             setTimeout(() => {
@@ -158,7 +164,7 @@ export default function VideoOverlay({ channel, overlayKey, embedded = false }: 
   const sound = () => {
     if (!muted) return;
     player.current?.unMute();
-    player.current?.setVolume(100);
+    player.current?.setVolume(volume.current);
     setMuted(false);
   };
   return (

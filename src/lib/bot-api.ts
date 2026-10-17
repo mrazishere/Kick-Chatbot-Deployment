@@ -967,6 +967,8 @@ export interface VideoOverlayFeed {
   now: number;
   current: { id: number; videoId: string; title: string; username: string; start: number; seconds: number; startedAt: number } | null;
   waiting: number;
+  /** The player's volume, 0–100 (points.video.volumePercent); absent from an older bot service. */
+  volume?: number;
 }
 
 /** `inFishing`: the player inside the fishing overlay, which the bot only feeds while the channel tests videos there. */

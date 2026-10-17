@@ -28,6 +28,7 @@ export interface PointsVideo {
   maxSeconds: number;
   queueMax: number;
   onlyWhileLive: boolean;
+  volumePercent?: number;
 }
 
 export interface PointsGive {
@@ -438,6 +439,7 @@ interface SettingsForm {
   videoMax: string;
   videoQueue: string;
   videoLiveOnly: boolean;
+  videoVolume: string;
   modMaxAdjust: string;
   publicLeaderboard: boolean;
   penaltyEnabled: boolean;
@@ -528,6 +530,7 @@ function formFromConfig(c: PointsConfig): SettingsForm {
     videoMax: String(c.video?.maxSeconds ?? 180),
     videoQueue: String(c.video?.queueMax ?? 5),
     videoLiveOnly: c.video?.onlyWhileLive !== false,
+    videoVolume: String(c.video?.volumePercent ?? 50),
     modMaxAdjust: String(c.modMaxAdjust),
     publicLeaderboard: c.publicLeaderboard,
     penaltyEnabled: c.timeoutPenalty.enabled,
@@ -731,6 +734,7 @@ function buildPatch(f: SettingsForm): { patch: PointsSettingsPatch } | { error: 
       maxSeconds: whole(f.videoMax, "Longest video", 5, 3600),
       queueMax: whole(f.videoQueue, "Videos waiting", 1, 50),
       onlyWhileLive: f.videoLiveOnly,
+      volumePercent: whole(f.videoVolume, "Video volume", 0, 100),
     },
     timeoutPenalty: {
       enabled: f.penaltyEnabled,
@@ -1968,6 +1972,9 @@ export default function PointsCard({
                   </Field>
                   <Field label="Videos waiting" hint="The line's length, the one playing aside. One each per viewer.">
                     {text("videoQueue", { inputMode: "numeric" })}
+                  </Field>
+                  <Field label="Volume (%)" hint="The player's own volume, 0–100; reaches a video already playing within a second. OBS's volume for the source applies on top.">
+                    {text("videoVolume", { inputMode: "numeric" })}
                   </Field>
                 </div>
                 <div className="mt-3">
