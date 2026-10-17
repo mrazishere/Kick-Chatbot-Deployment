@@ -29,6 +29,7 @@ import { noteSocketClose, PUSHER_BAD_KEY_CODES, pusherUrl, refreshPusherKey, wat
 import { toHandleChatFormat } from './channels/webhook-poller';
 import { STREAM_GRACE_MS } from './community/big-bite';
 import { advanceVideos, failVideo, markVideoOverlaySeen, waitingVideos } from './community/video-share';
+import { mediaShareNow } from './community/mediashare';
 
 /* eslint-disable @typescript-eslint/no-var-requires, @typescript-eslint/no-explicit-any */
 const puppeteer = require('puppeteer-extra');
@@ -2979,7 +2980,7 @@ app.get('/internal/bot/:channel/overlay/video', internalGuard(false), (req, res)
   const cfg = effectivePointsConfig(config['points']);
   // Answers for paid videos, and for a wheel that spins here (wheel onVideoOverlay) even without them.
   const wheelHere = cfg.enabled && cfg.games.enabled && readWheel(channel).onVideoOverlay;
-  if (!cfg.enabled || (!cfg.video.enabled && !wheelHere)) return res.status(404).json({ error: 'Video sharing is off in this channel' });
+  if (!cfg.enabled || (!cfg.video.enabled && !cfg.video.mediashare && !wheelHere)) return res.status(404).json({ error: 'Video sharing is off in this channel' });
   // ?in=fishing: the player inside the fishing overlay, only while the channel tests videos there.
   if (req.query['in'] === 'fishing' && !cfg.video.onFishOverlay) return res.status(404).json({ error: 'Videos are not on the fishing overlay' });
   const db = openPointsDb(channel, { create: false });
@@ -2989,6 +2990,12 @@ app.get('/internal/bot/:channel/overlay/video', internalGuard(false), (req, res)
   try {
     const now = Date.now();
     markVideoOverlaySeen(db, now);
+    // Mirroring StreamElements media share: what it plays, where it is, playing or paused.
+    if (cfg.video.mediashare) {
+      const ms = mediaShareNow(channel);
+      const wheels = wheelHere ? readOverlay(db, now).events.filter(e => e.kind === 'wheel' && now - e.ts < 60_000) : [];
+      return res.json({ now, current: null, mediashare: ms, waiting: 0, volume, wheels });
+    }
     const v = advanceVideos(db, now);
     const current = v ? { id: v.id, videoId: v.video_id, title: v.title, username: v.username, start: v.start_s, seconds: v.seconds, startedAt: v.started_at } : null;
     // wheels: the latest spins (overlay_feed's wheel events); the overlay plays the ones newer than it has seen.

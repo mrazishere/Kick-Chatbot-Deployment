@@ -186,6 +186,12 @@ export interface PointsVideoConfig {
   ownerOnly: boolean;
   /** Testing: videos also play in a box on the fishing overlay, for a channel without the video overlay in OBS yet. */
   onFishOverlay: boolean;
+  /**
+   * The video overlay plays the channel's StreamElements media share instead of the
+   * paid queue: whatever it's playing, in step with it (community/mediashare.ts). Needs
+   * data/streamelements/<channel>.json. Independent of `enabled` ($<cmd> video).
+   */
+  mediashare: boolean;
 }
 
 export interface PointsGiveConfig {
