@@ -961,8 +961,8 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
 
   // ── give ──
   /**
-   * `fish give @user 🦭 [count]`: one kind of fish or junk to another viewer who has
-   * fished before, oldest sized ones first. Free; games.giveCooldownSeconds between gives.
+   * `fish give @user 🦭 [count]`: one kind of fish or junk to any other viewer the bot
+   * knows, oldest sized ones first. Free; games.giveCooldownSeconds between gives.
    */
   function give(parts: string[], uid: number): void {
     if (!g.giveEnabled) return void say('Fish gifts are switched off here.');
@@ -992,10 +992,8 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       const have = d?.catch.types[item.name] ?? 0;
       if (!d || have === 0) return `You don't have any ${item.name} to give!`;
       if (have < n) return `You only have ${have} ${item.name}.`;
-      const r = loadFish(db!, to.user_id);
-      // Big bites count: a viewer who only ever reeled one in has caught fish without casting.
-      const fished = !!r && (hasFishedBefore(r) || r.lifetime.fish + r.lifetime.junk + r.catch.fish + r.catch.junk > 0);
-      if (!r || !fished) return `${to.username} has to go fishing at least once before they can take fish.`;
+      // Anyone the bot knows can take a gift, fished before or not: their collection starts here.
+      const r = loadFish(db!, to.user_id) ?? initialData();
       const moved = giveItems(d, r, item, n);
       saveFish(db!, uid, d, now);
       saveFish(db!, to.user_id, r, now);

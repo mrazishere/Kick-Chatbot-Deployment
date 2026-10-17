@@ -1075,7 +1075,8 @@ async function main(): Promise<void> {
       check('fish give is off unless the channel turns it on', (await run('$don fish give @friend 🐟')).includes('switched off') && fishOf(51).catch.types['🐟'] === 3);
       cfgWith({ giveEnabled: true, giveCooldownSeconds: 30 });
       shift += 20_000; // the service re-reads its settings
-      check('not to someone who has never fished', (await run('$don fish give @newbie 🐟')).includes('at least once') && fishOf(51).catch.types['🐟'] === 3);
+      const toNew = await run('$don fish give @newbie 🦐');
+      check('even someone who has never fished can take one', toNew.includes("don't have any 🦐") && fishOf(51).catch.types['🐟'] === 3, toNew);
       check('not more than you hold, nor to yourself', (await run('$don fish give @friend 🐟 4')).includes('only have 3') && (await run('$don fish give @giver 🐟')).includes('yourself'));
       const gave = await run('$don f gv @friend 🐟 2');
       check('a give moves that many, oldest sized first, lengths kept and the record bonus left behind', gave.includes('You gave @friend 2 🐟') && gave.includes('1 left')
@@ -1089,6 +1090,11 @@ async function main(): Promise<void> {
       shift += 30_000;
       const toBiter = await run('$don fish give @biter 🐟');
       check('a viewer whose only catch was a big bite can take fish', toBiter.includes('You gave @biter 🐟') && fishOf(54).catch.types['🐟'] === 1, toBiter);
+      shift += 30_000;
+      seed(55, 'nobody', false);
+      runWrite(gdb, () => gdb.prepare('DELETE FROM fish WHERE user_id = 55').run()); // known to the bot, no fishing record at all
+      const toNobody = await run('$don fish give @nobody 🥫', ['friend', 52]);
+      check('and so can someone with no fishing record at all: one starts with the gift', toNobody.includes('You gave @nobody 🥫') && fishOf(55).catch.junk === 1 && fishOf(55).lifetime.attempts === 0, toNobody);
       shift += 30_000;
       const glued = await run('$don fish give @giver 🐟1', ['biter', 54]);
       check('a count typed onto the emoji works too (🐟1)', glued.includes('You gave @giver 🐟') && fishOf(51).catch.types['🐟'] === 1 && fishOf(54).catch.types['🐟'] === 0, glued);

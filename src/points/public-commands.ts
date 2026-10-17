@@ -135,7 +135,7 @@ export function publicCommands(cfg: PointsConfig, opts: { channel?: BotCommandCh
         { usage: `${f} sell duplicate fish`, short: `${s} s d f`, does: 'Sell your duplicates, keeping the biggest of each' },
         { usage: `${f} show [@user] [fish | junk]`, short: `${s} sh`, does: 'A collection, reel and purse' },
         ...(g.giveEnabled ? [
-          { usage: `${f} give @user 🐟 [count]`, short: `${s} gv @user 🐟`, does: `Give one kind of fish or junk to someone who has fished before, oldest first${g.giveCooldownSeconds > 0 ? `; ${g.giveCooldownSeconds}s between gives` : ''}` }
+          { usage: `${f} give @user 🐟 [count]`, short: `${s} gv @user 🐟`, does: `Give one kind of fish or junk to someone, oldest first${g.giveCooldownSeconds > 0 ? `; ${g.giveCooldownSeconds}s between gives` : ''}` }
         ] : []),
         { usage: `${f} stats [@user | global]`, short: `${s} st`, does: 'Attempts, catches, traps, bait, sales and streaks' },
         { usage: `${f} top [board]`, short: `${s} tp`, does: `Top 10 on a board, fish by default: ${fishBoards('catch')}` },

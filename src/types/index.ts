@@ -304,7 +304,7 @@ export interface PointsGamesConfig {
   baitPricePercent: number;
   /** A short AI story on 1 in 3 catches. */
   stories: boolean;
-  /** `fish give @user 🐟 [count]`: hand fish or junk to another viewer who has fished before. Any time, live or not. */
+  /** `fish give @user 🐟 [count]`: hand fish or junk to another viewer, fished before or not. Any time, live or not. */
   giveEnabled: boolean;
   /** Seconds a viewer waits between fish gives (0–3600). */
   giveCooldownSeconds: number;
