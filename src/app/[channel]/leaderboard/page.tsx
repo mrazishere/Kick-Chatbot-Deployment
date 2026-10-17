@@ -214,24 +214,75 @@ function FishingTab({ fishing, currency, channel }: { fishing: PublicFishing; cu
 
 const WHO_LABEL = { subs: "Subs & up", vips: "VIPs & up", mods: "Mods only", streamer: "Streamer only" } as const;
 
+/**
+ * A link target for a command row, from its words before any argument: "$don fish give
+ * @user 🐟" is fish-give, "!claude <question>" is claude, "$don top activetime" is
+ * top-activetime. Repeats get -2, -3 in page order, so every row has its own.
+ */
+function commandAnchors(sections: PublicCommands["sections"]): string[][] {
+  const seen = new Map<string, number>();
+  return sections.map((s) =>
+    s.rows.map((r) => {
+      const words = r.usage.trim().split(/\s+/);
+      const head = words[0].replace(/^[$!]/, "");
+      // The currency command itself ($don) is left out: its subcommand names the row.
+      const rest = words[0].startsWith("$") ? words.slice(1) : [head, ...words.slice(1)];
+      const named: string[] = [];
+      for (const w of rest) {
+        if (!/^[A-Za-z][A-Za-z0-9-]*$/.test(w)) break;
+        named.push(w.toLowerCase());
+      }
+      const base = named.join("-") || head.toLowerCase().replace(/[^a-z0-9-]/g, "") || "command";
+      const n = (seen.get(base) ?? 0) + 1;
+      seen.set(base, n);
+      return n === 1 ? base : `${base}-${n}`;
+    }),
+  );
+}
+
+/** A link target for each section, from its title; one a command row already has gets -section. */
+function sectionAnchors(sections: PublicCommands["sections"], rows: string[][]): string[] {
+  const taken = new Set(rows.flat());
+  return sections.map((s) => {
+    const base = s.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "section";
+    return taken.has(base) ? `${base}-section` : base;
+  });
+}
+
 /** Every command the channel has on: the currency ones with their short forms, then the bot's ! commands. */
 function CommandsTab({ commands }: { commands: PublicCommands }) {
+  const anchors = commandAnchors(commands.sections);
+  const heads = sectionAnchors(commands.sections, anchors);
   return (
     <div className="space-y-4">
       <p className="text-xs text-neutral-500">
-        {`Type these in chat. A green tag is a short form that does the same thing; words in [brackets] are optional.`}
+        {`Type these in chat. A green tag is a short form that does the same thing; words in [brackets] are optional. The # beside a command links straight to it.`}
       </p>
-      {commands.sections.map((s) => (
-        <section key={s.title} className="overflow-hidden rounded-xl border border-neutral-800 bg-neutral-950/60">
+      {commands.sections.map((s, si) => (
+        <section key={s.title} id={heads[si]} className="scroll-mt-4 overflow-hidden rounded-xl border border-neutral-800 bg-neutral-950/60">
           <div className="border-b border-neutral-800 px-5 py-2.5">
-            <h2 className="text-sm font-medium text-neutral-200">{s.title}</h2>
+            <h2 className="text-sm font-medium text-neutral-200">
+              <a href={`?tab=commands#${heads[si]}`} className="hover:underline">{s.title}</a>
+            </h2>
             {s.note ? <p className="mt-0.5 text-xs text-neutral-500">{s.note}</p> : null}
           </div>
           <ul className="divide-y divide-neutral-800">
-            {s.rows.map((r) => (
-              <li key={r.usage} className="px-5 py-2.5 text-sm">
+            {s.rows.map((r, ri) => (
+              <li
+                key={r.usage}
+                id={anchors[si][ri]}
+                className="group scroll-mt-4 px-5 py-2.5 text-sm [&:target]:bg-[#53FC18]/10 [&:target]:shadow-[inset_3px_0_0_#53FC18]"
+              >
                 <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                  <code className="font-mono text-[13px] text-neutral-100">{r.usage}</code>
+                  <a
+                    href={`?tab=commands#${anchors[si][ri]}`}
+                    aria-label={`Link to ${r.usage}`}
+                    title="Link to this command"
+                    className="-ml-3.5 w-2.5 font-mono text-xs text-neutral-600 opacity-40 hover:text-[#53FC18] group-hover:opacity-100"
+                  >
+                    #
+                  </a>
+                  <code className="-ml-2 font-mono text-[13px] text-neutral-100">{r.usage}</code>
                   {r.short ? <code className="rounded-md border border-neutral-800 bg-neutral-900 px-1.5 py-0.5 font-mono text-xs text-[#53FC18]">{r.short}</code> : null}
                   {r.who ? (
                     <span className="rounded-md border border-amber-900/60 bg-amber-950/40 px-1.5 py-0.5 text-xs text-amber-300">{WHO_LABEL[r.who]}</span>
