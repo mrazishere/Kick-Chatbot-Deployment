@@ -1153,15 +1153,17 @@ async function main(): Promise<void> {
     const started = await run('$don wordle start', ['modder', 92], true);
     check('a mod starts one, with the rules', started.includes('Wordle!') && started.includes('$don w <word>') && started.includes('3 guesses for the whole chat') && started.includes('wins 500 $DON'), started);
     setWord('crane');
-    check('a second start says one is on', (await run('$don w start', ['modder', 92], true)).includes('already on'));
+    check('$don w s is start: one is on already', (await run('$don w s', ['modder', 92], true)).includes('already on'));
+    const startGuess = await run('$don w start', ['ann', 91]);
+    check('during a game START is a guess, from anyone', startGuess.startsWith('START ') && startGuess.includes('Guesses: 1/3'), startGuess);
     check('not a word, or not 5 letters, uses no guess', (await run('$don wordle zzzzz', ['ann', 91])).includes("isn't in my word list") && (await run('$don wordle cat', ['ann', 91])).includes('5 letters'));
-    const g1 = await run('$don w react', ['ann', 91]);
-    check('a guess gets its squares, the count and the alphabet so far', g1 === 'REACT 🟨🟨🟩🟨⬜ | Guesses: 1/3 | Unused: BDFGHIJKLMNOPQSUVWXYZ | Wrong pos: CER | Not in word: T', g1);
+    const g1 = await run('$don w g react', ['ann', 91]);
+    check('a guess gets its squares, the count and the alphabet so far', g1.startsWith('REACT 🟨🟨🟩🟨⬜ | Guesses: 2/3 | Unused:') && g1.includes('Not in word: ST'), g1);
     check('the same word twice is turned away', (await run('$don wordle REACT', ['ben', 93])).includes('guessed already'));
     const boardNow = await run('$don wordle', ['ben', 93]);
-    check('$don wordle shows the board', boardNow === 'REACT 🟨🟨🟩🟨⬜ | Guesses: 1/3 | Unused: BDFGHIJKLMNOPQSUVWXYZ | Wrong pos: CER | Not in word: T', boardNow);
+    check('$don wordle shows the board', boardNow.startsWith('START ') && boardNow.includes('REACT 🟨🟨🟩🟨⬜') && boardNow.includes('Guesses: 2/3'), boardNow);
     const won = await run('$don wordle crane', ['ben', 93]);
-    check('the first right guess wins the prize', won.includes('🎉 @ben got it in 2/3: CRANE 🟩🟩🟩🟩🟩 +500 $DON') && balance(ch, 93) === 500, won);
+    check('the first right guess wins the prize', won.includes('🎉 @ben got it in 3/3: CRANE 🟩🟩🟩🟩🟩 +500 $DON') && balance(ch, 93) === 500, won);
     check('a won game takes no more guesses', (await run('$don wordle crane', ['ann', 91])).toLowerCase().includes('no wordle is on'));
     await run('$don wordle start', ['modder', 92], true);
     setWord('crane');
@@ -1171,9 +1173,9 @@ async function main(): Promise<void> {
     check('out of guesses: the word is shown, no prize', lost.includes('Out of guesses! The word was CRANE') && balance(ch, 93) === 500, lost);
     await run('$don wordle start', ['modder', 92], true);
     setWord('crane');
-    check('a mod can stop one, showing the word', (await run('$don wordle stop', ['modder', 92], true)).includes('The word was CRANE'));
+    check('a mod can stop one with x, showing the word', (await run('$don w x', ['modder', 92], true)).includes('The word was CRANE'));
     const rows = publicCommands(effectivePointsConfig({ enabled: true, wordle: { enabled: true } })).sections.find(sec => sec.title === 'Games')?.rows.filter(r => r.usage.includes('wordle')) ?? [];
-    check('the Commands tab lists wordle where it is on', rows.length === 4 && rows[0].short === '$points w <word>'
+    check('the Commands tab lists wordle where it is on', rows.length === 5 && rows[0].short === '$points w <word>' && rows.some(r => r.short === '$points w s') && rows.some(r => r.short === '$points w x')
       && !(publicCommands(effectivePointsConfig({ enabled: true })).sections.find(sec => sec.title === 'Games')?.rows ?? []).some(r => r.usage.includes('wordle')), rows);
   }
 

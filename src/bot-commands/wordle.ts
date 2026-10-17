@@ -9,10 +9,10 @@
  *
  * Permission required: everyone guesses; the streamer, mods and the bot owner start and stop.
  *
- * Usage:   $don wordle <word>   - guess (also $don w <word>)
+ * Usage:   $don wordle <word>   - guess (also $don w <word>, $don w g <word>, $don w guess <word>)
  *          $don wordle          - the board so far
- *          $don wordle start    - start a game (mods)
- *          $don wordle stop     - end it and show the word (mods)
+ *          $don wordle start    - start a game (mods; also $don w s)
+ *          $don wordle stop     - end it and show the word (mods; also $don w x)
  *
  * A port of the original !wordle (removed in March): the same rules and answer list,
  * now with squares, which Kick shows now that the bot posts as the streamer. The game
@@ -128,10 +128,21 @@ export const wordle: CommandFn = async function wordle(client, message, channel,
   const cur = cfg.currencyName;
   const say = (text: string) => client.say(channel, text).catch(err => console.error(`[WORDLE] Reply in ${chan} failed: ${err instanceof Error ? err.message : String(err)}`));
   const isMod = tags.isBroadcaster || tags.isModUp || isBotOwner(me);
-  const arg = (words[2] ?? '').toLowerCase();
+  const first = (words[2] ?? '').toLowerCase();
+  // "guess" or "g" says the next word is a guess, whatever it is: $don w g start guesses START.
+  const explicit = first === 'guess' || first === 'g';
+  const arg = explicit ? (words[3] ?? '').toLowerCase() : first;
+  // Short words for the mod commands: s starts, x stops.
+  const command = explicit ? null : first === 's' ? 'start' : first === 'x' ? 'stop' : first === 'start' || first === 'stop' ? first : null;
   const prize = w.prize > 0 ? ` First to get it wins ${w.prize.toLocaleString('en-US')} ${cur}.` : '';
 
-  if (arg === 'start') {
+  // START is a word too: while a game is on it's a guess, from anyone (a new game needs
+  // the current one stopped first anyway). Only with none on does it start one.
+  const gameOn = (() => {
+    const g = readGame(db);
+    return !!g && !g.over;
+  })();
+  if (command === 'start' && (first === 's' || !gameOn)) {
     if (!isMod) return;
     const word = ANSWERS[Math.floor(Math.random() * ANSWERS.length)];
     const started = runWrite(db, () => {
@@ -145,7 +156,7 @@ export const wordle: CommandFn = async function wordle(client, message, channel,
     return void say(`🟩🟨⬛ Wordle! Guess the 5-letter word with $${cmd} w <word>. ${w.maxGuesses} guesses for the whole chat.${prize}`);
   }
 
-  if (arg === 'stop') {
+  if (command === 'stop') {
     if (!isMod) return;
     const stopped = runWrite(db, () => {
       const g = readGame(db);
@@ -159,9 +170,9 @@ export const wordle: CommandFn = async function wordle(client, message, channel,
     return void say(`Wordle stopped. The word was ${stopped.word.toUpperCase()}.`);
   }
 
-  if (!arg) {
+  if (!arg && !explicit) {
     const g = readGame(db);
-    if (!g || g.over) return void say(`No Wordle is on.${isMod ? ` Start one with $${cmd} w start.` : ' A mod can start one.'}`);
+    if (!g || g.over) return void say(`No Wordle is on.${isMod ? ` Start one with $${cmd} w s.` : ' A mod can start one.'}`);
     if (!g.guesses.length) return void say(`Wordle: no guesses yet, ${w.maxGuesses} for the whole chat. $${cmd} w <word>`);
     return void say(`${board(g)} | ${status(g, w.maxGuesses)}`);
   }
@@ -200,7 +211,7 @@ export const wordle: CommandFn = async function wordle(client, message, channel,
   const run = tags.messageId ? applyOnce(db, `chat:${tags.messageId}`, now, play) : { applied: true, result: runWrite(db, play) };
   if (!run.applied) return;
   const r = run.result!;
-  if (r.kind === 'none') return void say(`@${me} no Wordle is on.${isMod ? ` Start one with $${cmd} w start.` : ''}`);
+  if (r.kind === 'none') return void say(`@${me} no Wordle is on.${isMod ? ` Start one with $${cmd} w s.` : ''}`);
   if (r.kind === 'dup') return void say(`@${me} ${arg.toUpperCase()} was guessed already.`);
   const n = `${r.game.guesses.length}/${w.maxGuesses}`;
   if (r.kind === 'won') {

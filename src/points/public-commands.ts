@@ -112,8 +112,9 @@ export function publicCommands(cfg: PointsConfig, opts: { channel?: BotCommandCh
     games.push(
       { usage: `${c} wordle <word>`, short: `${c} w <word>`, does: `Guess the Wordle: 🟩 right place, 🟨 elsewhere in the word, ⬛ not in it. ${cfg.wordle.maxGuesses} guesses for the whole chat${cfg.wordle.prize > 0 ? `; the first to get it wins ${cfg.wordle.prize.toLocaleString('en-US')} ${cur}` : ''}` },
       { usage: `${c} wordle`, short: `${c} w`, does: 'The board so far, and the letters ruled out' },
-      { usage: `${c} wordle start`, short: `${c} w start`, does: 'Start a Wordle', who: 'mods' },
-      { usage: `${c} wordle stop`, short: `${c} w stop`, does: 'End it and show the word', who: 'mods' }
+      { usage: `${c} wordle guess <word>`, short: `${c} w g <word>`, does: 'The same, for a guess that is also a command word, like START' },
+      { usage: `${c} wordle start`, short: `${c} w s`, does: 'Start a Wordle', who: 'mods' },
+      { usage: `${c} wordle stop`, short: `${c} w x`, does: 'End it and show the word', who: 'mods' }
     );
   }
   if (games.length) sections.push({ title: 'Games', rows: games });
