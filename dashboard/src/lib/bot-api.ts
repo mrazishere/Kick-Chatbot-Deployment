@@ -419,9 +419,13 @@ export interface PublicFishing {
 }
 
 /** One viewer's unsold fish: each kind with how many, rarest first, and what the lot would sell for. */
+/** One fish held, or several just alike: its length (null: none), duel stats and sell price. */
+export interface PublicHeldFish { cm: number | null; n: number; hp: number; attack: number; worth: number }
+
 export interface PublicHolder {
   name: string;
-  fish: Array<{ emoji: string; n: number; rarity: PublicCatch["rarity"] }>;
+  /** `type` and `each` are absent from a bot service older than them. */
+  fish: Array<{ emoji: string; n: number; rarity: PublicCatch["rarity"]; type?: "Predator" | "Swift" | "Armored"; each?: PublicHeldFish[] }>;
   count: number;
   worth: number;
 }

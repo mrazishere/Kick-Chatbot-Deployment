@@ -41,7 +41,7 @@ export const ITEMS: readonly CatchItem[] = [
   { name: '🍂', type: 'junk', price: 1, weight: 100, size: false },
   { name: '🧦', type: 'junk', price: 5, weight: 50, size: false },
   ...fishTier(['🐟', '🦐', '🦀', '🐸'], 10, 25),
-  { name: '🐚', type: 'fish', price: 25, weight: 10, size: false },
+  { name: '🐚', type: 'fish', price: 25, weight: 10, size: true },
   ...fishTier(['🐠', '🐡', '🦞', '🐢'], 4, 60),
   ...fishTier(['🦑', '🐙', '🦂', '🐬'], 1.5, 150),
   ...fishTier(['🐊', '🦈'], 0.5, 400),
@@ -51,8 +51,8 @@ export const ITEMS: readonly CatchItem[] = [
   { name: '🦭', type: 'fish', price: 1_000, weight: 30, size: true, trophy: true, landPercent: 90 },
   { name: '🦦', type: 'fish', price: 1_500, weight: 25, size: true, trophy: true, landPercent: 80 },
   { name: '🦕', type: 'fish', price: 2_500, weight: 20, size: true, trophy: true, landPercent: 70 },
-  { name: '💎', type: 'fish', price: 4_000, weight: 10, size: false, trophy: true, landPercent: 60 },
-  { name: '👑', type: 'fish', price: 6_000, weight: 10, size: false, trophy: true, landPercent: 50 },
+  { name: '💎', type: 'fish', price: 4_000, weight: 10, size: true, trophy: true, landPercent: 60 },
+  { name: '👑', type: 'fish', price: 6_000, weight: 10, size: true, trophy: true, landPercent: 50 },
   { name: '🐉', type: 'fish', price: 25_000, weight: 5, size: true, trophy: true, landPercent: 40 }
 ];
 
@@ -126,8 +126,9 @@ export interface FishData {
     fish: number; junk: number; dryStreak: number; luckyStreak: number; types: Record<string, number>;
     /**
      * Our addition: the sized fish still held, oldest first, so a sale can price by
-     * length. Fish from traps, or caught before sizes were kept, have no entry and
-     * sell at the base price.
+     * length. Every fish gets one (since 2026-10-18 traps, 🐚, 💎 and 👑 too, and the
+     * fish held without one were given 50 cm, their old price and strength), so each
+     * can be picked by length. Only junk has none.
      */
     sizes?: Record<string, HeldFish[]>;
     /** Our addition: how many of the unsized fish held of each kind were stolen (see HeldFish). */
@@ -335,6 +336,25 @@ export function takeItems(d: FishData, item: CatchItem, n: number, g: PointsGame
   else d.lifetime.scrapped += taken;
   return total;
 }
+/**
+ * Remove `n` fish of this kind that are `cm` long and price them, as takeItems would
+ * (a stolen one at the plain price). Returns null when fewer than `n` are that long.
+ */
+export function takeSized(d: FishData, item: CatchItem, cm: number, n: number, g: PointsGamesConfig, value = 1): number | null {
+  const list = d.catch.sizes?.[item.name] ?? [];
+  if (item.type !== 'fish' || list.filter(h => h.cm === cm).length < n) return null;
+  let total = 0;
+  for (let i = 0; i < n; i++) {
+    const at = list.findIndex(h => h.cm === cm);
+    const [held] = list.splice(at, 1);
+    total += sellPrice(item, g, held, held.stolen ? 1 : value);
+  }
+  d.catch.types[item.name] = (d.catch.types[item.name] ?? 0) - n;
+  d.catch.fish -= n;
+  d.lifetime.sold += n;
+  return total;
+}
+
 /** Words for the items, so chat can type "shark" or "boot" instead of the emoji. */
 const ITEM_WORDS: Record<string, string> = {
   fish: '🐟', shrimp: '🦐', prawn: '🦐', crab: '🦀', frog: '🐸', shell: '🐚', seashell: '🐚',

@@ -1,5 +1,5 @@
 import "server-only";
-import { BotApiError, getPointsLeaderboard, getPublicHistory, getPublicViewers, type PublicHistory, type PublicViewer, type PointsLeaderboard, type PublicCommands, type PublicCommandRow, type PublicCommandSection, type PointsLeaderboardEntry, type PublicCatch, type PublicDuels, type PublicFishing, type PublicHeists, type PublicHolder, type PublicRareCatch } from "./bot-api";
+import { BotApiError, getPointsLeaderboard, getPublicHistory, getPublicViewers, type PublicHistory, type PublicViewer, type PointsLeaderboard, type PublicCommands, type PublicCommandRow, type PublicCommandSection, type PointsLeaderboardEntry, type PublicCatch, type PublicDuels, type PublicFishing, type PublicHeists, type PublicHeldFish, type PublicHolder, type PublicRareCatch } from "./bot-api";
 
 /**
  * The public leaderboard page is the one page anyone can open signed out, so it
@@ -129,6 +129,23 @@ function publicDuels(raw: unknown): PublicDuels | null {
   };
 }
 
+const DUEL_TYPES = new Set(["Predator", "Swift", "Armored"]);
+
+/** Each fish of a kind held, by length, keeping only well-formed entries; {} when there are none. */
+function heldEach(raw: unknown): { each?: PublicHeldFish[] } {
+  if (!Array.isArray(raw)) return {};
+  const num = (v: unknown, max: number) => (typeof v === "number" && Number.isFinite(v) && v >= 0 && v <= max ? v : null);
+  const each = raw.slice(0, 100).flatMap((e) => {
+    const x = e as Partial<PublicHeldFish> | null;
+    if (!x) return [];
+    const cm = x.cm === null ? null : num(x.cm, 1000);
+    const k = num(x.n, 1e6), hp = num(x.hp, 1e5), attack = num(x.attack, 1e5), worth = num(x.worth, 1e12);
+    if ((cm === null && x.cm !== null) || !k || hp === null || attack === null || worth === null) return [];
+    return [{ cm: cm === null ? null : Math.floor(cm), n: Math.floor(k), hp: Math.round(hp), attack, worth: Math.floor(worth) }];
+  });
+  return each.length ? { each } : {};
+}
+
 /** Who holds what, keeping only well-formed rows. */
 function publicHolders(rows: unknown): PublicHolder[] {
   if (!Array.isArray(rows)) return [];
@@ -138,7 +155,7 @@ function publicHolders(rows: unknown): PublicHolder[] {
     if (!r || typeof r.name !== "string" || !USERNAME.test(r.name) || !Array.isArray(r.fish)) return [];
     const fish = r.fish.slice(0, 40).flatMap((f) =>
       f && typeof f.emoji === "string" && f.emoji.length <= 8 && n(f.n) > 0 && typeof f.rarity === "string" && RARITIES.has(f.rarity)
-        ? [{ emoji: f.emoji, n: n(f.n), rarity: f.rarity }]
+        ? [{ emoji: f.emoji, n: n(f.n), rarity: f.rarity, ...(f.type && DUEL_TYPES.has(f.type) ? { type: f.type } : {}), ...heldEach(f.each) }]
         : [],
     );
     return fish.length ? [{ name: r.name, fish, count: fish.reduce((sum, f) => sum + f.n, 0), worth: n(r.worth) }] : [];

@@ -22,6 +22,7 @@ import { closePointsDb, openPointsDb } from './points/db';
 import { markOverlaySeen, readOverlay } from './community/fish-overlay';
 import { publicUserHistory, publicViewerSearch } from './points/store';
 import { ITEMS, rarityName, sellPrice } from './community/fishing';
+import { fighterOf } from './community/fish-duel';
 import { adjustPoints, backupPoints, caughtFish, duelBoard, heistBoard, heldCatches, getPointsUserDetail, pointsLeaderboard, pointsSummary, resetAllPoints, searchPointsUsers } from './points/store';
 import { RULES as CHEAT_RULES, suspects as cheatSuspects } from './community/cheat-signals';
 import { recentSpins } from './community/wheel-history';
@@ -3151,7 +3152,22 @@ function publicFishing(channel: string, cfg: ReturnType<typeof effectivePointsCo
         for (const one of sized) worth += sellPrice(item, g, one);
         worth += (n - sized.length) * sellPrice(item, g);
         count += n;
-        return [{ emoji: item.name, n, rarity: o?.rarity ?? 'Never' }];
+        // Each one, as `fish show 🦈` lists them: by length, biggest first, with its duel
+        // stats and price, so a viewer can see which to name. One length and price is one line.
+        const each: Array<{ cm: number | null; n: number; hp: number; attack: number; worth: number }> = [];
+        const add = (held: { cm: number; record: boolean } | undefined, k: number) => {
+          const cm = held ? held.cm : null;
+          const value = sellPrice(item, g, held);
+          const same = each.find(e => e.cm === cm && e.worth === value);
+          if (same) return void (same.n += k);
+          const f = fighterOf(g, item, held);
+          each.push({ cm, n: k, hp: f.hp, attack: f.attack, worth: value });
+        };
+        for (const one of sized) add(one, 1);
+        if (n > sized.length) add(undefined, n - sized.length);
+        each.sort((a, b) => (b.cm ?? -1) - (a.cm ?? -1) || b.worth - a.worth);
+        const f = fighterOf(g, item);
+        return [{ emoji: item.name, n, rarity: o?.rarity ?? 'Never', type: f.type, each }];
       });
       return { name: h.username, fish: held, count, worth };
     })

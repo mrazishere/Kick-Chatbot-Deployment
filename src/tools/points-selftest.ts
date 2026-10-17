@@ -31,7 +31,7 @@ import { advanceVideos, enqueueVideo, failVideo, hasVideoInLine, isoDurationSeco
 import { moveFish, takeItems, addItem, FishData, initialData, isTrophy, rarityOf, stealChance, stealCharges, stealRollChance, ITEMS, landsFish, loadFish, parseSellList, recordCatch, saveFish, sellPrice, weightedCatch } from '../community/fishing';
 import { openCommunityDb } from '../community/store';
 import { markOverlaySeen, readOverlay } from '../community/fish-overlay';
-import { biteFor, drawSnipeMs, resetBites, snipeOpen, SNIPE_PENDING, startBite, takeBite as takeBiteForTest } from '../community/big-bite';
+import { biteFor, drawSnipeMs, openSnipes, resetBites, snipeOpen, SNIPE_PENDING, startBite, takeBite as takeBiteForTest } from '../community/big-bite';
 import { fish as fishCommand, SUBCOMMANDS as FISH_SUBCOMMANDS, BOARDS as FISH_BOARD_MAP, BOARD_SHORT as FISH_BOARD_SHORT } from '../bot-commands/fish';
 import { publicCommands, FISH_BOARDS } from '../points/public-commands';
 import { duelBoard, publicLedgerText } from '../points/store';
@@ -43,7 +43,7 @@ import { recentSpins } from '../community/wheel-history';
 import { wheel as wheelCommand } from '../bot-commands/wheel';
 import { streamstatus } from '../bot-commands/streamstatus';
 import { LISTED_FILES, NOT_LISTED } from '../points/public-bot-commands';
-import { fight, fighterOf, fishNamed, fishValue, pickByValue, pickFighter, pickForKeeps, playMs, sameFish, randomFish, SWITCH_MS, switchesIn, teamFight, teamSizeOf, typeOf, wantsRandom } from '../community/fish-duel';
+import { fight, fighterOf, fishNamed, fishSpecs, fishValue, pickByValue, pickFighter, pickForKeeps, playMs, sameFish, randomFish, SWITCH_MS, switchesIn, teamFight, teamSizeOf, typeOf, wantsRandom } from '../community/fish-duel';
 
 const MIN = 60_000;
 
@@ -644,7 +644,7 @@ async function main(): Promise<void> {
     check('snipes open only once the SNIPE OPEN line is posted: not while it is being sent', pending && opened, { pending, opened, snipeAt: slow.snipeAt });
     const opens = said.filter(m => m.includes('SNIPE OPEN'));
     check('chat says the moment snipes open, and stays quiet for a bite settled first',
-      opens.length === 1 && opens[0].includes("@opened's big bite") && opens[0].includes('$don fish reel') && said.some(m => m.includes("I'll say so in chat")), said);
+      opens.length === 1 && opens[0].includes("@opened's big bite") && /\$don fish reel \d{2} takes it/.test(opens[0]) && said.some(m => m.includes("I'll post a snipe code in chat")), said);
   }
 
   // onlyWhileOffline: casting and trapping are shut while live, open offline; never on with onlyWhileLive
@@ -1074,6 +1074,36 @@ async function main(): Promise<void> {
       restock(51, [['🦈', 90], ['🐟', 20], ['🐟', 60]]);
       restock(52, [['🐢', 70]]);
 
+      // A certain fish, by its length.
+      check('lengths are read after the fish they follow, glued on or spaced', JSON.stringify(fishSpecs(['🦈72cm', '🐢', '20', 'cm', 'shark', '5CM', '🐟']))
+        === JSON.stringify([{ fish: '🦈', cm: 72 }, { fish: '🐢', cm: 20 }, { fish: '🦈', cm: 5 }, { fish: '🐟' }]), fishSpecs(['🦈72cm', '🐢', '20', 'cm', 'shark', '5CM', '🐟']));
+      const listed = await run('$don fish show 🐟', ash);
+      check('show 🐟 lists each one, biggest first, with its duel stats and price', listed.includes('You have 2 🐟 (') && listed.indexOf('60 cm') < listed.indexOf('20 cm')
+        && /60 cm ❤️\d+ ⚔️[\d.]+ 💰[\d,]+ \| 20 cm/.test(listed) && listed.includes('fish duel @user 🐟 60cm'), listed);
+      const showAll = [await run('$don fish show fish', ash), await run('$don fish show @ash shrimp', gary), await run('$don fish show @ash 🦈', gary)];
+      check('show fish is still every fish, and show @user 🐟 someone else\'s', showAll[0].includes('3 fish in your collection')
+        && showAll[1].includes('no 🦐') && showAll[2].includes('They have 1 🦈'), showAll);
+      check('a length you don\'t have is said so', (await run('$don fish duel @gary 🐟 33cm', ash)).includes("You don't have a 🐟 33 cm"));
+      const exactAsk = await run('$don fish duel @gary 🐟 20 cm', ash);
+      await run('$don fish accept', gary);
+      const exactShown = readOverlay(ddb).events.filter(e => e.kind === 'duel').pop()?.duel;
+      check('a duel with a fish named by length sends that very one, not the biggest', exactAsk.includes('their 🐟 20 cm') && exactShown?.a.fish === '🐟' && exactShown.a.cm === 20, { exactAsk, a: exactShown?.a });
+      restock(51, [['🦈', 90], ['🐟', 20], ['🐟', 60]]);
+      restock(52, [['🐢', 70], ['🦀', 30], ['🦀', 40]]);
+      await run('$don fish duel @gary', ash);
+      await run('$don fish accept 🦀30cm', gary);
+      const acceptShown = readOverlay(ddb).events.filter(e => e.kind === 'duel').pop()?.duel;
+      check('accepting with a fish named by length sends that one', acceptShown?.b.fish === '🦀' && acceptShown.b.cm === 30, acceptShown?.b);
+      restock(51, [['🦈', 90], ['🐟', 20], ['🐟', 60]]);
+      restock(52, [['🐢', 70], ['🦀', 30], ['🦀', 40]]);
+      const teamExact = await run('$don fish duel @gary 2v2 🐟 20cm 🦈', ash);
+      await run('$don fish accept 🦀 30cm', gary);
+      const teamExactShown = readOverlay(ddb).events.filter(e => e.kind === 'duel').pop()?.duel;
+      check('team fish can be named by length too, on both sides', teamExact.includes('2v2 fish battle with 🐟 20 cm, 🦈 90 cm')
+        && teamExactShown?.teams?.[1][0].fish === '🦀' && teamExactShown.teams[1][0].cm === 30 && teamExactShown.teams[1][1].fish === '🐢', { teamExact, b: teamExactShown?.teams?.[1] });
+      restock(51, [['🦈', 90], ['🐟', 20], ['🐟', 60]]);
+      restock(52, [['🐢', 70]]);
+
       cfgWith({ allowKeeps: false, maxWager: 100 });
       const noKeeps = await run('$don fish duel @gary keeps', ash);
       const capped = await run('$don fish duel @gary 150', ash);
@@ -1299,6 +1329,46 @@ async function main(): Promise<void> {
         && fishOf(51).catch.types['🦈'] === 0 && fishOf(52).catch.types['🦈'] === 3, { byName, after });
       shift += 30_000;
       check('one kind at a time, and a clear usage line', (await run('$don fish give @friend 🐟 🥫')).includes('One kind at a time') && (await run('$don fish give')).includes('Give what to whom'));
+      // A certain fish by its length: friend holds 🐟 20 cm and 70 cm (from the give above).
+      const missingLen = await run('$don fish give @giver 🐟 33cm', ['friend', 52]);
+      const byLength = await run('$don fish give @giver 🐟 70cm', ['friend', 52]);
+      check('a length gives that very fish, not the oldest', missingLen.includes("You don't have a 🐟 33 cm") && byLength.includes('You gave @giver 🐟 (70 cm)')
+        && JSON.stringify(fishOf(52).catch.sizes?.['🐟']) === JSON.stringify([{ cm: 20, record: false }]) && fishOf(51).catch.sizes!['🐟'].some(h => h.cm === 70), { missingLen, byLength, friend: fishOf(52).catch.sizes });
+      shift += 30_000;
+      check('a length only for fish, one at a time, and no more than are that long',
+        (await run('$don fish give @giver 🥫 5cm', ['friend', 52])).includes('Only fish have a length')
+        && (await run('$don fish give @giver 🐟 20 cm 70cm', ['friend', 52])).includes('One length at a time')
+        && (await run('$don fish give @giver 🐟20cm 2', ['friend', 52])).includes('only have 1'));
+      // fish remove: the streamer (or the bot owner) takes fish off a viewer, for nothing.
+      seed(56, 'cheater', true, d => {
+        for (const [n, cm] of [['🦈', 72], ['🦈', 40], ['🐟', 50], ['🐟', 50], ['🐟', 61]] as const) {
+          addItem(d, fish(n));
+          ((d.catch.sizes ??= {})[n] ??= []).push({ cm, record: false });
+        }
+        addItem(d, fish('🥫'));
+      });
+      const asStreamer = async (msg: string, who: [string, number] = [ch, 999], broadcaster = true) => {
+        shift += 6_000;
+        const out: string[] = [];
+        const t: KickTags = { username: who[0], 'display-name': who[0], badges: {}, isBroadcaster: broadcaster, isModUp: broadcaster, isVIPUp: false, rawBadges: [], senderId: who[1] };
+        await fishCommand({ say: async (_c, m) => { out.push(m); } }, msg, `#${ch}`, t, { channelName: ch } as ChannelConfig);
+        return out[0] ?? '';
+      };
+      const notAllowed = await asStreamer('$don fish remove @cheater 🦈', ['friend', 52], false);
+      const short = await asStreamer('$don fish remove @cheater 🦈 72cm 99cm');
+      check('only the streamer or the bot owner removes fish, and nothing goes if any isn\'t theirs', notAllowed === '' && short.includes('Nothing removed: cheater has no 🦈 99 cm')
+        && fishOf(56).catch.types['🦈'] === 2, { notAllowed, short });
+      const sold = fishOf(56).lifetime.sold;
+      const removed = await asStreamer('$don fish rm @cheater 🦈 72cm 🐟 50cm 2');
+      const c = fishOf(56).catch;
+      check('remove takes those very fish, and isn\'t a sale', removed.includes('Removed 🦈 72 cm, 🐟 50 cm x2 from @cheater') && removed.includes('2 fish and 1 junk left')
+        && JSON.stringify(c.sizes!['🦈']) === JSON.stringify([{ cm: 40, record: false }]) && JSON.stringify(c.sizes!['🐟']) === JSON.stringify([{ cm: 61, record: false }])
+        && fishOf(56).lifetime.sold === sold && balance(ch, 56) === 10, { removed, c });
+      const wiped = await asStreamer('$don fish remove @cheater all');
+      check('remove all takes every fish and leaves the junk', wiped.includes('Removed') && fishOf(56).catch.fish === 0 && fishOf(56).catch.junk === 1
+        && (await asStreamer('$don fish remove @cheater all junk')).includes('🥫') && fishOf(56).catch.junk === 0, wiped);
+      check('the Commands tab lists remove for the streamer', publicCommands(effectivePointsConfig({ enabled: true, games: { enabled: true } })).sections.find(sec => sec.title === 'Fishing')!.rows
+        .some(r => r.usage.includes('fish remove') && r.who === 'streamer'));
       const row = publicCommands(effectivePointsConfig({ enabled: true, games: { enabled: true, giveEnabled: true } })).sections.find(sec => sec.title === 'Fishing')!.rows.find(r => r.usage.includes('fish give'));
       check('the Commands tab lists fish give where it is on, and only there', row?.short === '$points f gv @user 🐟'
         && !publicCommands(effectivePointsConfig({ enabled: true, games: { enabled: true } })).sections.find(sec => sec.title === 'Fishing')!.rows.some(r => r.usage.includes('fish give')), row);
@@ -1594,15 +1664,24 @@ async function main(): Promise<void> {
         && Array.from({ length: 50 }, () => drawSnipeMs({ ...DEFAULT_BIG_BITE, windowSeconds: 10, snipeSeconds: 2 })).every(ms => ms >= 1_000 && ms <= 5_000),
         [Math.min(...draws), Math.max(...draws)]);
       check('a snipe before it opens uses up that sniper\'s try', (await run(`$don fish reel ${s1.code}`, ['early', 48], 5_000)).includes('Too early') && lastBite()?.username === 'biter');
-      // 18.5s in: open whichever way the window was drawn (it opens 15–18s in here).
-      const wrongSnipe = await run(`$don fish reel ${s1.code === '10' ? '11' : '10'}`, ['third', 47], 13_500);
-      check('a wrong snipe uses up that sniper\'s one try and leaves the bite alone', wrongSnipe.includes('Wrong code')
-        && (await run(`$don fish reel ${s1.code}`, ['third', 47], 500)) === '' && lastBite()?.username === 'biter' && lastBite()!.pull === 1, wrongSnipe);
-      check('an early sniper gets no second try once it opens', (await run(`$don fish reel ${s1.code}`, ['early', 48], 300)) === '' && lastBite()?.username === 'biter');
-      const sniped = await run(`$don fish reel ${s1.code}`, ['other', 44], 500);
+      // 18.5s in: due whichever way the window was drawn (15–18s in here), but snipes open
+      // only with the chat line, which the timer posts in real time: post it now.
+      shift += 13_500;
+      check('snipes don\'t open before the SNIPE OPEN line, even when due', !snipeOpen(s1bite, Date.now()) && s1bite.snipeCode === undefined);
+      const openSaid: string[] = [];
+      openSnipes({ channel: ch, db: bdb, bigBite: effectivePointsConfig({ games: { enabled: true } }).games.bigBite, command: 'don', sendMessage: async m => { openSaid.push(m); } }, s1bite);
+      await new Promise(r => setImmediate(r));
+      const snipeCode = s1bite.snipeCode!;
+      check('the SNIPE OPEN line gives snipers a 2-digit code of their own, not the overlay\'s', /^\d{2}$/.test(snipeCode) && snipeCode !== s1.code
+        && openSaid[0]?.includes(`$don fish reel ${snipeCode} takes it`) && !openSaid[0]?.includes(s1.code!) && snipeOpen(s1bite, Date.now()), { snipeCode, openSaid, code: s1.code });
+      const wrongSnipe = await run(`$don fish reel ${s1.code}`, ['third', 47], 0);
+      check('a sniper typing the overlay code gets it wrong, uses up their one try, and leaves the bite alone', wrongSnipe.includes('Wrong code') && wrongSnipe.includes('SNIPE OPEN line')
+        && (await run(`$don fish reel ${snipeCode}`, ['third', 47], 500)) === '' && lastBite()?.username === 'biter' && lastBite()!.pull === 1, wrongSnipe);
+      check('an early sniper gets no second try once it opens', (await run(`$don fish reel ${snipeCode}`, ['early', 48], 300)) === '' && lastBite()?.username === 'biter');
+      const sniped = await run(`$don fish reel ${snipeCode}`, ['other', 44], 500);
       const s2 = lastBite()!;
       check('the first right snipe takes the bite and carries on from the next pull', sniped.includes('@biter') && sniped.includes('@other sniped') && s2.username === 'other'
-        && s2.pull === 2 && s2.snipeAt === undefined && s2.code !== s1.code, { sniped, s2 });
+        && s2.pull === 2 && s2.snipeAt === undefined && s2.code !== s1.code && biteFor(ch, 'other')!.snipeCode === undefined, { sniped, s2 });
       check('the chatter it was for has lost it, and later pulls can\'t be sniped', (await run(`$don fish reel ${s2.code}`, ['biter', 41], 500)).includes('nothing big on your line')
         && lastBite()?.username === 'other' && lastBite()!.pull === 2);
       await run(`$don fish reel ${s2.code}`, ['other', 44], 2_500);
@@ -1819,6 +1898,37 @@ async function main(): Promise<void> {
       return !('errors' in v) && v.wheel.onVideoOverlay === undefined && readWheel(ch).onVideoOverlay === true;
     })());
     resetWheelBusy();
+  }
+
+  // Trap fish get a length, as a cast's do, shown in the haul
+  {
+    const ch = 'traplengthch';
+    writeConfig(root, ch, { enabled: true, currencyName: '$DON', games: { enabled: true, onlyWhileLive: false, trapMinutes: 60, catchOdds: 2 } });
+    makeService(ch, { broadcaster: 999, live: async () => ({ isLive: false, startedAt: null }) });
+    const pdb = openPointsDb(ch, { create: true })!;
+    const realNow = Date.now;
+    let shift = 0;
+    Date.now = () => realNow() + shift;
+    try {
+      const t: KickTags = { username: 'netter', 'display-name': 'netter', badges: {}, isBroadcaster: false, isModUp: false, isVIPUp: false, rawBadges: [], senderId: 32 };
+      const run = async (msg: string) => {
+        shift += 6_000;
+        const out: string[] = [];
+        await fishCommand({ say: async (_c, m) => { out.push(m); } }, msg, `#${ch}`, t, { channelName: ch } as ChannelConfig);
+        return out[0] ?? '';
+      };
+      const fish = () => loadFish(pdb, 32)!;
+      const fill = async () => { await run('$don fish trap'); shift += 61 * 60_000; return run('$don fish trap'); };
+      runWrite(pdb, () => ensureUserTx(pdb, 32, 'netter', 1));
+      const hauls: string[] = [];
+      for (let i = 0; i < 6; i++) hauls.push(await fill());
+      const held = fish().catch;
+      const fishKinds = Object.entries(held.types).filter(([n, k]) => k > 0 && ITEMS.find(x => x.name === n)?.type === 'fish');
+      check('every fish from a trap has a length, shown in the haul', fishKinds.length > 0 && fishKinds.every(([n, k]) => (held.sizes?.[n] ?? []).length === k)
+        && hauls.filter(h => h.includes('spot some fish')).every(h => / \(\d+ cm\)/.test(h)), { hauls, held });
+    } finally {
+      Date.now = realNow;
+    }
   }
 
   // Trap checks: a question before an offline haul, against macros
@@ -2147,6 +2257,40 @@ async function main(): Promise<void> {
       check('counts cap at what is held', left[0]?.startsWith('@seller Sold your 🐟, 🦀 for 50 $DON'), left);
       const none = await run('$don fish sell 🐟 🦐', on, ['seller', 12]);
       check('nothing held of any is refused', none[0] === '@seller You have no 🐟🦐 to sell!', none);
+      // A certain fish by its length: three 🦈, two of them 40 cm.
+      runWrite(pdb, () => {
+        const d = loadFish(pdb, 12)!;
+        for (let i = 0; i < 3; i++) addItem(d, ITEMS.find(i2 => i2.name === '🦈')!);
+        d.catch.sizes = { ...(d.catch.sizes ?? {}), '🦈': [{ cm: 40, record: false }, { cm: 90, record: false }, { cm: 40, record: false }] };
+        saveFish(pdb, 12, d, 1);
+      });
+      const before = balance(ch, 12);
+      const byLen = await run('$don fish sell 🦈 90cm', on, ['seller', 12]);
+      const after90 = loadFish(pdb, 12)!.catch;
+      check('selling by length sells that very fish at its price', byLen[0]?.startsWith('@seller Sold your 🦈 90 cm for ') && after90.types['🦈'] === 2
+        && JSON.stringify(after90.sizes!['🦈']) === JSON.stringify([{ cm: 40, record: false }, { cm: 40, record: false }]) && balance(ch, 12) > before, { byLen, after90 });
+      const twoLen = await run('$don fish sell 🦈40cm 3', on, ['seller', 12]);
+      const noLen = await run('$don fish sell 🦈 41 cm', on, ['seller', 12]);
+      const junkLen = await run('$don fish sell 🥫 5cm', on, ['seller', 12]);
+      check('no more than are that long, a length you don\'t have, and only fish', twoLen[0]?.includes('Nothing sold: you have only 2 🦈 40 cm') && noLen[0]?.includes('no 🦈 41 cm')
+        && junkLen[0]?.includes('Only fish have a length') && loadFish(pdb, 12)!.catch.types['🦈'] === 2, { twoLen, noLen, junkLen });
+      // Several at once: lengths of one kind, another kind by length, and a kind with none.
+      runWrite(pdb, () => {
+        const d = loadFish(pdb, 12)!;
+        for (const [n, cm] of [['🦕', 42], ['🦕', 44], ['🦕', 65], ['🐢', 30]] as const) {
+          addItem(d, ITEMS.find(i2 => i2.name === n)!);
+          (d.catch.sizes![n] ??= []).push({ cm, record: false });
+        }
+        addItem(d, ITEMS.find(i2 => i2.name === '🦐')!);
+        saveFish(pdb, 12, d, 1);
+      });
+      const partial = await run('$don fish sell 🦕 42cm 43cm', on, ['seller', 12]);
+      check('one length not held and nothing sells', partial[0]?.includes('Nothing sold: you have no 🦕 43 cm') && loadFish(pdb, 12)!.catch.types['🦕'] === 3, partial);
+      const multi = await run('$don fish sell 🦕 42cm 44 cm 🐢30cm 🦈 40cm 🦐', on, ['seller', 12]);
+      const left2 = loadFish(pdb, 12)!.catch;
+      check('several fish by length in one sale, and kinds with none oldest first', multi[0]?.startsWith('@seller Sold your 🦕 42 cm, 🦕 44 cm, 🐢 30 cm, 🦈 40 cm, 🦐 for ')
+        && JSON.stringify(left2.sizes!['🦕']) === JSON.stringify([{ cm: 65, record: false }]) && left2.types['🦕'] === 1 && (left2.types['🐢'] ?? 0) === 0
+        && left2.types['🦈'] === 1 && (left2.types['🦐'] ?? 0) === 0, { multi, left2 });
 
       // Fish and junk together
       runWrite(pdb, () => {

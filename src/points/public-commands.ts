@@ -144,12 +144,13 @@ export function publicCommands(cfg: PointsConfig, opts: { channel?: BotCommandCh
         ...(g.trapCheck.enabled ? [
           { usage: `${f} answer <x>`, short: `${s} ans <x>`, does: `Answer the question your full traps${g.trapCheck.castChancePercent > 0 ? ' or a cast' : ''} sometimes ask while the stream is offline: ${g.trapCheck.tries === 1 ? 'one try' : `${g.trapCheck.tries} tries`} within ${g.trapCheck.answerSeconds} seconds${g.trapCheck.finePercent > 0 ? `, or it costs ${g.trapCheck.finePercent}% of your ${cur} and the catch` : ', or you lose the catch'}` }
         ] : []),
-        { usage: `${f} sell 🐟 🦐 3`, short: `${s} s 🐟 🦐 3`, does: 'Sell the kinds you name, each with an optional count' },
+        { usage: `${f} sell 🐟 🦐 3`, short: `${s} s 🐟 🦐 3`, does: 'Sell the kinds you name, each with an optional count (oldest first)' },
+        { usage: `${f} sell 🦕 42cm 44cm 🦈 72cm`, short: `${s} s 🦈 72cm`, does: 'Sell certain fish by length, as many as you list (a count after a length sells more of it); nothing sells if one isn\'t yours' },
         { usage: `${f} sell all fish junk`, short: `${s} s a f j`, does: 'Sell every fish, every piece of junk, or both' },
         { usage: `${f} sell duplicate fish`, short: `${s} s d f`, does: 'Sell your duplicates, keeping the biggest of each' },
-        { usage: `${f} show [@user] [fish | junk]`, short: `${s} sh`, does: 'A collection, reel and purse' },
+        { usage: `${f} show [@user] [fish | junk | 🦈]`, short: `${s} sh 🦈`, does: 'A collection, reel and purse; name a fish to list each one you hold by length, with its duel stats (❤️ health, ⚔️ attack) and price' },
         ...(g.giveEnabled ? [
-          { usage: `${f} give @user 🐟 [count]`, short: `${s} gv @user 🐟`, does: `Give one kind of fish or junk to someone, by emoji or name (2 sharks), oldest first${g.giveCooldownSeconds > 0 ? `; ${g.giveCooldownSeconds}s between gives` : ''}` }
+          { usage: `${f} give @user 🐟 [count] [length]`, short: `${s} gv @user 🐟`, does: `Give one kind of fish or junk to someone, by emoji or name (2 sharks), oldest first, or a certain fish by its length (🦈 72cm)${g.giveCooldownSeconds > 0 ? `; ${g.giveCooldownSeconds}s between gives` : ''}` }
         ] : []),
         { usage: `${f} stats [@user | global]`, short: `${s} st`, does: 'Attempts, catches, traps, bait, sales and streaks' },
         { usage: `${f} top [board]`, short: `${s} tp`, does: `Top 10 on a board, fish by default: ${fishBoards('catch')}` },
@@ -167,15 +168,16 @@ export function publicCommands(cfg: PointsConfig, opts: { channel?: BotCommandCh
           { usage: `${f} steal @user`, short: `${s} sl @user`, does: 'Try to steal one of their fish' }
         ] : []),
         ...(g.duel.enabled ? [
-          { usage: `${f} duel @user [fish | random] [amount${g.duel.allowKeeps ? ' | keeps' : ''}]`, short: `${s} d @user`, does: `Challenge them to a fish duel with your strongest fish, the one you name (emoji or word, like shark) or a random one: for glory, for a ${cur} wager${g.duel.allowKeeps ? ", or for keeps (the winner takes the loser's fish)" : ''}` },
-          { usage: `${f} duel @user 3v3 [fish fish fish | random] [amount${g.duel.allowKeeps ? ' | keeps' : ''}]`, short: `${s} d @user 3v3`, does: `A team battle (2v2 or 3v3): each side's fish fight one after another, Pokémon style, the next coming in when one faints, and the last side standing wins. Your strongest fish unless you name them${g.duel.allowKeeps ? '; for keeps, the winner takes every fish on the losing team' : ''}` },
-          { usage: `${f} accept [fish | random]`, short: `${s} a`, does: 'Take up a duel, with your strongest fish, the one you name or a random one (for a team battle, name up to 3)' },
+          { usage: `${f} duel @user [fish | random] [amount${g.duel.allowKeeps ? ' | keeps' : ''}]`, short: `${s} d @user`, does: `Challenge them to a fish duel with your strongest fish, the one you name (emoji or word, like shark; add its length for that very one, like 🦈 72cm) or a random one: for glory, for a ${cur} wager${g.duel.allowKeeps ? ", or for keeps (the winner takes the loser's fish)" : ''}` },
+          { usage: `${f} duel @user 3v3 [fish fish fish | random] [amount${g.duel.allowKeeps ? ' | keeps' : ''}]`, short: `${s} d @user 3v3`, does: `A team battle (2v2 or 3v3): each side's fish fight one after another, Pokémon style, the next coming in when one faints, and the last side standing wins. Your strongest fish unless you name them (with a length for a certain one, like 🦈 72cm)${g.duel.allowKeeps ? '; for keeps, the winner takes every fish on the losing team' : ''}` },
+          { usage: `${f} accept [fish | random]`, short: `${s} a`, does: 'Take up a duel, with your strongest fish, the one you name (🦈 72cm for that very one) or a random one (for a team battle, name up to 3)' },
           { usage: `${f} deny`, short: `${s} dn`, does: 'Turn a duel down, or take back your own challenge' }
         ] : []),
         ...(g.bigBite.enabled ? [
           { usage: `${f} reel <code>`, short: `${s} r <code>`, does: 'Answer a big bite with the code shown on stream' },
           { usage: `${f} bigbite [@user | me]`, short: `${s} bb`, does: 'Start a big bite now, on a random chatter, the one named, or yourself', who: 'streamer' as const }
-        ] : [])
+        ] : []),
+        { usage: `${f} remove @user 🦈 72cm 🐟 3`, short: `${s} rm @user 🦈`, does: 'Take fish off a viewer for nothing: by kind, length and count, or all (all junk for junk too); nothing goes if any isn\'t theirs', who: 'streamer' as const }
       ]
     });
   }

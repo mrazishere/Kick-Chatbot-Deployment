@@ -309,39 +309,41 @@ function fishUnits(d: FishData | null | undefined, g: PointsGamesConfig): Picked
 }
 
 /**
- * A team of `n` fish, in the order they fight: the kinds named first (the biggest of each
- * not already in), then the strongest left; with `random`, any fish held, each an equal
+ * A team of `n` fish, in the order they fight: the kinds named first (the strongest of each
+ * not already in, or the very one for a kind named with its length), then the strongest left; with `random`, any fish held, each an equal
  * chance. For keeps (`values`), each place gets the fish closest in value to the one it
  * faces instead. null when fewer than `n` fish are held, or `missing` names a kind asked for
  * and not held.
  */
-export function pickTeam(d: FishData | null | undefined, g: PointsGamesConfig, n: number, opts: { names?: string[]; random?: boolean; values?: number[]; rng?: Rng } = {}): { team: Picked[] } | { missing: string } | null {
+export function pickTeam(d: FishData | null | undefined, g: PointsGamesConfig, n: number, opts: { names?: Array<string | FishSpec>; random?: boolean; values?: number[]; rng?: Rng } = {}): { team: Picked[] } | { missing: string } | null {
   const pool = fishUnits(d, g);
   if (pool.length < n) return null;
   const take = (i: number): Picked => pool.splice(i, 1)[0];
-  const strongestOf = (name?: string): number => {
+  const fits = (p: Picked, spec?: FishSpec): boolean => !spec || (p.item.name === spec.fish && (spec.cm === undefined || p.held?.cm === spec.cm));
+  const strongestOf = (spec?: FishSpec): number => {
     let best = -1;
     pool.forEach((p, i) => {
-      if (name !== undefined && p.item.name !== name) return;
+      if (!fits(p, spec)) return;
       if (best < 0 || might(p.fighter) > might(pool[best].fighter)) best = i;
     });
     return best;
   };
   const team: Picked[] = [];
-  for (const name of (opts.names ?? []).slice(0, n)) {
+  for (const named of (opts.names ?? []).slice(0, n)) {
+    const spec: FishSpec = typeof named === 'string' ? { fish: named } : named;
     let i = -1;
     if (opts.values) {
       const value = opts.values[team.length];
       let gap = Infinity;
       pool.forEach((p, j) => {
-        if (p.item.name !== name) return;
+        if (!fits(p, spec)) return;
         const x = Math.abs(Math.log(Math.max(1, fishValue(g, p)) / Math.max(1, value)));
         if (x < gap) { gap = x; i = j; }
       });
     } else {
-      i = strongestOf(name);
+      i = strongestOf(spec);
     }
-    if (i < 0) return { missing: name };
+    if (i < 0) return { missing: specText(spec) };
     team.push(take(i));
   }
   const rng = opts.rng ?? cryptoRng;
@@ -384,6 +386,51 @@ export function findTeam(d: FishData | null | undefined, g: PointsGamesConfig, w
   }
   return team;
 }
+
+/** A fish asked for by kind and, when given, by length: "🦈 72cm" is that very shark. */
+export interface FishSpec { fish: string; cm?: number }
+
+/**
+ * Words with every length written as one "72cm" word, on its own: "🦈72cm" and
+ * "🦈 72 cm" both become "🦈", "72cm". Anything else is left as it is.
+ */
+export function splitLengths(words: readonly string[]): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < words.length; i++) {
+    const word = words[i].replace(/\uFE0F/g, '');
+    const glued = /^(.+?)(\d{1,3})cm$/i.exec(word);
+    if (glued && fishNamed([glued[1]])) {
+      out.push(glued[1], `${glued[2]}cm`);
+    } else if (/^\d{1,3}$/.test(word) && /^cm$/i.test(words[i + 1] ?? '')) {
+      out.push(`${word}cm`);
+      i++;
+    } else {
+      out.push(/^\d{1,3}cm$/i.test(word) ? word.toLowerCase() : words[i]);
+    }
+  }
+  return out;
+}
+
+/** Whether a word (after splitLengths) is a length, "72cm". */
+export const isLength = (word: string): boolean => /^\d{1,3}cm$/i.test(word);
+
+/** Every fish named in `words`, in order, each with the length after it if one is given ("🦈 72cm 🐢"). */
+export function fishSpecs(words: readonly string[]): FishSpec[] {
+  const out: FishSpec[] = [];
+  for (const w of splitLengths(words)) {
+    if (isLength(w)) {
+      const last = out[out.length - 1];
+      if (last && last.cm === undefined) last.cm = parseInt(w, 10);
+      continue;
+    }
+    const fish = fishNamed([w]);
+    if (fish) out.push({ fish });
+  }
+  return out;
+}
+
+/** "🦈 72 cm", or "🦈" for any shark. */
+export const specText = (s: FishSpec): string => `${s.fish}${s.cm !== undefined ? ` ${s.cm} cm` : ''}`;
 
 /** Every fish named in `words`, in order, by emoji or by word (🦈 🦈 is two sharks). */
 export function fishesNamed(words: readonly string[]): string[] {
@@ -478,8 +525,13 @@ export interface Challenge {
   target: string;
   /** The fish the challenger named or, with none named, their strongest when they asked. */
   fish: string;
-  /** For keeps, the length of that very fish (absent: one with no length), picked to match one the target holds. */
+  /**
+   * For keeps, or when the challenger named it by length (`exact`), the length of that very
+   * fish (absent: one with no length). For keeps it's picked to match one the target holds.
+   */
   cm?: number;
+  /** The challenger named this fish by its length: it fights, not the biggest of its kind. */
+  exact?: boolean;
   /** A team battle: the challenger's fish in fighting order, each by kind and length (absent: one with no length). `fish` is the first. */
   team?: Array<{ fish: string; cm?: number }>;
   stake: DuelStake;

@@ -10,8 +10,10 @@
  * Mythic trophy by its land chance. A wrong code or too slow, and it gets away.
  *
  * Sniping: for about the last `snipeSeconds` of the first code (give or take up to
- * SNIPE_JITTER_MS, drawn per bite), anyone else chatting can answer it. The first right answer takes the bite off the chatter it was for and
- * carries on from the next pull as theirs. Each sniper gets one try per bite.
+ * SNIPE_JITTER_MS, drawn per bite), anyone else chatting can take it with the snipe code:
+ * two digits of its own, said only in the SNIPE OPEN chat line, so nobody can type it in
+ * advance off the overlay. The first right answer takes the bite off the chatter it was
+ * for and carries on from the next pull as theirs. Each sniper gets one try per bite.
  *
  * Chat gets two lines: the opening mention, so the chatter knows to look, and the
  * result; a snipe adds one between. The pulls play on the overlay only, to keep chat quiet.
@@ -45,6 +47,12 @@ export interface Bite {
    * moment Kick has posted that line (SNIPE_PENDING while it's being posted).
    */
   snipeAt?: number;
+  /**
+   * The code snipers answer with: two digits, never the overlay's, said only in the SNIPE
+   * OPEN line. Set when that line goes out. Snipers with a pre-typed overlay code always
+   * won, the same fast few every time (asked for 2026-10-18).
+   */
+  snipeCode?: string;
   /** Who has used their one snipe try on this bite, lowercase. */
   tried: Set<string>;
   timer: NodeJS.Timeout;
@@ -123,7 +131,7 @@ export function drawSnipeMs(b: FishBigBiteSetting): number {
 }
 
 /** Whether this bite's first code is open to everyone else right now. */
-export const snipeOpen = (bite: Bite, now: number): boolean => bite.pull === 1 && bite.snipeAt !== undefined && now >= bite.snipeAt && now <= bite.until + STREAM_GRACE_MS;
+export const snipeOpen = (bite: Bite, now: number): boolean => bite.pull === 1 && bite.snipeAt !== undefined && bite.snipeCode !== undefined && now >= bite.snipeAt && now <= bite.until + STREAM_GRACE_MS;
 
 /**
  * A sniper answered the first code right, before the chatter it was for: the bite is
@@ -136,6 +144,7 @@ export function snipeBite(ctx: BiteContext, bite: Bite, name: string, userId: nu
   bite.username = name;
   bite.userId = userId;
   delete bite.snipeAt;
+  delete bite.snipeCode;
   bites.set(key(ctx.channel, name), bite);
   console.log(`[FISH] ${name} sniped ${from}'s big bite in ${ctx.channel}`);
   pushOverlay(ctx.db, { username: from, kind: 'miss', text: `🪝 ${name} sniped your big bite!` });
@@ -178,6 +187,28 @@ export function pullCode(pull: number): string {
 /** Whether an answer matches a code: case and surrounding spaces don't matter. */
 export const codeMatches = (answer: string | undefined, code: string): boolean => (answer ?? '').trim().toUpperCase() === code;
 
+/**
+ * Time's up for the chatter alone: chat posts the SNIPE OPEN line with a snipe code of its
+ * own, and snipes open once Kick has it. Nothing if the bite was settled, sniped or moved
+ * on first. Exported for the self-test, which can't wait for the timer.
+ */
+export function openSnipes(ctx: BiteContext, bite: Bite): void {
+  const k = key(ctx.channel, bite.username);
+  const code = bite.code;
+  const still = () => bites.get(k) === bite && bite.code === code && bite.pull === 1 && bite.snipeAt !== undefined;
+  if (!still()) return;
+  bite.snipeAt = SNIPE_PENDING;
+  let snipeCode = pullCode(1);
+  while (snipeCode === code) snipeCode = pullCode(1);
+  bite.snipeCode = snipeCode;
+  const open = () => {
+    if (!still()) return;
+    bite.snipeAt = Date.now();
+    console.log(`[FISH] snipes open on ${bite.username}'s big bite in ${ctx.channel}`);
+  };
+  ctx.sendMessage(`🪝 SNIPE OPEN! @${bite.username}'s big bite is up for grabs: first to type $${ctx.command} fish reel ${snipeCode} takes it!`).then(open, open);
+}
+
 /** A fresh code for this pull: armed to get away if it isn't answered in time, and shown only on the overlay. */
 function arm(ctx: BiteContext, bite: Bite, windowMs: number, text: string, now: number): void {
   const k = key(ctx.channel, bite.username);
@@ -192,22 +223,13 @@ function arm(ctx: BiteContext, bite: Bite, windowMs: number, text: string, now: 
   const snipeMs = bite.pull === 1 ? drawSnipeMs(ctx.bigBite) : 0;
   if (snipeMs > 0) bite.snipeAt = bite.until - snipeMs;
   else delete bite.snipeAt;
+  delete bite.snipeCode;
   // Chat is the one signal that snipes are open: it has no stream delay, so everyone sees it
   // at once however far behind their stream runs. Snipes open once Kick has posted the line
   // (about a second after asking); an answer before that can't have come from seeing it.
   // Nothing if the bite was settled, sniped or moved on first.
   if (bite.snipeAt !== undefined) {
-    const still = () => bites.get(k) === bite && bite.code === code && bite.pull === 1 && bite.snipeAt !== undefined;
-    const t = setTimeout(() => {
-      if (!still()) return;
-      bite.snipeAt = SNIPE_PENDING;
-      const open = () => {
-        if (!still()) return;
-        bite.snipeAt = Date.now();
-        console.log(`[FISH] snipes open on ${bite.username}'s big bite in ${ctx.channel}`);
-      };
-      ctx.sendMessage(`🪝 SNIPE OPEN! @${bite.username}'s big bite is up for grabs: first to type $${ctx.command} fish reel and the code on stream takes it!`).then(open, open);
-    }, Math.max(0, bite.snipeAt - Date.now()));
+    const t = setTimeout(() => openSnipes(ctx, bite), Math.max(0, bite.snipeAt - Date.now()));
     t.unref?.();
   }
   bite.timer = setTimeout(() => {
@@ -239,7 +261,7 @@ export function startBite(ctx: BiteContext, name: string, userId: number): Bite 
     `🎣 Something BIG is tugging at your line! Reel it in with $${ctx.command} fish reel <code> within ${ctx.bigBite.windowSeconds}s!${pulls}`, now);
   // The one chat line: who, and where to look. The code and everything after are on stream.
   const snipeS = snipeWindowMs(ctx.bigBite) / 1000;
-  const snipers = snipeS > 0 ? ` For about the last ${snipeS}s anyone can snipe it: I'll say so in chat, and the first right code then takes it!` : '';
+  const snipers = snipeS > 0 ? ` For about the last ${snipeS}s anyone can snipe it: I'll post a snipe code in chat, and the first to type it takes it!` : '';
   void ctx.sendMessage(`@${name} 🎣 Something BIG is on your line! A code is showing on stream now: type $${ctx.command} fish reel and that code within ${ctx.bigBite.windowSeconds}s to reel it in!${snipers}`).catch(() => {});
   return bite;
 }

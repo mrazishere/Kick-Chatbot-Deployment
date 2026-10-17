@@ -56,14 +56,14 @@ import { gameInvocation } from '../community/stakes';
 import { addReminder, cancelSelfRemindersStartingWith, openCommunityDb } from '../community/store';
 import { bestEmote, broadcasterIdFor, emoteImages } from '../community/emotes';
 import { OverlayKind, overlayShowing, pushOverlay } from '../community/fish-overlay';
-import { addChallenge, challengeBy, challengeFor, closeInValue, describe, describeTeam, dropChallenge, fight, findTeam, fishesNamed, fishNamed, fishValue, keepsRange, overlayDuel, overlayTeamDuel, pickByValue, pickFighter, pickForKeeps, pickTeam, sameFish, playMs, randomFish, switchesIn, teamFight, teamSizeOf, teamValue, wantsRandom, type Challenge, type DuelStake, type OverlayDuel } from '../community/fish-duel';
+import { addChallenge, challengeBy, challengeFor, closeInValue, describe, describeTeam, dropChallenge, fight, findTeam, fishSpecs, fishNamed, heldFish, TYPE_EMOJI, isLength, specText, splitLengths, fishValue, keepsRange, overlayDuel, overlayTeamDuel, pickByValue, pickFighter, pickForKeeps, pickTeam, sameFish, playMs, randomFish, switchesIn, teamFight, teamSizeOf, teamValue, wantsRandom, type Challenge, type DuelStake, type OverlayDuel, type Picked } from '../community/fish-duel';
 import { parseBet } from './points';
 import { answerMatches, makeTrapCheck, type TrapCheck } from '../community/trap-check';
 import { wheelBusy } from '../community/wheel-state';
 import { recordSignal } from '../community/cheat-signals';
 import { BITE_TOO_FAST_MS, STREAM_GRACE_MS, biteFor, canBite, channelBite, channelHasBite, codeMatches, getAway, nextPull, pickChatter, snipeBite, snipeOpen, startBite, takeBite, type BiteContext } from '../community/big-bite';
 import {
-  addItem, giveItems, baitPrice, baitRoll, currentReel, heldFishValue, landsFish, moveFish, pickHeld, stealableFish, stealChance, stealCharges, stealRollChance, worstStealCharges, parseSellList, CatchItem, CatchType, FAILURE_EMOTES, FishData, findBait, hasFishedBefore, initialData, rarityOf, recordCatch,
+  addItem, giveItems, baitPrice, baitRoll, currentReel, heldFishValue, landsFish, moveFish, pickHeld, stealableFish, stealChance, stealCharges, stealRollChance, worstStealCharges, parseSellList, takeSized, CatchItem, CatchType, FAILURE_EMOTES, FishData, findBait, hasFishedBefore, initialData, rarityOf, recordCatch,
   ITEMS, JUNK_MESSAGES, loadFish, MISS_DELAY_MS, pick, randomInt, rollCatch, saveFish, sellPrice, STORY_STYLES, SUCCESS_EMOTES,
   takeItems, TYPE_DESCRIPTIONS, weightedCatch
 } from '../community/fishing';
@@ -77,13 +77,15 @@ const pointer = makeCooldown(60_000);
 /** The timer that ends each waiting trap check when its time runs out, by channel and user id. */
 const checkTimers = new Map<string, NodeJS.Timeout>();
 
-export const SUBCOMMANDS: Record<string, 'buy' | 'sell' | 'show' | 'stats' | 'top' | 'trap' | 'steal' | 'give' | 'duel' | 'accept' | 'deny' | 'reel' | 'bigbite' | 'answer'> = {
+export const SUBCOMMANDS: Record<string, 'buy' | 'sell' | 'show' | 'stats' | 'top' | 'trap' | 'steal' | 'give' | 'duel' | 'accept' | 'deny' | 'reel' | 'bigbite' | 'answer' | 'remove'> = {
   buy: 'buy', b: 'buy', sell: 'sell', s: 'sell',
   show: 'show', sh: 'show', count: 'show', display: 'show', collection: 'show',
   stats: 'stats', st: 'stats', top: 'top', tp: 'top', leaderboard: 'top',
   trap: 'trap', t: 'trap', net: 'trap', trawl: 'trap',
   steal: 'steal', sl: 'steal', rob: 'steal',
   give: 'give', gv: 'give', gift: 'give',
+  // The streamer or the bot owner: take fish off a viewer.
+  remove: 'remove', rm: 'remove', confiscate: 'remove',
   duel: 'duel', d: 'duel', battle: 'duel', fight: 'duel', accept: 'accept', a: 'accept', deny: 'deny', dn: 'deny', decline: 'deny',
   reel: 'reel', r: 'reel',
   // A trap check's answer (community/trap-check.ts).
@@ -93,6 +95,61 @@ export const SUBCOMMANDS: Record<string, 'buy' | 'sell' | 'show' | 'stats' | 'to
   bigbite: 'bigbite', bb: 'bigbite'
 };
 
+
+/**
+ * Fish asked for by kind, length and count, as sell and remove read them: "🦕 42cm 44cm 🦈
+ * 72cm 🐟 3" is a 🦕 of each length, that 🦈, and three 🐟 (oldest first). A count after a
+ * length is more of that length ("🦕 42cm 2").
+ */
+interface FishPick { item: CatchItem; n: number; cm?: number; counted: boolean }
+
+function parsePicks(parts: string[]): { picks: FishPick[] } | { error: 'order' | 'length' | 'amount' | 'unknown' } {
+  const picks: FishPick[] = [];
+  for (const w of splitLengths(parts)) {
+    const last = picks[picks.length - 1];
+    if (isLength(w)) {
+      if (!last) return { error: 'order' };
+      if (last.item.type !== 'fish') return { error: 'length' };
+      const cm = parseInt(w, 10);
+      // The kind's first length is that fish; each one after is another of the kind.
+      if (last.cm === undefined && !last.counted && last.n === 1) last.cm = cm;
+      else picks.push({ item: last.item, n: 1, cm, counted: false });
+      continue;
+    }
+    const count = /^x?(\d+)x?$/i.exec(w);
+    if (count) {
+      if (!last || last.counted || Number(count[1]) < 1) return { error: 'amount' };
+      last.n = Number(count[1]);
+      last.counted = true;
+      continue;
+    }
+    const one = parseSellList([w]);
+    if ('error' in one) return { error: one.error };
+    for (const x of one.items) picks.push({ item: x.item, n: x.n, counted: /\d/.test(w) });
+  }
+  return { picks };
+}
+
+/** The fish asked for by length, one entry per kind and length with how many. */
+function lengthsWanted(picks: FishPick[]): Map<string, { item: CatchItem; cm: number; n: number }> {
+  const want = new Map<string, { item: CatchItem; cm: number; n: number }>();
+  for (const e of picks) {
+    if (e.cm === undefined) continue;
+    const k = `${e.item.name}|${e.cm}`;
+    const w = want.get(k);
+    if (w) w.n += e.n;
+    else want.set(k, { item: e.item, cm: e.cm, n: e.n });
+  }
+  return want;
+}
+
+/** What's short of the lengths wanted: "no 🦕 43 cm", "only 1 🦈 40 cm". */
+function shortOf(d: FishData, want: ReturnType<typeof lengthsWanted>): string[] {
+  return [...want.values()].flatMap(w => {
+    const k = (d.catch.sizes?.[w.item.name] ?? []).filter(h => h.cm === w.cm).length;
+    return k < w.n ? [k ? `only ${k} ${w.item.name} ${w.cm} cm` : `no ${w.item.name} ${w.cm} cm`] : [];
+  });
+}
 
 const STORY_MODEL = 'claude-haiku-4-5-20251001';
 /** supibot asks for 150 characters; allow some overrun before trimming. */
@@ -337,8 +394,9 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
    * `fish reel <code>`: one answer per pull, from the bite's chatter, after the stream
    * could show the code. A right answer before the last pull brings the next code; on
    * the last, the trophy is rolled and lands by its land chance or snaps the line.
-   * Someone else's bite can be sniped while its first code is open to everyone: one
-   * try each, and the first right answer takes the bite and reels on as its chatter.
+   * Someone else's bite can be sniped while its first code is open to everyone, with the
+   * snipe code from chat (not the overlay's): one try each, and the first right answer
+   * takes the bite and reels on as its chatter.
    */
   function reelIn(codeRaw: string | undefined, uid: number): void {
     const at = Date.now();
@@ -347,7 +405,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       const other = channelBite(chan);
       // Too early for someone else's first code: that was their one try (spamming the
       // code from the start used to cost nothing, so the ±3s on the window didn't help).
-      if (other && other.pull === 1 && other.snipeAt !== undefined && at < other.snipeAt && !other.tried.has(meLc)
+      if (other && other.pull === 1 && other.snipeAt !== undefined && (at < other.snipeAt || !other.snipeCode) && !other.tried.has(meLc)
         && canBite({ channel: chan, excluded: (id, name) => offLimits(id, name) }, uid, me)) {
         other.tried.add(meLc);
         return void say(`Too early! You spooked it: no more snipes at ${other.username}'s big bite.`);
@@ -357,7 +415,8 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       }
       if (other.tried.has(meLc)) return ignore('snipe already tried');
       other.tried.add(meLc);
-      if (!codeMatches(codeRaw, other.code)) return void say(`Wrong code! You missed your one shot at sniping ${other.username}'s big bite.`);
+      // Snipers answer with the code from the SNIPE OPEN line, not the overlay's.
+      if (!codeMatches(codeRaw, other.snipeCode!)) return void say(`Wrong code! You missed your one shot at sniping ${other.username}'s big bite.${codeMatches(codeRaw, other.code) ? ' Snipes take the code from the SNIPE OPEN line in chat.' : ''}`);
       snipeBite(biteCtx(), other, me, uid);
       bite = other;
     } else {
@@ -639,8 +698,12 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
             fishAmount++;
             i += skip;
             addItem(d, r.item);
-            recordCatch(db!, uid, r.item.name, 'trap', null, now);
-            results.push(r.item.name);
+            // Every fish gets a length, as a cast's does, so each can be told apart (picked by
+            // length to sell, give or duel). A trap's never sets a size record.
+            const cm = r.item.size ? randomInt(1, 100) : null;
+            if (cm !== null) (((d.catch.sizes ??= {})[r.item.name]) ??= []).push({ cm, record: false });
+            recordCatch(db!, uid, r.item.name, 'trap', cm, now);
+            results.push(cm !== null ? `${r.item.name} (${cm} cm)` : r.item.name);
           } else if (r.type === 'junk') {
             addItem(d, r.item);
             results.push(r.item.name);
@@ -653,7 +716,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
         if (fishAmount > d.lifetime.trap.bestFishCatch) d.lifetime.trap.bestFishCatch = fishAmount;
         if (!results.length) return 'You drag the traps out of the water... and find that there is nothing at all...!';
         if (fishAmount === 0) return `You drag the traps out of the water... and find a bunch of junk. ${results.join('')}`;
-        return `You drag the traps out of the water... and you spot some fish! ${results.join('')}`;
+        return `You drag the traps out of the water... and you spot some fish! ${results.join(' ')}`;
       };
 
       let reply: string;
@@ -827,6 +890,38 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
         return `You sold ${soldByType.join(' and ')} for a grand total of ${gained} ${cur} - now you have ${balance} ${cur}`;
       }
 
+      // Lengths sell those very fish: "🦕 42cm 44cm 🦈 72cm 🐟" sells a 🦕 of each length, that
+      // 🦈, and the oldest 🐟. A count after a length is more of that length ("🦕 42cm 2").
+      const words = splitLengths(parts);
+      if (words.some(isLength)) {
+        const parsed = parsePicks(words);
+        if ('error' in parsed) return pickError(parsed.error, 'sell');
+        const entries = parsed.picks;
+        const want = lengthsWanted(entries);
+        const short = shortOf(d, want);
+        if (short.length) return `Nothing sold: you have ${short.join(', ')}. ${cmd} fish show ${[...want.values()][0].item.name} lists yours.`;
+        let gained = 0;
+        const soldParts: string[] = [];
+        for (const w of want.values()) {
+          gained += takeSized(d, w.item, w.cm, w.n, g, value)!;
+          soldParts.push(`${w.item.name} ${w.cm} cm${w.n > 1 ? ` x${w.n}` : ''}`);
+        }
+        // Then the kinds named without a length, oldest first, as many as are left.
+        const missing: string[] = [];
+        for (const e of entries) {
+          if (e.cm !== undefined) continue;
+          const n = Math.min(d.catch.types[e.item.name] ?? 0, e.n);
+          if (n <= 0) { missing.push(e.item.name); continue; }
+          gained += takeItems(d, e.item, n, g, false, value);
+          soldParts.push(`${e.item.name}${n > 1 ? ` x${n}` : ''}`);
+        }
+        d.lifetime.coins += gained;
+        const balance = pay(gained);
+        saveFish(db!, uid, d, now);
+        const skipped = missing.length ? ` (you have no ${missing.join('')})` : '';
+        return `Sold your ${soldParts.join(', ')} for ${groupDigits(gained)} ${cur} - now you have ${groupDigits(balance)} ${cur}${skipped}`;
+      }
+
       // One or more items, each with an optional count: "🐟 3 🦐" or "🐟🦐🦀".
       const list = parseSellList(parts);
       if ('error' in list) {
@@ -966,13 +1061,18 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
    */
   function give(parts: string[], uid: number): void {
     if (!g.giveEnabled) return void say('Fish gifts are switched off here.');
-    const usage = `Give what to whom? ${cmd} fish give @user shark (an emoji or a name, and a number for more than one)`;
+    const usage = `Give what to whom? ${cmd} fish give @user shark (an emoji or a name, a number for more than one, a length like 72cm for a certain one)`;
     // The viewer anywhere: "@faye 2 sharks" or "🦈 2 @faye"; without an @, the first word.
     const at = parts.findIndex(p => p.startsWith('@'));
     const who = at >= 0 ? at : 0;
     const name = parseUsername(parts[who]);
     if (!name) return void say(usage);
-    const list = parseSellList(parts.filter((_, i) => i !== who));
+    // A length gives that very fish ("🦈 72cm"), not the oldest of its kind.
+    const words = splitLengths(parts.filter((_, i) => i !== who));
+    const lengths = words.filter(isLength);
+    if (lengths.length > 1) return void say('One length at a time, like 🦈 72cm.');
+    const cm = lengths.length ? parseInt(lengths[0], 10) : undefined;
+    const list = parseSellList(words.filter(w => !isLength(w)));
     if ('error' in list) {
       return void say(list.error === 'unknown'
         ? `That's not an item I know! Use its emoji or a name like fish, shark, dino or boot.`
@@ -981,6 +1081,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     if (list.items.length === 0) return void say(usage);
     if (list.items.length > 1) return void say('One kind at a time, like 🐟 3.');
     const { item, n } = list.items[0];
+    if (cm !== undefined && item.type !== 'fish') return void say('Only fish have a length.');
     const nameLc = name.toLowerCase();
     if (isBotSender(name) || SYSTEM_BOTS.has(nameLc)) return void say("Bots don't keep fish. Find a human!");
     const to = findUserByName(db!, nameLc);
@@ -995,14 +1096,27 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       const have = d?.catch.types[item.name] ?? 0;
       if (!d || have === 0) return `You don't have any ${item.name} to give!`;
       if (have < n) return `You only have ${have} ${item.name}.`;
+      const ofLength = cm === undefined ? 0 : (d.catch.sizes?.[item.name] ?? []).filter(h => h.cm === cm).length;
+      if (cm !== undefined && ofLength === 0) return `You don't have a ${item.name} ${cm} cm. ${cmd} fish show ${item.name} lists yours.`;
+      if (cm !== undefined && ofLength < n) return `You only have ${ofLength} ${item.name} ${cm} cm.`;
       // Anyone the bot knows can take a gift, fished before or not: their collection starts here.
       const r = loadFish(db!, to.user_id) ?? initialData();
-      const moved = giveItems(d, r, item, n);
+      let moved: number;
+      if (cm === undefined) moved = giveItems(d, r, item, n);
+      else {
+        for (let i = 0; i < n; i++) {
+          const sized = d.catch.sizes![item.name];
+          const index = sized.findIndex(h => h.cm === cm);
+          moveFish(d, r, item, { index, held: sized[index] });
+        }
+        moved = n;
+      }
       saveFish(db!, uid, d, now);
       saveFish(db!, to.user_id, r, now);
       lastGive.set(`${chan}|${meLc}`, now);
-      console.log(`[FISH] ${me} gave ${moved} ${item.name} to ${to.username} in ${chan}`);
-      return `🎁 You gave @${to.username} ${moved > 1 ? `${moved} ` : ''}${item.name}! You have ${have - moved} left.`;
+      const size = cm !== undefined ? ` (${cm} cm)` : '';
+      console.log(`[FISH] ${me} gave ${moved} ${item.name}${size} to ${to.username} in ${chan}`);
+      return `🎁 You gave @${to.username} ${moved > 1 ? `${moved} ` : ''}${item.name}${size}! You have ${have - moved} left.`;
     });
     if (text) say(text);
   }
@@ -1137,6 +1251,76 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
         : 'For glory only.';
 
   /** Challenge someone: `duel @user [fish | random] [amount | keeps]`. */
+  /** The reply for words parsePicks couldn't read. */
+  const pickError = (error: 'order' | 'length' | 'amount' | 'unknown', verb: 'sell' | 'remove @user'): string =>
+    error === 'order' ? `Name the fish before its length, like ${cmd} fish ${verb} 🦈 72cm`
+      : error === 'length' ? 'Only fish have a length.'
+        : error === 'unknown' ? `You provided an unknown item type! Use one of: ${ITEMS.map(i => i.name).join('')}`
+          : `You provided an invalid amount of items to ${verb.split(' ')[0]}! Put a whole number after a single fish or length, like 🦈 72cm 2.`;
+
+  // ── remove ──
+  /**
+   * The streamer or the bot owner takes fish off a viewer, for nothing: a cheater's haul, a
+   * test's leftovers. The same words as sell ("🦈 72cm 🐟 3"), or "all" for every fish ("all
+   * junk" for junk too). Nothing goes if any of it isn't held. Not a sale: no stats change.
+   */
+  function remove(parts: string[]): void {
+    const usage = `Usage: ${cmd} fish remove @user 🦈 72cm 🐟 3 (fish, lengths, counts) or ${cmd} fish remove @user all`;
+    const at = parts.findIndex(p => p.startsWith('@'));
+    const name = parseUsername(parts[at >= 0 ? at : 0]);
+    const words = parts.filter((_, i) => i !== (at >= 0 ? at : 0));
+    if (!name || !words.length) return void say(usage);
+    const target = findUserByName(db!, name.toLowerCase());
+    if (!target) return void say('No such user exists!');
+    const all = words.some(w => /^all$/i.test(w));
+    const parsed = all ? null : parsePicks(words);
+    if (parsed && 'error' in parsed) return void say(pickError(parsed.error, 'remove @user'));
+    const text = once(now => {
+      const d = loadFish(db!, target.user_id);
+      if (!d || d.catch.fish + d.catch.junk === 0) return `${target.username} has no fish or junk.`;
+      const before = { sold: d.lifetime.sold, scrapped: d.lifetime.scrapped };
+      const gone: string[] = [];
+      if (all) {
+        const junkToo = words.some(w => /^junk$/i.test(w));
+        for (const item of ITEMS) {
+          if (item.type === 'junk' && !junkToo) continue;
+          const n = d.catch.types[item.name] ?? 0;
+          if (n <= 0) continue;
+          takeItems(d, item, n, g);
+          gone.push(`${item.name}${n > 1 ? ` x${n}` : ''}`);
+        }
+      } else {
+        const picks = parsed!.picks;
+        const want = lengthsWanted(picks);
+        const short = shortOf(d, want);
+        const kinds = picks.filter(p => p.cm === undefined);
+        const shortKinds = kinds.filter(p => (d.catch.types[p.item.name] ?? 0) < p.n).map(p => `${p.n > 1 ? `only ${d.catch.types[p.item.name] ?? 0} ` : 'no '}${p.item.name}`);
+        if (short.length || shortKinds.length) return `Nothing removed: ${target.username} has ${[...short, ...shortKinds].join(', ')}.`;
+        for (const w of want.values()) {
+          takeSized(d, w.item, w.cm, w.n, g);
+          gone.push(`${w.item.name} ${w.cm} cm${w.n > 1 ? ` x${w.n}` : ''}`);
+        }
+        for (const p of kinds) {
+          takeItems(d, p.item, p.n, g);
+          gone.push(`${p.item.name}${p.n > 1 ? ` x${p.n}` : ''}`);
+        }
+      }
+      if (!gone.length) return `${target.username} has no fish to remove.`;
+      // Taken, not sold: their selling stats stay as they were.
+      d.lifetime.sold = before.sold;
+      d.lifetime.scrapped = before.scrapped;
+      saveFish(db!, target.user_id, d, now);
+      console.log(`[FISH] ${me} removed ${gone.join(' ')} from ${target.username} in ${chan}`);
+      return `🗑️ Removed ${gone.join(', ')} from @${target.username}. They have ${d.catch.fish} fish and ${d.catch.junk} junk left.`;
+    });
+    if (text) say(text);
+  }
+
+  /** A fish asked for and not held: "🦈" (more than are held) or "🦈 72 cm" (that one). */
+  const missingText = (missing: string): string => / cm$/.test(missing)
+    ? `You don't have a ${missing} to send (or not that many). ${cmd} fish show ${missing.split(' ')[0]} lists yours.`
+    : `You don't have that many ${missing} to send.`;
+
   async function duel(words: string[], uid: number): Promise<void> {
     const du = g.duel;
     if (!(await duelsOpen())) return;
@@ -1159,12 +1343,12 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     const wait = (lastChallenge.get(cdKey) ?? 0) + du.cooldownSeconds * 1000 - now;
     if (!tester && wait > 0) return void say(`You can challenge someone again in ${span(wait)}.`);
 
-    const withSize = words.filter(w => w !== nameWord);
+    const withSize = splitLengths(words.filter(w => w !== nameWord));
     // 2v2 or 3v3: a team battle, each side's fish one after another.
     const sizeWord = withSize.find(w => teamSizeOf(w) !== null);
     const size = sizeWord ? teamSizeOf(sizeWord)! : 1;
     const rest = withSize.filter(w => w !== sizeWord);
-    const others = rest.filter(w => fishNamed([w]) === undefined && !wantsRandom([w]));
+    const others = rest.filter(w => fishNamed([w]) === undefined && !wantsRandom([w]) && !isLength(w));
     if (others.length > 1) return void say(usage);
     const word = others[0]?.toLowerCase();
     const keeps = word === 'keeps' || word === 'keep' || word === 'k';
@@ -1183,9 +1367,9 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     const mineD = loadFish(db!, uid);
     if (size > 1) {
       const theirsD = loadFish(db!, rival.user_id);
-      const mine = pickTeam(mineD, g, size, { names: fishesNamed(rest), random: wantsRandom(rest) });
+      const mine = pickTeam(mineD, g, size, { names: fishSpecs(rest), random: wantsRandom(rest) });
       if (!mine) return void say(`You need ${size} fish for a ${size}v${size} battle.`);
-      if ('missing' in mine) return void say(`You don't have that many ${mine.missing} to send.`);
+      if ('missing' in mine) return void say(missingText(mine.missing));
       const theirs = pickTeam(theirsD, g, size, keeps ? { values: mine.team.map(p => fishValue(g, p)) } : {});
       if (!theirs || 'missing' in theirs) return void say(`${rival.username} doesn't have ${size} fish to fight with.`);
       const worth = teamValue(g, mine.team);
@@ -1211,14 +1395,23 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     }
     const theirsD = loadFish(db!, rival.user_id);
     // `random` sends any fish held; the pick is made now and named in the challenge, like a fish asked for.
-    const fishName = wantsRandom(rest) ? randomFish(mineD) : fishNamed(rest);
-    const strongest = pickFighter(mineD, g, fishName);
+    // A fish named with its length ("🦈 72cm") is that very one.
+    const spec = wantsRandom(rest) ? undefined : fishSpecs(rest)[0];
+    const fishName = wantsRandom(rest) ? randomFish(mineD) : spec?.fish;
+    const exact = spec?.cm !== undefined ? sameFish(mineD, g, spec.fish, spec.cm) : null;
+    if (spec?.cm !== undefined && !exact) return void say(`You don't have a ${specText(spec)}. ${cmd} fish show ${spec.fish} lists yours.`);
+    const strongest = exact ?? pickFighter(mineD, g, fishName);
     if (!strongest) return void say(fishName ? `You don't have a ${fishName} to send.` : 'You need a fish to duel with. Go catch one!');
     if (!pickFighter(theirsD, g)) return void say(`${rival.username} has no fish to fight with.`);
     // For keeps, the fish sent is one they hold a fish close in value to: the strongest such, of the kind named if one was.
-    const fighter = keeps ? pickForKeeps(mineD, theirsD, g, fishName) : strongest;
+    const keepsFish = (): Picked | null => {
+      if (!exact) return pickForKeeps(mineD, theirsD, g, fishName);
+      const v = fishValue(g, exact);
+      return heldFish(theirsD, g).some(p => closeInValue(v, fishValue(g, p))) ? exact : null;
+    };
+    const fighter = keeps ? keepsFish() : strongest;
     if (!fighter) {
-      return void say(`For keeps, both fish must be close in value, and none of your ${fishName ?? 'fish'} is close to any fish ${rival.username} has.`);
+      return void say(`For keeps, both fish must be close in value, and ${exact ? `your ${specText(spec!)} isn't` : `none of your ${fishName ?? 'fish'} is`} close to any fish ${rival.username} has.`);
     }
 
     const stake = stakeOf();
@@ -1226,7 +1419,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
 
     addChallenge(chan, {
       challengerId: uid, challenger: me, targetId: rival.user_id, target: rival.username,
-      fish: fighter.item.name, ...(keeps && fighter.held ? { cm: fighter.held.cm } : {}), stake, expiresAt: now + du.expirySeconds * 1000
+      fish: fighter.item.name, ...((keeps || exact) && fighter.held ? { cm: fighter.held.cm } : {}), ...(exact ? { exact: true } : {}), stake, expiresAt: now + du.expirySeconds * 1000
     }, now);
     lastChallenge.set(cdKey, now);
     console.log(`[FISH] ${me} challenged ${rival.username} to a duel in ${chan} with ${fighter.item.name} (${stake.kind}${stake.kind === 'wager' ? ` ${stake.amount}` : ''})`);
@@ -1244,21 +1437,26 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     const c = challengeFor(chan, uid);
     if (!c) return void say('Nobody has challenged you to a fish duel.');
     const random = wantsRandom(words);
-    const fishName = random ? undefined : fishNamed(words);
+    const spec = random ? undefined : fishSpecs(words)[0];
+    const fishName = spec?.fish;
     type Fought = { off: string } | { retry: string } | { text: string; duel: OverlayDuel; winner: string; turns: number; switches?: number };
     const fought = once((now): Fought => {
       if (c.team) return teamBattle(c, words, uid, now);
       ensureUserTx(db!, uid, me, now);
       const theirs = loadFish(db!, c.challengerId);
       const keeps = c.stake.kind === 'keeps';
-      // For keeps, the very fish named in the challenge; otherwise the biggest of its kind.
-      const a = keeps ? sameFish(theirs, g, c.fish, c.cm) : pickFighter(theirs, g, c.fish);
+      // For keeps, the very fish named in the challenge; one named by length, that one while
+      // they still have it; otherwise the biggest of its kind.
+      const a = keeps ? sameFish(theirs, g, c.fish, c.cm)
+        : (c.exact ? sameFish(theirs, g, c.fish, c.cm) : null) ?? pickFighter(theirs, g, c.fish);
       if (!theirs || !a) return { off: `${c.challenger} no longer has their ${c.fish}, so the duel is off.` };
       const own = loadFish(db!, uid);
       const kind = random ? randomFish(own) : fishName;
       // For keeps, the fish closest in value to theirs, of the kind named if one was, whatever its length.
-      const b = keeps ? pickByValue(own, g, fishValue(g, a), kind) : pickFighter(own, g, kind);
-      if (!own || !b) return { retry: fishName ? `You don't have a ${fishName} to send.` : 'You have no fish to fight with.' };
+      // A fish named with its length is that very one.
+      const b = spec?.cm !== undefined ? sameFish(own, g, spec.fish, spec.cm)
+        : keeps ? pickByValue(own, g, fishValue(g, a), kind) : pickFighter(own, g, kind);
+      if (!own || !b) return { retry: spec ? `You don't have a ${specText(spec)} to send.` : 'You have no fish to fight with.' };
       if (keeps && !closeInValue(fishValue(g, a), fishValue(g, b))) {
         const [lo, hi] = keepsRange(fishValue(g, a));
         return { retry: `For keeps, both fish must be close in value: their ${a.item.name} is worth ${groupDigits(fishValue(g, a))} and your closest ${kind ? b.item.name : 'fish'} ${groupDigits(fishValue(g, b))}. Send one worth ${groupDigits(lo)}–${groupDigits(hi)}, or ${cmd} fish deny.` };
@@ -1337,9 +1535,9 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     const a = findTeam(theirs, g, c.team!, keeps);
     if (!theirs || !a) return { off: `${c.challenger} no longer has the fish they named, so the battle is off.` };
     const own = loadFish(db!, uid);
-    const picked = pickTeam(own, g, size, { names: fishesNamed(words), random: wantsRandom(words), ...(keeps ? { values: a.map(p => fishValue(g, p)) } : {}) });
+    const picked = pickTeam(own, g, size, { names: fishSpecs(words), random: wantsRandom(words), ...(keeps ? { values: a.map(p => fishValue(g, p)) } : {}) });
     if (!own || !picked) return { retry: `You need ${size} fish for a ${size}v${size} battle.` };
-    if ('missing' in picked) return { retry: `You don't have that many ${picked.missing} to send.` };
+    if ('missing' in picked) return { retry: missingText(picked.missing) };
     const b = picked.team;
     if (keeps && !closeInValue(teamValue(g, a), teamValue(g, b))) {
       const [lo, hi] = keepsRange(teamValue(g, a));
@@ -1415,7 +1613,15 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
 
   // ── show ──
   function show(parts: string[]): void {
-    const [userOrType, optionalType] = parts;
+    // A fish or junk by itself is your own: "show 🦈" (or "show shark") lists your sharks.
+    const itemWord = (w: string | undefined): CatchItem | undefined => {
+      // "fish" and "junk" are the kinds of catch here, not 🐟.
+      if (!w || /^(fish|junk)$/i.test(w)) return undefined;
+      const bare = w.replace(/\uFE0F/g, '');
+      const fish = fishNamed([bare]);
+      return ITEMS.find(i => i.name === (fish ?? bare));
+    };
+    const [userOrType, optionalType] = parts.length === 1 && itemWord(parts[0]) ? [undefined, parts[0]] : parts;
     let showType: CatchType = 'fish';
     // No type asked for shows both, where supibot shows fish only and junk looked missing.
     let bothTypes = true;
@@ -1439,18 +1645,21 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
           showType = optionalType;
           bothTypes = false;
         } else {
-          emojiItem = ITEMS.find(i => i.name === optionalType);
+          emojiItem = itemWord(optionalType);
           if (!emojiItem) return void say('You must provide a proper catch type (fish or junk) or a proper catch emoji!');
         }
       }
+    } else if (optionalType) {
+      emojiItem = itemWord(optionalType);
     }
     const d = targetId === null ? null : loadFish(db!, targetId);
     const [subject, possessive] = self ? ['You', 'your'] : ['They', 'their'];
     // Holding anything counts too: fish can arrive without a cast (a steal, or a tester's setup).
     if (!d || (!hasFishedBefore(d) && d.catch.fish + d.catch.junk === 0)) return void say(`${subject} have never gone fishing before.`);
+    if (emojiItem?.type === 'fish' && (d.catch.types[emojiItem.name] ?? 0) > 0) return void say(`${subject} have ${fishList(d, emojiItem)}`);
     if (emojiItem) {
       const n = d.catch.types[emojiItem.name] ?? 0;
-      const itemString = !n ? 'no' : n < 5 ? `${emojiItem.name} `.repeat(n).trim() : `${n}x ${emojiItem.name}`;
+      const itemString = !n ? `no ${emojiItem.name}` : n < 5 ? `${emojiItem.name} `.repeat(n).trim() : `${n}x ${emojiItem.name}`;
       return void say(`${subject} have ${itemString} in ${possessive} collection.`);
     }
     const purse = getUser(db!, targetId!)?.balance ?? 0;
@@ -1482,6 +1691,31 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       return void say(`${subject} have no ${TYPE_DESCRIPTIONS[showType]} in ${possessive} collection, and ${possessive} purse contains ${purse} ${cur}.`);
     }
     return void say(`${subject} have ${amount} ${TYPE_DESCRIPTIONS[showType]} in ${possessive} collection. Here they are: ${listOf(showType)} ${subject} also have ${purse} ${cur} in ${possessive} purse.`);
+  }
+
+  /**
+   * Every fish of a kind held, biggest first, each with its fighting stats and price, so
+   * one can be picked by length: "3 🦈 (🦷 Predator · Epic): 87 cm ❤️104 ⚔️19.7 💰2,610 | …".
+   * Fish of the same length are the same in a fight, so they're shown once with a count.
+   */
+  function fishList(d: FishData, item: CatchItem): string {
+    const all = heldFish(d, g, item.name);
+    // heldFish gives one entry for all the fish with no length: count them back in.
+    const have = d.catch.types[item.name] ?? 0;
+    const unsized = have - all.filter(p => p.held).length;
+    const groups: Array<{ p: Picked; n: number }> = [];
+    for (const p of [...all].sort((a, b) => (b.held?.cm ?? -1) - (a.held?.cm ?? -1) || fishValue(g, b) - fishValue(g, a))) {
+      const same = groups.find(x => x.p.held?.cm === p.held?.cm && fishValue(g, x.p) === fishValue(g, p));
+      if (same) same.n++;
+      else groups.push({ p, n: p.held ? 1 : unsized });
+    }
+    const MAX = 10;
+    const f = all[0].fighter;
+    const line = groups.slice(0, MAX).map(({ p, n }) =>
+      `${p.held ? `${p.held.cm} cm` : 'no size'}${n > 1 ? ` ×${n}` : ''} ❤️${p.fighter.hp} ⚔️${p.fighter.attack} 💰${groupDigits(fishValue(g, p))}`).join(' | ');
+    const more = groups.length > MAX ? ` | +${groups.slice(MAX).reduce((x, y) => x + y.n, 0)} more` : '';
+    const pick = g.duel.enabled && groups.some(x => x.p.held) ? ` Duel a certain one with ${cmd} fish duel @user ${item.name} ${groups.find(x => x.p.held)!.p.held!.cm}cm` : '';
+    return `${have} ${item.name} (${TYPE_EMOJI[f.type]} ${f.type} · ${f.rarity}): ${line}${more}.${pick}`;
   }
 
   // ── stats ──
@@ -1571,6 +1805,11 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
         if (userId === null || excluded) return ignore('no account or excluded');
         duelReply = true;
         return give(rest, userId);
+      case 'remove':
+        // The streamer and the bot owner only; the answer goes to chat, whatever the reply settings.
+        if (!(tags.isBroadcaster || isBotOwner(me))) return ignore('remove is for the streamer and the bot owner');
+        duelReply = true;
+        return remove(rest);
       case 'duel':
         if (userId === null || excluded) return ignore('no account or excluded');
         duelReply = g.duel.enabled;
