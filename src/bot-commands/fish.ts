@@ -56,7 +56,7 @@ import { gameInvocation } from '../community/stakes';
 import { addReminder, cancelSelfRemindersStartingWith, openCommunityDb } from '../community/store';
 import { bestEmote, broadcasterIdFor, emoteImages } from '../community/emotes';
 import { OverlayKind, overlayShowing, pushOverlay } from '../community/fish-overlay';
-import { addChallenge, challengeBy, challengeFor, closeInValue, describe, dropChallenge, fight, fishNamed, fishValue, keepsRange, overlayDuel, pickByValue, pickFighter, pickForKeeps, sameFish, playMs, randomFish, wantsRandom, type DuelStake } from '../community/fish-duel';
+import { addChallenge, challengeBy, challengeFor, closeInValue, describe, describeTeam, dropChallenge, fight, findTeam, fishesNamed, fishNamed, fishValue, keepsRange, overlayDuel, overlayTeamDuel, pickByValue, pickFighter, pickForKeeps, pickTeam, sameFish, playMs, randomFish, switchesIn, teamFight, teamSizeOf, teamValue, wantsRandom, type Challenge, type DuelStake, type OverlayDuel } from '../community/fish-duel';
 import { parseBet } from './points';
 import { answerMatches, makeTrapCheck, type TrapCheck } from '../community/trap-check';
 import { wheelBusy } from '../community/wheel-state';
@@ -1140,7 +1140,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
   async function duel(words: string[], uid: number): Promise<void> {
     const du = g.duel;
     if (!(await duelsOpen())) return;
-    const usage = `Usage: ${cmd} fish duel @user [fish | random] [amount | keeps]`;
+    const usage = `Usage: ${cmd} fish duel @user [2v2 | 3v3] [fish | random] [amount | keeps]`;
     const nameWord = words.find(w => w.startsWith('@')) ?? words[0];
     const name = parseUsername(nameWord);
     if (!name) return void say(usage);
@@ -1159,13 +1159,56 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     const wait = (lastChallenge.get(cdKey) ?? 0) + du.cooldownSeconds * 1000 - now;
     if (!tester && wait > 0) return void say(`You can challenge someone again in ${span(wait)}.`);
 
-    const rest = words.filter(w => w !== nameWord);
+    const withSize = words.filter(w => w !== nameWord);
+    // 2v2 or 3v3: a team battle, each side's fish one after another.
+    const sizeWord = withSize.find(w => teamSizeOf(w) !== null);
+    const size = sizeWord ? teamSizeOf(sizeWord)! : 1;
+    const rest = withSize.filter(w => w !== sizeWord);
     const others = rest.filter(w => fishNamed([w]) === undefined && !wantsRandom([w]));
     if (others.length > 1) return void say(usage);
     const word = others[0]?.toLowerCase();
     const keeps = word === 'keeps' || word === 'keep' || word === 'k';
     if (keeps && !du.allowKeeps) return void say('Duels for keeps are off here. Name an amount, or nothing at all.');
+    const stakeOf = (): DuelStake | string => {
+      if (keeps) return { kind: 'keeps' };
+      if (word === undefined) return { kind: 'friendly' };
+      const balance = getUser(db!, uid)?.balance ?? 0;
+      const amount = parseBet(word, balance);
+      if (amount === null || amount <= 0) return usage;
+      if (du.maxWager > 0 && amount > du.maxWager) return `The most you can stake on a fish duel is ${groupDigits(du.maxWager)} ${cur}.`;
+      if (amount > balance) return `You only have ${groupDigits(balance)} ${cur}.`;
+      if (rival.balance < amount) return `${rival.username} only has ${groupDigits(rival.balance)} ${cur}.`;
+      return { kind: 'wager', amount };
+    };
     const mineD = loadFish(db!, uid);
+    if (size > 1) {
+      const theirsD = loadFish(db!, rival.user_id);
+      const mine = pickTeam(mineD, g, size, { names: fishesNamed(rest), random: wantsRandom(rest) });
+      if (!mine) return void say(`You need ${size} fish for a ${size}v${size} battle.`);
+      if ('missing' in mine) return void say(`You don't have that many ${mine.missing} to send.`);
+      const theirs = pickTeam(theirsD, g, size, keeps ? { values: mine.team.map(p => fishValue(g, p)) } : {});
+      if (!theirs || 'missing' in theirs) return void say(`${rival.username} doesn't have ${size} fish to fight with.`);
+      const worth = teamValue(g, mine.team);
+      if (keeps && !closeInValue(worth, teamValue(g, theirs.team))) {
+        return void say(`For keeps, both teams must be close in value: yours is worth ${groupDigits(worth)} and the closest team ${rival.username} has is worth ${groupDigits(teamValue(g, theirs.team))}.`);
+      }
+      const stake = stakeOf();
+      if (typeof stake === 'string') return void say(stake);
+      addChallenge(chan, {
+        challengerId: uid, challenger: me, targetId: rival.user_id, target: rival.username,
+        fish: mine.team[0].item.name, team: mine.team.map(p => ({ fish: p.item.name, ...(p.held ? { cm: p.held.cm } : {}) })),
+        stake, expiresAt: now + du.expirySeconds * 1000
+      }, now);
+      lastChallenge.set(cdKey, now);
+      const lineup = describeTeam(mine.team.map(p => p.fighter));
+      console.log(`[FISH] ${me} challenged ${rival.username} to a ${size}v${size} battle in ${chan} with ${lineup} (${stake.kind}${stake.kind === 'wager' ? ` ${stake.amount}` : ''})`);
+      const keepsNote = stake.kind === 'keeps'
+        ? (() => { const [lo, hi] = keepsRange(worth); return ` Their team is worth ${groupDigits(worth)}: yours must be worth ${groupDigits(lo)}–${groupDigits(hi)} (a plain accept sends your closest).`; })()
+        : '';
+      const text = `⚔️ ${me} challenges you to a ${size}v${size} fish battle with ${lineup}. ${stakeLine(stake)}${keepsNote} Answer within ${span(du.expirySeconds * 1000)}: ${cmd} fish accept [fish…] or ${cmd} fish deny.`;
+      pushOverlay(db!, { username: me, kind: 'info', text: `⚔️ challenges ${rival.username} to a ${size}v${size} fish battle with ${lineup}. ${stakeLine(stake)}` });
+      return void (await announce(`@${rival.username} ${text}`));
+    }
     const theirsD = loadFish(db!, rival.user_id);
     // `random` sends any fish held; the pick is made now and named in the challenge, like a fish asked for.
     const fishName = wantsRandom(rest) ? randomFish(mineD) : fishNamed(rest);
@@ -1178,18 +1221,8 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       return void say(`For keeps, both fish must be close in value, and none of your ${fishName ?? 'fish'} is close to any fish ${rival.username} has.`);
     }
 
-    let stake: DuelStake = { kind: 'friendly' };
-    if (keeps) {
-      stake = { kind: 'keeps' };
-    } else if (word !== undefined) {
-      const balance = getUser(db!, uid)?.balance ?? 0;
-      const amount = parseBet(word, balance);
-      if (amount === null || amount <= 0) return void say(usage);
-      if (du.maxWager > 0 && amount > du.maxWager) return void say(`The most you can stake on a fish duel is ${groupDigits(du.maxWager)} ${cur}.`);
-      if (amount > balance) return void say(`You only have ${groupDigits(balance)} ${cur}.`);
-      if (rival.balance < amount) return void say(`${rival.username} only has ${groupDigits(rival.balance)} ${cur}.`);
-      stake = { kind: 'wager', amount };
-    }
+    const stake = stakeOf();
+    if (typeof stake === 'string') return void say(stake);
 
     addChallenge(chan, {
       challengerId: uid, challenger: me, targetId: rival.user_id, target: rival.username,
@@ -1212,8 +1245,9 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     if (!c) return void say('Nobody has challenged you to a fish duel.');
     const random = wantsRandom(words);
     const fishName = random ? undefined : fishNamed(words);
-    type Fought = { off: string } | { retry: string } | { text: string; shown: Parameters<typeof overlayDuel>; winner: string; turns: number };
+    type Fought = { off: string } | { retry: string } | { text: string; duel: OverlayDuel; winner: string; turns: number; switches?: number };
     const fought = once((now): Fought => {
+      if (c.team) return teamBattle(c, words, uid, now);
       ensureUserTx(db!, uid, me, now);
       const theirs = loadFish(db!, c.challengerId);
       const keeps = c.stake.kind === 'keeps';
@@ -1271,7 +1305,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       console.log(`[FISH] duel ${id} in ${chan}: ${names[w]} ${picks[w].item.name} beat ${names[l]} ${picks[l].item.name} in ${battle.turns.length} turns (${c.stake.kind}${c.stake.kind === 'wager' ? ` ${c.stake.amount}` : ''})`);
       return {
         text: `⚔️ @${names[w]}'s ${describe(picks[w].fighter)} ${how} @${names[l]}'s ${describe(picks[l].fighter)} in ${battle.turns.length} turns, with ${left}% health left.${prize}`,
-        shown: [[names[0], names[1]], [a.fighter, b.fighter], battle, c.stake, cur],
+        duel: overlayDuel([names[0], names[1]], [a.fighter, b.fighter], battle, c.stake, cur),
         winner: names[w],
         turns: battle.turns.length
       };
@@ -1282,11 +1316,87 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     if ('off' in fought) return void announce(`@${me} @${c.challenger} ${fought.off}`);
     // With an overlay showing the fight, chat hears who won as it ends there, not before it starts.
     const playing = overlayShowing(db!);
-    pushOverlay(db!, { username: fought.winner, kind: 'duel', text: fought.text.replace(/@/g, ''), duel: overlayDuel(...fought.shown) });
+    pushOverlay(db!, { username: fought.winner, kind: 'duel', text: fought.text.replace(/@/g, ''), duel: fought.duel });
     if (!playing) return void announce(fought.text);
-    await announce(`⚔️ ${c.challenger} vs ${me}: the fish duel is on! Watch the stream.`);
+    await announce(`⚔️ ${c.challenger} vs ${me}: the fish ${c.team ? `battle (${c.team.length}v${c.team.length})` : 'duel'} is on! Watch the stream.`);
     // The stream shows the fight streamDelaySeconds behind chat.
-    setTimeout(() => void announce(fought.text), playMs(fought.turns) + g.streamDelaySeconds * 1000).unref();
+    setTimeout(() => void announce(fought.text), playMs(fought.turns, fought.switches ?? 0) + g.streamDelaySeconds * 1000).unref();
+  }
+
+  /**
+   * Fight a team battle the viewer accepted, inside the accept's write: their team is
+   * the fish they name (the rest their strongest), or for keeps each the closest in value
+   * to the fish it faces.
+   */
+  function teamBattle(c: Challenge, words: string[], uid: number, now: number): { off: string } | { retry: string } | { text: string; duel: OverlayDuel; winner: string; turns: number; switches: number } {
+    const size = c.team!.length;
+    const keeps = c.stake.kind === 'keeps';
+    ensureUserTx(db!, uid, me, now);
+    const theirs = loadFish(db!, c.challengerId);
+    // For keeps, the very fish named in the challenge; otherwise the biggest of each kind.
+    const a = findTeam(theirs, g, c.team!, keeps);
+    if (!theirs || !a) return { off: `${c.challenger} no longer has the fish they named, so the battle is off.` };
+    const own = loadFish(db!, uid);
+    const picked = pickTeam(own, g, size, { names: fishesNamed(words), random: wantsRandom(words), ...(keeps ? { values: a.map(p => fishValue(g, p)) } : {}) });
+    if (!own || !picked) return { retry: `You need ${size} fish for a ${size}v${size} battle.` };
+    if ('missing' in picked) return { retry: `You don't have that many ${picked.missing} to send.` };
+    const b = picked.team;
+    if (keeps && !closeInValue(teamValue(g, a), teamValue(g, b))) {
+      const [lo, hi] = keepsRange(teamValue(g, a));
+      return { retry: `For keeps, both teams must be close in value: theirs is worth ${groupDigits(teamValue(g, a))} and yours ${groupDigits(teamValue(g, b))}. Send fish worth ${groupDigits(lo)}–${groupDigits(hi)} together, or ${cmd} fish deny.` };
+    }
+    if (c.stake.kind === 'wager') {
+      if ((getUser(db!, c.challengerId)?.balance ?? 0) < c.stake.amount) return { off: `${c.challenger} can't cover the ${groupDigits(c.stake.amount)} ${cur} stake any more, so the battle is off.` };
+      const balance = getUser(db!, uid)?.balance ?? 0;
+      if (balance < c.stake.amount) return { retry: `The stake is ${groupDigits(c.stake.amount)} ${cur} and you have ${groupDigits(balance)} ${cur}.` };
+    }
+
+    const battle = teamFight(a.map(p => p.fighter), b.map(p => p.fighter));
+    const w = battle.winner;
+    const l = w === 0 ? 1 : 0;
+    const sides = [theirs, own] as const;
+    const ids = [c.challengerId, uid] as const;
+    const names = [c.challenger, me] as const;
+    const teams = [a, b] as const;
+    sides[w].lifetime.duel.wins++;
+    sides[l].lifetime.duel.losses++;
+    const id = Number(db!.prepare(
+      `INSERT INTO fish_duels (ts, challenger_id, opponent_id, winner_id, challenger_fish, challenger_cm, opponent_fish, opponent_cm, stake, amount, turns)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(now, ids[0], ids[1], ids[w], a.map(p => p.item.name).join(' '), a[0].fighter.cm, b.map(p => p.item.name).join(' '), b[0].fighter.cm,
+      c.stake.kind, c.stake.kind === 'wager' ? c.stake.amount : null, battle.turns.length).lastInsertRowid);
+
+    let prize = '';
+    if (c.stake.kind === 'wager') {
+      const ref = `fishduel:${id}`;
+      debitTx(db!, { userId: ids[l], amount: c.stake.amount, reason: 'game:fish_duel', ref, actor: `chat:${me}`, note: names[w], now });
+      const balance = creditTx(db!, { userId: ids[w], amount: c.stake.amount, reason: 'game:fish_duel_win', ref, actor: `chat:${me}`, note: names[l], now });
+      sides[w].lifetime.duel.coinsWon += c.stake.amount;
+      sides[l].lifetime.duel.coinsLost += c.stake.amount;
+      prize = ` ${names[w]} takes ${groupDigits(c.stake.amount)} ${cur} and now has ${groupDigits(balance)}.`;
+    } else if (keeps) {
+      // One at a time, each found again: moving one shifts where the next of its kind sits.
+      for (const p of teams[l]) {
+        const now2 = sameFish(sides[l], g, p.item.name, p.held?.cm);
+        if (!now2) continue;
+        moveFish(sides[l], sides[w], now2.item, now2);
+        sides[w].lifetime.duel.fishWon++;
+        sides[l].lifetime.duel.fishLost++;
+      }
+      prize = ` ${names[w]} takes ${describeTeam(teams[l].map(p => p.fighter))} for keeps!`;
+    }
+    saveFish(db!, ids[0], sides[0], now);
+    saveFish(db!, ids[1], sides[1], now);
+
+    const standing = battle.left[w].filter(hp => hp > 0).length;
+    console.log(`[FISH] battle ${id} in ${chan} (${size}v${size}): ${names[w]} beat ${names[l]} in ${battle.turns.length} turns, ${standing} standing (${c.stake.kind}${c.stake.kind === 'wager' ? ` ${c.stake.amount}` : ''})`);
+    return {
+      text: `⚔️ @${names[w]}'s team (${describeTeam(teams[w].map(p => p.fighter))}) beat @${names[l]}'s (${describeTeam(teams[l].map(p => p.fighter))}) in ${battle.turns.length} turns, with ${standing} of ${size} fish still standing.${prize}`,
+      duel: overlayTeamDuel([names[0], names[1]], [a.map(p => p.fighter), b.map(p => p.fighter)], battle, c.stake, cur),
+      winner: names[w],
+      turns: battle.turns.length,
+      switches: switchesIn(battle)
+    };
   }
 
   /** Turn down the duel waiting for this viewer, or take back the one they asked for. */

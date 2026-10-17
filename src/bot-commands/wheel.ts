@@ -14,6 +14,7 @@
  *          !wheel spin                     - also !spin
  *          !wheel add <item> [| <item>…]   - add one or several, split with |
  *          !wheel remove <item or number>  - also rm, del
+ *          !wheel history                  - the latest spins and where they landed (also h, hist)
  *
  * Items, colours, spin length and "remove the winner" are also on the dashboard.
  */
@@ -26,6 +27,7 @@ import { channelHasBite, STREAM_GRACE_MS } from '../community/big-bite';
 import { addItems, changeWheel, pickWinner, readWheel, removeItem, RESULT_HOLD_MS, type Wheel } from '../community/wheel';
 import { markWheelBusy, wheelBusy } from '../community/wheel-state';
 import { extendVideo, videoOverlayShowing } from '../community/video-share';
+import { ago, recentSpins, recordSpin } from '../community/wheel-history';
 
 /** How long a spin waits for a big bite already on the line, at most. */
 const BITE_WAIT_MS = 90_000;
@@ -34,8 +36,9 @@ const OVERLAY_POLL_MS = 500;
 /** Kick cuts chat messages at 500 characters. */
 const CHAT_MAX = 480;
 
-const SUBS: Record<string, 'list' | 'spin' | 'add' | 'remove'> = {
-  list: 'list', ls: 'list', spin: 'spin', add: 'add', remove: 'remove', rm: 'remove', del: 'remove', delete: 'remove'
+const SUBS: Record<string, 'list' | 'spin' | 'add' | 'remove' | 'history'> = {
+  list: 'list', ls: 'list', spin: 'spin', add: 'add', remove: 'remove', rm: 'remove', del: 'remove', delete: 'remove',
+  history: 'history', hist: 'history', h: 'history'
 };
 
 const isWheelCommand = (word: string): boolean => word === '!wheel' || word === '!spin';
@@ -66,7 +69,7 @@ export const wheel: CommandFn = async function wheel(client, message, channel, t
 
   if (!sub) {
     // Kick chat drops anything in angle brackets, so placeholders are spelled out.
-    void say(`@${me} 🎡 !wheel (list) · !wheel spin (or !spin) · !wheel add Item | Another item · !wheel remove Item (or its number)`);
+    void say(`@${me} 🎡 !wheel (list) · !wheel spin (or !spin) · !wheel add Item | Another item · !wheel remove Item (or its number) · !wheel history`);
     return;
   }
 
@@ -76,6 +79,19 @@ export const wheel: CommandFn = async function wheel(client, message, channel, t
     let text = `🎡 Wheel (${w.items.length}):`;
     for (const [i, it] of w.items.entries()) {
       const next = ` ${i + 1}. ${it.label}${i < w.items.length - 1 ? ' ·' : ''}`;
+      if (text.length + next.length > CHAT_MAX) { text += ' …'; break; }
+      text += next;
+    }
+    return void say(text);
+  }
+
+  if (sub === 'history') {
+    const spins = recentSpins(db, 5);
+    if (!spins.length) return void say(`@${me} 🎡 The wheel hasn't been spun yet.`);
+    const now = Date.now();
+    let text = '🎡 Last spins:';
+    for (const [i, sp] of spins.entries()) {
+      const next = ` ${sp.result} (${sp.by}, ${ago(now - sp.ts)} ago)${i < spins.length - 1 ? ' ·' : ''}`;
       if (text.length + next.length > CHAT_MAX) { text += ' …'; break; }
       text += next;
     }
@@ -153,6 +169,11 @@ function spin(chan: string, by: string, w: Wheel, db: Parameters<typeof pushOver
   console.log(`[WHEEL] ${by} spun the wheel in ${chan}: "${landed.label}" (${winner + 1} of ${w.items.length})${w.onVideoOverlay ? ' on the video overlay' : ''}`);
   // On the video overlay a playing video pauses for the spin and the result: its slot stretches by as much.
   if (w.onVideoOverlay) extendVideo(db, spinMs + RESULT_HOLD_MS + OVERLAY_POLL_MS);
+  try {
+    recordSpin(db, { ts: now, by, winner, items: w.items, overlay: w.onVideoOverlay ? 'video' : 'fishing' });
+  } catch (err) {
+    console.error(`[WHEEL] Recording the spin in ${chan} failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
   pushOverlay(db, { username: by, kind: 'wheel', text: `${by} spun the wheel!`, wheel: { items: w.items, winner, spinMs } }, now);
   const t = setTimeout(() => {
     void say(`🎡 The wheel landed on: ${landed.label}!`);

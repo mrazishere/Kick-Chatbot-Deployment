@@ -39,10 +39,11 @@ import { answerMatches, makeTrapCheck, normalizeAnswer } from '../community/trap
 import { changeWheel, readWheel, validateWheel } from '../community/wheel';
 import { recordSignal, suspects } from '../community/cheat-signals';
 import { resetWheelBusy, wheelBusy } from '../community/wheel-state';
+import { recentSpins } from '../community/wheel-history';
 import { wheel as wheelCommand } from '../bot-commands/wheel';
 import { streamstatus } from '../bot-commands/streamstatus';
 import { LISTED_FILES, NOT_LISTED } from '../points/public-bot-commands';
-import { fight, fighterOf, fishNamed, fishValue, pickByValue, pickFighter, pickForKeeps, playMs, sameFish, randomFish, typeOf, wantsRandom } from '../community/fish-duel';
+import { fight, fighterOf, fishNamed, fishValue, pickByValue, pickFighter, pickForKeeps, playMs, sameFish, randomFish, SWITCH_MS, switchesIn, teamFight, teamSizeOf, typeOf, wantsRandom } from '../community/fish-duel';
 
 const MIN = 60_000;
 
@@ -222,7 +223,7 @@ async function main(): Promise<void> {
   // Store basics
   {
     const db = openPointsDb('basics', { create: true })!;
-    check('migrated to user_version 12', db.pragma('user_version', { simple: true }) === 12);
+    check('migrated to user_version 13', db.pragma('user_version', { simple: true }) === 13);
     runWrite(db, () => creditTx(db, { userId: 1, username: 'alice', amount: 100, reason: 'mod_add', now: 1 }));
     const over = runWrite(db, () => debitTx(db, { userId: 1, amount: 150, reason: 'mod_remove', now: 2 }));
     check('debit beyond balance refused', !over.ok && over.balance === 100);
@@ -1025,6 +1026,54 @@ async function main(): Promise<void> {
       const stats = await run('$don fish stats', ash);
       check('duel wins have a board and a stats line', top.includes('fish duelists') && /fish duels won: \d, lost: \d/.test(stats), { top, stats });
 
+      // Team battles: 2v2 / 3v3, each side's fish one after another.
+      check('team sizes: 2v2 and 3v3, not 4v4 or 2v3', teamSizeOf('3v3') === 3 && teamSizeOf('2V2') === 2 && teamSizeOf('4v4') === null && teamSizeOf('2v3') === null && teamSizeOf('300') === null);
+      {
+        let i = 0;
+        const seq = Array.from({ length: 500 }, (_, k) => ((k * 7919) % 1000) / 1000);
+        const rngA = () => seq[i++ % seq.length];
+        const one = fight(fighterOf(g, item('🦈'), { cm: 80, record: false }), fighterOf(g, item('🐢'), { cm: 70, record: false }), rngA);
+        i = 0;
+        const solo = teamFight([fighterOf(g, item('🦈'), { cm: 80, record: false })], [fighterOf(g, item('🐢'), { cm: 70, record: false })], rngA);
+        check('a team of one fights exactly as a one-fish duel', JSON.stringify(one.turns) === JSON.stringify(solo.turns) && one.winner === solo.winner && one.left[0] === solo.left[0][0]);
+        const strong = [80, 85, 90].map(cm => fighterOf(g, item('🦈'), { cm, record: false }));
+        const weak = [20, 25, 30].map(cm => fighterOf(g, item('🐟'), { cm, record: false }));
+        const tb = teamFight(strong, weak);
+        const sw = Array.from({ length: 200 }, () => teamFight(strong, weak).winner).filter(w => w === 0).length;
+        check('chat waits for every fish coming in on the overlay: each one knocked out but a side\'s last, each adding the pause',
+          switchesIn(tb) === 2 + tb.left[0].filter(hp => hp <= 0).length && switchesIn({ turns: [], winner: 0, left: [[0, 0, 5], [0, 0, 0]] }) === 4 && playMs(30, 2) === playMs(30) + 2 * SWITCH_MS, switchesIn(tb));
+        check('a team battle goes on until one side has no fish standing, and the stronger team wins',
+          tb.winner === 0 && tb.left[1].every(hp => hp === 0) && tb.left[0].some(hp => hp > 0) && tb.left[0].length === 3 && sw > 195, { tb: tb.left, sw });
+      }
+      restock(51, [['🦈', 90], ['🐟', 20], ['🐟', 60]]);
+      restock(52, [['🐢', 70], ['🐟', 40], ['🦀', 30]]);
+      const teamAsk = await run('$don fish duel @gary 3v3', ash);
+      check('a 3v3 challenge names the team, strongest first', teamAsk.startsWith('@gary ⚔️ ash challenges you to a 3v3 fish battle with 🦈 90 cm, 🐟 60 cm, 🐟 20 cm') && teamAsk.includes('For glory only'), teamAsk);
+      const teamDone = await run('$don fish accept', gary);
+      const row4 = lastDuel();
+      const teamShown = readOverlay(ddb).events.filter(e => e.kind === 'duel').pop();
+      check('accepting fights the team battle: one result line, a row with every fish, nothing changes hands',
+        /⚔️ @(ash|gary)'s team \(.*\) beat @(ash|gary)'s \(.*\) in \d+ turns, with [123] of 3 fish still standing\.$/.test(teamDone)
+        && row4.challenger_fish === '🦈 🐟 🐟' && row4.opponent_fish === '🐢 🐟 🦀' && row4.stake === 'friendly'
+        && fishOf(51).catch.fish === 3 && fishOf(52).catch.fish === 3, { teamDone, row4 });
+      check('the overlay gets both teams in order and every turn', teamShown?.duel?.teams?.[0].length === 3 && teamShown.duel.teams[1].map(x => x.fish).join('') === '🐢🐟🦀'
+        && teamShown.duel.a.fish === '🦈' && teamShown.duel.turns.length === row4.turns, teamShown?.duel);
+      check('a team battle needs that many fish on both sides', (await run('$don fish duel @misty 3v3', ash)).includes("doesn't have 3 fish") && (await run('$don fish duel @gary 2v2', ['brock', 53])).includes('You need 2 fish'));
+      const named = await run('$don fish duel @ash 2v2 crab', gary);
+      check('fish named for a team go first, the strongest fill the rest', named.includes('2v2 fish battle with 🦀 30 cm, 🐢 70 cm'), named);
+      await run('$don fish deny', gary);
+      restock(51, [['🐟', 50], ['🐟', 51], ['🐟', 52]]);
+      restock(52, [['🐟', 50], ['🐟', 51], ['🐟', 52]]);
+      const teamKeeps = await run('$don fish duel @gary 3v3 keeps', ash);
+      const keepsDone = await run('$don fish accept', gary);
+      const kw = lastDuel().winner_id === 51 ? 51 : 52;
+      const kl = kw === 51 ? 52 : 51;
+      check('a 3v3 for keeps: the winner takes every fish on the losing team, with their lengths', teamKeeps.includes('Their team is worth') && keepsDone.includes('for keeps!')
+        && fishOf(kw).catch.fish === 6 && fishOf(kw).catch.types['🐟'] === 6 && fishOf(kl).catch.fish === 0 && (fishOf(kw).catch.sizes!['🐟'] ?? []).length === 6
+        && fishOf(kw).lifetime.duel.fishWon >= 3 && fishOf(kl).lifetime.duel.fishLost >= 3, { keepsDone, w: fishOf(kw).catch, l: fishOf(kl).catch });
+      restock(51, [['🦈', 90], ['🐟', 20], ['🐟', 60]]);
+      restock(52, [['🐢', 70]]);
+
       cfgWith({ allowKeeps: false, maxWager: 100 });
       const noKeeps = await run('$don fish duel @gary keeps', ash);
       const capped = await run('$don fish duel @gary 150', ash);
@@ -1690,6 +1739,7 @@ async function main(): Promise<void> {
     };
     resetWheelBusy();
     check('an empty wheel says so', (await say('!wheel')).includes('The wheel is empty'));
+    check('no spins yet, no history', (await say('!wheel history')).includes("hasn't been spun yet") && (await say('!wheel h', as('viewer', false))) === '');
     const added = await say('!wheel add Sing a song | Do 10 pushups | sing a song');
     check('mods add items, several at once, without duplicates', added.includes('added "Sing a song", "Do 10 pushups"') && added.includes('skipped "sing a song"')
       && readWheel(ch).items.length === 2, added);
@@ -1709,6 +1759,11 @@ async function main(): Promise<void> {
     check('a spin goes to the overlay with its items and winner, and holds the overlay', spun === '' && !!ev?.wheel && ev.wheel.items.length === 3
       && ev.wheel.winner >= 0 && ev.wheel.winner < 3 && ev.wheel.spinMs === 6000 && wheelBusy(ch), ev);
     check('one spin at a time', (await say('!spin')).includes('already spinning'));
+    const hist = recentSpins(wdb);
+    check('the spin is kept in the history with what was on the wheel', hist.length === 1 && hist[0].by === 'modder' && hist[0].itemCount === 3
+      && hist[0].result === hist[0].items[hist[0].position - 1] && hist[0].result === ev?.wheel?.items[ev.wheel.winner].label && hist[0].overlay === 'fishing', hist);
+    const histMsg = await say('!wheel hist');
+    check('!wheel history shows it in chat', histMsg.startsWith('🎡 Last spins: ') && histMsg.includes(`${hist[0]?.result} (modder, 0m ago)`), histMsg);
     check('no big bite starts while it spins', (await wsvc.bigBiteTick(() => 0)) === null);
 
     // The dashboard's save: whole wheel, refused if chat changed it since it loaded.
@@ -1730,6 +1785,7 @@ async function main(): Promise<void> {
     await new Promise(r => setTimeout(r, 8_600));
     const result = said.find(m => m.includes('The wheel landed on'));
     const landedLabel = result?.replace(/^.*landed on: (.*)!$/, '$1');
+    check('the history keeps a removed winner, newest first', recentSpins(wdb).length === 2 && recentSpins(wdb)[0].result === landedLabel, recentSpins(wdb));
     check('the result goes to chat, and with removeWinner the item leaves the wheel', !!result && readWheel(ch).items.length === 1
       && !readWheel(ch).items.some(i => i.label === landedLabel), { said, items: readWheel(ch).items });
     resetWheelBusy();
@@ -2528,25 +2584,25 @@ async function main(): Promise<void> {
     const mch = 'migrate1ch';
     const mdb = openPointsDb(mch, { create: true })!;
     runWrite(mdb, () => creditTx(mdb, { userId: 1, username: 'old', amount: 77, reason: 'mod_add', now: 1 }));
-    mdb.exec('DROP TABLE video_queue; DROP TABLE fish_signals; DROP TABLE fish_duels; DROP TABLE steals; DROP TABLE overlay_feed; DROP TABLE catches; DROP TABLE fish; DROP TABLE duels; DROP TABLE raffle_entries; DROP TABLE raffles; DROP INDEX ledger_ref');
+    mdb.exec('DROP TABLE wheel_spins; DROP TABLE video_queue; DROP TABLE fish_signals; DROP TABLE fish_duels; DROP TABLE steals; DROP TABLE overlay_feed; DROP TABLE catches; DROP TABLE fish; DROP TABLE duels; DROP TABLE raffle_entries; DROP TABLE raffles; DROP INDEX ledger_ref');
     mdb.pragma('user_version = 1');
     closePointsDb(mch);
     const reopened = openPointsDb(mch, { create: false })!;
     const hasTable = (n: string) => !!reopened.prepare('SELECT 1 FROM sqlite_master WHERE name = ?').get(n);
     check('a v1 database migrates to the latest version keeping balances',
-      reopened.pragma('user_version', { simple: true }) === 12 && balance(mch, 1) === 77 && hasTable('video_queue')
+      reopened.pragma('user_version', { simple: true }) === 13 && balance(mch, 1) === 77 && hasTable('video_queue') && hasTable('wheel_spins')
       && hasTable('duels') && hasTable('raffles') && hasTable('raffle_entries') && hasTable('fish') && hasTable('catches') && hasTable('overlay_feed') && hasTable('steals') && hasTable('fish_duels') && hasTable('fish_signals'));
 
     // v2 → v3 specifically: a database that already has duels gains the raffle tables.
     const m2 = 'migrate2ch';
     const m2db = openPointsDb(m2, { create: true })!;
     runWrite(m2db, () => creditTx(m2db, { userId: 1, username: 'old2', amount: 42, reason: 'mod_add', now: 1 }));
-    m2db.exec('DROP TABLE video_queue; DROP TABLE fish_signals; DROP TABLE fish_duels; DROP TABLE steals; DROP TABLE overlay_feed; DROP TABLE catches; DROP TABLE fish; DROP TABLE raffle_entries; DROP TABLE raffles; DROP INDEX ledger_ref');
+    m2db.exec('DROP TABLE wheel_spins; DROP TABLE video_queue; DROP TABLE fish_signals; DROP TABLE fish_duels; DROP TABLE steals; DROP TABLE overlay_feed; DROP TABLE catches; DROP TABLE fish; DROP TABLE raffle_entries; DROP TABLE raffles; DROP INDEX ledger_ref');
     m2db.pragma('user_version = 2');
     closePointsDb(m2);
     const re2 = openPointsDb(m2, { create: false })!;
     check('a v2 database gains the raffle tables and keeps its balances',
-      re2.pragma('user_version', { simple: true }) === 12 && balance(m2, 1) === 42
+      re2.pragma('user_version', { simple: true }) === 13 && balance(m2, 1) === 42
       && !!re2.prepare("SELECT 1 FROM sqlite_master WHERE name = 'raffles'").get());
     void svc;
     makeService(ch, { broadcaster: 999 });

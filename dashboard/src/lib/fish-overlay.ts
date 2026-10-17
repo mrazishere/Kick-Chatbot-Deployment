@@ -94,7 +94,16 @@ function duelOf(raw: unknown): FishDuel | null {
   };
   const a = side(d.a);
   const b = side(d.b);
-  if (!a || !b || (d.winner !== 0 && d.winner !== 1) || !Array.isArray(d.turns) || d.turns.length < 1 || d.turns.length > 60) return null;
+  // A team battle (2v2, 3v3): each side's fish in order, a and b the first of each. Up to 40 turns a pairing.
+  let teams: [FishDuelSide[], FishDuelSide[]] | undefined;
+  if (d.teams !== undefined) {
+    if (!Array.isArray(d.teams) || d.teams.length !== 2) return null;
+    const t = d.teams.map((list) => (Array.isArray(list) && list.length >= 1 && list.length <= 3 ? list.map(side) : null));
+    if (!t[0] || !t[1] || t[0].length !== t[1].length || t[0].some((x) => !x) || t[1].some((x) => !x)) return null;
+    teams = [t[0] as FishDuelSide[], t[1] as FishDuelSide[]];
+  }
+  const maxTurns = 40 * (teams ? teams[0].length : 1);
+  if (!a || !b || (d.winner !== 0 && d.winner !== 1) || !Array.isArray(d.turns) || d.turns.length < 1 || d.turns.length > Math.max(60, maxTurns)) return null;
   const turns: FishDuel["turns"] = [];
   for (const t of d.turns) {
     if (!Array.isArray(t) || (t[0] !== 0 && t[0] !== 1) || typeof t[1] !== "number" || !Number.isInteger(t[1]) || t[1] < 0 || t[1] > 10_000) return null;
@@ -103,7 +112,7 @@ function duelOf(raw: unknown): FishDuel | null {
   }
   const stake = d.stake === "wager" || d.stake === "keeps" ? d.stake : "friendly";
   return {
-    a, b, turns, winner: d.winner, stake,
+    a, b, ...(teams ? { teams } : {}), turns, winner: d.winner, stake,
     ...(stake === "wager" && typeof d.amount === "number" && d.amount > 0 ? { amount: Math.round(d.amount) } : {}),
     ...(typeof d.currency === "string" && d.currency.length <= 24 ? { currency: d.currency } : {}),
   };

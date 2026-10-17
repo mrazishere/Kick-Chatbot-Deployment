@@ -24,6 +24,7 @@ import { publicUserHistory, publicViewerSearch } from './points/store';
 import { ITEMS, rarityName, sellPrice } from './community/fishing';
 import { adjustPoints, backupPoints, caughtFish, duelBoard, heistBoard, heldCatches, getPointsUserDetail, pointsLeaderboard, pointsSummary, resetAllPoints, searchPointsUsers } from './points/store';
 import { RULES as CHEAT_RULES, suspects as cheatSuspects } from './community/cheat-signals';
+import { recentSpins } from './community/wheel-history';
 import { changeWheel, MAX_ITEMS as WHEEL_MAX_ITEMS, MAX_LABEL as WHEEL_MAX_LABEL, readWheel, SPIN_SECONDS as WHEEL_SPIN_SECONDS, validateWheel } from './community/wheel';
 import { noteSocketClose, PUSHER_BAD_KEY_CODES, pusherUrl, refreshPusherKey, watchChatSocket } from './channels/pusher-key';
 import { toHandleChatFormat } from './channels/webhook-poller';
@@ -2220,7 +2221,15 @@ app.get('/internal/bot/:channel/wheel', internalGuard(false), (req, res) => {
   const channel = (typeof channelRaw === 'string' ? channelRaw : '').toLowerCase();
   if (!validateChannelName(channel)) return res.status(400).json({ error: 'Invalid channel name' });
   if (!readChannelConfig(channel)) return res.status(404).json({ error: 'Not enrolled' });
-  return res.json({ ...readWheel(channel), limits: { maxItems: WHEEL_MAX_ITEMS, maxLabel: WHEEL_MAX_LABEL, spinSeconds: WHEEL_SPIN_SECONDS } });
+  // history: the latest spins (wheel_spins), newest first; empty without a points database.
+  let history: ReturnType<typeof recentSpins> = [];
+  try {
+    const db = openPointsDb(channel, { create: false });
+    if (db) history = recentSpins(db, 50);
+  } catch (e) {
+    console.error(`[WHEEL] Reading ${channel}'s spin history failed:`, e instanceof Error ? e.message : String(e));
+  }
+  return res.json({ ...readWheel(channel), limits: { maxItems: WHEEL_MAX_ITEMS, maxLabel: WHEEL_MAX_LABEL, spinSeconds: WHEEL_SPIN_SECONDS }, history });
 });
 
 app.put('/internal/bot/:channel/wheel', internalGuard(true), async (req, res) => {

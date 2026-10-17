@@ -13,6 +13,10 @@
  * or miss) is kept small, enough for an upset between close fish and no more: a rarer or
  * bigger fish is the favourite every time, and the wider the gap the surer the win.
  *
+ * A team battle (2v2 or 3v3) is the same fight in a row: each side's fish come in one
+ * after another, Pokémon style; when one faints the next takes its place and strikes
+ * next, and the side with a fish still standing wins. A one-fish duel is a team of one.
+ *
  * The fight is rolled in one go when the challenge is accepted; the overlay plays
  * the turns back. Challenges wait in memory, so a restart drops the ones not yet
  * answered. Nothing is held while one waits: the stake is checked again, and
@@ -225,33 +229,177 @@ export interface Battle {
   left: [number, number];
 }
 
+/** A team battle: every turn, who won, and the hit points each fish of each side has left. */
+export interface TeamBattle {
+  turns: Turn[];
+  winner: 0 | 1;
+  left: [number[], number[]];
+}
+
+/** The most fish a side may send. */
+export const TEAM_MAX = 3;
+
+/** "2v2" or "3v3" (also "1v1") → the team size, anything else null. */
+export function teamSizeOf(word: string): number | null {
+  const m = /^([1-9])v([1-9])$/i.exec(word);
+  return m && m[1] === m[2] && Number(m[1]) <= TEAM_MAX ? Number(m[1]) : null;
+}
+
 const edgeOf = (attacker: Fighter, defender: Fighter): 1 | 0 | -1 =>
   BEATS[attacker.type] === defender.type ? 1 : BEATS[defender.type] === attacker.type ? -1 : 0;
 
-/** Fight it out. A coin flip says who strikes first, then they alternate. */
+/** Fight it out, one fish against one. A coin flip says who strikes first, then they alternate. */
 export function fight(a: Fighter, b: Fighter, rng: Rng = cryptoRng): Battle {
-  const sides = [a, b] as const;
-  const left: [number, number] = [a.hp, b.hp];
+  const t = teamFight([a], [b], rng);
+  return { turns: t.turns, winner: t.winner, left: [t.left[0][0], t.left[1][0]] };
+}
+
+/**
+ * Fight it out, team against team: each side's fish in order, the next coming in as
+ * one faints (and striking next, as the turns alternate). A coin flip says who
+ * strikes first. Each pairing gets MAX_TURNS, so a long fight is called on the share of
+ * hit points each side has left, the challenger on a dead heat.
+ */
+export function teamFight(a: Fighter[], b: Fighter[], rng: Rng = cryptoRng): TeamBattle {
+  const teams = [a, b] as const;
+  const left: [number[], number[]] = [a.map(f => f.hp), b.map(f => f.hp)];
+  const at: [number, number] = [0, 0];
+  const standing = (side: 0 | 1): boolean => at[side] < teams[side].length;
   const turns: Turn[] = [];
+  const maxTurns = MAX_TURNS * Math.max(a.length, b.length);
   let by: 0 | 1 = rng() < 0.5 ? 0 : 1;
-  while (left[0] > 0 && left[1] > 0 && turns.length < MAX_TURNS) {
+  while (standing(0) && standing(1) && turns.length < maxTurns) {
     const other: 0 | 1 = by === 0 ? 1 : 0;
-    const edge = edgeOf(sides[by], sides[other]);
+    const attacker = teams[by][at[by]];
+    const defender = teams[other][at[other]];
+    const edge = edgeOf(attacker, defender);
     if (rng() * 100 < EVADE_PERCENT) {
       turns.push({ by, damage: 0, hit: 'miss', edge });
     } else {
       const crit = rng() * 100 < CRIT_PERCENT;
       const swing = 1 - SWING + rng() * 2 * SWING;
-      const damage = Math.max(1, Math.round(sides[by].attack * swing * (edge > 0 ? STRONG : edge < 0 ? WEAK : 1) * (crit ? CRIT_MULTIPLIER : 1)));
-      left[other] = Math.max(0, left[other] - damage);
+      const damage = Math.max(1, Math.round(attacker.attack * swing * (edge > 0 ? STRONG : edge < 0 ? WEAK : 1) * (crit ? CRIT_MULTIPLIER : 1)));
+      left[other][at[other]] = Math.max(0, left[other][at[other]] - damage);
+      if (left[other][at[other]] <= 0) at[other]++;
       turns.push({ by, damage, hit: crit ? 'crit' : 'hit', edge });
     }
     by = other;
   }
-  // Out of turns: whoever has more of their hit points left, the challenger on a dead heat.
-  const winner: 0 | 1 = left[1] <= 0 ? 0 : left[0] <= 0 ? 1 : left[0] / a.hp >= left[1] / b.hp ? 0 : 1;
+  const share = (side: 0 | 1): number => left[side].reduce((x, y) => x + y, 0) / teams[side].reduce((x, f) => x + f.hp, 0);
+  const winner: 0 | 1 = !standing(1) ? 0 : !standing(0) ? 1 : share(0) >= share(1) ? 0 : 1;
   return { turns, winner, left };
 }
+
+/**
+ * Every fish held, one entry each (fish with no length too, one per fish), the way a
+ * team is picked from. `index` is as in pickFighter.
+ */
+function fishUnits(d: FishData | null | undefined, g: PointsGamesConfig): Picked[] {
+  if (!d) return [];
+  const out: Picked[] = [];
+  for (const item of ITEMS) {
+    if (item.type !== 'fish') continue;
+    const have = d.catch.types[item.name] ?? 0;
+    if (have <= 0) continue;
+    const sized = (d.catch.sizes?.[item.name] ?? []).slice(0, have);
+    sized.forEach((held, index) => out.push({ item, index, held, fighter: fighterOf(g, item, held) }));
+    for (let i = sized.length; i < have; i++) out.push({ item, index: -1, fighter: fighterOf(g, item) });
+  }
+  return out;
+}
+
+/**
+ * A team of `n` fish, in the order they fight: the kinds named first (the biggest of each
+ * not already in), then the strongest left; with `random`, any fish held, each an equal
+ * chance. For keeps (`values`), each place gets the fish closest in value to the one it
+ * faces instead. null when fewer than `n` fish are held, or `missing` names a kind asked for
+ * and not held.
+ */
+export function pickTeam(d: FishData | null | undefined, g: PointsGamesConfig, n: number, opts: { names?: string[]; random?: boolean; values?: number[]; rng?: Rng } = {}): { team: Picked[] } | { missing: string } | null {
+  const pool = fishUnits(d, g);
+  if (pool.length < n) return null;
+  const take = (i: number): Picked => pool.splice(i, 1)[0];
+  const strongestOf = (name?: string): number => {
+    let best = -1;
+    pool.forEach((p, i) => {
+      if (name !== undefined && p.item.name !== name) return;
+      if (best < 0 || might(p.fighter) > might(pool[best].fighter)) best = i;
+    });
+    return best;
+  };
+  const team: Picked[] = [];
+  for (const name of (opts.names ?? []).slice(0, n)) {
+    let i = -1;
+    if (opts.values) {
+      const value = opts.values[team.length];
+      let gap = Infinity;
+      pool.forEach((p, j) => {
+        if (p.item.name !== name) return;
+        const x = Math.abs(Math.log(Math.max(1, fishValue(g, p)) / Math.max(1, value)));
+        if (x < gap) { gap = x; i = j; }
+      });
+    } else {
+      i = strongestOf(name);
+    }
+    if (i < 0) return { missing: name };
+    team.push(take(i));
+  }
+  const rng = opts.rng ?? cryptoRng;
+  while (team.length < n) {
+    let i: number;
+    if (opts.values) {
+      const value = opts.values[team.length];
+      let gap = Infinity;
+      i = 0;
+      pool.forEach((p, j) => {
+        const x = Math.abs(Math.log(Math.max(1, fishValue(g, p)) / Math.max(1, value)));
+        if (x < gap) { gap = x; i = j; }
+      });
+    } else {
+      i = opts.random ? Math.floor(rng() * pool.length) : strongestOf();
+    }
+    team.push(take(i));
+  }
+  return { team };
+}
+
+/**
+ * A team as the challenge named it, found again in what its owner holds now: each fish
+ * by kind and length; with `exact` off, a fish gone is stood in for by the biggest
+ * left of its kind (as a one-fish duel sends the biggest of the kind named). null when
+ * one can't be found.
+ */
+export function findTeam(d: FishData | null | undefined, g: PointsGamesConfig, wanted: ReadonlyArray<{ fish: string; cm?: number }>, exact: boolean): Picked[] | null {
+  const pool = fishUnits(d, g);
+  const team: Picked[] = [];
+  for (const w of wanted) {
+    let i = pool.findIndex(p => p.item.name === w.fish && p.held?.cm === w.cm);
+    if (i < 0 && !exact) {
+      pool.forEach((p, j) => {
+        if (p.item.name === w.fish && (i < 0 || might(p.fighter) > might(pool[i].fighter))) i = j;
+      });
+    }
+    if (i < 0) return null;
+    team.push(pool.splice(i, 1)[0]);
+  }
+  return team;
+}
+
+/** Every fish named in `words`, in order, by emoji or by word (🦈 🦈 is two sharks). */
+export function fishesNamed(words: readonly string[]): string[] {
+  const out: string[] = [];
+  for (const w of words) {
+    const name = fishNamed([w]);
+    if (name) out.push(name);
+  }
+  return out;
+}
+
+/** A team's fish together, for keeps: what it's worth. */
+export const teamValue = (g: PointsGamesConfig, team: readonly Picked[]): number => team.reduce((sum, p) => sum + fishValue(g, p), 0);
+
+/** "🦈 87 cm, 🐢, 🐬 66 cm": a team in chat. */
+export const describeTeam = (team: readonly Fighter[]): string => team.map(f => `${f.fish}${f.cm !== null ? ` ${f.cm} cm` : ''}`).join(', ');
 
 /** "🦈 87 cm · 🦷 Predator · Epic", for a challenge and the result. */
 export function describe(f: Fighter): string {
@@ -268,6 +416,8 @@ export interface OverlaySide { user: string; fish: string; cm: number | null; ty
 export interface OverlayDuel {
   a: OverlaySide;
   b: OverlaySide;
+  /** A team battle: each side's fish in the order they fight (a and b are the first of each). */
+  teams?: [OverlaySide[], OverlaySide[]];
   turns: Array<[by: 0 | 1, damage: number, hit: 0 | 1 | 2, edge: 1 | 0 | -1]>;
   winner: 0 | 1;
   stake: 'friendly' | 'wager' | 'keeps';
@@ -290,14 +440,34 @@ export function overlayDuel(users: [string, string], fighters: [Fighter, Fighter
   };
 }
 
+/** A team battle as the overlay gets it. */
+export function overlayTeamDuel(users: [string, string], teams: [Fighter[], Fighter[]], battle: TeamBattle, stake: DuelStake, currency: string): OverlayDuel {
+  const side = (i: 0 | 1, f: Fighter): OverlaySide => ({ user: users[i], fish: f.fish, cm: f.cm, type: f.type, rarity: f.rarity, hp: f.hp });
+  return {
+    a: side(0, teams[0][0]), b: side(1, teams[1][0]),
+    teams: [teams[0].map(f => side(0, f)), teams[1].map(f => side(1, f))],
+    turns: battle.turns.map(t => [t.by, t.damage, t.hit === 'miss' ? 0 : t.hit === 'crit' ? 2 : 1, t.edge]),
+    winner: battle.winner,
+    stake: stake.kind,
+    ...(stake.kind === 'wager' ? { amount: stake.amount, currency } : {})
+  };
+}
+
 /**
  * How long the overlay takes to play a duel: the same sums the overlay does, so
  * chat hears who won as the fight ends on stream rather than before it starts.
  */
-export function playMs(turns: number): number {
+export function playMs(turns: number, switches = 0): number {
   const perTurn = turns > 16 ? 550 : turns > 10 ? 750 : 950;
-  return 2_500 + turns * perTurn + 800;
+  return 2_500 + turns * perTurn + switches * SWITCH_MS + 800;
 }
+
+/** A team battle: the overlay's pause for a fish knocked out and the next coming in (FAINT_MS + ENTER_MS there). */
+export const SWITCH_MS = 1_700;
+
+/** How many times a fish comes in during a team battle: every one knocked out but the last of its side. */
+export const switchesIn = (battle: TeamBattle): number =>
+  battle.left.reduce((n, side) => n + Math.min(side.filter(hp => hp <= 0).length, side.length - 1), 0);
 
 // ─── Challenges waiting for an answer ───────────────────────────────────────
 
@@ -310,6 +480,8 @@ export interface Challenge {
   fish: string;
   /** For keeps, the length of that very fish (absent: one with no length), picked to match one the target holds. */
   cm?: number;
+  /** A team battle: the challenger's fish in fighting order, each by kind and length (absent: one with no length). `fish` is the first. */
+  team?: Array<{ fish: string; cm?: number }>;
   stake: DuelStake;
   expiresAt: number;
 }

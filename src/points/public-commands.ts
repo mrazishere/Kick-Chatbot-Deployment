@@ -168,7 +168,8 @@ export function publicCommands(cfg: PointsConfig, opts: { channel?: BotCommandCh
         ] : []),
         ...(g.duel.enabled ? [
           { usage: `${f} duel @user [fish | random] [amount${g.duel.allowKeeps ? ' | keeps' : ''}]`, short: `${s} d @user`, does: `Challenge them to a fish duel with your strongest fish, the one you name (emoji or word, like shark) or a random one: for glory, for a ${cur} wager${g.duel.allowKeeps ? ", or for keeps (the winner takes the loser's fish)" : ''}` },
-          { usage: `${f} accept [fish | random]`, short: `${s} a`, does: 'Take up a duel, with your strongest fish, the one you name or a random one' },
+          { usage: `${f} duel @user 3v3 [fish fish fish | random] [amount${g.duel.allowKeeps ? ' | keeps' : ''}]`, short: `${s} d @user 3v3`, does: `A team battle (2v2 or 3v3): each side's fish fight one after another, Pokémon style, the next coming in when one faints, and the last side standing wins. Your strongest fish unless you name them${g.duel.allowKeeps ? '; for keeps, the winner takes every fish on the losing team' : ''}` },
+          { usage: `${f} accept [fish | random]`, short: `${s} a`, does: 'Take up a duel, with your strongest fish, the one you name or a random one (for a team battle, name up to 3)' },
           { usage: `${f} deny`, short: `${s} dn`, does: 'Turn a duel down, or take back your own challenge' }
         ] : []),
         ...(g.bigBite.enabled ? [
@@ -187,7 +188,8 @@ export function publicCommands(cfg: PointsConfig, opts: { channel?: BotCommandCh
         { usage: '!wheel', does: 'List the items on the wheel', who: 'mods' },
         { usage: '!wheel spin', short: '!spin', does: 'Spin the wheel', who: 'mods' },
         { usage: '!wheel add <item> | <item>', does: 'Add one or more items, split with |', who: 'mods' },
-        { usage: '!wheel remove <item or number>', short: '!wheel rm', does: 'Take an item off the wheel', who: 'mods' }
+        { usage: '!wheel remove <item or number>', short: '!wheel rm', does: 'Take an item off the wheel', who: 'mods' },
+        { usage: '!wheel history', short: '!wheel h', does: 'The last 5 spins: where it landed, who spun it and when', who: 'mods' }
       ]
     });
   }

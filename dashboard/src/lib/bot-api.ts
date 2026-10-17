@@ -629,6 +629,21 @@ export interface WheelConfig {
   /** Bumped on every change, chat's included: a save names the one it loaded. */
   version: number;
   limits?: { maxItems: number; maxLabel: number; spinSeconds: { min: number; max: number } };
+  /** The latest spins, newest first. Absent from an older bot service. */
+  history?: WheelSpin[];
+}
+
+/** One spin of the wheel as the bot kept it. */
+export interface WheelSpin {
+  ts: number;
+  by: string;
+  result: string;
+  /** 1-based, of itemCount. */
+  position: number;
+  itemCount: number;
+  /** What was on the wheel then. */
+  items: string[];
+  overlay: "fishing" | "video";
 }
 
 export function getWheel(channel: string): Promise<WheelConfig> {
@@ -937,6 +952,8 @@ export interface FishDuelSide {
 export interface FishDuel {
   a: FishDuelSide;
   b: FishDuelSide;
+  /** A team battle (2v2, 3v3): each side's fish in the order they fight; a and b are the first of each. */
+  teams?: [FishDuelSide[], FishDuelSide[]];
   /** Each hit: who struck (0 is a), the damage, 0 a miss / 1 a hit / 2 a critical, and 1 / 0 / -1 for a type advantage, none, or a disadvantage. */
   turns: Array<[by: 0 | 1, damage: number, hit: 0 | 1 | 2, edge: 1 | 0 | -1]>;
   winner: 0 | 1;

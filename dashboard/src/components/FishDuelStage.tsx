@@ -12,22 +12,81 @@ const INTRO_MS = 2_500;
 const perTurnMs = (turns: number) => (turns > 16 ? 550 : turns > 10 ? 750 : 950);
 /** How long the winner stays up. */
 const RESULT_MS = 6_000;
+/** A team battle: a fish knocked out stays this much longer on its turn, sinking. */
+const FAINT_MS = 700;
+/** Then the next one comes in, for this long, before it fights. Both match SWITCH_MS in community/fish-duel.ts. */
+const ENTER_MS = 1_000;
 
 const TYPE_ICON: Record<FishDuelSide["type"], string> = { Predator: "🦷", Swift: "💨", Armored: "🪨" };
 
-function hpAfter(d: FishDuel, turns: number): [number, number] {
-  const hp: [number, number] = [d.a.hp, d.b.hp];
-  for (let i = 0; i < Math.min(turns, d.turns.length); i++) {
+const teamsOf = (d: FishDuel): [FishDuelSide[], FishDuelSide[]] => d.teams ?? [[d.a], [d.b]];
+
+/**
+ * Each side after this many turns: every fish's hit points, the one in the ring, and
+ * whether it was knocked out by the last of those turns (it stays in view that turn,
+ * and the next fish comes in on the one after, as the bot plays it).
+ */
+function stateAfter(d: FishDuel, turns: number, swapLast = false): { hp: [number[], number[]]; at: [number, number]; fainted: [boolean, boolean] } {
+  const teams = teamsOf(d);
+  const hp: [number[], number[]] = [teams[0].map((f) => f.hp), teams[1].map((f) => f.hp)];
+  const at: [number, number] = [0, 0];
+  const fainted: [boolean, boolean] = [false, false];
+  const n = Math.min(turns, d.turns.length);
+  for (let i = 0; i < n; i++) {
     const [by, damage] = d.turns[i];
     const other = by === 0 ? 1 : 0;
-    hp[other] = Math.max(0, hp[other] - damage);
+    fainted[0] = fainted[1] = false;
+    hp[other][at[other]] = Math.max(0, hp[other][at[other]] - damage);
+    if (hp[other][at[other]] <= 0) {
+      fainted[other] = true;
+      if ((i < n - 1 || swapLast) && at[other] < teams[other].length - 1) at[other]++;
+    }
   }
-  return hp;
+  return { hp, at, fainted };
 }
 
-function Side({ side, hp, right, acting, struck, dodged, out, won, pop }: {
+/**
+ * The beats a duel plays, in order, with when each starts: the intro, every turn, and in
+ * a team battle a fish coming in after each one knocked out (but the last of a side).
+ */
+type Beat = { kind: "intro" } | { kind: "turn"; i: number } | { kind: "enter"; i: number; side: 0 | 1 } | { kind: "result" };
+
+function beatsOf(d: FishDuel): { beats: Beat[]; at: number[]; end: number } {
+  const teams = teamsOf(d);
+  const per = perTurnMs(d.turns.length);
+  const hp = [teams[0].map((f) => f.hp), teams[1].map((f) => f.hp)];
+  const on = [0, 0];
+  const beats: Beat[] = [{ kind: "intro" }];
+  const at: number[] = [0];
+  let t = INTRO_MS;
+  d.turns.forEach(([by, damage], i) => {
+    const other = by === 0 ? 1 : 0;
+    beats.push({ kind: "turn", i });
+    at.push(t);
+    t += per;
+    hp[other][on[other]] = Math.max(0, hp[other][on[other]] - damage);
+    if (hp[other][on[other]] <= 0 && on[other] < teams[other].length - 1) {
+      on[other]++;
+      t += FAINT_MS;
+      beats.push({ kind: "enter", i, side: other });
+      at.push(t);
+      t += ENTER_MS;
+    }
+  });
+  beats.push({ kind: "result" });
+  at.push(t);
+  return { beats, at, end: t };
+}
+
+function Side({ side, hp, right, acting, struck, dodged, out, ko, entering, won, pop, bench }: {
   side: FishDuelSide;
   hp: number;
+  /** Its fish was just knocked out, with more to come: the fish sinks, the side stays lit. */
+  ko?: boolean;
+  /** Its next fish is coming in. */
+  entering?: boolean;
+  /** A team battle: every fish on the side, in order, and whether each is still standing. */
+  bench?: Array<{ fish: string; up: boolean; now: boolean }>;
   right: boolean;
   acting: boolean;
   struck: boolean;
@@ -39,8 +98,17 @@ function Side({ side, hp, right, acting, struck, dodged, out, won, pop }: {
   const share = Math.max(0, Math.min(1, hp / side.hp));
   const move = acting ? "fd-lunge" : struck ? "fd-struck" : dodged ? "fd-dodge" : "";
   return (
-    <div className={`fd-side ${right ? "fd-right" : ""} ${out ? "fd-out" : ""} ${won ? "fd-won" : ""}`}>
+    <div className={`fd-side ${right ? "fd-right" : ""} ${out ? "fd-out" : ""} ${ko ? "fd-ko" : ""} ${entering ? "fd-entering" : ""} ${won ? "fd-won" : ""}`}>
       <div className="fd-name">{side.user}</div>
+      {bench ? (
+        <div className="fd-bench">
+          {bench.map((b, i) => (
+            <span key={i} className={`${b.up ? "" : "fd-down"} ${b.now ? "fd-now" : ""}`}>
+              {b.fish}
+            </span>
+          ))}
+        </div>
+      ) : null}
       <div className="fd-arena">
         {/* Keyed by the turn, so the same move plays again on the next one. */}
         <span key={pop ? `f${pop.key}` : acting ? "a" : "idle"} className={`fd-fish ${move}`}>
@@ -72,33 +140,46 @@ function Stage({ ev, onDone }: { ev: FishOverlayEvent; onDone: () => void }) {
   const d = ev.duel!;
   const currency = d.currency ?? "points";
   const total = d.turns.length;
-  // -1 the intro, 0..total-1 the turn playing, total the result.
-  const [step, setStep] = useState(-1);
+  const plan = useMemo(() => beatsOf(d), [d]);
+  // Which beat is playing.
+  const [b, setB] = useState(0);
   const done = useRef(onDone);
   done.current = onDone;
 
   useEffect(() => {
-    const per = perTurnMs(total);
     const timers: Array<ReturnType<typeof setTimeout>> = [];
-    for (let i = 0; i <= total; i++) timers.push(setTimeout(() => setStep(i), INTRO_MS + i * per));
-    timers.push(setTimeout(() => done.current(), INTRO_MS + total * per + RESULT_MS));
+    plan.at.forEach((t, i) => i > 0 && timers.push(setTimeout(() => setB(i), t)));
+    timers.push(setTimeout(() => done.current(), plan.end + RESULT_MS));
     return () => timers.forEach(clearTimeout);
-  }, [ev.id, total]);
+  }, [ev.id, plan]);
 
-  const over = step >= total;
-  const turn = step >= 0 && !over ? d.turns[step] : null;
-  const hp = hpAfter(d, step + 1);
-  const sides = [d.a, d.b] as const;
+  const beat = plan.beats[b];
+  const over = beat.kind === "result";
+  // The turn playing, or the one just played while a fish comes in.
+  const step = beat.kind === "intro" ? -1 : beat.kind === "result" ? total : beat.i;
+  const turn = beat.kind === "turn" ? d.turns[beat.i] : null;
+  const entering = beat.kind === "enter" ? beat.side : null;
+  const teams = teamsOf(d);
+  const size = teams[0].length;
+  const st = stateAfter(d, step + 1, entering !== null);
+  // The fish in the ring on each side.
+  const sides = [teams[0][st.at[0]], teams[1][st.at[1]]] as const;
+  const hp = [st.hp[0][st.at[0]], st.hp[1][st.at[1]]] as const;
 
   let caption = "";
   if (step < 0) caption = d.stake === "wager" && d.amount ? `${d.amount.toLocaleString("en-US")} ${currency} each` : d.stake === "keeps" ? "Winner keeps the loser's fish" : "For glory";
   else if (turn) {
     const [by, , hit, edge] = turn;
-    caption = hit === 0 ? `${sides[by].fish} missed!` : hit === 2 ? "A critical hit!" : edge > 0 ? "It's super effective!" : edge < 0 ? "It's not very effective…" : "";
+    const other = by === 0 ? 1 : 0;
+    caption = st.fainted[other] && size > 1
+      ? `${sides[other].fish} fainted!`
+      : hit === 0 ? `${sides[by].fish} missed!` : hit === 2 ? "A critical hit!" : edge > 0 ? "It's super effective!" : edge < 0 ? "It's not very effective…" : "";
+  } else if (entering !== null) {
+    caption = `${sides[entering].user} sends in ${sides[entering].fish}!`;
   } else {
     const w = sides[d.winner];
-    const l = sides[d.winner === 0 ? 1 : 0];
-    caption = d.stake === "wager" && d.amount ? `${w.user} wins ${d.amount.toLocaleString("en-US")} ${currency}!` : d.stake === "keeps" ? `${w.user} wins and keeps the ${l.fish}!` : `${w.user} wins!`;
+    const lost = teams[d.winner === 0 ? 1 : 0].map((f) => f.fish).join(" ");
+    caption = d.stake === "wager" && d.amount ? `${w.user} wins ${d.amount.toLocaleString("en-US")} ${currency}!` : d.stake === "keeps" ? `${w.user} wins and keeps the ${lost}!` : `${w.user} wins!`;
   }
 
   const view = (i: 0 | 1) => {
@@ -106,15 +187,20 @@ function Stage({ ev, onDone }: { ev: FishOverlayEvent; onDone: () => void }) {
     const pop = defending && turn ? { key: step, text: turn[2] === 0 ? "miss" : `−${turn[1]}`, crit: turn[2] === 2 } : null;
     return (
       <Side
+        // A new fish is a new Side: its bar starts full, nothing of the last one's moves carries over.
+        key={`${i}-${st.at[i]}`}
         side={sides[i]}
         hp={hp[i]}
         right={i === 1}
         acting={!!turn && turn[0] === i}
         struck={defending && turn![2] > 0}
         dodged={defending && turn![2] === 0}
-        out={hp[i] <= 0 || (over && d.winner !== i)}
+        out={over ? d.winner !== i : hp[i] <= 0 && st.at[i] === teams[i].length - 1}
+        ko={!over && hp[i] <= 0 && st.at[i] < teams[i].length - 1}
+        entering={entering === i}
         won={over && d.winner === i}
         pop={pop}
+        bench={size > 1 ? teams[i].map((f, j) => ({ fish: f.fish, up: st.hp[i][j] > 0, now: j === st.at[i] })) : undefined}
       />
     );
   };
@@ -122,10 +208,10 @@ function Stage({ ev, onDone }: { ev: FishOverlayEvent; onDone: () => void }) {
   return (
     <div className={`fd-stage ${over ? "fd-over" : ""}`}>
       <div className="fd-title">
-        <span>⚔️ Fish duel</span>
+        <span>⚔️ {size > 1 ? `Fish battle ${size}v${size}` : "Fish duel"}</span>
         {step >= 0 && !over ? (
           <span className="fd-turn">
-            Turn {step + 1}/{total}
+            Turn {Math.min(step + 1, total)}/{total}
           </span>
         ) : null}
       </div>
@@ -149,23 +235,29 @@ function sampleDuel(id: number): FishOverlayEvent {
     const cm = 20 + Math.floor(Math.random() * 80);
     return { user, fish: f, cm, type, rarity, hp: Math.round((50 + cm * 0.7) * level), attack: Math.round(18 * level) };
   };
-  const a = pick("ash_ketchum");
-  const b = pick("gary_oak");
-  const hp = [a.hp, b.hp];
+  // Every other one a 3v3, so the preview shows team battles too.
+  const size = Math.abs(id) % 2 ? 3 : 1;
+  const teams = [Array.from({ length: size }, () => pick("ash_ketchum")), Array.from({ length: size }, () => pick("gary_oak"))] as const;
+  const hp = [teams[0].map((f) => f.hp), teams[1].map((f) => f.hp)];
+  const at = [0, 0];
   const turns: FishDuel["turns"] = [];
   let by: 0 | 1 = Math.random() < 0.5 ? 0 : 1;
-  while (hp[0] > 0 && hp[1] > 0 && turns.length < 40) {
+  while (at[0] < size && at[1] < size && turns.length < 40 * size) {
     const other: 0 | 1 = by === 0 ? 1 : 0;
     const roll = Math.random();
-    const damage = roll < 0.1 ? 0 : Math.round((by === 0 ? a : b).attack * (0.85 + Math.random() * 0.3) * (roll > 0.9 ? 1.5 : 1));
-    hp[other] = Math.max(0, hp[other] - damage);
+    const damage = roll < 0.1 ? 0 : Math.round(teams[by][at[by]].attack * (0.85 + Math.random() * 0.3) * (roll > 0.9 ? 1.5 : 1));
+    hp[other][at[other]] = Math.max(0, hp[other][at[other]] - damage);
+    if (hp[other][at[other]] <= 0) at[other]++;
     turns.push([by, damage, roll < 0.1 ? 0 : roll > 0.9 ? 2 : 1, 0]);
     by = other;
   }
   const stake = (["friendly", "wager", "keeps"] as const)[Math.abs(id) % 3];
   return {
-    id, ts: Date.now(), username: a.user, kind: "duel", text: "",
-    duel: { a, b, turns, winner: hp[1] <= 0 ? 0 : 1, stake, ...(stake === "wager" ? { amount: 500, currency: "$DON" } : {}) },
+    id, ts: Date.now(), username: "ash_ketchum", kind: "duel", text: "",
+    duel: {
+      a: teams[0][0], b: teams[1][0], ...(size > 1 ? { teams: [teams[0], teams[1]] as [FishDuelSide[], FishDuelSide[]] } : {}),
+      turns, winner: at[1] >= size ? 0 : 1, stake, ...(stake === "wager" ? { amount: 500, currency: "$DON" } : {}),
+    },
   };
 }
 
@@ -275,6 +367,18 @@ const CSS = `
 .fd-side{flex:1;min-width:0;display:flex;flex-direction:column;transition:opacity .5s ease}
 .fd-right{text-align:right}
 .fd-name{font-weight:800;font-size:.95em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fd-bench{display:flex;gap:.35em;font-size:.9em;line-height:1.25;margin-top:.05em}
+.fd-right .fd-bench{justify-content:flex-end}
+.fd-bench span{opacity:.6;padding-bottom:.05em;border-bottom:.12em solid transparent}
+.fd-bench .fd-now{opacity:1;border-bottom-color:#fde047}
+.fd-bench .fd-down{opacity:.28;filter:grayscale(1)}
+.fd-ko .fd-fish{animation:fd-struck .45s ease-in-out .15s both,fd-ko .7s ease-in .5s forwards}
+@keyframes fd-ko{30%{transform:translateY(-.2em) rotate(calc(var(--dir) * 20deg))}to{transform:translateY(.7em) rotate(calc(var(--dir) * 180deg)) scale(.7);opacity:.25;filter:grayscale(1)}}
+.fd-ko .fd-fill{transition:none}
+.fd-entering .fd-fish{animation:fd-in .7s cubic-bezier(.2,1.3,.4,1) both}
+@keyframes fd-in{from{transform:translateX(calc(var(--dir) * -2.2em)) scale(.4);opacity:0}to{transform:none;opacity:1}}
+.fd-entering .fd-bar{animation:fd-barin .5s ease-out both}
+@keyframes fd-barin{from{opacity:0}to{opacity:1}}
 .fd-arena{position:relative;height:2.9em;display:flex;align-items:center;justify-content:center}
 .fd-fish{display:inline-block;font-size:2.3em;line-height:1;--dir:1}
 .fd-right .fd-fish{--dir:-1}

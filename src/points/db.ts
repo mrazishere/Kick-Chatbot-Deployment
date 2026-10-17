@@ -304,7 +304,22 @@ CREATE TABLE video_queue (
 CREATE INDEX video_queue_status ON video_queue(status, id);
 `;
 
-const SCHEMA_VERSION = 12;
+/** v13: wheel_spins, every spin of the prize wheel and where it landed. */
+const SCHEMA_V13 = `
+CREATE TABLE wheel_spins (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts INTEGER NOT NULL,
+  by_name TEXT NOT NULL,
+  result TEXT NOT NULL,
+  position INTEGER NOT NULL,
+  item_count INTEGER NOT NULL,
+  items TEXT NOT NULL,
+  overlay TEXT NOT NULL
+);
+CREATE INDEX wheel_spins_ts ON wheel_spins(ts);
+`;
+
+const SCHEMA_VERSION = 13;
 
 export function migrate(db: PointsDb): void {
   if ((db.pragma('user_version', { simple: true }) as number) >= SCHEMA_VERSION) return;
@@ -325,6 +340,7 @@ export function migrate(db: PointsDb): void {
     if (version < 10) db.exec(SCHEMA_V10);
     if (version < 11) db.exec(SCHEMA_V11);
     if (version < 12) db.exec(SCHEMA_V12);
+    if (version < 13) db.exec(SCHEMA_V13);
     if (version < SCHEMA_VERSION) db.pragma(`user_version = ${SCHEMA_VERSION}`);
   }).immediate();
 }

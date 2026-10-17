@@ -6,7 +6,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { Loader2, Plus, RotateCw, Trash2 } from "lucide-react";
-import type { WheelConfig, WheelItem } from "@/lib/bot-api";
+import type { WheelConfig, WheelItem, WheelSpin } from "@/lib/bot-api";
 import { Button, Card, Toggle } from "./ui";
 
 /** The overlay's palette, so an item without a colour shows the one it'll get. */
@@ -113,7 +113,8 @@ export default function WheelCard({ channel, fishingOn }: { channel: string; fis
         <p className="text-xs leading-relaxed text-neutral-500">
           A prize wheel on the fishing overlay. The streamer, the bot owner and mods spin it with <code className="text-neutral-300">!wheel spin</code> (or{" "}
           <code className="text-neutral-300">!spin</code>) and can change it with <code className="text-neutral-300">!wheel add &lt;item&gt;</code> and{" "}
-          <code className="text-neutral-300">!wheel remove &lt;item&gt;</code>; anyone can list it with <code className="text-neutral-300">!wheel</code>. Every item is
+          <code className="text-neutral-300">!wheel remove &lt;item&gt;</code>, list it with <code className="text-neutral-300">!wheel</code> and see the last spins with{" "}
+          <code className="text-neutral-300">!wheel history</code>. Every item is
           equally likely. Fishing alerts wait on the overlay while it spins, and chat gets the result.
         </p>
         {!fishingOn ? (
@@ -209,11 +210,39 @@ export default function WheelCard({ channel, fishingOn }: { channel: string; fis
               </Button>
               {notice && !dirty ? <span className="text-sm text-[#53FC18]">{notice}</span> : null}
             </div>
+
+            <SpinHistory spins={loaded.history} />
           </>
         ) : null}
 
         {error ? <p className="text-sm text-red-400">{error}</p> : null}
       </div>
     </Card>
+  );
+}
+
+/** The latest spins, newest first; hovering one shows what was on the wheel then. */
+function SpinHistory({ spins }: { spins?: WheelSpin[] }) {
+  if (!spins) return null;
+  return (
+    <div className="border-t border-neutral-800 pt-4">
+      <p className="text-sm font-medium text-neutral-200">Spin history</p>
+      {spins.length === 0 ? (
+        <p className="mt-1 text-xs text-neutral-500">No spins yet.</p>
+      ) : (
+        <ul className="mt-2 max-h-72 space-y-1 overflow-y-auto pr-1 text-xs">
+          {spins.map((s, i) => (
+            <li key={`${s.ts}-${i}`} className="flex flex-wrap items-baseline gap-x-2" title={s.items.length ? `On the wheel: ${s.items.join(" · ")}` : undefined}>
+              <span className="w-32 shrink-0 tabular-nums text-neutral-500">{new Date(s.ts).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}</span>
+              <span className="min-w-0 flex-1 break-words text-neutral-200">{s.result}</span>
+              <span className="text-neutral-500">
+                {s.position} of {s.itemCount} · {s.by}
+                {s.overlay === "video" ? " · video overlay" : ""}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }
