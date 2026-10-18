@@ -1372,6 +1372,20 @@ async function main(): Promise<void> {
       const wiped = await asStreamer('$don fish remove @cheater all');
       check('remove all takes every fish and leaves the junk', wiped.includes('Removed') && fishOf(56).catch.fish === 0 && fishOf(56).catch.junk === 1
         && (await asStreamer('$don fish remove @cheater all junk')).includes('🥫') && fishOf(56).catch.junk === 0, wiped);
+      // fish add: the streamer (or the bot owner) hands a viewer fish, from nothing.
+      const addDenied = await asStreamer('$don fish add @cheater 🦈 72cm', ['friend', 52], false);
+      const caught = fishOf(56).lifetime.fish;
+      const granted = await asStreamer('$don fish add @cheater 🦈 72cm 🐟 2 🥫');
+      const ac = fishOf(56).catch;
+      check('only the streamer or the bot owner adds fish: those lengths, random ones otherwise, not a catch', addDenied === ''
+        && granted.includes('Added 🦈 72 cm, 🐟 (') && granted.includes('🥫 to @cheater') && ac.types['🦈'] === 1 && ac.types['🐟'] === 2 && ac.fish === 3 && ac.junk === 1
+        && ac.sizes!['🦈'][0].cm === 72 && ac.sizes!['🐟'].length === 2 && ac.sizes!['🐟'].every(h => h.cm >= 1 && h.cm <= 100) && fishOf(56).lifetime.fish === caught, { granted, ac });
+      const lead = await asStreamer('$don fish add @cheater 1cm 🦈');
+      check('a length typed before the fish goes with it', lead.includes('Added 🦈 1 cm to @cheater') && fishOf(56).catch.sizes!['🦈'].some(h => h.cm === 1)
+        && (await asStreamer('$don fish remove @cheater 1cm 🦈')).includes('Removed 🦈 1 cm') && (await asStreamer('$don fish add @cheater 5cm')).includes('Name the fish before its length'), lead);
+      check('add keeps to the bucket cap and lengths of 1 to 100', (await asStreamer('$don fish add @cheater 🐟 100')).includes('Nothing added: @cheater has 3/100 fish, room for 97 more')
+        && (await asStreamer('$don fish add @cheater 🐟 101cm')).includes('1 to 100 cm') && fishOf(56).catch.fish === 3);
+      await asStreamer('$don fish remove @cheater all junk');
       check('the Commands tab lists remove for the streamer', publicCommands(effectivePointsConfig({ enabled: true, games: { enabled: true } })).sections.find(sec => sec.title === 'Fishing')!.rows
         .some(r => r.usage.includes('fish remove') && r.who === 'streamer'));
       const row = publicCommands(effectivePointsConfig({ enabled: true, games: { enabled: true, giveEnabled: true } })).sections.find(sec => sec.title === 'Fishing')!.rows.find(r => r.usage.includes('fish give'));
@@ -1522,7 +1536,11 @@ async function main(): Promise<void> {
     const trophyRolls = Array.from({ length: 500 }, () => weightedCatch('trophy', g0));
     check('casts never roll a trophy, big bites only roll trophies', !fishRolls.some(n => isTrophy(n)) && trophyRolls.every(t => t.trophy));
     check('trophies are Mythic and their prices aren\'t scaled by the channel', rarityOf(g0, '🐉') === 'Mythic' && rarityOf(g0, '🐋') !== 'Mythic'
-      && sellPrice(ITEMS.find(i => i.name === '🐉')!, g0) === 25_000 && g0.catches.find(c => c.name === '🐉')?.trophy === true, rarityOf(g0, '🐉'));
+      && sellPrice(ITEMS.find(i => i.name === '🐉')!, g0) === 12_500 && g0.catches.find(c => c.name === '🐉')?.trophy === true, rarityOf(g0, '🐉'));
+    // Trophies fight as their tier: a seal like a Rare fish, only the dragon as a Mythic.
+    const hpOf = (n: string) => fighterOf(g0, ITEMS.find(i => i.name === n)!, { cm: 50, record: false }).hp;
+    check('trophies fight as their tier, not all as Mythic', hpOf('🦭') === hpOf('🐬') && hpOf('🦕') === hpOf('🦈') && hpOf('🦄') === hpOf('🐳') && hpOf('🐉') > hpOf('🐳')
+      && fighterOf(g0, ITEMS.find(i => i.name === '🦭')!).rarity === 'Mythic', { seal: hpOf('🦭'), dolphin: hpOf('🐬'), dragon: hpOf('🐉') });
 
     const ch = 'fishbite';
     writeConfig(root, ch, { enabled: true, currencyName: '$DON', debugFishTesters: ['tester'], games: { enabled: true, onlyWhileLive: false, stories: false } });
@@ -1958,7 +1976,7 @@ async function main(): Promise<void> {
       && fishNamed(['[emote:1:KEKLEO]']) === 'KEKLEO' && fishNamed(['Kekleo']) === 'KEKLEO', sl);
 
     const ch = 'customfishch';
-    writeConfig(root, ch, { enabled: true, currencyName: '$DON', games: { enabled: true, onlyWhileLive: false, customFish: [{ name: 'KEKLEO', weight: 1, price: 500, type: 'Predator' }] } });
+    writeConfig(root, ch, { enabled: true, currencyName: '$DON', games: { enabled: true, onlyWhileLive: false, customFish: [{ name: 'KEKLEO', weight: 1, price: 500, type: 'Predator' }, { name: 'kek00cat', weight: 1, price: 300, type: 'Swift' }] } });
     makeService(ch, { broadcaster: 999, live: async () => ({ isLive: false, startedAt: null }) });
     const pdb = openPointsDb(ch, { create: true })!;
     runWrite(pdb, () => {
@@ -1985,6 +2003,18 @@ async function main(): Promise<void> {
     const sold = await say('$don fish sell [emote:37225:KEKLEO] 30cm');
     check('viewers show and sell it like any fish, its name spaced so it shows as the emote', /KEKLEO KEKLEO/.test(shown) && !/KEKLEOKEKLEO|🐟KEKLEO|KEKLEO🐟/.test(shown)
       && kinds.includes('2 KEKLEO (🦷 Predator') && kinds.includes('80 cm') && sold.includes('Sold your KEKLEO 30 cm for') && loadFish(pdb, 35)!.catch.types.KEKLEO === 1, { shown, kinds, sold });
+    // The streamer adds one, from Kick's emote picker, the length either side.
+    shift += 6_000;
+    const outs: string[] = [];
+    const st: KickTags = { username: ch, 'display-name': ch, badges: {}, isBroadcaster: true, isModUp: true, isVIPUp: false, rawBadges: [], senderId: 999 };
+    for (const m of ['$don fish add kekfan 1cm [emote:37225:KEKLEO]', '$don fish add @kekfan [emote:37225:KEKLEO] 64cm', '$don fish add kekfan [emote:6020230:kek00cat] 1cm', '$don fish add kekfan kek00cat 2']) {
+      shift += 6_000;
+      await fishCommand({ say: async (_c, x) => { outs.push(x); } }, m, `#${ch}`, st, { channelName: ch } as ChannelConfig);
+    }
+    check('the streamer adds a custom fish by its emote, the length before or after', outs[0]?.includes('Added KEKLEO 1 cm to @kekfan') && outs[1]?.includes('Added KEKLEO 64 cm')
+      && JSON.stringify(loadFish(pdb, 35)!.catch.sizes!.KEKLEO.map(h => h.cm)) === '[80,1,64]'
+      // Digits in a fish's own name aren't a count: the length is its, and a count after still counts.
+      && outs[2]?.endsWith('🎁 Added kek00cat 1 cm to @kekfan. They have 5 fish and 0 junk now.') && /Added kek00cat \(\d+, \d+ cm\)/.test(outs[3] ?? ''), outs);
     Date.now = realNow;
   }
 

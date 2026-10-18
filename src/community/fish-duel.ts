@@ -75,7 +75,8 @@ export interface Fighter {
 
 export function fighterOf(g: PointsGamesConfig, item: CatchItem, held?: HeldFish): Fighter {
   const rarity = rarityOf(g, item.name) ?? 'Common';
-  const level = LEVEL[rarity] ?? 1;
+  // A trophy fights as its tier, while still shown as the Mythic it is.
+  const level = LEVEL[item.duelRarity ?? rarity] ?? 1;
   const cm = Math.min(100, Math.max(1, held?.cm ?? UNSIZED_CM));
   const fed = levelOf(held);
   const boost = 1 + LEVEL_STATS * fed;

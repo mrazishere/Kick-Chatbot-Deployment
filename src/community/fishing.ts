@@ -32,6 +32,11 @@ export interface CatchItem {
   /** A trophy's chance (%) that the last pull lands it rather than snapping the line: rarer, lower. */
   landPercent?: number;
   /**
+   * The rarity a trophy fights as (community/fish-duel.ts): every trophy is Mythic, but only the
+   * top one fights like it, so the common ones don't outclass sharks and whales. Absent: its rarity.
+   */
+  duelRarity?: 'Rare' | 'Epic' | 'Legendary' | 'Mythic';
+  /**
    * A fish a channel added on its dashboard (games.customFish): an emoji or an emote's
    * name. Only the channels that list it catch it; anyone holding one can still sell it.
    */
@@ -60,12 +65,14 @@ export const ITEMS: CatchItem[] = [
   ...fishTier(['🐳', '🐋'], 0.1, 1500),
   // Big bite trophies. Weights are shares of big bites; prices are listed, not scaled
   // like supibot's fish, so a channel that triples fish prices sets these itself.
-  { name: '🦭', type: 'fish', price: 1_000, weight: 30, size: true, trophy: true, landPercent: 90 },
-  { name: '🦦', type: 'fish', price: 1_500, weight: 25, size: true, trophy: true, landPercent: 80 },
-  { name: '🦕', type: 'fish', price: 2_500, weight: 20, size: true, trophy: true, landPercent: 70 },
-  { name: '🦖', type: 'fish', price: 4_000, weight: 10, size: true, trophy: true, landPercent: 60 },
-  { name: '🦄', type: 'fish', price: 6_000, weight: 10, size: true, trophy: true, landPercent: 50 },
-  { name: '🐉', type: 'fish', price: 25_000, weight: 5, size: true, trophy: true, landPercent: 40 }
+  // 2026-10-18: big bites flooded the market (18 landed a day, trophies 8-0 in duels against
+  // fish), so prices halved, land chances lowered and fighting strength set by tier.
+  { name: '🦭', type: 'fish', price: 500, weight: 30, size: true, trophy: true, landPercent: 60, duelRarity: 'Rare' },
+  { name: '🦦', type: 'fish', price: 750, weight: 25, size: true, trophy: true, landPercent: 50, duelRarity: 'Rare' },
+  { name: '🦕', type: 'fish', price: 1_250, weight: 20, size: true, trophy: true, landPercent: 40, duelRarity: 'Epic' },
+  { name: '🦖', type: 'fish', price: 2_000, weight: 10, size: true, trophy: true, landPercent: 30, duelRarity: 'Epic' },
+  { name: '🦄', type: 'fish', price: 3_000, weight: 10, size: true, trophy: true, landPercent: 20, duelRarity: 'Legendary' },
+  { name: '🐉', type: 'fish', price: 12_500, weight: 5, size: true, trophy: true, landPercent: 10, duelRarity: 'Mythic' }
 ];
 
 /** Custom fish by lowercase name, for typing an emote's name in any case. */

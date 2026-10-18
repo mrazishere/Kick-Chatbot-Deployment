@@ -63,7 +63,7 @@ import { wheelBusy } from '../community/wheel-state';
 import { recordSignal } from '../community/cheat-signals';
 import { BITE_TOO_FAST_MS, STREAM_GRACE_MS, biteFor, canBite, channelBite, channelHasBite, codeMatches, getAway, nextPull, pickChatter, snipeBite, snipeOpen, startBite, takeBite, type BiteContext } from '../community/big-bite';
 import {
-  addItem, giveItems, baitPrice, baitRoll, currentReel, heldFishValue, landsFish, moveFish, pickHeld, stealableFish, stealChance, stealCharges, stealRollChance, worstStealCharges, parseSellList, takeSized, addXp, levelCost, levelOf, MAX_LEVEL, capOf, emoteWord, isWordName, nearCap, overflow, CatchItem, CatchType, FAILURE_EMOTES, FishData, findBait, hasFishedBefore, initialData, rarityOf, recordCatch,
+  addItem, itemByWord, giveItems, baitPrice, baitRoll, currentReel, heldFishValue, landsFish, moveFish, pickHeld, stealableFish, stealChance, stealCharges, stealRollChance, worstStealCharges, parseSellList, takeSized, addXp, levelCost, levelOf, MAX_LEVEL, capOf, emoteWord, isWordName, nearCap, overflow, CatchItem, CatchType, FAILURE_EMOTES, FishData, findBait, hasFishedBefore, initialData, rarityOf, recordCatch,
   ITEMS, JUNK_MESSAGES, loadFish, MISS_DELAY_MS, pick, randomInt, rollCatch, saveFish, sellPrice, STORY_STYLES, SUCCESS_EMOTES,
   takeItems, TYPE_DESCRIPTIONS, weightedCatch
 } from '../community/fishing';
@@ -77,7 +77,7 @@ const pointer = makeCooldown(60_000);
 /** The timer that ends each waiting trap check when its time runs out, by channel and user id. */
 const checkTimers = new Map<string, NodeJS.Timeout>();
 
-export const SUBCOMMANDS: Record<string, 'buy' | 'sell' | 'show' | 'stats' | 'top' | 'trap' | 'steal' | 'give' | 'duel' | 'accept' | 'deny' | 'reel' | 'bigbite' | 'answer' | 'remove' | 'feed'> = {
+export const SUBCOMMANDS: Record<string, 'buy' | 'sell' | 'show' | 'stats' | 'top' | 'trap' | 'steal' | 'give' | 'duel' | 'accept' | 'deny' | 'reel' | 'bigbite' | 'answer' | 'remove' | 'feed' | 'add'> = {
   buy: 'buy', b: 'buy', sell: 'sell', s: 'sell',
   show: 'show', sh: 'show', count: 'show', display: 'show', collection: 'show',
   stats: 'stats', st: 'stats', top: 'top', tp: 'top', leaderboard: 'top',
@@ -88,6 +88,8 @@ export const SUBCOMMANDS: Record<string, 'buy' | 'sell' | 'show' | 'stats' | 'to
   feed: 'feed', fd: 'feed', eat: 'feed', evolve: 'feed',
   // The streamer or the bot owner: take fish off a viewer.
   remove: 'remove', rm: 'remove', confiscate: 'remove',
+  // The streamer or the bot owner: hand a viewer fish or junk.
+  add: 'add', ad: 'add', grant: 'add',
   duel: 'duel', d: 'duel', battle: 'duel', fight: 'duel', accept: 'accept', a: 'accept', deny: 'deny', dn: 'deny', decline: 'deny',
   reel: 'reel', r: 'reel',
   // A trap check's answer (community/trap-check.ts).
@@ -107,10 +109,16 @@ interface FishPick { item: CatchItem; n: number; cm?: number; counted: boolean }
 
 function parsePicks(parts: string[]): { picks: FishPick[] } | { error: 'order' | 'length' | 'amount' | 'unknown' } {
   const picks: FishPick[] = [];
+  // A length typed first ("1cm 🦈") goes with the fish named right after it.
+  let leading: number | null = null;
   for (const w of splitLengths(parts)) {
     const last = picks[picks.length - 1];
     if (isLength(w)) {
-      if (!last) return { error: 'order' };
+      if (!last) {
+        if (leading !== null) return { error: 'order' };
+        leading = parseInt(w, 10);
+        continue;
+      }
       if (last.item.type !== 'fish') return { error: 'length' };
       const cm = parseInt(w, 10);
       // The kind's first length is that fish; each one after is another of the kind.
@@ -127,8 +135,18 @@ function parsePicks(parts: string[]): { picks: FishPick[] } | { error: 'order' |
     }
     const one = parseSellList([w]);
     if ('error' in one) return { error: one.error };
-    for (const x of one.items) picks.push({ item: x.item, n: x.n, counted: /\d/.test(w) });
+    // A count typed onto it ("🐟3") is counted; a name that has digits ("sukasbl00dcat") isn't.
+    const plain = !!itemByWord(w) || ITEMS.some(i => i.name === w.replace(/\uFE0F/g, ''));
+    for (const x of one.items) picks.push({ item: x.item, n: x.n, counted: !plain && /\d/.test(w) });
+    if (leading !== null) {
+      const first = picks[0];
+      if (picks.length !== 1 || first.n !== 1 || first.counted) return { error: 'order' };
+      if (first.item.type !== 'fish') return { error: 'length' };
+      first.cm = leading;
+      leading = null;
+    }
   }
+  if (leading !== null) return { error: 'order' };
   return { picks };
 }
 
@@ -1329,7 +1347,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
 
   /** Challenge someone: `duel @user [fish | random] [amount | keeps]`. */
   /** The reply for words parsePicks couldn't read. */
-  const pickError = (error: 'order' | 'length' | 'amount' | 'unknown', verb: 'sell' | 'remove @user' | 'feed'): string =>
+  const pickError = (error: 'order' | 'length' | 'amount' | 'unknown', verb: 'sell' | 'remove @user' | 'add @user' | 'feed'): string =>
     error === 'order' ? `Name the fish before its length, like ${cmd} fish ${verb} 🦈 72cm`
       : error === 'length' ? 'Only fish have a length.'
         : error === 'unknown' ? `You provided an unknown item type! Use one of: ${runOf(ITEMS.filter(i => !i.custom || g.catches.some(c => c.name === i.name)).map(i => i.name))}`
@@ -1472,6 +1490,62 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       saveFish(db!, target.user_id, d, now);
       console.log(`[FISH] ${me} removed ${gone.join(' ')} from ${target.username} in ${chan}`);
       return `🗑️ Removed ${gone.join(', ')} from @${target.username}. They have ${d.catch.fish} fish and ${d.catch.junk} junk left.`;
+    });
+    if (text) say(text);
+  }
+
+  // ── add ──
+  /**
+   * The streamer or the bot owner hands a viewer fish or junk, from nothing: a prize, a
+   * refund for a bug. The same words as sell ("🦈 72cm 🐟 3"); a fish named without a length
+   * gets a random one, as a trap's does. Not a catch: no stats, records or history change.
+   * Nothing is added past the viewer's bucket caps.
+   */
+  function add(parts: string[]): void {
+    const usage = `Usage: ${cmd} fish add @user 🦈 72cm 🐟 3 (fish or junk, lengths, counts)`;
+    const at = parts.findIndex(p => p.startsWith('@'));
+    const name = parseUsername(parts[at >= 0 ? at : 0]);
+    const words = parts.filter((_, i) => i !== (at >= 0 ? at : 0));
+    if (!name || !words.length) return void say(usage);
+    const target = findUserByName(db!, name.toLowerCase());
+    if (!target) return void say('No such user exists!');
+    const parsed = parsePicks(words);
+    if ('error' in parsed) return void say(pickError(parsed.error, 'add @user'));
+    // Another channel's custom fish isn't one here.
+    const foreign = parsed.picks.find(p => p.item.custom && !g.catches.some(c => c.name === p.item.name));
+    if (foreign) return void say(pickError('unknown', 'add @user'));
+    if (parsed.picks.some(p => p.cm !== undefined && (p.cm < 1 || p.cm > 100))) return void say('A fish is 1 to 100 cm long.');
+    const text = once(now => {
+      const d = loadFish(db!, target.user_id) ?? initialData();
+      const want = { fish: 0, junk: 0 };
+      for (const p of parsed.picks) want[p.item.type] += p.n;
+      for (const type of ['fish', 'junk'] as const) {
+        const cap = capOf(g, type);
+        if (cap > 0 && want[type] > 0 && d.catch[type] + want[type] > cap) {
+          return `Nothing added: @${target.username} has ${d.catch[type]}/${cap} ${type}, room for ${Math.max(0, cap - d.catch[type])} more.`;
+        }
+      }
+      // A gift from the streamer, not a catch: lifetime counts stay as they were.
+      const lifetime = { fish: d.lifetime.fish, junk: d.lifetime.junk };
+      const added: string[] = [];
+      for (const p of parsed.picks) {
+        const cms: number[] = [];
+        for (let i = 0; i < p.n; i++) {
+          addItem(d, p.item);
+          if (p.item.type !== 'fish') continue;
+          const cm = p.cm ?? randomInt(1, 100);
+          ((d.catch.sizes ??= {})[p.item.name] ??= []).push({ cm, record: false });
+          cms.push(cm);
+        }
+        added.push(p.item.type === 'fish'
+          ? (p.cm !== undefined ? `${p.item.name} ${p.cm} cm${p.n > 1 ? ` x${p.n}` : ''}` : `${p.item.name} (${cms.join(', ')} cm)`)
+          : `${p.item.name}${p.n > 1 ? ` x${p.n}` : ''}`);
+      }
+      d.lifetime.fish = lifetime.fish;
+      d.lifetime.junk = lifetime.junk;
+      saveFish(db!, target.user_id, d, now);
+      console.log(`[FISH] ${me} added ${added.join(' ')} to ${target.username} in ${chan}`);
+      return `🎁 Added ${added.join(', ')} to @${target.username}. They have ${d.catch.fish} fish and ${d.catch.junk} junk now.`;
     });
     if (text) say(text);
   }
@@ -1675,7 +1749,10 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     if ('off' in fought) return void announce(`@${me} @${c.challenger} ${fought.off}`);
     // With an overlay showing the fight, chat hears who won as it ends there, not before it starts.
     const playing = overlayShowing(db!);
-    pushOverlay(db!, { username: fought.winner, kind: 'duel', text: fought.text.replace(/@/g, ''), duel: fought.duel });
+    // Fish named after emotes (custom fish) show as the emote on the stage.
+    const d0 = fought.duel;
+    const duelEmotes = emoteImages(chan, [d0.a.fish, d0.b.fish, ...(d0.teams ?? []).flat().map(f => f.fish)].join(' '));
+    pushOverlay(db!, { username: fought.winner, kind: 'duel', text: fought.text.replace(/@/g, ''), duel: d0, ...(Object.keys(duelEmotes).length ? { emotes: duelEmotes } : {}) });
     if (!playing) return void announce(fought.text);
     await announce(`⚔️ ${c.challenger} vs ${me}: the fish ${c.team ? `battle (${c.team.length}v${c.team.length})` : 'duel'} is on! Watch the stream.`);
     // The stream shows the fight streamDelaySeconds behind chat.
@@ -1975,6 +2052,11 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
         if (!(tags.isBroadcaster || isBotOwner(me))) return ignore('remove is for the streamer and the bot owner');
         duelReply = true;
         return remove(rest);
+      case 'add':
+        // The streamer and the bot owner only, like remove.
+        if (!(tags.isBroadcaster || isBotOwner(me))) return ignore('add is for the streamer and the bot owner');
+        duelReply = true;
+        return add(rest);
       case 'duel':
         if (userId === null || excluded) return ignore('no account or excluded');
         duelReply = g.duel.enabled;

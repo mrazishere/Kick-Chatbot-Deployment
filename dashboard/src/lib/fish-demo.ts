@@ -186,7 +186,7 @@ export function demoBigBite(startId: number): Array<{ afterMs: number; at: () =>
     {
       afterMs: 17_000,
       at: step(3, () => landed
-        ? { kind: "catch", item: trophy, rarity: "Mythic", text: `🏆 You reeled it in! A MYTHIC ✨${trophy}✨! It is ${int(1, 100)} cm in length. Worth 1,000 $DON.` }
+        ? { kind: "catch", item: trophy, rarity: "Mythic", text: `🏆 You reeled it in! A MYTHIC ✨${trophy}✨! It is ${int(1, 100)} cm in length. Worth 500 $DON.` }
         : { kind: "miss", item: trophy, rarity: "Mythic", text: `So close! It was a ✨${trophy}✨! It thrashed free on the last pull and snapped the line! 😱` }),
     },
   ];

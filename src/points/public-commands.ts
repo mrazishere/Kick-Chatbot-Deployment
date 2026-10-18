@@ -201,6 +201,7 @@ export function publicCommands(cfg: PointsConfig, opts: { channel?: BotCommandCh
           { usage: `${f} reel <code>`, short: `${s} r <code>`, does: 'Answer a big bite with the code shown on stream' },
           { usage: `${f} bigbite [@user | me]`, short: `${s} bb`, does: 'Start a big bite now, on a random chatter, the one named, or yourself', who: 'streamer' as const }
         ] : []),
+        { usage: `${f} add @user 🦈 72cm 🐟 3`, short: `${s} ad @user 🦈`, does: 'Give a viewer fish or junk from nothing: by kind, length and count (no length: a random one), within their bucket caps; not counted as a catch', who: 'streamer' as const },
         { usage: `${f} remove @user 🦈 72cm 🐟 3`, short: `${s} rm @user 🦈`, does: 'Take fish off a viewer for nothing: by kind, length and count, or all (all junk for junk too); nothing goes if any isn\'t theirs', who: 'streamer' as const }
       ]
     });

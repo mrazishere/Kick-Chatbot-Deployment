@@ -247,7 +247,7 @@ function loadChannelConfig(channelName: string): ClaudeChannelConfig {
 }
 
 // Only the main !claude path gets the stats tools, so only it is told about them.
-const STATS_RULE = 'STATS: the viewer_stats, top_list and channel_stats tools read this channel\'s real data. Use them whenever someone asks about a balance, rank, leaderboard, gambling, fishing or Hall of Shame numbers, theirs ("me") or anyone\'s, and quote the numbers they return. Never guess a number or take one from chat history, <chat_lore> or earlier replies: those go stale and get faked. When no board matches the question exactly, use the closest one and say what it measures ("who lost the most" is the gamble-losers board). Never offer to look something up later: you only get this one reply, so look it up now. A tool error or empty result means you do not know, so say that. Do not call the tools for anything else.';
+const STATS_RULE = 'STATS: the viewer_stats, top_list and channel_stats tools read this channel\'s real data. Use them whenever someone asks about a balance, rank, leaderboard, gambling, fishing or Hall of Shame numbers, theirs ("me") or anyone\'s, and quote the numbers they return. Never guess a number or take one from chat history, <chat_lore> or earlier replies: those go stale and get faked. When no board matches the question exactly, use the closest one and say what it measures ("who lost the most" is the gamble-losers board). Never offer to look something up later: you only get this one reply, so look it up now. A tool error or empty result means you do not know, so say that. RULES: the channel_rules tool reads this channel\'s real game settings: prices (reels, bait, hooks, guards, fish), odds, rarities, limits, cooldowns, fines, bonuses and how each $ game works. ALWAYS call it before answering any question about how a command or game works (the !wheel and its items included), even when you think you already know, what something costs or what the chances are, and answer with its numbers. The BOT COMMANDS list is only a one-line summary of each command: for how one works in any detail, call channel_rules too. A question about someone\'s own fish (its level, XP, what they hold) is viewer_stats: answer with their real numbers, not just the rule; never say you lack prices or settings, and never send people to run a command to find out what the tool can tell you. Do not call the tools for anything else.';
 
 // ─── The bot's own commands ───────────────────────────────────────────────────
 // Viewers ask the bot about its commands, and with nothing to go on it answered
@@ -1391,6 +1391,9 @@ function setUserCooldown(username: string, channel: string): void {
  * Check if message contains @MrAIisHere mention and extract the prompt
  */
 function extractMentionPrompt(message: string): string | null {
+  // A command that names the bot as its target ("$don fish add @MrAIisHere 🐟", "!followage
+  // @MrAIisHere") is that command's, not a question: answering it, the bot made up results.
+  if (/^\s*[$!]/.test(message)) return null;
   // Check for @MrAIisHere mention (case insensitive)
   const mentionRegex = /@mraiishere\s+(.*?)$/i;
   const match = message.match(mentionRegex);
@@ -1498,7 +1501,7 @@ async function handleSpecialTrigger(client: { say(channel: string, msg: string):
       responseText = responseText.replace(/PogChamp\s*/g, ''); // Remove stray emotes
 
       // ONLY remove @mentions at the very beginning of the response (not throughout)
-      responseText = responseText.replace(/@\w+,?\s*/g, '');
+      responseText = responseText.replace(/^(?:@\w+,?\s*)+/, '');
       responseText = responseText.trim();
 
       // If response still starts with problematic phrases, cut them out
@@ -1765,7 +1768,7 @@ export const claude: CommandFn = async function claude(client, message, channel,
             responseText = responseText.replace(/PogChamp\s*/g, ''); // Remove stray emotes
 
             // Remove any @mentions that Claude might add
-            responseText = responseText.replace(/@\w+,?\s*/g, '');
+            responseText = responseText.replace(/^(?:@\w+,?\s*)+/, '');
             responseText = responseText.trim();
 
             // If response still starts with problematic phrases, cut them out
@@ -2069,7 +2072,7 @@ export const claude: CommandFn = async function claude(client, message, channel,
           responseText = responseText.replace(/PogChamp\s*/g, ''); // Remove stray emotes
 
           // ONLY remove @mentions at the very beginning of the response (not throughout)
-          responseText = responseText.replace(/@\w+,?\s*/g, '');
+          responseText = responseText.replace(/^(?:@\w+,?\s*)+/, '');
           responseText = responseText.trim();
 
           // If response still starts with problematic phrases, cut them out

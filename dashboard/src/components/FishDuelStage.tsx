@@ -7,6 +7,21 @@ import type { FishDuel, FishDuelSide, FishOverlayEvent } from "@/lib/bot-api";
 // rolled, played back a hit at a time. Shared by the fishing scene and the text
 // cards; while one plays, the overlay under it dims.
 
+/** A fish named after an emote (a custom fish) draws as the emote's image; anything else as its emoji. */
+function FishFace({ fish, emotes }: { fish: string; emotes?: Record<string, string> }) {
+  const url = emotes?.[fish];
+  // eslint-disable-next-line @next/next/no-img-element
+  return url ? <img src={url} alt={fish} className="fd-emote" /> : <>{fish}</>;
+}
+
+/** A caption with any emote fish in it drawn as their images. */
+function withEmotes(text: string, emotes?: Record<string, string>): ReactNode {
+  const names = Object.keys(emotes ?? {});
+  if (!names.length) return text;
+  const re = new RegExp(`(${names.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})`);
+  return text.split(re).map((part, i) => (emotes![part] ? <FishFace key={i} fish={part} emotes={emotes} /> : part));
+}
+
 /** The bot waits this same time before telling chat who won (playMs in community/fish-duel.ts). */
 const INTRO_MS = 2_500;
 const perTurnMs = (turns: number) => (turns > 16 ? 550 : turns > 10 ? 750 : 950);
@@ -78,8 +93,9 @@ function beatsOf(d: FishDuel): { beats: Beat[]; at: number[]; end: number } {
   return { beats, at, end: t };
 }
 
-function Side({ side, hp, right, acting, struck, dodged, out, ko, entering, won, pop, bench }: {
+function Side({ side, hp, right, acting, struck, dodged, out, ko, entering, won, pop, bench, emotes }: {
   side: FishDuelSide;
+  emotes?: Record<string, string>;
   hp: number;
   /** Its fish was just knocked out, with more to come: the fish sinks, the side stays lit. */
   ko?: boolean;
@@ -104,7 +120,7 @@ function Side({ side, hp, right, acting, struck, dodged, out, ko, entering, won,
         <div className="fd-bench">
           {bench.map((b, i) => (
             <span key={i} className={`${b.up ? "" : "fd-down"} ${b.now ? "fd-now" : ""}`}>
-              {b.fish}
+              <FishFace fish={b.fish} emotes={emotes} />
             </span>
           ))}
         </div>
@@ -112,7 +128,7 @@ function Side({ side, hp, right, acting, struck, dodged, out, ko, entering, won,
       <div className="fd-arena">
         {/* Keyed by the turn, so the same move plays again on the next one. */}
         <span key={pop ? `f${pop.key}` : acting ? "a" : "idle"} className={`fd-fish ${move}`}>
-          <span className="fd-face">{side.fish}</span>
+          <span className="fd-face"><FishFace fish={side.fish} emotes={emotes} /></span>
         </span>
         {pop ? (
           <span key={`p${pop.key}`} className={`fd-pop ${pop.crit ? "fd-crit" : ""}`}>
@@ -201,6 +217,7 @@ function Stage({ ev, onDone }: { ev: FishOverlayEvent; onDone: () => void }) {
         won={over && d.winner === i}
         pop={pop}
         bench={size > 1 ? teams[i].map((f, j) => ({ fish: f.fish, up: st.hp[i][j] > 0, now: j === st.at[i] })) : undefined}
+        emotes={ev.emotes}
       />
     );
   };
@@ -221,7 +238,7 @@ function Stage({ ev, onDone }: { ev: FishOverlayEvent; onDone: () => void }) {
         {view(1)}
       </div>
       <div key={`${step}-${caption}`} className={`fd-caption ${over ? "fd-final" : ""}`}>
-        {caption || " "}
+        {caption ? withEmotes(caption, ev.emotes) : " "}
       </div>
     </div>
   );
@@ -381,6 +398,7 @@ const CSS = `
 @keyframes fd-barin{from{opacity:0}to{opacity:1}}
 .fd-arena{position:relative;height:2.9em;display:flex;align-items:center;justify-content:center}
 .fd-fish{display:inline-block;font-size:2.3em;line-height:1;--dir:1}
+.fd-emote{height:1.15em;width:auto;vertical-align:-.2em;object-fit:contain}
 .fd-right .fd-fish{--dir:-1}
 /* Fish emoji face left: the one on the left is turned to face its rival. */
 .fd-face{display:inline-block}
