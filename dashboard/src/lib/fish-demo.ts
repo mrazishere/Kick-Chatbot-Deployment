@@ -164,7 +164,7 @@ export function demoGenerator(odds: DemoOdds | null) {
   };
 }
 
-const TROPHIES = ["🦭", "🦦", "🦕", "💎", "👑", "🐉"];
+const TROPHIES = ["🦭", "🦦", "🦕", "🦖", "🦄", "🐉"];
 
 /**
  * A big bite for the demo, as the bot plays one: the first code, two more pulls

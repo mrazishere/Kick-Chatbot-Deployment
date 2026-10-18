@@ -11,6 +11,7 @@
 import { PointsConfig } from '../types';
 import { effectiveCommand } from './config';
 import { botCommandSections, type BotCommandChannel, type CustomCommands } from './public-bot-commands';
+import { LEVEL_STATS, LEVEL_VALUE, MAX_LEVEL } from '../community/fishing';
 
 /**
  * The fishing leaderboards `fish top` answers to, with their short forms, as the
@@ -51,6 +52,24 @@ export interface PublicCommands {
   /** The command word with its $, e.g. "$don". */
   command: string;
   sections: PublicCommandSection[];
+}
+
+/**
+ * How feeding levels a fish up, in full, for !claude to answer from (bot-commands/claude.ts):
+ * the Commands tab row has room for the gist only. '' when feeding is off.
+ */
+export function feedingGuide(cfg: PointsConfig): string {
+  const g = cfg.games;
+  if (!g.enabled || !g.feedEnabled) return '';
+  const f = `$${effectiveCommand(cfg)} fish`;
+  return [
+    `FEEDING (${f} feed 🦈 72cm 🐟 🐟 🦀, short ${f.replace(' fish', ' f')} fd): the first fish named eats the rest and gains what they would sell for as XP (their length and their own levels count).`,
+    `Levels go up to Lv${MAX_LEVEL}. Each one adds ${LEVEL_STATS * 100}% to the fish's duel health and attack and ${LEVEL_VALUE * 100}% to its sell value.`,
+    `Lv1 costs XP equal to the eater's own unlevelled price at its length, Lv2 twice that, Lv3 three times, and so on, so a big or rare fish needs more food. One feeding can gain several levels; XP past Lv${MAX_LEVEL} is lost, and a Lv${MAX_LEVEL} fish can't eat.`,
+    'Named without a length, the eater is your highest-level, then longest, fish of that kind. Food is fish only, never junk, named the same way as for selling (kinds, counts, lengths); it can be the same kind as the eater but not the eater itself. If any of the food is missing, nothing is eaten.',
+    g.feedFailPercent > 0 ? `${g.feedFailPercent}% of feedings fail: the fish chokes, the food is gone and no XP is gained.` : 'Feedings never fail here.',
+    `The reply shows the XP toward the next level, and ${f} show 🦈 lists each fish with its level (LvN), duel stats and price. Duels send your highest-level fish of a kind unless you name a length; selling or giving by kind uses unfed fish first, so fed fish are kept. A fed fish keeps its level when it is given away, stolen or lost in a duel.`
+  ].join(' ');
 }
 
 /**

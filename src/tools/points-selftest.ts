@@ -33,7 +33,7 @@ import { openCommunityDb } from '../community/store';
 import { markOverlaySeen, readOverlay } from '../community/fish-overlay';
 import { biteFor, drawSnipeMs, openSnipes, resetBites, snipeOpen, SNIPE_PENDING, startBite, takeBite as takeBiteForTest } from '../community/big-bite';
 import { fish as fishCommand, SUBCOMMANDS as FISH_SUBCOMMANDS, BOARDS as FISH_BOARD_MAP, BOARD_SHORT as FISH_BOARD_SHORT } from '../bot-commands/fish';
-import { publicCommands, FISH_BOARDS } from '../points/public-commands';
+import { publicCommands, FISH_BOARDS, feedingGuide } from '../points/public-commands';
 import { duelBoard, publicLedgerText } from '../points/store';
 import { answerMatches, makeTrapCheck, normalizeAnswer } from '../community/trap-check';
 import { changeWheel, readWheel, validateWheel } from '../community/wheel';
@@ -758,6 +758,11 @@ async function main(): Promise<void> {
       && Object.keys(FISH_BOARD_SHORT).length === FISH_BOARDS.length
       && ['lucky (l)', 'total-lucky (tl)', 'robbed (r)', 'who holds the most'].every(t => listed.sections[2].rows.some(r => r.does.includes(t))),
       { named, listedBoards: FISH_BOARDS.map(b => b.board) });
+    // !claude's feeding rules follow the channel: its command, its fail chance, nothing when feeding is off.
+    const guide = feedingGuide(effectivePointsConfig({ enabled: true, currencyName: '$DON', games: { enabled: true, feedFailPercent: 15 } }));
+    check('!claude gets the feeding rules, with the channel\'s fail chance, and none when feeding is off',
+      guide.startsWith('FEEDING ($don fish feed') && guide.includes('15% of feedings fail') && guide.includes('Lv10')
+      && feedingGuide(effectivePointsConfig({ enabled: true, currencyName: '$DON', games: { enabled: true, feedEnabled: false } })) === '', guide);
     const bare = publicCommands(effectivePointsConfig({ enabled: true, currencyName: '$DON', raffle: { enabled: false } }));
     check('and leaves out what the channel has off', bare.command === '$don' && bare.sections.map(s => s.title).join(',') === '$DON,Streamer' && !bare.sections[0].rows.some(r => /give|gamble/.test(r.usage)), bare.sections.map(s => s.title));
     // The bot's ! commands: every command file is listed (or has a reason it isn't), and what a channel has off is left out.
@@ -1933,10 +1938,10 @@ async function main(): Promise<void> {
 
   // Custom fish: a channel's own, by emoji or an emote's name
   {
-    const ok = validatePointsPatch({}, { games: { customFish: [{ name: 'KEKLEO', weight: 1000000, price: 500, type: 'Predator' }, { name: '🦄\uFE0F', weight: 2, price: 900, type: 'Armored' }] } });
+    const ok = validatePointsPatch({}, { games: { customFish: [{ name: 'KEKLEO', weight: 1000000, price: 500, type: 'Predator' }, { name: '🦩\uFE0F', weight: 2, price: 900, type: 'Armored' }] } });
     const bad = (name: string, extra: Record<string, unknown> = {}) => validatePointsPatch({}, { games: { customFish: [{ name, weight: 1, price: 1, type: 'Swift', ...extra }] } }).errors.join(' ');
     check('custom fish: an emote\'s name or an emoji; not a built-in, a command word, a number or a bad type', ok.errors.length === 0
-      && JSON.stringify(ok.next?.games?.customFish?.map(f => f.name)) === JSON.stringify(['KEKLEO', '🦄'])
+      && JSON.stringify(ok.next?.games?.customFish?.map(f => f.name)) === JSON.stringify(['KEKLEO', '🦩'])
       && bad('🐟').includes('built-in') && bad('shark').includes('built-in') && bad('Sharks').includes('built-in') && bad('junk').includes('already use') && bad('keeps').includes('already use')
       && bad('3v3').includes('emoji') && bad('a b').includes('emoji') && bad('K').includes('emoji') && bad('KEK', { type: 'Fire' }).includes('duel type')
       && validatePointsPatch({}, { games: { customFish: [{ name: 'KEK', weight: 1, price: 1, type: 'Swift' }, { name: 'kek', weight: 1, price: 1, type: 'Swift' }] } }).errors.join(' ').includes('Two custom fish'),
@@ -1947,9 +1952,9 @@ async function main(): Promise<void> {
     check('a custom fish joins the catches: sized, its odds and price, its rarity and duel type', !!kek?.custom && kek.size && gk.catches.some(c => c.name === 'KEKLEO' && c.custom && c.price === 500)
       && rolls.filter(n => n === 'KEKLEO').length > 45 && rarityOf(gk, 'KEKLEO') === 'Common' && typeOf('KEKLEO') === 'Predator' && sellPrice(kek!, gk, { cm: 50, record: false }) === 500, rolls.slice(0, 5));
     const other = effectivePointsConfig({ games: { enabled: true } }).games;
-    check('another channel never catches it', Array.from({ length: 3000 }, () => weightedCatch('fish', other).name).every(n => n !== 'KEKLEO' && n !== '🦄') && !other.catches.some(c => c.custom));
-    const sl = parseSellList(['kekleo', '2', '[emote:37225:KEKLEO]', '🦄']);
-    check('it\'s typed by name in any case, from Kick\'s emote picker, or as its emoji', !('error' in sl) && sl.items.map(x => `${x.item.name}${x.n}`).join() === 'KEKLEO3,🦄1'
+    check('another channel never catches it', Array.from({ length: 3000 }, () => weightedCatch('fish', other).name).every(n => n !== 'KEKLEO' && n !== '🦩') && !other.catches.some(c => c.custom));
+    const sl = parseSellList(['kekleo', '2', '[emote:37225:KEKLEO]', '🦩']);
+    check('it\'s typed by name in any case, from Kick\'s emote picker, or as its emoji', !('error' in sl) && sl.items.map(x => `${x.item.name}${x.n}`).join() === 'KEKLEO3,🦩1'
       && fishNamed(['[emote:1:KEKLEO]']) === 'KEKLEO' && fishNamed(['Kekleo']) === 'KEKLEO', sl);
 
     const ch = 'customfishch';

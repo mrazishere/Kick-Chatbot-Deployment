@@ -63,8 +63,8 @@ export const ITEMS: CatchItem[] = [
   { name: '🦭', type: 'fish', price: 1_000, weight: 30, size: true, trophy: true, landPercent: 90 },
   { name: '🦦', type: 'fish', price: 1_500, weight: 25, size: true, trophy: true, landPercent: 80 },
   { name: '🦕', type: 'fish', price: 2_500, weight: 20, size: true, trophy: true, landPercent: 70 },
-  { name: '💎', type: 'fish', price: 4_000, weight: 10, size: true, trophy: true, landPercent: 60 },
-  { name: '👑', type: 'fish', price: 6_000, weight: 10, size: true, trophy: true, landPercent: 50 },
+  { name: '🦖', type: 'fish', price: 4_000, weight: 10, size: true, trophy: true, landPercent: 60 },
+  { name: '🦄', type: 'fish', price: 6_000, weight: 10, size: true, trophy: true, landPercent: 50 },
   { name: '🐉', type: 'fish', price: 25_000, weight: 5, size: true, trophy: true, landPercent: 40 }
 ];
 
@@ -189,7 +189,7 @@ export interface FishData {
     fish: number; junk: number; dryStreak: number; luckyStreak: number; types: Record<string, number>;
     /**
      * Our addition: the sized fish still held, oldest first, so a sale can price by
-     * length. Every fish gets one (since 2026-10-18 traps, 🐚, 💎 and 👑 too, and the
+     * length. Every fish gets one (since 2026-10-18 traps, 🐚 and the trophies then called 💎 and 👑 too, and the
      * fish held without one were given 50 cm, their old price and strength), so each
      * can be picked by length. Only junk has none.
      */
@@ -498,7 +498,7 @@ const ITEM_WORDS: Record<string, string> = {
   squid: '🦑', octopus: '🐙', scorpion: '🦂', dolphin: '🐬',
   crocodile: '🐊', croc: '🐊', shark: '🦈',
   whale: '🐳', bluewhale: '🐋',
-  seal: '🦭', otter: '🦦', dinosaur: '🦕', dino: '🦕', gem: '💎', diamond: '💎', crown: '👑', dragon: '🐉',
+  seal: '🦭', otter: '🦦', dinosaur: '🦕', dino: '🦕', trex: '🦖', rex: '🦖', tyrannosaurus: '🦖', unicorn: '🦄', dragon: '🐉',
   can: '🥫', tin: '🥫', skull: '💀', boot: '🥾', shoe: '🥾', weed: '🌿', seaweed: '🌿', herb: '🌿', leaf: '🍂', leaves: '🍂', sock: '🧦'
 };
 

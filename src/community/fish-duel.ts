@@ -40,7 +40,7 @@ const TYPES: Record<string, DuelType> = {
   '🦑': 'Predator', '🐙': 'Predator', '🦂': 'Armored', '🐬': 'Swift',
   '🐊': 'Armored', '🦈': 'Predator',
   '🐳': 'Swift', '🐋': 'Armored',
-  '🦭': 'Swift', '🦦': 'Predator', '🦕': 'Armored', '💎': 'Armored', '👑': 'Swift', '🐉': 'Predator'
+  '🦭': 'Swift', '🦦': 'Predator', '🦕': 'Armored', '🦖': 'Armored', '🦄': 'Swift', '🐉': 'Predator'
 };
 
 export const typeOf = (name: string): DuelType => TYPES[name] ?? ITEMS.find(i => i.name === name)?.duelType ?? 'Swift';

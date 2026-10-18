@@ -12,7 +12,7 @@
 import { openPointsDb, PointsDb } from './points/db';
 import { readLivePointsConfig } from './points/config';
 import { exclusionsFor, findUserByName, getUser, gambleStatsFor, gambleTop, isExcluded, pointsSummary, rankBy, topBy, caughtFish } from './points/store';
-import { loadFish, hasFishedBefore, currentReel, heldFishValue } from './community/fishing';
+import { loadFish, hasFishedBefore, currentReel, heldFishValue, ITEMS, levelOf, levelCost, MAX_LEVEL } from './community/fishing';
 import { BOARDS, topRows } from './bot-commands/fish';
 import { readState, avgDumb, avgTrolled, topAskers, topDumb, topTrolled } from './leaderboard-store';
 
@@ -36,7 +36,7 @@ export function statTools(channel: string): Array<Record<string, unknown>> {
   return [
     {
       name: 'viewer_stats',
-      description: `A viewer's real stats in this channel: ${points ? 'currency balance and rank, active time, lifetime earned, first and last seen, gambling record, fishing record (catches, coins from selling, reel, fish held, steals, duels), and ' : ''}their Hall of Shame scores (how often they ask the bot, how dumb their questions are and how hard they get roasted, each 0-10). Use it whenever someone asks about their own or another viewer's stats, money, rank or record. Pass "me" for the person asking.`,
+      description: `A viewer's real stats in this channel: ${points ? 'currency balance and rank, active time, lifetime earned, first and last seen, gambling record, fishing record (catches, coins from selling, reel, fish held, fish levelled up by feeding with their XP, steals, duels), and ' : ''}their Hall of Shame scores (how often they ask the bot, how dumb their questions are and how hard they get roasted, each 0-10). Use it whenever someone asks about their own or another viewer's stats, money, rank or record. Pass "me" for the person asking.`,
       input_schema: {
         type: 'object',
         properties: { username: { type: 'string', description: 'Kick username without @, or "me"' } },
@@ -118,6 +118,14 @@ function viewerStats(ctx: StatToolContext, raw: unknown): unknown {
         junkHeld: d.catch.junk,
         heldByKind: held,
         heldValue: heldFishValue(d, cfg.games),
+        // Fish levelled up by feeding ($ fish feed), with the XP toward their next level.
+        fedFish: Object.entries(d.catch.sizes ?? {}).flatMap(([name, list]) => {
+          const item = ITEMS.find(i => i.name === name);
+          return item ? list.slice(0, d.catch.types[name] ?? 0).filter(h => levelOf(h) > 0 || (h.xp ?? 0) > 0).map(h => ({
+            fish: name, cm: h.cm, level: levelOf(h),
+            ...(levelOf(h) < MAX_LEVEL ? { xp: h.xp ?? 0, xpForNextLevel: levelCost(item, cfg.games, h, levelOf(h)) } : {})
+          })) : [];
+        }),
         casts: L.attempts,
         fishCaught: L.fish,
         junkCaught: L.junk,
