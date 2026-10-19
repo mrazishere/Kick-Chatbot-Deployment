@@ -8,6 +8,7 @@ import FishOverlay from "@/components/FishOverlay";
 import FishOverlayCards from "@/components/FishOverlayCards";
 import VideoOverlay from "@/components/VideoOverlay";
 import { videoOverlayKey } from "@/lib/video-overlay";
+import { logOverlayLoad } from "@/lib/overlay-load-log";
 
 export const dynamic = "force-dynamic";
 
@@ -29,6 +30,7 @@ export default async function FishOverlayPage({ params, searchParams }: Props) {
   const q = await searchParams;
   const key = one(q.key) ?? "";
   const style = validChannel(slug) ? overlayStyleFor(slug, key) : null;
+  await logOverlayLoad(slug, "fishing", style ?? "404", key, q);
   if (!style) notFound();
 
   const scale = Math.min(3, Math.max(0.5, Number(one(q.scale)) || 1));
