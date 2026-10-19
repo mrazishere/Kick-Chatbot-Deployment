@@ -971,8 +971,9 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       if (!d || (d.catch.fish === 0 && d.catch.junk === 0)) return 'You have no items to sell!';
       // The seller's reel raises what their fish fetch, whenever they were caught.
       const value = currentReel(d, g)?.valueMultiplier ?? 1;
-      const pay = (gained: number): number => gained > 0
-        ? creditTx(db!, { userId: uid, username: me, amount: gained, reason: 'game:fish_sell', actor: `chat:${me}`, now })
+      // The note says what went ("20 pieces of junk"): the one reason covers fish and junk alike.
+      const pay = (gained: number, what: string): number => gained > 0
+        ? creditTx(db!, { userId: uid, username: me, amount: gained, reason: 'game:fish_sell', actor: `chat:${me}`, note: what.slice(0, 200), now })
         : getUser(db!, uid)?.balance ?? 0;
 
       if (specifier === 'all' || specifier === 'duplicate') {
@@ -1004,7 +1005,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
         }
         if (soldByType.length === 0) return `You have no ${prefix}${types.map(t => TYPE_DESCRIPTIONS[t as CatchType]).join(' or ')} to sell!`;
         d.lifetime.coins += gained;
-        const balance = pay(gained);
+        const balance = pay(gained, soldByType.join(' and '));
         saveFish(db!, uid, d, now);
         return `You sold ${soldByType.join(' and ')} for a grand total of ${gained} ${cur} - now you have ${balance} ${cur}`;
       }
@@ -1035,7 +1036,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
           soldParts.push(`${e.item.name}${n > 1 ? ` x${n}` : ''}`);
         }
         d.lifetime.coins += gained;
-        const balance = pay(gained);
+        const balance = pay(gained, soldParts.join(', '));
         saveFish(db!, uid, d, now);
         const skipped = missing.length ? ` (you have no ${runOf(missing)})` : '';
         return `Sold your ${soldParts.join(', ')} for ${groupDigits(gained)} ${cur} - now you have ${groupDigits(balance)} ${cur}${skipped}`;
@@ -1064,7 +1065,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       }
       if (soldParts.length === 0) return `You have no ${runOf(missing)} to sell!`;
       d.lifetime.coins += gained;
-      const balance = pay(gained);
+      const balance = pay(gained, soldParts.join(', '));
       saveFish(db!, uid, d, now);
       const skipped = missing.length ? ` (you have no ${runOf(missing)})` : '';
       return `Sold your ${soldParts.join(', ')} for ${gained} ${cur} - now you have ${balance} ${cur}${skipped}`;

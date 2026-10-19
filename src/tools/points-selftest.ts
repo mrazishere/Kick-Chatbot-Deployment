@@ -2684,6 +2684,8 @@ async function main(): Promise<void> {
       check('duplicate across both types', dup[0] === '@bulk You sold 1 duplicate fish for a grand total of 25 $DON - now you have 58 $DON', dup);
       const both = await bulk('$don f s a f j');
       check('sell all fish junk sells both, typed short as $don f s a f j', both[0] === '@bulk You sold 1 fish and 2 pieces of junk for a grand total of 38 $DON - now you have 96 $DON', both);
+      const sellNotes = (pdb.prepare("SELECT note FROM ledger WHERE user_id = 13 AND reason = 'game:fish_sell' ORDER BY id").all() as Array<{ note: string | null }>).map(r => r.note);
+      check('each sale notes what was sold, junk named as junk', sellNotes.join(' | ') === '🦐, 🥫 | 1 duplicate fish | 1 fish and 2 pieces of junk', sellNotes);
       // Reels
       const defaults = effectivePointsConfig({}).games.reels;
       check('four default reels, cheapest first', defaults.map(r => `${r.name}:${r.price}`).join(',') === 'Bamboo:5000,Fiberglass:25000,Carbon:100000,Golden:500000', defaults);

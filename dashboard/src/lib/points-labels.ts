@@ -40,7 +40,7 @@ export const REASON_LABEL: Record<string, string> = {
   "game:fish": "Fishing cast",
   "game:fish_win": "Fishing catch",
   "game:fish_bait": "Fishing bait",
-  "game:fish_sell": "Sold fish",
+  "game:fish_sell": "Sold catch",
   "game:fish_reel": "Bought a reel",
   "game:fish_reel_refund": "Reel taken back, refunded",
   "game:fish_hook": "Bought a grappling hook",
