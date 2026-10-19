@@ -18,6 +18,8 @@ export interface TrapCheck {
   answers: string[];
   /** Whether the traps go back in once it's answered (the player used `trap reset`). */
   reset: boolean;
+  /** How long they go back in for, when the reset named a time; else as long as before. */
+  resetMinutes?: number;
   /** When it was asked, and the last moment an answer counts (ms). */
   askedAt: number;
   until: number;

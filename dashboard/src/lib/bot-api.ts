@@ -133,6 +133,8 @@ export interface PointsGames {
   catchOdds: number;
   catchCooldownMinutes: number;
   trapMinutes: number;
+  /** The longest trap a chatter can name; absent from an older bot service. */
+  trapMaxMinutes?: number;
   /** Sell prices as a percentage of supibot's (fish 50, junk 1–20). */
   sellPricePercent: number;
   /** Bait prices as a percentage of supibot's (worm 2, fly 5, cricket 8). */

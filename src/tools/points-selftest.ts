@@ -26,13 +26,13 @@ import {
 } from '../points/store';
 import { WebhookPoller } from '../channels/webhook-poller';
 import { points as pointsCommand, SUBCOMMAND_ALIASES } from '../bot-commands/points';
-import { marksFor, wordle as wordleCommand } from '../bot-commands/wordle';
+import { marksFor, readStats as readWordleStats, wordle as wordleCommand } from '../bot-commands/wordle';
 import { advanceVideos, enqueueVideo, failVideo, hasVideoInLine, isoDurationSeconds, LOAD_PAD_MS, markVideoOverlaySeen, parseYouTubeLink, playingVideo } from '../community/video-share';
 import { duelStrength, moveFish, takeItems, addItem, overflow, nearCap, addXp, levelCost, takeSized, FishData, initialData, isTrophy, rarityOf, stealChance, stealCharges, stealRollChance, ITEMS, landsFish, loadFish, parseSellList, recordCatch, saveFish, sellPrice, weightedCatch } from '../community/fishing';
 import { openCommunityDb } from '../community/store';
 import { markOverlaySeen, overlayOff, overlayShowing, readOverlay } from '../community/fish-overlay';
 import { biteFor, drawSnipeMs, openSnipes, resetBites, rewardBitesWaiting, snipeOpen, SNIPE_PENDING, startBite, takeBite as takeBiteForTest } from '../community/big-bite';
-import { fish as fishCommand, SUBCOMMANDS as FISH_SUBCOMMANDS, BOARDS as FISH_BOARD_MAP, BOARD_SHORT as FISH_BOARD_SHORT } from '../bot-commands/fish';
+import { fish as fishCommand, parseTrapMinutes, SUBCOMMANDS as FISH_SUBCOMMANDS, BOARDS as FISH_BOARD_MAP, BOARD_SHORT as FISH_BOARD_SHORT } from '../bot-commands/fish';
 import { publicCommands, FISH_BOARDS, feedingGuide } from '../points/public-commands';
 import { duelBoard, publicLedgerText, setMetaTx } from '../points/store';
 import { mediaShareHeld, setMediaShareHeld } from '../community/mediashare';
@@ -1238,6 +1238,7 @@ async function main(): Promise<void> {
     };
     const setWord = (word: string) => runWrite(wdb, () => wdb.prepare("UPDATE meta SET value = json_set(value, '$.word', ?) WHERE key = 'wordle_game'").run(word));
     check('viewers can\'t start one; there\'s none yet', (await run('$don wordle start', ['ann', 91])) === '' && (await run('$don wordle', ['ann', 91])).includes('No Wordle is on'));
+    check('no stats before a game ends', (await run('$don w st', ['modder', 92], true)).includes('no Wordle games have been played'));
     const started = await run('$don wordle start', ['modder', 92], true);
     check('a mod starts one, with the rules', started.includes('Wordle!') && started.includes('$don w WORD') && started.includes('3 guesses for the whole chat') && started.includes('wins 500 $DON'), started);
     setWord('crane');
@@ -1261,9 +1262,13 @@ async function main(): Promise<void> {
     check('out of guesses: the word is shown, no prize', lost.includes('Out of guesses! The word was CRANE') && balance(ch, 93) === 500, lost);
     await run('$don wordle start', ['modder', 92], true);
     setWord('crane');
+    const midStats = await run('$don wordle stats', ['ann', 91]);
+    check('$don wordle stats mid-game shows the stats, not a guess: a win and a loss so far', midStats.includes('📊 Wordle Stats: 2 games played | Avg guesses: 3.0 | Top 5: ben (1)'), midStats);
+    check('stats are once per 30s for viewers, any time for mods', (await run('$don w st', ['ben', 93])) === '' && (await run('$don w st', ['modder', 92], true)).includes('2 games played'));
     check('a mod can stop one with x, showing the word', (await run('$don w x', ['modder', 92], true)).includes('The word was CRANE'));
+    check('a stopped game isn\'t counted', readWordleStats(wdb).gamesPlayed === 2 && readWordleStats(wdb).totalGuesses === 6);
     const rows = publicCommands(effectivePointsConfig({ enabled: true, wordle: { enabled: true } })).sections.find(sec => sec.title === 'Games')?.rows.filter(r => r.usage.includes('wordle')) ?? [];
-    check('the Commands tab lists wordle where it is on', rows.length === 5 && rows[0].short === '$points w <word>' && rows.some(r => r.short === '$points w s') && rows.some(r => r.short === '$points w x')
+    check('the Commands tab lists wordle where it is on', rows.length === 6 && rows[0].short === '$points w <word>' && rows.some(r => r.short === '$points w st') && rows.some(r => r.short === '$points w s') && rows.some(r => r.short === '$points w x')
       && !(publicCommands(effectivePointsConfig({ enabled: true })).sections.find(sec => sec.title === 'Games')?.rows ?? []).some(r => r.usage.includes('wordle')), rows);
   }
 
@@ -1395,6 +1400,63 @@ async function main(): Promise<void> {
       const row = publicCommands(effectivePointsConfig({ enabled: true, games: { enabled: true, giveEnabled: true } })).sections.find(sec => sec.title === 'Fishing')!.rows.find(r => r.usage.includes('fish give'));
       check('the Commands tab lists fish give where it is on, and only there', row?.short === '$points f gv @user 🐟'
         && !publicCommands(effectivePointsConfig({ enabled: true, games: { enabled: true } })).sections.find(sec => sec.title === 'Fishing')!.rows.some(r => r.usage.includes('fish give')), row);
+    } finally {
+      Date.now = realNow;
+    }
+  }
+
+  // Aimed steals: a kind or one fish by length, at that fish's own odds
+  {
+    const ch = 'aimsteal';
+    writeConfig(root, ch, { enabled: true, currencyName: '$DON', games: { enabled: true, onlyWhileLive: false, steal: { enabled: true, oddsCommon: 100 } } });
+    makeService(ch, { broadcaster: 999 });
+    const adb = openPointsDb(ch, { create: true })!;
+    const fishOf = (id: number) => loadFish(adb, id)!;
+    const seed = (id: number, name: string, bal: number, held: Array<[string, number]>, hook = 0) => runWrite(adb, () => {
+      creditTx(adb, { userId: id, username: name, amount: bal, reason: 'mod_add', now: 1 });
+      const d = initialData();
+      d.lifetime.attempts = 1;
+      d.hook = hook;
+      for (const [fishName, cm] of held) {
+        addItem(d, ITEMS.find(x => x.name === fishName)!);
+        (((d.catch.sizes ??= {})[fishName]) ??= []).push({ cm, record: false });
+      }
+      saveFish(adb, id, d, 1);
+    });
+    seed(61, 'aimer', 100_000, [], 3);
+    seed(62, 'aimkind', 10, [['🐟', 30], ['🐟', 30], ['🐟', 30], ['🐋', 100]]);
+    seed(63, 'aimlen', 10, [['🐟', 20], ['🐟', 80]]);
+    seed(64, 'nokind', 10, [['🐟', 50]]);
+    seed(65, 'freshlen', 10, [['🐟', 40], ['🐟', 70]]);
+    const realNow = Date.now;
+    let shift = 0;
+    Date.now = () => realNow() + shift;
+    try {
+      const run = async (msg: string) => {
+        shift += 31 * 60_000;   // past the fishing cooldown each time
+        const out: string[] = [];
+        const t: KickTags = { username: 'aimer', 'display-name': 'aimer', badges: {}, isBroadcaster: false, isModUp: false, isVIPUp: false, rawBadges: [], senderId: 61 };
+        await fishCommand({ say: async (_c, m) => { out.push(m); } }, msg, `#${ch}`, t, { channelName: ch } as ChannelConfig);
+        return out[0] ?? '';
+      };
+      check('aiming at junk is turned away, nothing spent', (await run('$don fish steal @aimkind 🥫')).includes('only grabs fish') && fishOf(61).hook === 3);
+      check('aiming at two fish asks for one', (await run('$don fish steal @aimkind 🐟 🐋')).includes('Name one fish to aim for') && fishOf(61).hook === 3);
+      const none = await run('$don fish steal @nokind 🐋');
+      check('a kind they don\'t hold is turned away before anything is spent', none.includes('has no 🐋') && fishOf(61).hook === 3 && balance(ch, 61) === 100_000, none);
+      const whale = await run('$don fish steal @aimkind 🐋');
+      check('aiming at a kind reaches for that kind, past the commoner fish', whale.includes('their ✨🐋✨') && fishOf(61).hook === 2, whale);
+      const len = await run('$don fish steal @aimlen 🐟 80cm');
+      check('aiming at a length takes that very fish', len.includes('made off with') && len.includes('(80 cm)') && fishOf(61).catch.sizes?.['🐟']?.some(h => h.cm === 80) === true
+        && fishOf(63).catch.sizes?.['🐟']?.map(h => h.cm).join() === '20', len);
+      check('a length they don\'t hold is turned away', (await run('$don fish steal @nokind 🐟 55cm')).includes('has no 🐟 55 cm') && fishOf(61).hook === 1);
+      // Landed just now (the run's clock moves on 31 minutes first, so a minute from then).
+      runWrite(adb, () => recordCatch(adb, 65, '🐟', 'cast', 70, Date.now() + 30 * 60_000));
+      const fresh = await run('$don fish steal @freshlen 🐟 70cm');
+      check('a length landed within the grace time can\'t be aimed at', fresh.includes('has no 🐟 70 cm') && fishOf(61).hook === 1, fresh);
+      const old = await run('$don fish steal @freshlen 🐟 40cm');
+      check('but an older one of the kind can', old.includes('made off with') && old.includes('(40 cm)') && fishOf(61).hook === 0, old);
+      const rows = publicCommands(effectivePointsConfig({ enabled: true, games: { enabled: true, steal: { enabled: true } } })).sections.find(sec => sec.title === 'Fishing')?.rows ?? [];
+      check('the Commands tab shows aiming', rows.some(r => r.usage.endsWith('steal @user [fish]') && r.does.includes('72cm')), rows.filter(r => r.usage.includes('steal')));
     } finally {
       Date.now = realNow;
     }
@@ -2368,6 +2430,13 @@ async function main(): Promise<void> {
       await fill();
       await run('$don fish trap cancel');
       check('cancelling drops the question', !fish().trapCheck && !fish().trap.active);
+      await run('$don fish trap');
+      shift += 40 * 60_000;
+      const liftAsked = await run('$don fish trap lift');
+      check('a lift is asked too, with the traps ended where they were lifted', liftAsked.includes('Before you pull them up') && !!fish().trapCheck
+        && Math.abs(fish().trap.duration - 40 * 60_000) < 60_000 && fish().trap.end <= Date.now(), { liftAsked, trap: fish().trap });
+      const liftRight = await run(`$don fish answer ${fish().trapCheck!.answers[0]}`);
+      check('answering a lifted trap\'s question collects the haul', liftRight.includes('Correct!') && liftRight.includes('drag the traps') && !fish().trap.active, liftRight);
 
       // Pulling the traps while a question waits is a failed check, fined.
       runWrite(pdb, () => creditTx(pdb, { userId: 31, username: 'trapper', amount: 1000 - balance(ch, 31), reason: 'test', now: 1 }));
@@ -2556,6 +2625,67 @@ async function main(): Promise<void> {
         && balance(ch2, 32) === 170 && !loadFish(cdb2, 32)!.trapCheck && !loadFish(cdb2, 32)!.trap.active, { said, b: balance(ch2, 32) });
     }
     check('trap check settings are validated', validatePointsPatch({}, { games: { trapCheck: { chancePercent: 0, finePercent: 101, enabled: 'yes', answerSeconds: 5, tries: 0 } } }).errors.length === 5);
+  }
+
+  // A chatter names how long the traps go out: 31 min up to games.trapMaxMinutes
+  {
+    check('trap times parse: minutes, hours, both', parseTrapMinutes('90') === 90 && parseTrapMinutes('90m') === 90 && parseTrapMinutes('2h') === 120
+      && parseTrapMinutes('1.5h') === 90 && parseTrapMinutes('1h30m') === 90 && parseTrapMinutes('1h30') === 90 && parseTrapMinutes('cancel') === null && parseTrapMinutes('2d') === null,
+      ['90m', '2h', '1.5h', '1h30m', '1h30'].map(parseTrapMinutes));
+    check('the longest trap is never below the trap time', effectivePointsConfig({ games: { trapMinutes: 120, trapMaxMinutes: 60 } }).games.trapMaxMinutes === 120
+      && effectivePointsConfig({ games: { trapMinutes: 90 } }).games.trapMaxMinutes === 90 && effectivePointsConfig({ games: { trapMaxMinutes: 300 } }).games.trapMaxMinutes === 300);
+    const ch = 'traptime';
+    writeConfig(root, ch, { enabled: true, currencyName: '$DON', games: { enabled: true, onlyWhileLive: false, trapMinutes: 60, trapMaxMinutes: 240 } });
+    makeService(ch, { broadcaster: 999 });
+    const tdb = openPointsDb(ch, { create: true })!;
+    const realNow = Date.now;
+    let shift = 0;
+    Date.now = () => realNow() + shift;
+    try {
+      const run = async (msg: string) => {
+        shift += 6_000;
+        const out: string[] = [];
+        const t: KickTags = { username: 'setter', 'display-name': 'setter', badges: {}, isBroadcaster: false, isModUp: false, isVIPUp: false, rawBadges: [], senderId: 51 };
+        await fishCommand({ say: async (_c, m) => { out.push(m); } }, msg, `#${ch}`, t, { channelName: ch } as ChannelConfig);
+        return out[0] ?? '';
+      };
+      const mins = () => (loadFish(tdb, 51)?.trap.duration ?? 0) / 60_000;
+      const tooLong = await run('$don fish trap 5h');
+      check('a time past the longest trap is refused with the range', tooLong.includes('31m up to 4h') && !loadFish(tdb, 51)?.trap.active, tooLong);
+      check('so is one under 31 minutes', (await run('$don fish t 20m')).includes('31m up to 4h') && !loadFish(tdb, 51)?.trap.active);
+      const laid = await run('$don fish trap 3h');
+      check('trap 3h lays them for 3 hours', laid.includes('You have laid') && laid.includes('about 3h') && mins() === 180, laid);
+      shift += 181 * 60_000;
+      const reset = await run('$don fish trap reset');
+      check('a reset without a time lays them again for as long as before', reset.includes('drag the traps') && reset.includes('about 3h') && mins() === 180, reset);
+      shift += 181 * 60_000;
+      check('a reset with a time uses it', (await run('$don fish t r 45m')).includes('about 45m') && mins() === 45);
+      shift += 46 * 60_000;
+      check('collecting with a time just collects', (await run('$don fish trap 2h')).includes('drag the traps') && !loadFish(tdb, 51)?.trap.active);
+      check('lift with no traps out says so', (await run('$don fish trap lift')).includes("don't have any traps out"));
+      await run('$don fish trap 2h');
+      shift += 30 * 60_000;
+      check('traps not full point to lift and cancel', (await run('$don fish trap')).includes('fish trap lift'));
+      shift += 30 * 60_000;
+      const spent = loadFish(tdb, 51)!.lifetime.trap.timeSpent;
+      const lifted = await run('$don fish t l');
+      check('lift pulls them up early with a haul for the time they were out', lifted.includes('You lift your traps early, 1h') && lifted.includes('drag the traps')
+        && !loadFish(tdb, 51)!.trap.active && Math.abs(loadFish(tdb, 51)!.lifetime.trap.timeSpent - spent - 60 * 60_000) < 60_000, lifted);
+      const sig = tdb.prepare("SELECT delay_ms, detail FROM fish_signals WHERE user_id = 51 AND kind = 'trap_collect' ORDER BY ts DESC LIMIT 1").get() as { delay_ms: number | null; detail: string | null };
+      check('a lift never counts as an instant haul', sig.delay_ms === null && sig.detail === 'lift', sig);
+      await run('$don fish trap 2h');
+      shift += 121 * 60_000;
+      const fullLift = await run('$don fish trap lift');
+      check('lift on full traps is a plain collect', fullLift.includes('drag the traps') && !fullLift.includes('early') && !loadFish(tdb, 51)!.trap.active, fullLift);
+      const plain = await run('$don fish trap');
+      check('a plain trap lays the trap time', plain.includes('about 1h') && mins() === 60, plain);
+      const rows = publicCommands(effectivePointsConfig({ enabled: true, games: { enabled: true, trapMaxMinutes: 240 } })).sections.find(sec => sec.title === 'Fishing')?.rows ?? [];
+      check('the Commands tab tells chatters they can name a time', rows.some(r => r.usage.endsWith('trap [time]') && r.does.includes('31 min to 4h') && (r.short ?? '').endsWith('t 2h')), rows.filter(r => r.usage.includes('trap')));
+      const hourRows = publicCommands(effectivePointsConfig({ enabled: true, games: { enabled: true } })).sections.find(sec => sec.title === 'Fishing')?.rows ?? [];
+      check('its example time fits the channel\'s range', hourRows.some(r => r.usage.endsWith('trap [time]') && (r.short ?? '').endsWith('t 45m') && r.does.includes('31 min to 1h, like 45m')), hourRows.filter(r => r.usage.includes('trap')));
+    } finally {
+      Date.now = realNow;
+    }
   }
 
   // Fishing traps set a reminder for when they're full

@@ -12,6 +12,10 @@ import { PointsConfig } from '../types';
 import { effectiveCommand } from './config';
 import { botCommandSections, type BotCommandChannel, type CustomCommands } from './public-bot-commands';
 import { LEVEL_STATS, LEVEL_VALUE, MAX_LEVEL } from '../community/fishing';
+import { span } from '../community/format';
+
+/** A trap time to show as the example, inside the channel's range so it works as typed. */
+const trapExample = (max: number): string => max >= 120 ? '2h' : max >= 90 ? '90m' : '45m';
 
 /**
  * The fishing leaderboards `fish top` answers to, with their short forms, as the
@@ -132,6 +136,7 @@ export function publicCommands(cfg: PointsConfig, opts: { channel?: BotCommandCh
       { usage: `${c} wordle <word>`, short: `${c} w <word>`, does: `Guess the Wordle: 🟩 right place, 🟨 elsewhere in the word, ⬛ not in it. ${cfg.wordle.maxGuesses} guesses for the whole chat${cfg.wordle.prize > 0 ? `; the first to get it wins ${cfg.wordle.prize.toLocaleString('en-US')} ${cur}` : ''}` },
       { usage: `${c} wordle`, short: `${c} w`, does: 'The board so far, and the letters ruled out' },
       { usage: `${c} wordle guess <word>`, short: `${c} w g <word>`, does: 'The same, for a guess that is also a command word, like START' },
+      { usage: `${c} wordle stats`, short: `${c} w st`, does: 'Games played, average guesses and the top 5 winners' },
       { usage: `${c} wordle start`, short: `${c} w s`, does: 'Start a Wordle', who: 'mods' },
       { usage: `${c} wordle stop`, short: `${c} w x`, does: 'End it and show the word', who: 'mods' }
     );
@@ -159,9 +164,10 @@ export function publicCommands(cfg: PointsConfig, opts: { channel?: BotCommandCh
       rows: [
         { usage: f, short: s, does: 'Cast your line' },
         { usage: `${f} worm | fly | cricket`, short: `${s} w | f | c`, does: 'Buy bait and cast with it, for better odds' },
-        { usage: `${f} trap`, short: `${s} t`, does: `Lay traps for ${g.trapMinutes} minutes, or collect them when they're full; no casting meanwhile` },
+        { usage: `${f} trap [time]`, short: `${s} t ${trapExample(g.trapMaxMinutes)}`, does: `Lay traps for ${g.trapMinutes} minutes, or the time you name (31 min${g.trapMaxMinutes > 31 ? ` to ${span(g.trapMaxMinutes * 60_000)}` : ''}, like ${trapExample(g.trapMaxMinutes)}; a longer trap catches more), or collect them when they're full; no casting meanwhile` },
+        { usage: `${f} trap lift`, short: `${s} t l`, does: 'Pull your traps up early and keep what they caught so far: the haul is for the time they were out' },
         { usage: `${f} trap cancel`, short: `${s} t c`, does: 'Pull your traps in early and lose the catch' },
-        { usage: `${f} trap reset`, short: `${s} t r`, does: 'Collect full traps and lay them again' },
+        { usage: `${f} trap reset [time]`, short: `${s} t r`, does: 'Collect full traps and lay them again, for as long as before or the time you name' },
         ...(g.trapCheck.enabled ? [
           { usage: `${f} answer <x>`, short: `${s} ans <x>`, does: `Answer the question your full traps${g.trapCheck.castChancePercent > 0 ? ' or a cast' : ''} sometimes ask while the stream is offline: ${g.trapCheck.tries === 1 ? 'one try' : `${g.trapCheck.tries} tries`} within ${g.trapCheck.answerSeconds} seconds${g.trapCheck.finePercent > 0 ? `, or it costs ${g.trapCheck.finePercent}% of your ${cur} and the catch` : ', or you lose the catch'}` }
         ] : []),
@@ -189,7 +195,7 @@ export function publicCommands(cfg: PointsConfig, opts: { channel?: BotCommandCh
         ...(steal ? [
           { usage: `${f} buy hook`, short: `${s} b h`, does: 'A grappling hook, needed to steal' },
           { usage: `${f} buy guard`, short: `${s} b g`, does: 'A guard to watch your fish' },
-          { usage: `${f} steal @user`, short: `${s} sl @user`, does: 'Try to steal one of their fish' }
+          { usage: `${f} steal @user [fish]`, short: `${s} sl @user 🦈`, does: 'Try to steal one of their fish: a random one, the kind you name, or the very one (🦈 72cm); the odds are that fish\'s own' }
         ] : []),
         ...(g.duel.enabled ? [
           { usage: `${f} duel @user [fish | random] [amount${g.duel.allowKeeps ? ' | keeps' : ''}]`, short: `${s} d @user`, does: `Challenge them to a fish duel with your strongest fish, the one you name (emoji or word, like shark; add its length for that very one, like 🦈 72cm) or a random one: for glory, for a ${cur} wager${g.duel.allowKeeps ? ", or for keeps (the winner takes the loser's fish)" : ''}` },

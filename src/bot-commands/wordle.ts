@@ -13,10 +13,13 @@
  *          $don wordle          - the board so far
  *          $don wordle start    - start a game (mods; also $don w s)
  *          $don wordle stop     - end it and show the word (mods; also $don w x)
+ *          $don wordle stats    - games played, average guesses and the top 5 winners (also $don w st)
  *
  * A port of the original !wordle (removed in March): the same rules and answer list,
  * now with squares, which Kick shows now that the bot posts as the streamer. The game
- * is kept in the points database, so a restart carries on with it.
+ * is kept in the points database, so a restart carries on with it. Stats are the
+ * Twitch bot's !wordle stats: every game that ends with a win or out of guesses counts,
+ * a stopped one doesn't.
  */
 
 import { CommandFn } from '../types';
@@ -30,6 +33,7 @@ import { applyOnce, creditTx, isExcluded } from '../points/store';
 import { ANSWERS, VALID_GUESSES } from '../community/wordle-words';
 
 const GAME_KEY = 'wordle_game';
+const STATS_KEY = 'wordle_stats';
 /** Short words for the game after the currency command. */
 const NAMES = new Set(['wordle', 'w']);
 
@@ -106,12 +110,41 @@ function writeGame(db: PointsDb, game: Game): void {
   db.prepare('INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(GAME_KEY, JSON.stringify(game));
 }
 
+/** The Twitch bot's wordle-data/<channel>-stats.json, kept in meta. */
+export interface WordleStats {
+  gamesPlayed: number;
+  totalGuesses: number;
+  /** Wins by name. */
+  winners: Record<string, number>;
+  lastPlayed?: string;
+}
+
+export function readStats(db: PointsDb): WordleStats {
+  const row = db.prepare('SELECT value FROM meta WHERE key = ?').get(STATS_KEY) as { value: string } | undefined;
+  try {
+    if (row) return JSON.parse(row.value) as WordleStats;
+  } catch { /* a bad row starts over */ }
+  return { gamesPlayed: 0, totalGuesses: 0, winners: {} };
+}
+
+/** Call inside a write transaction, once a game ends with a win or out of guesses. */
+function recordGame(db: PointsDb, game: Game): void {
+  const stats = readStats(db);
+  stats.gamesPlayed++;
+  stats.totalGuesses += game.guesses.length;
+  if (game.over?.winner) stats.winners[game.over.winner] = (stats.winners[game.over.winner] ?? 0) + 1;
+  stats.lastPlayed = new Date(game.over?.at ?? Date.now()).toISOString();
+  db.prepare('INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(STATS_KEY, JSON.stringify(stats));
+}
+
 const board = (game: Game): string => game.guesses.map(g => `${g.word.toUpperCase()} ${g.marks}`).join(' | ');
 
 /** When each channel last said no game is on, so `$don w` can't be spammed. */
 const lastNoGame = new Map<string, number>();
 /** When each viewer last guessed, by "channel|name". */
 const lastGuess = new Map<string, number>();
+/** When each channel last showed the stats: once per 30s, like $don top. */
+const lastStats = new Map<string, number>();
 
 export const wordle: CommandFn = async function wordle(client, message, channel, tags) {
   const words = message.trim().split(/\s+/);
@@ -134,8 +167,10 @@ export const wordle: CommandFn = async function wordle(client, message, channel,
   // "guess" or "g" says the next word is a guess, whatever it is: $don w g start guesses START.
   const explicit = first === 'guess' || first === 'g';
   const arg = explicit ? (words[3] ?? '').toLowerCase() : first;
-  // Short words for the mod commands: s starts, x stops.
-  const command = explicit ? null : first === 's' ? 'start' : first === 'x' ? 'stop' : first === 'start' || first === 'stop' ? first : null;
+  // Short words for the commands: s starts, x stops, st shows the stats.
+  const command = explicit ? null
+    : first === 's' ? 'start' : first === 'x' ? 'stop' : first === 'st' ? 'stats'
+    : first === 'start' || first === 'stop' || first === 'stats' ? first : null;
   const prize = w.prize > 0 ? ` First to get it wins ${w.prize.toLocaleString('en-US')} ${cur}.` : '';
 
   // START is a word too: while a game is on it's a guess, from anyone (a new game needs
@@ -156,6 +191,20 @@ export const wordle: CommandFn = async function wordle(client, message, channel,
     if (started) return void say(`@${me} a Wordle is already on (${started.guesses.length}/${w.maxGuesses}): $${cmd} w shows the board.`);
     console.log(`[WORDLE] ${me} started a game in ${chan}`);
     return void say(`🟩🟨⬛ Wordle! Guess the 5-letter word with $${cmd} w WORD. ${w.maxGuesses} guesses for the whole chat.${prize}`);
+  }
+
+  // STATS is a word too, but viewers ask for the stats mid-game: $don w g stats guesses it.
+  if (command === 'stats') {
+    if (!isMod) {
+      if (Date.now() - (lastStats.get(chan) ?? 0) < 30_000) return;
+      lastStats.set(chan, Date.now());
+    }
+    const stats = readStats(db);
+    if (!stats.gamesPlayed) return void say(`@${me} no Wordle games have been played in this channel yet!`);
+    const avg = (stats.totalGuesses / stats.gamesPlayed).toFixed(1);
+    const top = Object.entries(stats.winners).sort(([, a], [, b]) => b - a).slice(0, 5);
+    const winners = top.length ? ` | Top 5: ${top.map(([name, wins]) => `${name} (${wins})`).join(', ')}` : '';
+    return void say(`@${me} 📊 Wordle Stats: ${stats.gamesPlayed} games played | Avg guesses: ${avg}${winners}`);
   }
 
   if (command === 'stop') {
@@ -203,6 +252,7 @@ export const wordle: CommandFn = async function wordle(client, message, channel,
     if (arg === g.word) {
       g.over = { winner: me, at: now };
       writeGame(db, g);
+      recordGame(db, g);
       const senderId = Number(tags.senderId);
       const balance = w.prize > 0 && Number.isInteger(senderId) && senderId > 0
         ? creditTx(db, { userId: senderId, username: me, amount: w.prize, reason: 'game:wordle_win', actor: 'wordle', note: g.word, now })
@@ -211,6 +261,7 @@ export const wordle: CommandFn = async function wordle(client, message, channel,
     }
     if (g.guesses.length >= w.maxGuesses) g.over = { winner: null, at: now };
     writeGame(db, g);
+    if (g.over) recordGame(db, g);
     return { kind: g.over ? 'lost' : 'guess', game: g, marks };
   };
   // Once per chat message: a replayed message (the webhook after the socket) changes nothing.

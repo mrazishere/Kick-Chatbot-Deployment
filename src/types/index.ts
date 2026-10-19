@@ -347,6 +347,11 @@ export interface PointsGamesConfig {
   catchCooldownMinutes: number;
   /** How long traps take to fill (supibot: 60). */
   trapMinutes: number;
+  /**
+   * The longest a chatter can lay traps for with `$<cmd> fish trap <time>` (from 31
+   * minutes). Never below trapMinutes, which a plain `fish trap` lays.
+   */
+  trapMaxMinutes: number;
   /** Sell prices as a percentage of supibot's (fish 50, junk 1–20). */
   sellPricePercent: number;
   /** Bait prices as a percentage of supibot's (worm 2, fly 5, cricket 8). */

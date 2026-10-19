@@ -17,7 +17,8 @@
  *          $don fish show [user] [fish|junk|emoji]      (also count, display, collection; no type shows both)
  *          $don fish stats [user|global]
  *          $don fish top [fish|coins|junk|lucky|unlucky|traps|attempts|thieves|caught|robbed|total-…|emoji]   (also leaderboard)
- *          $don fish trap [cancel|reset]                (also net, trawl)
+ *          $don fish trap [cancel|reset|lift] [time]    (also net, trawl; time: 90, 90m, 2h, 1h30m;
+ *                                                         lift pulls them up early with what they caught so far)
  *          $don fish answer <x>                         (also ans: a trap check's answer; see games.trapCheck
  *                                                         and community/trap-check.ts)
  *          $don fish buy [reel|hook|guard]              (shows the shop; "buy reel" buys the next reel)
@@ -63,9 +64,9 @@ import { wheelBusy } from '../community/wheel-state';
 import { recordSignal } from '../community/cheat-signals';
 import { BITE_TOO_FAST_MS, STREAM_GRACE_MS, biteFor, canBite, channelBite, channelHasBite, codeMatches, getAway, nextPull, pickChatter, snipeBite, snipeOpen, startBite, takeBite, type BiteContext } from '../community/big-bite';
 import {
-  addItem, itemByWord, giveItems, baitPrice, baitRoll, currentReel, heldFishValue, landsFish, moveFish, pickHeld, stealableFish, stealChance, stealCharges, stealRollChance, worstStealCharges, parseSellList, takeSized, addXp, levelCost, levelOf, MAX_LEVEL, capOf, emoteWord, isWordName, nearCap, overflow, CatchItem, CatchType, FAILURE_EMOTES, FishData, findBait, hasFishedBefore, initialData, rarityOf, recordCatch,
+  addItem, itemByWord, giveItems, baitPrice, baitRoll, currentReel, heldFishValue, freshLengths, landsFish, moveFish, pickHeld, stealableFish, stealChance, stealCharges, stealRollChance, worstStealCharges, parseSellList, takeSized, addXp, levelCost, levelOf, MAX_LEVEL, capOf, emoteWord, isWordName, nearCap, overflow, CatchItem, CatchType, FAILURE_EMOTES, FishData, findBait, hasFishedBefore, initialData, rarityOf, recordCatch,
   ITEMS, JUNK_MESSAGES, loadFish, MISS_DELAY_MS, pick, randomInt, rollCatch, saveFish, sellPrice, STORY_STYLES, SUCCESS_EMOTES,
-  takeItems, TYPE_DESCRIPTIONS, weightedCatch
+  takeItems, TYPE_DESCRIPTIONS, weightedCatch, type HeldFish
 } from '../community/fishing';
 
 const cooldown = makeCooldown(5000);
@@ -189,7 +190,22 @@ interface Board { path: string | null; name: string; value: (d: FishData, balanc
 
 /** Short forms for the words after a fish subcommand: `t c` is `trap cancel`, `b h` is `buy hook`, `tp tf` is `top total-fish`. */
 const TYPE_SHORT: Record<string, string> = { f: 'fish', j: 'junk' };
-const TRAP_SHORT: Record<string, string> = { c: 'cancel', r: 'reset' };
+const TRAP_SHORT: Record<string, string> = { c: 'cancel', r: 'reset', l: 'lift' };
+
+/** The shortest trap: each fish skips 30 rolls, so anything shorter could never catch one. */
+const TRAP_MIN_MINUTES = 31;
+
+/** A trap time as a chatter types it: 90 or 90m (minutes), 2h, 1.5h, 1h30m or 1h30. Whole minutes, or null when it isn't one. */
+export function parseTrapMinutes(raw: string): number | null {
+  const t = raw.trim().toLowerCase();
+  let m = /^(\d{1,5})(?:m|min|mins)?$/.exec(t);
+  if (m) return Number(m[1]);
+  m = /^(\d{1,3}(?:\.\d+)?)(?:h|hr|hrs)$/.exec(t);
+  if (m) return Math.round(Number(m[1]) * 60);
+  m = /^(\d{1,3})h(\d{1,2})(?:m|min|mins)?$/.exec(t);
+  if (m) return Number(m[1]) * 60 + Number(m[2]);
+  return null;
+}
 const BUY_SHORT: Record<string, string> = { r: 'reel', h: 'hook', g: 'guard' };
 const BAIT_SHORT: Record<string, string> = { w: 'worm', f: 'fly', c: 'cricket' };
 const SELL_SHORT: Record<string, string> = { a: 'all', d: 'duplicate' };
@@ -589,7 +605,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
           kind: 'reply',
           text: now > d.trap.end
             ? `You cannot go fishing while your traps are laid out - you would be disturbing the catch! Your traps are ready to be collected! Go ahead and use "${cmd} fish trap" to get your stuff.`
-            : `You cannot go fishing while your traps are laid out - you would be disturbing the catch! If you wish to get rid of the traps immediately, use "${cmd} fish trap cancel", but you will not get any catch from them.`
+            : `You cannot go fishing while your traps are laid out - you would be disturbing the catch! Use "${cmd} fish trap lift" to pull them up early with what they've caught so far, or "${cmd} fish trap cancel" to get rid of them with no catch.`
         };
       }
       // A cast check waiting: answer it first. (A trap one can't be: the traps would be out.)
@@ -734,15 +750,20 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
   // ── trap ──
   /**
    * `trap` lays traps, or collects full ones; `trap reset` collects and lays again;
-   * `trap cancel` pulls them in empty. With trap checks on, collecting while the
+   * `trap cancel` pulls them in empty; `trap lift` pulls them up early with a haul for
+   * the time they were out, as if they'd been laid that long. With trap checks on, collecting while the
    * stream is offline may ask a question first (community/trap-check.ts): the haul
    * waits for `answer`. A right one collects it; running out of tries or time fines
    * the player and empties the traps. A timer ends the window on time; after a
    * restart, the player's next trap command or answer does.
    */
-  async function trap(operation: string, uid: number, answer?: string): Promise<void> {
+  async function trap(operation: string, uid: number, answer?: string, minutes?: number | null): Promise<void> {
     const before = loadFish(db!, uid) ?? initialData();
     const tc = g.trapCheck;
+    // A time the chatter named (null: one that didn't read as a time): only within the range.
+    if (minutes !== undefined && (minutes === null || minutes < TRAP_MIN_MINUTES || minutes > g.trapMaxMinutes)) {
+      return void say(`Traps can be laid for ${span(TRAP_MIN_MINUTES * 60_000)} up to ${span(g.trapMaxMinutes * 60_000)}, like ${cmd} fish trap ${g.trapMaxMinutes >= 120 ? '2h' : '45m'}.`);
+    }
     if (operation === 'answer') {
       if (!before.trapCheck) return void say("There's no question waiting on your traps.");
       // Nothing after "answer" isn't a try: the question again, while there's time.
@@ -753,7 +774,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     // An answer to a reset lays them again too, but if it can't, it still collects.
     const laysTraps = operation === 'answer'
       ? before.trapCheck!.reset
-      : operation !== 'cancel' && (!before.trap.active || operation === 'reset');
+      : operation !== 'cancel' && operation !== 'lift' && (!before.trap.active || operation === 'reset');
     const mayLay = laysTraps && (await liveOk());
     if (laysTraps && !mayLay && operation !== 'answer') return;
     // Checks only ask offline; an unknown live state counts as offline.
@@ -779,8 +800,15 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
         saveFish(db!, uid, d, now);
         return text;
       }
-      const setUp = (): string => {
-        const duration = g.trapMinutes * 60_000;
+      // Lifted before they're full: they end now, and the haul is for the time they were out.
+      const lifting = operation === 'lift' && d.trap.active && now <= d.trap.end && !d.trapCheck;
+      if (lifting) {
+        d.trap.duration = now - d.trap.start;
+        d.trap.end = now;
+      }
+      /** Lay the traps for `mins`, kept within today's range: a reset's earlier length may be outside it now. */
+      const setUp = (mins: number): string => {
+        const duration = Math.min(g.trapMaxMinutes, Math.max(TRAP_MIN_MINUTES, mins)) * 60_000;
         d.trap = { active: true, start: now, end: now + duration, duration };
         after = { laidUntil: d.trap.end };
         const ping = remindsOn ? " I'll ping you when they're ready." : '';
@@ -789,7 +817,8 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       const collect = (): string => {
         collected = true;
         // How long after the traps filled they were collected (cheat-signals.ts).
-        recordSignal(db!, { userId: uid, kind: 'trap_collect', now, delayMs: now - d.trap.end, live: liveNow });
+        // A lift has no wait to measure: it would read as an instant haul.
+        recordSignal(db!, { userId: uid, kind: 'trap_collect', now, delayMs: lifting ? null : now - d.trap.end, live: liveNow, ...(lifting ? { detail: 'lift' } : {}) });
         const rolls = Math.floor(d.trap.duration / 60_000 * randomInt(75, 90) / 100);
         const skip = g.catchCooldownMinutes;
         let fishAmount = 0;
@@ -847,7 +876,8 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
           delete d.trapCheck;
           d.lifetime.trap.checksPassed++;
           console.log(`[FISH] ${me} passed a trap check in ${chan}`);
-          reply = check.cast ? 'Correct! Your line is free: cast away.' : check.reset && mayLay ? `Correct! ${collect()} ${setUp()}` : `Correct! ${collect()}`;
+          const again = check.resetMinutes ?? d.trap.duration / 60_000;
+          reply = check.cast ? 'Correct! Your line is free: cast away.' : check.reset && mayLay ? `Correct! ${collect()} ${setUp(again)}` : `Correct! ${collect()}`;
         } else {
           recordSignal(db!, { userId: uid, kind: 'check_wrong', now, delayMs: now - check.askedAt, live: liveNow });
           if (++check.wrong >= tc.tries) {
@@ -871,32 +901,37 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
         after = { laidUntil: null };
         d.lifetime.trap.cancelled++;
         reply = "You have successfully retrieved your traps before they filled up. You don't get any junk or fish.";
+      } else if (operation === 'lift' && !d.trap.active) {
+        return "You don't have any traps out to lift!";
       } else if (!d.trap.active) {
-        reply = setUp();
-      } else if (now <= d.trap.end) {
-        return `Your traps are not fully loaded yet! They will be ready to harvest in ${span(d.trap.end - now)}. If you wish to get rid of them immediately, use "${cmd} fish trap cancel", but you will not get any catch from your traps.`;
+        reply = setUp(minutes ?? g.trapMinutes);
+      } else if (now <= d.trap.end && !lifting) {
+        return `Your traps are not fully loaded yet! They will be ready to harvest in ${span(d.trap.end - now)}. Use "${cmd} fish trap lift" to pull them up now with whatever they've caught so far, or "${cmd} fish trap cancel" to get rid of them with no catch.`;
       } else if (d.trapCheck && now > d.trapCheck.until) {
         // Its timer didn't get to it (a restart): it ends now.
         reply = failCheck(d, uid, d.trapCheck, 'time', now);
         after = { laidUntil: null };
       } else if (d.trapCheck) {
         // Waiting: the same question, and a reset now counts for the answer.
-        if (operation === 'reset' && !d.trapCheck.reset) {
+        if (operation === 'reset' && (!d.trapCheck.reset || (minutes != null && d.trapCheck.resetMinutes !== minutes))) {
           d.trapCheck.reset = true;
+          if (minutes != null) d.trapCheck.resetMinutes = minutes;
           saveFish(db!, uid, d, now);
         }
         return `Your traps are full, but first: ${d.trapCheck.question} ${answerHow} (${span(d.trapCheck.until - now)} left)`;
       } else if (mayAsk && randomInt(1, 100) <= tc.chancePercent) {
-        d.trapCheck = askedCheck = { ...makeTrapCheck(operation === 'reset', now, tc.answerSeconds), fine: Math.floor((getUser(db!, uid)?.balance ?? 0) * tc.finePercent / 100) };
+        d.trapCheck = askedCheck = { ...makeTrapCheck(operation === 'reset', now, tc.answerSeconds), ...(operation === 'reset' && minutes != null ? { resetMinutes: minutes } : {}), fine: Math.floor((getUser(db!, uid)?.balance ?? 0) * tc.finePercent / 100) };
         recordSignal(db!, { userId: uid, kind: 'check_asked', now, live: liveNow, detail: 'trap' });
         console.log(`[FISH] ${me} got a trap check in ${chan}: ${d.trapCheck.question}`);
         const stake = tc.finePercent > 0 ? `costs ${tc.finePercent}% of your ${cur} and the catch` : 'loses the catch';
         const tries = tc.tries === 1 ? 'one try' : `${tc.tries} tries`;
         reply = `Your traps are full! Before you pull them up: ${d.trapCheck.question} ${answerHow} You have ${span(tc.answerSeconds * 1000)} and ${tries}; running out ${stake}.`;
       } else if (operation === 'reset') {
-        reply = `${collect()} ${setUp()}`;
+        // Without a time, as long as the traps just collected.
+        const again = minutes ?? d.trap.duration / 60_000;
+        reply = `${collect()} ${setUp(again)}`;
       } else {
-        reply = collect();
+        reply = lifting ? `You lift your traps early, ${span(d.trap.duration)} in. ${collect()}` : collect();
       }
       saveFish(db!, uid, d, now);
       return reply;
@@ -1248,12 +1283,13 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
   // ── steal ──
   /**
    * Reach for one random fish the target has held past the grace time, weighted by
-   * how many of each they hold. It works by that fish's rarity; otherwise the thief
+   * how many of each they hold, or the kind (`steal @user 🦈`) or the very fish
+   * (`steal @user 🦈 72cm`) the thief names. It works by that fish's rarity, aimed or not; otherwise the thief
    * is caught and fined on top of the fee (both go nowhere). Every try uses one hook
-   * try. A guard, or a thief who couldn't pay for the target's costliest fish, costs
-   * one hook use and nothing else.
+   * try. A guard, or a thief who couldn't pay for the costliest fish the hook could
+   * grab (the one aimed at, or any), costs one hook use and nothing else.
    */
-  async function steal(targetRaw: string | undefined, uid: number): Promise<void> {
+  async function steal(targetRaw: string | undefined, uid: number, aimWords: string[] = []): Promise<void> {
     const st = g.steal;
     if (!st.enabled && !tester) return void say("Nobody steals fish here. Go catch your own!");
     if (!tester && !(await liveOk(st.onlyWhileLive))) return;
@@ -1265,6 +1301,17 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     if (!victim) return void say('No such user exists!');
     if (victim.user_id === uid) return void say("You can't steal from yourself!");
     if (nameLc === chan || (!tester && offLimits(victim.user_id, nameLc))) return void say(`${victim.username}'s fish are off limits.`);
+    // A fish named after the target: that kind, or with a length that very fish.
+    let aim: { item: CatchItem; cm?: number } | null = null;
+    if (aimWords.length) {
+      const parsed = parsePicks(aimWords);
+      const usage = `Name one fish to aim for, like ${cmd} fish steal @${victim.username} 🦈 or 🦈 72cm`;
+      if ('error' in parsed) return void say(parsed.error === 'unknown' ? pickError('unknown', 'sell') : usage);
+      const [p] = parsed.picks;
+      if (parsed.picks.length !== 1 || p.counted || p.n !== 1) return void say(usage);
+      if (p.item.type !== 'fish') return void say('Your hook only grabs fish, not junk.');
+      aim = { item: p.item, cm: p.cm };
+    }
 
     let overlay: { kind: OverlayKind; item: string } | null = null;
     const text = once(now => {
@@ -1299,16 +1346,34 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       }
       const pool = v ? stealableFish(db!, v, victim.user_id, now, st.graceMinutes * 60_000) : [];
       if (!v || !pool.length) return `${victim.username} has no fish you can get your hook into right now.`;
+      // Aimed: the kind must be reachable, and a length must be a fish they hold past the grace time.
+      let aimed: { index: number; held?: HeldFish } | null = null;
+      if (aim) {
+        const label = `${aim.item.name}${aim.cm !== undefined ? ` ${aim.cm} cm` : ''}`;
+        if (!pool.some(p => p.item.name === aim!.item.name)) return `${victim.username} has no ${label} you can get your hook into right now.`;
+        if (aim.cm !== undefined) {
+          const have = v.catch.types[aim.item.name] ?? 0;
+          const sized = (v.catch.sizes?.[aim.item.name] ?? []).slice(0, have);
+          const index = sized.findIndex(h => h.cm === aim!.cm);
+          const held = sized.filter(h => h.cm === aim!.cm).length;
+          const fresh = freshLengths(db!, victim.user_id, aim.item.name, now, st.graceMinutes * 60_000).filter(cm => cm === aim!.cm).length;
+          if (index < 0 || held <= fresh) return `${victim.username} has no ${label} you can get your hook into right now.`;
+          aimed = { index, held: sized[index] };
+        }
+      }
       // The thief must be able to pay for the worst the hook could grab: the fee and the
-      // fine on the target's most valuable fish. Short of that, the try costs a hook use.
+      // fine on the fish aimed at, or on the target's most valuable one. Short of that,
+      // the try costs a hook use.
       const balance = getUser(db!, uid)?.balance ?? 0;
-      const needed = worstStealCharges(v, g, pool);
+      const needed = aimed
+        ? (({ fee, fine }) => fee + fine)(stealCharges(g, sellPrice(aim!.item, g, aimed.held), stealChance(g, aim!.item.name)))
+        : worstStealCharges(v, g, aim ? pool.filter(p => p.item.name === aim!.item.name) : pool);
       if (balance < needed) {
         d.hook = (d.hook ?? 1) - 1;
         saveFish(db!, uid, d, now);
         log('short', null, null);
         const left = d.hook > 0 ? `${tries(d.hook)} left on it` : 'that was its last try';
-        return `You fumbled your 🪝 hook (${left}). To try ${victim.username} you need ${groupDigits(needed)} ${cur} on hand: the fee and the fine for the costliest fish they hold.`;
+        return `You fumbled your 🪝 hook (${left}). To try ${victim.username} you need ${groupDigits(needed)} ${cur} on hand: the fee and the fine for ${aimed ? 'that fish' : aim ? `their costliest ${aim.item.name}` : 'the costliest fish they hold'}.`;
       }
 
       // The attempt goes ahead: a hook use and the fishing cooldown are spent whatever happens, and the fee once the fish is known.
@@ -1316,8 +1381,8 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       d.readyTimestamp = now + g.catchCooldownMinutes * 60_000;
       d.lifetime.steal.attempts++;
       let r = randomInt(1, pool.reduce((sum, p) => sum + p.n, 0));
-      const item = pool.find(p => (r -= p.n) <= 0)!.item;
-      const picked = pickHeld(v, item);
+      const item = aim ? aim.item : pool.find(p => (r -= p.n) <= 0)!.item;
+      const picked = aimed ?? pickHeld(v, item);
       const worth = sellPrice(item, g, picked.held);
       const chance = stealChance(g, item.name);
       const { fee, fine } = stealCharges(g, worth, chance);
@@ -2062,7 +2127,13 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
         return sell(rest, userId);
       case 'trap':
         if (userId === null || excluded) return ignore('no account or excluded');
-        return await trap(long((rest[0] ?? '').toLowerCase(), TRAP_SHORT), userId);
+      {
+        // A time: `trap 2h` lays them for that long, `trap reset 2h` lays them again for it.
+        const op = long((rest[0] ?? '').toLowerCase(), TRAP_SHORT);
+        if (op === 'reset') return await trap(op, userId, undefined, rest[1] === undefined ? undefined : parseTrapMinutes(rest[1]));
+        const mins = rest[0] === undefined ? null : parseTrapMinutes(rest[0]);
+        return await trap(mins === null ? op : '', userId, undefined, mins ?? undefined);
+      }
       case 'answer':
         if (userId === null || excluded) return ignore('no account or excluded');
         // Only a waiting question skips the cooldown (checkAnswer, above).
@@ -2070,7 +2141,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
         return await trap('answer', userId, rest.join(' ').trim() || undefined);
       case 'steal':
         if (userId === null || excluded) return ignore('no account or excluded');
-        return await steal(rest[0], userId);
+        return await steal(rest[0], userId, rest.slice(1));
       case 'give':
         if (userId === null || excluded) return ignore('no account or excluded');
         duelReply = true;

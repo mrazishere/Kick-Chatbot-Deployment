@@ -81,6 +81,7 @@ export function defaultPointsConfig(): PointsConfig {
       catchOdds: 20,
       catchCooldownMinutes: 30,
       trapMinutes: 60,
+      trapMaxMinutes: 60,
       sellPricePercent: 100,
       baitPricePercent: 100,
       stories: true,
@@ -563,6 +564,8 @@ export function internalPointsConfig(raw: unknown): InternalPointsConfig {
     catchOdds: num(ga.catchOdds, d.games.catchOdds, 1, 1000, true),
     catchCooldownMinutes: num(ga.catchCooldownMinutes, d.games.catchCooldownMinutes, 1, 1440, true),
     trapMinutes: num(ga.trapMinutes, d.games.trapMinutes, 31, 1440, true),
+    // At least the trap time, which a plain `fish trap` lays.
+    trapMaxMinutes: Math.max(num(ga.trapMinutes, d.games.trapMinutes, 31, 1440, true), num(ga.trapMaxMinutes, d.games.trapMaxMinutes, 31, 1440, true)),
     sellPricePercent: num(ga.sellPricePercent, d.games.sellPricePercent, 0, 1000, true),
     baitPricePercent: num(ga.baitPricePercent, d.games.baitPricePercent, 0, 1000, true),
     stories: bool(ga.stories, d.games.stories),
@@ -719,6 +722,7 @@ const GAMES_NUMBERS: Record<string, Rule> = {
   catchCooldownMinutes: { min: 1, max: 1440, integer: true },
   // Traps skip 30 rolls after each fish, so anything shorter could never catch one.
   trapMinutes: { min: 31, max: 1440, integer: true },
+  trapMaxMinutes: { min: 31, max: 1440, integer: true },
   sellPricePercent: { min: 0, max: 1000, integer: true },
   baitPricePercent: { min: 0, max: 1000, integer: true },
   overlaySizePercent: { min: 50, max: 300, integer: true },

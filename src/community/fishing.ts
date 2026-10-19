@@ -818,6 +818,18 @@ export function stealableFish(db: PointsDb, d: FishData, userId: number, now: nu
 }
 
 /**
+ * The lengths of `name` the owner landed or stole in the last `graceMs`, one entry per
+ * fish (null for an unsized one): the ones a thief aiming at a length can't reach yet.
+ */
+export function freshLengths(db: PointsDb, userId: number, name: string, now: number, graceMs: number): Array<number | null> {
+  const since = now - graceMs;
+  return (db.prepare(
+    `SELECT cm FROM catches WHERE user_id = ? AND name = ? AND ts > ?
+     UNION ALL SELECT cm FROM steals WHERE thief_id = ? AND name = ? AND ts > ? AND outcome = 'stolen'`
+  ).all(userId, name, since, userId, name, since) as Array<{ cm: number | null }>).map(r => r.cm);
+}
+
+/**
  * One of `item` the owner holds, at random: a sized one (with its length) or, among
  * fish from traps and older catches, an unsized one. Doesn't remove it.
  */

@@ -122,6 +122,8 @@ export interface PointsGames {
   catchOdds: number;
   catchCooldownMinutes: number;
   trapMinutes: number;
+  /** The longest trap a chatter can name ($cmd fish trap 2h); never below trapMinutes. Absent from an older bot service. */
+  trapMaxMinutes?: number;
   /** Sell prices as a percentage of supibot's (fish 50, junk 1–20). */
   sellPricePercent: number;
   /** Bait prices as a percentage of supibot's (worm 2, fly 5, cricket 8). */
@@ -300,6 +302,7 @@ const GAMES_DEFAULTS: PointsGames = {
   catchOdds: 20,
   catchCooldownMinutes: 30,
   trapMinutes: 60,
+  trapMaxMinutes: 60,
   sellPricePercent: 100,
   baitPricePercent: 100,
   stories: true,
@@ -523,6 +526,7 @@ interface SettingsForm {
   fishOdds: string;
   fishCatchCooldown: string;
   fishTrapMinutes: string;
+  fishTrapMax: string;
   fishSellPct: string;
   fishBaitPct: string;
   fishStories: boolean;
@@ -626,6 +630,7 @@ function formFromConfig(c: PointsConfig): SettingsForm {
     fishOdds: String((c.games ?? GAMES_DEFAULTS).catchOdds),
     fishCatchCooldown: String((c.games ?? GAMES_DEFAULTS).catchCooldownMinutes),
     fishTrapMinutes: String((c.games ?? GAMES_DEFAULTS).trapMinutes),
+    fishTrapMax: String((c.games ?? GAMES_DEFAULTS).trapMaxMinutes ?? (c.games ?? GAMES_DEFAULTS).trapMinutes),
     fishSellPct: String((c.games ?? GAMES_DEFAULTS).sellPricePercent),
     fishBaitPct: String((c.games ?? GAMES_DEFAULTS).baitPricePercent),
     fishStories: (c.games ?? GAMES_DEFAULTS).stories,
@@ -872,6 +877,7 @@ function buildPatch(f: SettingsForm): { patch: PointsSettingsPatch } | { error: 
     catchOdds: whole(f.fishOdds, "Catch odds", 1, 1000),
     catchCooldownMinutes: whole(f.fishCatchCooldown, "Cooldown after a catch", 1, 1440),
     trapMinutes: whole(f.fishTrapMinutes, "Trap time", 31, 1440),
+    trapMaxMinutes: whole(f.fishTrapMax, "Longest trap", 31, 1440),
     sellPricePercent: whole(f.fishSellPct, "Sell prices", 0, 1000),
     baitPricePercent: whole(f.fishBaitPct, "Bait prices", 0, 1000),
     stories: f.fishStories,
@@ -888,6 +894,7 @@ function buildPatch(f: SettingsForm): { patch: PointsSettingsPatch } | { error: 
     overlayClearHeightPercent: whole(f.fishOverlayClearH, "Clear corner height", 0, 80),
     streamDelaySeconds: whole(f.fishStreamDelay, "Stream delay", 0, 30),
   };
+  if ((patch.games.trapMaxMinutes ?? 0) < (patch.games.trapMinutes ?? 0)) errors.push("Longest trap must be at least the trap time");
   if (f.fishCatches.length > 0) {
     // Only items that differ from their default are sent; the rest keep following it.
     const catches: Record<string, { weight: number; price: number }> = {};
@@ -2361,6 +2368,7 @@ export default function PointsCard({
                   <Field label="Catch odds (1 in …)" hint="supibot: 20">{text("fishOdds", { inputMode: "numeric" })}</Field>
                   <Field label="Cooldown after a catch (min)" hint="supibot: 30">{text("fishCatchCooldown", { inputMode: "numeric" })}</Field>
                   <Field label="Trap time (min)" hint="31–1440, supibot: 60">{text("fishTrapMinutes", { inputMode: "numeric" })}</Field>
+                  <Field label="Longest trap (min)" hint={`Chatters can name a time from 31 min up to this: $${commandPreview || "…"} fish trap 2h. At least the trap time`}>{text("fishTrapMax", { inputMode: "numeric" })}</Field>
                 </div>
                 <div className="mt-3 grid gap-4 sm:grid-cols-4">
                   {form.fishCatches.length === 0 ? (

@@ -19,6 +19,7 @@ import { fighterOf } from './community/fish-duel';
 import { readWheel } from './community/wheel';
 import { feedingGuide } from './points/public-commands';
 import { BOARDS, topRows } from './bot-commands/fish';
+import { readStats as readWordleStats } from './bot-commands/wordle';
 import { readState, avgDumb, avgTrolled, topAskers, topDumb, topTrolled } from './leaderboard-store';
 
 /** How many tool rounds one !claude reply may take. */
@@ -26,7 +27,7 @@ export const MAX_TOOL_ROUNDS = 3;
 
 const RULE_TOPICS = ['bot-commands', 'earning', 'games', 'fishing', 'fish-table', 'fish-shop', 'stealing', 'fish-duels', 'big-bites', 'feeding', 'wheel'];
 const FISH_BOARDS = ['fish', 'total-fish', 'total-coins', 'junk', 'lucky', 'unlucky', 'traps', 'attempts', 'thieves', 'caught', 'robbed', 'duelists'];
-const BOARD_NAMES = ['balance', 'activetime', 'gamble', 'gamble-losers', 'shame-roasted', 'shame-dumb', 'shame-yap', ...FISH_BOARDS.map(b => `fishing-${b}`)];
+const BOARD_NAMES = ['balance', 'activetime', 'gamble', 'gamble-losers', 'wordle', 'shame-roasted', 'shame-dumb', 'shame-yap', ...FISH_BOARDS.map(b => `fishing-${b}`)];
 
 export interface StatToolContext {
   /** Channel slug, no '#'. */
@@ -51,7 +52,7 @@ export function statTools(channel: string): Array<Record<string, unknown>> {
     },
     {
       name: 'top_list',
-      description: `The top 10 of one of this channel's leaderboards, with values. ${points ? 'balance: currency held; activetime: seconds watched while chatting; gamble: biggest net gambling winners; gamble-losers: biggest net gambling losers (most $<currency> lost gambling); fishing-*: the $<currency> fish top boards (fish = fish held now, total-fish = ever caught, total-coins = earned selling, thieves = fish stolen, caught = caught stealing, robbed = fish lost to thieves, duelists = fish duels won). ' : ''}shame-roasted, shame-dumb: average Hall of Shame score (3+ questions to qualify); shame-yap: most questions asked.`,
+      description: `The top 10 of one of this channel's leaderboards, with values. ${points ? 'balance: currency held; activetime: seconds watched while chatting; gamble: biggest net gambling winners; gamble-losers: biggest net gambling losers (most $<currency> lost gambling); wordle: Wordle wins, with games played and average guesses ($<currency> wordle stats); fishing-*: the $<currency> fish top boards (fish = fish held now, total-fish = ever caught, total-coins = earned selling, thieves = fish stolen, caught = caught stealing, robbed = fish lost to thieves, duelists = fish duels won). ' : ''}shame-roasted, shame-dumb: average Hall of Shame score (3+ questions to qualify); shame-yap: most questions asked.`,
       input_schema: {
         type: 'object',
         properties: { board: { type: 'string', enum: boards } },
@@ -174,6 +175,15 @@ function topList(ctx: StatToolContext, raw: unknown): unknown {
     if (board === 'gamble' || board === 'gamble-losers') {
       return gambleTop(db, 1, 10, ex, board === 'gamble' ? 'winners' : 'losers').map((g, i) => ({ rank: i + 1, ...g }));
     }
+    if (board === 'wordle') {
+      const st = readWordleStats(db);
+      if (!st.gamesPlayed) return { gamesPlayed: 0, note: 'No Wordle game has finished here yet.' };
+      return {
+        gamesPlayed: st.gamesPlayed,
+        averageGuesses: Math.round(st.totalGuesses / st.gamesPlayed * 10) / 10,
+        winners: Object.entries(st.winners).sort(([, a], [, b]) => b - a).slice(0, 10).map(([username, wins], i) => ({ rank: i + 1, username, wins }))
+      };
+    }
     const fb = board.startsWith('fishing-') ? BOARDS.get(board.slice('fishing-'.length)) : undefined;
     if (!fb || !FISH_BOARDS.includes(board.slice('fishing-'.length))) return { error: 'Unknown board.' };
     return topRows(db, fb).filter(r => r.value > 0).map((r, i) => ({ rank: i + 1, username: r.username, value: r.value }));
@@ -272,6 +282,7 @@ function channelRules(ctx: StatToolContext, raw: unknown): unknown {
       trapRolls: `collecting full traps rolls about 0.75-0.9 rolls per minute they were laid (${Math.floor(g.trapMinutes * 0.75)}-${Math.floor(g.trapMinutes * 0.9)} rolls for ${g.trapMinutes} min); each roll is like a cast without bait (1 in ${g.catchOdds} a fish, times the reel), and each fish caught uses up the next ${g.catchCooldownMinutes} rolls. Collecting late changes nothing`,
       cooldownAfterAFishMinutes: g.catchCooldownMinutes,
       trapMinutes: g.trapMinutes,
+      trapTimes: `a plain $<cmd> fish trap lays them for ${g.trapMinutes} min; a chatter can name a time from 31 min to ${g.trapMaxMinutes} min ($<cmd> fish trap 2h, 90m, 1h30m), and trap reset lays them again for as long as before or the time named. trap lift pulls them up early with a haul for the minutes they were out (as if laid that long; under about ${g.catchCooldownMinutes + 5} min it can only be junk); trap cancel pulls them up with nothing. A longer trap catches more, and a little more per minute, since each fish uses up the next rolls`,
       when: g.onlyWhileOffline ? 'casting and traps only while the stream is offline' : g.onlyWhileLive ? 'casting and traps only while live' : 'any time',
       sellPricePercent: g.sellPricePercent,
       sizes: 'fish are 1-100 cm: 1 cm sells for half the base price, 50 cm for the base price, 100 cm for double; a size record sells for 1.5x',
@@ -317,6 +328,7 @@ function channelRules(ctx: StatToolContext, raw: unknown): unknown {
     const st = g.steal;
     return {
       needs: `a grappling hook (${st.hookPrice} ${cur}, ${st.hookUses} tries)`,
+      aiming: '$<cmd> fish steal @user grabs a random fish they hold; $<cmd> fish steal @user 🦈 aims at that kind, and 🦈 72cm at that very fish. Aimed or not, the chance, fee and fine are that fish\'s own',
       when: st.onlyWhileLive ? 'only while live' : g.onlyWhileOffline ? 'only while offline, like casting' : 'any time',
       successPercentByRarity: { Common: st.oddsCommon, Uncommon: st.oddsUncommon, Rare: st.oddsRare, Epic: st.oddsEpic, Legendary: st.oddsLegendary },
       oddsFollowRarity: 'each fish\'s chance follows how rare it is to catch, with no steps: the tiers\' standard fish get the tier odds above, rarer ones less, down to a fraction of a percent for the rarest; trophies use the tier they fight as (the 🐉 half a Legendary\'s)',
