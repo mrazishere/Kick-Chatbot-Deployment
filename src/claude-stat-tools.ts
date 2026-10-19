@@ -14,7 +14,7 @@ import * as fs from 'fs';
 import { channelConfigPath, effectiveCommand, readLivePointsConfig } from './points/config';
 import type { PointsConfig, RewardAction } from './types';
 import { exclusionsFor, findUserByName, getUser, gambleStatsFor, gambleTop, isExcluded, pointsSummary, rankBy, topBy, caughtFish } from './points/store';
-import { loadFish, hasFishedBefore, currentReel, heldFishValue, ITEMS, levelOf, levelCost, MAX_LEVEL, BAITS, baitPrice, baitRoll, rarityName } from './community/fishing';
+import { loadFish, hasFishedBefore, currentReel, heldFishValue, ITEMS, levelOf, levelCost, MAX_LEVEL, BAITS, baitPrice, baitRoll, rarityName, stealRollChance } from './community/fishing';
 import { fighterOf } from './community/fish-duel';
 import { readWheel } from './community/wheel';
 import { feedingGuide } from './points/public-commands';
@@ -319,7 +319,9 @@ function channelRules(ctx: StatToolContext, raw: unknown): unknown {
       needs: `a grappling hook (${st.hookPrice} ${cur}, ${st.hookUses} tries)`,
       when: st.onlyWhileLive ? 'only while live' : g.onlyWhileOffline ? 'only while offline, like casting' : 'any time',
       successPercentByRarity: { Common: st.oddsCommon, Uncommon: st.oddsUncommon, Rare: st.oddsRare, Epic: st.oddsEpic, Legendary: st.oddsLegendary },
-      luck: st.luckPercent > 0 ? `every success chance above is raised by ${st.luckPercent}% of itself (so ${st.oddsCommon}% becomes ${Math.round(st.oddsCommon * (1 + st.luckPercent / 100) * 100) / 100}%, ${st.oddsLegendary}% becomes ${Math.round(st.oddsLegendary * (1 + st.luckPercent / 100) * 100) / 100}%), while fines stay priced from the lower odds, so stealing pays a little on average` : 'none: the odds above are the real ones',
+      oddsFollowRarity: 'each fish\'s chance follows how rare it is to catch, with no steps: the tiers\' standard fish get the tier odds above, rarer ones less, down to a fraction of a percent for the rarest; trophies use the tier they fight as (the 🐉 half a Legendary\'s)',
+      successPercentByFishWithLuck: Object.fromEntries(g.catches.filter(x => x.type === 'fish' && x.weight > 0).map(x => [x.name, Math.round(stealRollChance(g, x.name) * 100) / 100])),
+      luck: st.luckPercent > 0 ? `every success chance by rarity above is raised by ${st.luckPercent}% of itself (so ${st.oddsCommon}% becomes ${Math.round(st.oddsCommon * (1 + st.luckPercent / 100) * 100) / 100}%, ${st.oddsLegendary}% becomes ${Math.round(st.oddsLegendary * (1 + st.luckPercent / 100) * 100) / 100}%), while fines stay priced from the lower odds, so stealing pays a little on average` : 'none: the odds above are the real ones',
       fee: `every try that goes ahead costs ${st.feePercent}% of the grabbed fish's value, at least ${st.feeMinimum}`,
       fine: `a caught thief also pays a fine, at least ${st.fineMinimum}, priced so the average try loses ${st.edgePercent}% before luck`,
       graceMinutes: `a fish can't be stolen until held ${st.graceMinutes} min`,
@@ -345,6 +347,9 @@ function channelRules(ctx: StatToolContext, raw: unknown): unknown {
       how: `while live with the fishing overlay up, now and then a random active chatter gets a big bite; they type the code shown on the overlay with ${c} fish reel <code> (from the second pull the code alone works too), ${b.pulls} pulls, each a new and harder code (from the second pull it flashes for codeShownSeconds and then hides); the last pull lands a trophy by its land chance or it snaps. A wrong code or too slow and it gets away`,
       everyMinutes: b.everyMinutes, pulls: b.pulls, firstCodeSeconds: b.windowSeconds, eachPullSeconds: b.pullSeconds,
       codeShownSeconds: b.flashSeconds || 'stays shown',
+      rewardBites: [b.kicksMin > 0 ? `sending ${b.kicksMin}+ Kicks at once` : '', b.onSub ? 'subscribing or resubscribing' : '', b.onGift ? 'gifting subs (the gifter)' : ''].filter(Boolean).join(', ') || 'off',
+      rewardBitesNote: 'a reward bite goes to that viewer right away (or after a bite already on a line), can\'t be sniped, always lands if every code is right (which trophy is still random) and doesn\'t move the timer; live with the overlay up only',
+      overlaySwitch: `when the overlay isn't on stream, mods can type ${c} fish overlay off: fishing replies go to chat and big bites pause until ${c} fish overlay on or the next stream`,
       sniping: b.snipeSeconds > 0 ? `in the first code's last ${b.snipeSeconds}s anyone may take the bite by typing the different code posted in chat` : 'off'
     };
   }

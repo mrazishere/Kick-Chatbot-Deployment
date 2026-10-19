@@ -30,6 +30,8 @@ const MOD_REFRESH_MS = 30 * 60 * 1000;
 const VANISH_WINDOW_MS = 10 * 60 * 1000;
 /** Most messages one !vanish deletes, which also bounds the API calls it makes. */
 const VANISH_MAX_MESSAGES = 25;
+/** How many of those it deletes at once. */
+const VANISH_PARALLEL = 5;
 
 /** A token that can issue a ban, and the name Kick will show on it. */
 interface ModerationActor {
@@ -365,24 +367,43 @@ export class ChannelModerator {
       return { ok: false, error: 'deleting messages is not set up for this channel' };
     }
 
-    // Find who can delete with the first message, then use them for the rest.
-    const del = (t: string, id: string) =>
-      axios.delete(`${API}/chat/${encodeURIComponent(id)}`, { headers: { Authorization: `Bearer ${t}` } }).catch((err: unknown) => {
-        // Already gone (a moderator got there first) is what was wanted.
-        if (axios.isAxiosError(err) && err.response?.status === 404) return;
-        throw err;
-      });
-    const actor = await this.firstThatWorks(actors, `Deleting ${username}'s message`, t => del(t, ids[0]));
+    // Newest first: what's on screen (the !vanish itself among it) goes first.
+    const order = [...ids].reverse();
+    const del = async (t: string, id: string): Promise<void> => {
+      for (let attempt = 0; ; attempt++) {
+        try {
+          await axios.delete(`${API}/chat/${encodeURIComponent(id)}`, { headers: { Authorization: `Bearer ${t}` } });
+          return;
+        } catch (err: unknown) {
+          // Already gone (a moderator got there first) is what was wanted.
+          if (axios.isAxiosError(err) && err.response?.status === 404) return;
+          // Too many at once: wait as asked (or a moment) and go again, a few times.
+          if (axios.isAxiosError(err) && err.response?.status === 429 && attempt < 3) {
+            const after = Number(err.response.headers?.['retry-after']);
+            await new Promise(r => setTimeout(r, Number.isFinite(after) && after > 0 ? Math.min(after * 1000, 5_000) : 500 * (attempt + 1)));
+            continue;
+          }
+          throw err;
+        }
+      }
+    };
+    // Find who can delete with the newest message, then the rest VANISH_PARALLEL at a time:
+    // one after another, 25 took 10 seconds (2026-10-19).
+    const actor = await this.firstThatWorks(actors, `Deleting ${username}'s message`, t => del(t, order[0]));
     if (!actor) return { ok: false, error: 'I could not delete your messages' };
     let deleted = 1;
-    for (const id of ids.slice(1)) {
-      try {
-        await del(actor.token, id);
-        deleted++;
-      } catch (err) {
-        console.error(`[MODERATION] Deleting ${username}'s message ${id} failed: ${describeError(err)}`);
+    const rest = order.slice(1);
+    const worker = async () => {
+      for (let id = rest.shift(); id !== undefined; id = rest.shift()) {
+        try {
+          await del(actor.token, id);
+          deleted++;
+        } catch (err) {
+          console.error(`[MODERATION] Deleting ${username}'s message ${id} failed: ${describeError(err)}`);
+        }
       }
-    }
+    };
+    await Promise.all(Array.from({ length: Math.min(VANISH_PARALLEL, rest.length) }, worker));
     this.recentMessages.delete(key);
     return { ok: true, deleted };
   }

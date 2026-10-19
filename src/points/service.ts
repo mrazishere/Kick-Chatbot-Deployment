@@ -522,19 +522,56 @@ export class PointsService {
   }
 
   onSubscriptionNew(e: SubscriptionEvent, meta: QueueMeta): bonuses.BonusOutcome | undefined {
+    // Held a moment: a gifted sub's recipient gets this event too, and only the gifter earns the bite.
+    this.guard('sub big bite', () => this.rewardBite('onSub', e?.subscriber, 'the sub', `sub:${meta.messageId ?? `${e?.subscriber?.user_id}:${e?.created_at}`}`, bigBite.SUB_HOLD_MS));
     return this.guard('sub bonus', () => bonuses.onSubscription(this.bonusContext(), 'new', e, meta));
   }
 
   onSubscriptionRenewal(e: SubscriptionEvent, meta: QueueMeta): bonuses.BonusOutcome | undefined {
+    this.guard('resub big bite', () => this.rewardBite('onSub', e?.subscriber, 'the resub', `resub:${meta.messageId ?? `${e?.subscriber?.user_id}:${e?.created_at}`}`));
     return this.guard('resub bonus', () => bonuses.onSubscription(this.bonusContext(), 'renewal', e, meta));
   }
 
   onSubscriptionGifts(e: SubscriptionGiftsEvent, meta: QueueMeta): bonuses.BonusOutcome | undefined {
+    this.guard('gift big bite', () => {
+      const giftees = (Array.isArray(e?.giftees) ? e.giftees : []).flatMap(g => (typeof g?.user_id === 'number' ? [g.user_id] : []));
+      // The recipients' own sub events don't earn a bite.
+      bigBite.dropRewardBites(this.channel, giftees);
+      if (e?.gifter && !e.gifter.is_anonymous && giftees.length) {
+        this.rewardBite('onGift', e.gifter, `the ${giftees.length} gifted ${giftees.length === 1 ? 'sub' : 'subs'}`, `gifts:${meta.messageId ?? `${e.gifter.user_id}:${e.created_at}:${giftees.join(',')}`}`);
+      }
+    });
     return this.guard('gifted sub bonus', () => bonuses.onGifts(this.bonusContext(), e, meta));
   }
 
   onKicksGifted(e: KicksGiftedEvent, meta: QueueMeta): bonuses.BonusOutcome | undefined {
+    this.guard('Kicks big bite', () => {
+      const amount = Number(e?.gift?.amount);
+      const min = this.config().games.bigBite.kicksMin;
+      if (min > 0 && Number.isFinite(amount) && amount >= min) {
+        this.rewardBite('kicks', e?.sender, `the ${amount.toLocaleString('en-US')} Kicks`, `kicks:${meta.messageId ?? `${e?.sender?.user_id}:${e?.created_at}:${amount}`}`);
+      }
+    });
     return this.guard('Kicks bonus', () => bonuses.onKicks(this.bonusContext(), e, meta));
+  }
+
+  /**
+   * A big bite for a viewer who paid the channel (games.bigBite.onSub, onGift, kicksMin): queued
+   * while live with fishing and big bites on, then started at once if nothing's on a line.
+   * Never for the streamer, a bot or an excluded account.
+   */
+  private rewardBite(kind: 'onSub' | 'onGift' | 'kicks', who: { user_id: number | null; username: string } | null | undefined, why: string, eventKey: string, holdMs = 0): void {
+    const cfg = this.config();
+    const bb = cfg.games.bigBite;
+    if (!cfg.enabled || !cfg.games.enabled || !bb.enabled || this.lastLive !== true) return;
+    if (kind !== 'kicks' && !bb[kind]) return;
+    if (!who || typeof who.user_id !== 'number' || !who.username) return;
+    const ex = this.exclusions();
+    if (!bigBite.canBite({ channel: this.channel, excluded: (id, name) => isExcluded(ex, id, name) }, who.user_id, who.username)) return;
+    if (!bigBite.queueRewardBite(this.channel, { name: who.username, userId: who.user_id }, why, eventKey, this.now(), holdMs)) return;
+    const go = () => void this.bigBiteTick();
+    if (holdMs > 0) setTimeout(go, holdMs + 500).unref?.();
+    else go();
   }
 
   /** A hint only: the tick's own live check decides whether anyone earns. */

@@ -17,6 +17,8 @@ export interface Emote {
   source: EmoteSource;
   /** An image of it, for the overlay. */
   url?: string;
+  /** Kick's id for a Kick emote: chat only shows one written as [emote:<id>:<name>]. */
+  id?: number;
 }
 
 const CACHE_MS = 60 * 60_000;
@@ -40,7 +42,7 @@ async function kickEmotes(channel: string): Promise<Emote[]> {
     const source: EmoteSource = label === 'Global' ? 'kick-global' : label === 'Emojis' ? 'kick-emoji' : 'kick';
     for (const e of set.emotes ?? []) {
       if (!e.name) continue;
-      out.push(Number.isInteger(e.id) ? { name: e.name, source, url: `https://files.kick.com/emotes/${e.id}/fullsize` } : { name: e.name, source });
+      out.push(Number.isInteger(e.id) ? { name: e.name, source, id: e.id, url: `https://files.kick.com/emotes/${e.id}/fullsize` } : { name: e.name, source });
     }
   }
   return out;
@@ -126,4 +128,36 @@ export function emoteImages(channel: string, text: string): Record<string, strin
     if (e.url && words.has(e.name) && !(e.name in out)) out[e.name] = e.url;
   }
   return out;
+}
+
+/**
+ * Kick only draws a Kick emote in chat when the message has it as [emote:<id>:<name>]; a
+ * viewer's chat box writes that for them, but a bot's plain "sukasbl00dcat" stays a word.
+ * This writes the channel's Kick emotes in `text` that way (whole words, a bracket or
+ * punctuation beside them is fine). 7TV emotes are left as words: viewers' extension draws
+ * those. Never throws: on any trouble the text goes as it is.
+ */
+export function withKickEmotes(channel: string, text: string, broadcasterUserId?: number | null): string {
+  try {
+    // From what's cached, never waiting on a fetch: a reply goes at once and in order. A channel
+    // not cached yet gets fetched meanwhile, for the replies after.
+    const ch = channel.replace(/^#/, '').toLowerCase();
+    const hit = cache.get(ch);
+    if (!hit || Date.now() - hit.at >= CACHE_MS) channelEmotes(ch, broadcasterUserId).catch(() => {});
+    const cached = hit?.emotes;
+    if (!cached) return text;
+    const emotes = cached
+      .filter(e => (e.source === 'kick' || e.source === 'kick-global') && Number.isInteger(e.id) && text.includes(e.name));
+    let out = text;
+    for (const e of emotes) {
+      const name = e.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      out = out.replace(new RegExp(`(^|[\\s(\\[])${name}(?=$|[\\s).,!?:;\\]])`, 'g'), (m, pre: string, offset: number, all: string) =>
+        // Already a code ("[emote:1:NAME]"): leave it.
+        /\[emote:\d+:$/.test(all.slice(0, offset + pre.length)) ? m : `${pre}[emote:${e.id}:${e.name}]`);
+    }
+    // The codes are longer than the names: past Kick's 500 a message would be cut or refused.
+    return out.length <= 500 ? out : text;
+  } catch {
+    return text;
+  }
 }

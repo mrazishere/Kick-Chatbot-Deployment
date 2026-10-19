@@ -21,7 +21,7 @@ import type { BotCommandChannel } from './points/public-bot-commands';
 import { closePointsDb, openPointsDb } from './points/db';
 import { markOverlaySeen, readOverlay } from './community/fish-overlay';
 import { publicUserHistory, publicViewerSearch } from './points/store';
-import { ITEMS, rarityName, sellPrice } from './community/fishing';
+import { ITEMS, rarityName, sellPrice, stealRollChance } from './community/fishing';
 import { fighterOf } from './community/fish-duel';
 import { channelEmotes } from './community/emotes';
 import { adjustPoints, backupPoints, caughtFish, duelBoard, heistBoard, heldCatches, getPointsUserDetail, pointsLeaderboard, pointsSummary, resetAllPoints, searchPointsUsers } from './points/store';
@@ -32,7 +32,7 @@ import { noteSocketClose, PUSHER_BAD_KEY_CODES, pusherUrl, refreshPusherKey, wat
 import { toHandleChatFormat } from './channels/webhook-poller';
 import { STREAM_GRACE_MS } from './community/big-bite';
 import { advanceVideos, failVideo, markVideoOverlaySeen, waitingVideos } from './community/video-share';
-import { mediaShareNow, mediaShareStatus, removeMediaShareToken, saveMediaShareToken } from './community/mediashare';
+import { PlayerView, mediaShareCaptions, mediaShareHeld, mediaShareHiddenKey, mediaShareNow, setMediaShareCaptions, setMediaShareHiddenKey, mediaShareStatus, playerAction, playerView, removeMediaShareToken, reportPlayer, saveMediaShareToken } from './community/mediashare';
 
 /* eslint-disable @typescript-eslint/no-var-requires, @typescript-eslint/no-explicit-any */
 const puppeteer = require('puppeteer-extra');
@@ -3008,9 +3008,14 @@ app.get('/internal/bot/:channel/overlay/video', internalGuard(false), (req, res)
     markVideoOverlaySeen(db, now);
     // Mirroring StreamElements media share: what it plays, where it is, playing or paused.
     if (cfg.video.mediashare) {
-      const ms = mediaShareNow(channel);
+      // delayMs: how far behind StreamElements the overlay plays it (points.video.mediashareDelaySeconds).
+      // A mod's !media pause holds it: hidden and stopped where it is.
+      const now0 = mediaShareNow(channel, mediaShareHeld(db));
+      // A mod's !media hide: the overlay hidden for this one video (audio only), still following it.
+      const ms = now0 && mediaShareHiddenKey(db) === now0.key ? { ...now0, hidden: true } : now0;
       const wheels = wheelHere ? readOverlay(db, now).events.filter(e => e.kind === 'wheel' && now - e.ts < 60_000) : [];
-      return res.json({ now, current: null, mediashare: ms, waiting: 0, volume, wheels });
+      // captions: YouTube's subtitles over the video, as the phone player's switch has them.
+      return res.json({ now, current: null, mediashare: ms, delayMs: Math.round(cfg.video.mediashareDelaySeconds * 1000), captions: mediaShareCaptions(db), waiting: 0, volume, wheels });
     }
     const v = advanceVideos(db, now);
     const current = v ? { id: v.id, videoId: v.video_id, title: v.title, username: v.username, start: v.start_s, seconds: v.seconds, startedAt: v.started_at } : null;
@@ -3049,6 +3054,75 @@ app.delete('/internal/bot/:channel/mediashare', internalGuard(true), (req, res) 
   removeMediaShareToken(channel);
   console.log(`[INTERNAL] ${channel} removed its StreamElements media share token`);
   return res.json(mediaShareStatus(channel));
+});
+
+// The media share phone player (the dashboard's /<channel>/player page): what to play,
+// and its report of where it is, every second. Body: { report?: { key, position, paused },
+// action?: { type: next | skip | play | pause | replay | hide | show | captions-on | captions-off, key? } }. The report only counts for the song
+// that's up, so the overlay follows the phone exactly (community/mediashare.ts).
+const playerViews = new Map<string, { at: number; view: PlayerView }>();
+// One player plays a channel's queue at a time: the page (its session) that claimed it, while it
+// keeps asking. Another started page waits silent until it's told to take over (or the one
+// playing has gone quiet this long). A page that drops off and comes back gets it again, unless
+// someone took over meanwhile.
+const playerOwners = new Map<string, { session: string; seenAt: number }>();
+const PLAYER_OWNER_MS = 6_000;
+app.post('/internal/bot/:channel/mediashare/player', internalGuard(true), async (req, res) => {
+  const channel = String(req.params['channel'] ?? '').toLowerCase();
+  if (!validateChannelName(channel)) return res.status(400).json({ error: 'Invalid channel name' });
+  const config = readChannelConfig(channel);
+  if (!config) return res.status(404).json({ error: 'Not enrolled' });
+  const cfg = effectivePointsConfig(config['points']);
+  if (!cfg.enabled || !cfg.video.mediashare) return res.status(404).json({ error: 'Media share is off in this channel' });
+  const body = (req.body ?? {}) as { session?: unknown; claim?: unknown; takeover?: unknown; report?: { key?: unknown; position?: unknown; paused?: unknown; hidden?: unknown; latencyMs?: unknown }; action?: { type?: unknown; key?: unknown } };
+  try {
+    const type = body.action?.type;
+    let acted: boolean | null = null;
+    if (type === 'next' || type === 'skip' || type === 'play' || type === 'pause' || type === 'replay') {
+      acted = await playerAction(channel, type, typeof body.action?.key === 'string' ? body.action.key : undefined);
+      playerViews.delete(channel);
+      if (acted) console.log(`[MEDIASHARE] ${channel} player: ${type}`);
+    }
+    const now = Date.now();
+    let cached = playerViews.get(channel);
+    if (!cached || now - cached.at > 1_500) {
+      const view = await playerView(channel);
+      if (!view) return res.status(409).json({ error: 'No StreamElements token is saved for media share' });
+      cached = { at: now, view };
+      playerViews.set(channel, cached);
+    }
+    const view = cached.view;
+    // Hide or show the overlay for the video up (audio only): the same switch as chat's !media hide/show.
+    const db = openPointsDb(channel, { create: false });
+    if ((type === 'captions-on' || type === 'captions-off') && db) {
+      setMediaShareCaptions(db, type === 'captions-on');
+      acted = true;
+      console.log(`[MEDIASHARE] ${channel} player: ${type}`);
+    }
+    if ((type === 'hide' || type === 'show') && db) {
+      setMediaShareHiddenKey(db, type === 'hide' && view.playing ? view.playing.key : null);
+      acted = true;
+      console.log(`[MEDIASHARE] ${channel} player: ${type}`);
+    }
+    const hiddenKey = db ? mediaShareHiddenKey(db) : null;
+    // Which page plays: a started page claims it, and takes it if nobody else has it or it's told to.
+    const session = typeof body.session === 'string' ? body.session.slice(0, 64) : '';
+    const owner = playerOwners.get(channel);
+    const ownerLive = !!owner && now - owner.seenAt < PLAYER_OWNER_MS;
+    if (session && body.claim === true && (!ownerLive || owner.session === session || body.takeover === true)) {
+      if (ownerLive && owner.session !== session) console.log(`[MEDIASHARE] ${channel} player: taken over by another page`);
+      playerOwners.set(channel, { session, seenAt: now });
+    }
+    const active = !!session && playerOwners.get(channel)?.session === session;
+    const otherActive = !active && ownerLive;
+    const r = active ? body.report : undefined;
+    if (r && view.playing && r.key === view.playing.key && typeof r.position === 'number') reportPlayer(channel, view.playing, r.position, r.paused === true, r.hidden === true, now, typeof r.latencyMs === 'number' ? r.latencyMs : 0);
+    return res.json({ now, ...view, hidden: !!view.playing && hiddenKey === view.playing.key, captions: db ? mediaShareCaptions(db) : false, active, otherActive, acted });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    console.error(`[MEDIASHARE] ${channel} player: ${msg}`);
+    return res.status(502).json({ error: 'StreamElements is not answering just now' });
+  }
 });
 
 // The video overlay couldn't play a video (removed, or embedding turned off since it was
@@ -3144,7 +3218,11 @@ function publicFishing(channel: string, cfg: ReturnType<typeof effectivePointsCo
     return items
       .map(c => {
         const chance = total > 0 ? (c.weight / total) * 100 : 0;
-        return { emoji: c.name, chance: Math.round(chance * 100) / 100, rarity: trophy ? 'Mythic' : rarityName(chance), price: c.price, ...(trophy ? { trophy: true } : {}) };
+        return {
+          emoji: c.name, chance: Math.round(chance * 100) / 100, rarity: trophy ? 'Mythic' : rarityName(chance), price: c.price, ...(trophy ? { trophy: true } : {}),
+          // The chance a steal try on it works, luck included: it follows the fish's rarity.
+          ...(g.steal.enabled && c.type === 'fish' ? { steal: Math.round(stealRollChance(g, c.name) * 100) / 100 } : {})
+        };
       })
       .sort((a, b) => b.chance - a.chance || a.price - b.price);
   };

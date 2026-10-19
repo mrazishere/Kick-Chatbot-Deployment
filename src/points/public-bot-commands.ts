@@ -83,12 +83,15 @@ const TOOLS: Row[] = [
   { file: 'weather', usage: '!weather [place]', does: 'The weather where the stream is, or anywhere' },
   { file: 'earnings', usage: '!earnings', does: 'This stream\'s estimated earnings' },
   { file: 'kpp', usage: '!kpp', does: 'This stream\'s engagement score for Kick\'s partner payout' },
+  { file: 'media', usage: '!media', does: 'What\'s playing on media share now, and who asked for it' },
   { file: 'ping', usage: '!ping', does: 'Check the bot is awake' },
   { file: 'countd', usage: '!countd add <title> 5m', does: 'Start a countdown in chat (also list, edit, delete, + and -)', who: 'vips' }
 ];
 
 const MODS: Row[] = [
   { file: 'streamstatus', usage: '!live | !offline', does: 'Tell the bot the stream just started or ended, so live-only and offline-only commands switch at once', who: 'mods' },
+  { file: 'media', usage: '!media pause | play', does: 'Hide the media share video overlay and stop it where it is while media share is paused, then bring it back from there', who: 'mods' },
+  { file: 'media', usage: '!media hide | show', does: 'Hide the media share video overlay for the video that\'s up (an audio-only one), or show it again; the next video shows', who: 'mods' },
   { file: '', usage: '!location current set <place>', does: 'Where the stream is now, for the currency and weather commands (or home set)', who: 'mods' }
 ];
 
@@ -98,6 +101,7 @@ export interface BotCommandChannel {
   kpp?: { enabled?: unknown };
   earnings?: { enabled?: unknown };
   blerpStreamerId?: unknown;
+  points?: { video?: { mediashare?: unknown } };
 }
 
 /** A custom command as data/custom-commands/<channel>.json keeps it: [who, response, counter]. */
@@ -115,6 +119,7 @@ function setUp(file: string, cfg: BotCommandChannel, excluded: Set<string>): boo
   if (file && excluded.has(file.toLowerCase())) return false;
   if (file === 'kpp' || file === 'topc') return cfg.kpp?.enabled === true;
   if (file === 'earnings') return cfg.earnings?.enabled === true;
+  if (file === 'media') return cfg.points?.video?.mediashare === true;
   if (file === 'blerp') return typeof cfg.blerpStreamerId === 'string' && cfg.blerpStreamerId.trim() !== '';
   return true;
 }
@@ -123,7 +128,7 @@ function setUp(file: string, cfg: BotCommandChannel, excluded: Set<string>): boo
 export function botCommandSections(cfg: BotCommandChannel, custom: CustomCommands | null, pointsOn: boolean): PublicCommandSection[] {
   const excluded = new Set(Array.isArray(cfg.excludedCommands) ? cfg.excludedCommands.map(c => String(c).toLowerCase()) : []);
   const keep = (rows: Row[]): PublicCommandRow[] => rows
-    .filter(r => setUp(r.file, cfg, excluded) && (r.file !== 'streamstatus' || pointsOn))
+    .filter(r => setUp(r.file, cfg, excluded) && ((r.file !== 'streamstatus' && r.file !== 'media') || pointsOn))
     .map(({ file: _file, ...row }) => row);
   const sections: PublicCommandSection[] = [];
   const add = (title: string, rows: Row[], note?: string) => {

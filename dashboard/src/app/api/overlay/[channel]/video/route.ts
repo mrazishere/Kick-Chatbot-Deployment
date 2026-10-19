@@ -26,7 +26,13 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ chan
     if (!embedded) noteOverlayBuild(slug, "video", req.nextUrl.searchParams.get("v"));
     const feed = await getVideoOverlay(slug, embedded);
     // build: which dashboard build answered, so an overlay running older page code reloads.
-    return NextResponse.json({ ...feed, build: process.env.DASH_BUILD_ID }, { headers });
+    // An overlay on an older build only reloads with nothing on (VideoOverlay), and media share
+    // played back to back never stops: it's told nothing is on for this one poll, so it reloads
+    // now and picks the video up again where it is.
+    const v = req.nextUrl.searchParams.get("v");
+    const build = process.env.DASH_BUILD_ID;
+    const stale = !embedded && !!v && !!build && v !== build && (feed as { mediashare?: unknown }).mediashare;
+    return NextResponse.json({ ...feed, ...(stale ? { mediashare: null } : {}), build }, { headers });
   } catch (e) {
     return failed(e);
   }

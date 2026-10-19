@@ -1,3 +1,4 @@
+import { mediaPlayerLinks } from "@/lib/media-player";
 import { getSession, isAdmin } from "@/lib/session";
 import { getChannel, listChannels, getManagers, syncManagers, channelsReachableBy, getCustomCommands, BotApiError, type BotChannel, type CustomCommand } from "@/lib/bot-api";
 import { authorizeChannel, validChannel, visibleTo } from "@/lib/bot-auth";
@@ -130,6 +131,7 @@ export default async function BotPage({
       customCommandsError={customCommandsError}
       fishOverlays={overlayLinks(slug)}
       videoOverlays={videoOverlayLinks(slug)}
+      mediaPlayers={mediaPlayerLinks(slug)}
     />
   );
 }

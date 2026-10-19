@@ -35,7 +35,7 @@ export function defaultPointsConfig(): PointsConfig {
     },
     give: { enabled: false, minAmount: 10, maxAmount: 0, cooldownSeconds: 30 },
     wordle: { enabled: false, prize: 1000, maxGuesses: 6, guessCooldownSeconds: 5 },
-    video: { enabled: false, pricePerSecond: 100, maxSeconds: 180, queueMax: 5, onlyWhileLive: true, volumePercent: 50, ownerOnly: false, onFishOverlay: false, mediashare: false },
+    video: { enabled: false, pricePerSecond: 100, maxSeconds: 180, queueMax: 5, onlyWhileLive: true, volumePercent: 50, ownerOnly: false, onFishOverlay: false, mediashare: false, mediashareDelaySeconds: 0 },
     modMaxAdjust: 1_000_000,
     publicLeaderboard: true,
     timeoutPenalty: {
@@ -108,9 +108,11 @@ export function defaultPointsConfig(): PointsConfig {
 }
 
 /** On by default: it only happens while live with an overlay showing, to someone chatting. */
-export const DEFAULT_BIG_BITE: Readonly<FishBigBiteSetting> = { enabled: true, everyMinutes: 30, activeMinutes: 10, windowSeconds: 30, pulls: 3, pullSeconds: 8, flashSeconds: 3, snipeSeconds: 20 };
+export const DEFAULT_BIG_BITE: Readonly<FishBigBiteSetting> = { enabled: true, everyMinutes: 30, activeMinutes: 10, windowSeconds: 30, pulls: 3, pullSeconds: 8, flashSeconds: 3, snipeSeconds: 20, kicksMin: 0, onSub: false, onGift: false };
+/** The on/off big bite settings. */
+const BIG_BITE_SWITCHES = ['enabled', 'onSub', 'onGift'] as const;
 
-const BIG_BITE_NUMBERS: Record<Exclude<keyof FishBigBiteSetting, 'enabled'>, Rule> = {
+const BIG_BITE_NUMBERS: Record<Exclude<keyof FishBigBiteSetting, (typeof BIG_BITE_SWITCHES)[number]>, Rule> = {
   // At least 10 minutes pass between two bites whatever the average says.
   everyMinutes: { min: 10, max: 600, integer: true },
   activeMinutes: { min: 1, max: 120, integer: true },
@@ -121,13 +123,16 @@ const BIG_BITE_NUMBERS: Record<Exclude<keyof FishBigBiteSetting, 'enabled'>, Rul
   pullSeconds: { min: 5, max: 60, integer: true },
   flashSeconds: { min: 0, max: 60, integer: true },
   // 0 is off. Capped at half the window when a bite starts (snipeWindowMs).
-  snipeSeconds: { min: 0, max: 60, integer: true }
+  snipeSeconds: { min: 0, max: 60, integer: true },
+  // 0 is off; Kicks sent in one gift.
+  kicksMin: { min: 0, max: 1_000_000, integer: true }
 };
 
 /** The stored big bite settings with values clamped; anything not stored keeps its default. */
 export function effectiveBigBite(stored: unknown): FishBigBiteSetting {
   const b = obj(stored);
-  const out: FishBigBiteSetting = { ...DEFAULT_BIG_BITE, enabled: bool(b.enabled, DEFAULT_BIG_BITE.enabled) };
+  const out: FishBigBiteSetting = { ...DEFAULT_BIG_BITE };
+  for (const k of BIG_BITE_SWITCHES) out[k] = bool(b[k], DEFAULT_BIG_BITE[k]);
   for (const [k, rule] of Object.entries(BIG_BITE_NUMBERS) as Array<[keyof typeof BIG_BITE_NUMBERS, Rule]>) {
     out[k] = num(b[k], DEFAULT_BIG_BITE[k], rule.min, rule.max, rule.integer ?? false);
   }
@@ -484,7 +489,8 @@ export function internalPointsConfig(raw: unknown): InternalPointsConfig {
     volumePercent: num(vd.volumePercent, d.video.volumePercent, 0, 100, true),
     ownerOnly: bool(vd.ownerOnly, d.video.ownerOnly),
     onFishOverlay: bool(vd.onFishOverlay, d.video.onFishOverlay),
-    mediashare: bool(vd.mediashare, d.video.mediashare)
+    mediashare: bool(vd.mediashare, d.video.mediashare),
+    mediashareDelaySeconds: Math.round(num(vd.mediashareDelaySeconds, d.video.mediashareDelaySeconds, 0, 15, false) * 10) / 10
   };
   const wordle: PointsWordleConfig = {
     enabled: bool(wd.enabled, d.wordle.enabled),
@@ -678,7 +684,8 @@ const VIDEO_NUMBERS: Record<string, Rule> = {
   pricePerSecond: { min: 0, max: 1_000_000, integer: true },
   maxSeconds: { min: 5, max: 3600, integer: true },
   queueMax: { min: 1, max: 50, integer: true },
-  volumePercent: { min: 0, max: 100, integer: true }
+  volumePercent: { min: 0, max: 100, integer: true },
+  mediashareDelaySeconds: { min: 0, max: 15, integer: false }
 };
 const DUEL_NUMBERS: Record<string, Rule> = {
   minAmount: { min: 1, max: 1_000_000_000, integer: true },
@@ -1081,9 +1088,10 @@ export function validatePointsPatch(current: unknown, patch: unknown): { next?: 
             const v = checkNumber(`games.bigBite.${key}`, bb[key], rule, errors);
             if (v !== undefined) (out as Record<string, unknown>)[key] = v;
           }
-          if (bb.enabled !== undefined) {
-            if (typeof bb.enabled !== 'boolean') errors.push('games.bigBite.enabled must be true or false');
-            else out.enabled = bb.enabled;
+          for (const k of BIG_BITE_SWITCHES) {
+            if (bb[k] === undefined) continue;
+            if (typeof bb[k] !== 'boolean') errors.push(`games.bigBite.${k} must be true or false`);
+            else out[k] = bb[k] as boolean;
           }
           for (const key of Object.keys(out) as Array<keyof FishBigBiteSetting>) if (out[key] === DEFAULT_BIG_BITE[key]) delete out[key];
           if (Object.keys(out).length) next.games!.bigBite = out;

@@ -25,7 +25,7 @@
 
 import * as crypto from 'crypto';
 import type { PointsGamesConfig } from '../types';
-import { CatchItem, FishData, HeldFish, ITEMS, itemByWord, LEVEL_STATS, levelOf, rarityOf, sellPrice } from './fishing';
+import { CatchItem, duelStrength, FishData, HeldFish, ITEMS, itemByWord, LEVEL_STATS, levelOf, rarityOf, sellPrice } from './fishing';
 
 export type DuelType = 'Predator' | 'Swift' | 'Armored';
 
@@ -45,8 +45,6 @@ const TYPES: Record<string, DuelType> = {
 
 export const typeOf = (name: string): DuelType => TYPES[name] ?? ITEMS.find(i => i.name === name)?.duelType ?? 'Swift';
 
-/** A fish's level, by its rarity as the channel's odds name it. */
-const LEVEL: Record<string, number> = { Common: 1, Uncommon: 1.12, Rare: 1.25, Epic: 1.4, Legendary: 1.6, Mythic: 1.8 };
 
 const UNSIZED_CM = 50;
 const CRIT_PERCENT = 12;
@@ -75,8 +73,9 @@ export interface Fighter {
 
 export function fighterOf(g: PointsGamesConfig, item: CatchItem, held?: HeldFish): Fighter {
   const rarity = rarityOf(g, item.name) ?? 'Common';
-  // A trophy fights as its tier, while still shown as the Mythic it is.
-  const level = LEVEL[item.duelRarity ?? rarity] ?? 1;
+  // Strength follows how rare the fish is, like its steal odds; a trophy fights as its tier,
+  // while still shown as the Mythic it is.
+  const level = duelStrength(g, item.name);
   const cm = Math.min(100, Math.max(1, held?.cm ?? UNSIZED_CM));
   const fed = levelOf(held);
   const boost = 1 + LEVEL_STATS * fed;

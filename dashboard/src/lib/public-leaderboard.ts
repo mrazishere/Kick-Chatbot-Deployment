@@ -47,7 +47,8 @@ function publicCatches(rows: unknown): PublicCatch[] {
     const r = row as Partial<PublicCatch> | null;
     if (!r || typeof r.emoji !== "string" || r.emoji.length > 25 || typeof r.chance !== "number" || typeof r.price !== "number") return [];
     if (typeof r.rarity !== "string" || !RARITIES.has(r.rarity)) return [];
-    return [{ emoji: r.emoji, chance: r.chance, rarity: r.rarity, price: r.price, ...(r.trophy === true ? { trophy: true } : {}) }];
+    return [{ emoji: r.emoji, chance: r.chance, rarity: r.rarity, price: r.price, ...(r.trophy === true ? { trophy: true } : {}),
+      ...(typeof r.steal === "number" && r.steal >= 0 && r.steal <= 100 ? { steal: r.steal } : {}) }];
   });
 }
 

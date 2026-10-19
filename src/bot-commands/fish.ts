@@ -54,8 +54,8 @@ import { applyOnce, creditTx, debitTx, ensureUserTx, findUserByName, getUser, is
 import { makeCooldown, parseUsername, span } from '../community/format';
 import { gameInvocation } from '../community/stakes';
 import { addReminder, cancelSelfRemindersStartingWith, openCommunityDb } from '../community/store';
-import { bestEmote, broadcasterIdFor, emoteImages } from '../community/emotes';
-import { OverlayKind, overlayShowing, pushOverlay } from '../community/fish-overlay';
+import { bestEmote, broadcasterIdFor, emoteImages, withKickEmotes } from '../community/emotes';
+import { OverlayKind, overlayOff, overlayShowing, pushOverlay, setOverlayOff } from '../community/fish-overlay';
 import { addChallenge, challengeBy, challengeFor, closeInValue, describe, fighterOf, describeTeam, dropChallenge, fight, findTeam, fishSpecs, fishNamed, heldFish, TYPE_EMOJI, isLength, specText, splitLengths, fishValue, keepsRange, overlayDuel, overlayTeamDuel, pickByValue, pickFighter, pickForKeeps, pickTeam, sameFish, playMs, randomFish, switchesIn, teamFight, teamSizeOf, teamValue, wantsRandom, type Challenge, type DuelStake, type OverlayDuel, type Picked } from '../community/fish-duel';
 import { parseBet } from './points';
 import { answerMatches, makeTrapCheck, type TrapCheck } from '../community/trap-check';
@@ -77,7 +77,7 @@ const pointer = makeCooldown(60_000);
 /** The timer that ends each waiting trap check when its time runs out, by channel and user id. */
 const checkTimers = new Map<string, NodeJS.Timeout>();
 
-export const SUBCOMMANDS: Record<string, 'buy' | 'sell' | 'show' | 'stats' | 'top' | 'trap' | 'steal' | 'give' | 'duel' | 'accept' | 'deny' | 'reel' | 'bigbite' | 'answer' | 'remove' | 'feed' | 'add'> = {
+export const SUBCOMMANDS: Record<string, 'buy' | 'sell' | 'show' | 'stats' | 'top' | 'trap' | 'steal' | 'give' | 'duel' | 'accept' | 'deny' | 'reel' | 'bigbite' | 'answer' | 'remove' | 'feed' | 'add' | 'overlay'> = {
   buy: 'buy', b: 'buy', sell: 'sell', s: 'sell',
   show: 'show', sh: 'show', count: 'show', display: 'show', collection: 'show',
   stats: 'stats', st: 'stats', top: 'top', tp: 'top', leaderboard: 'top',
@@ -96,7 +96,9 @@ export const SUBCOMMANDS: Record<string, 'buy' | 'sell' | 'show' | 'stats' | 'to
   answer: 'answer', ans: 'answer',
   // The streamer or the bot owner: a big bite now, on a random active chatter, the one named, or "me".
   // Testers (debugFishTesters): one on yourself.
-  bigbite: 'bigbite', bb: 'bigbite'
+  bigbite: 'bigbite', bb: 'bigbite',
+  // Mods, the streamer and the bot owner: the overlay isn't on stream, so replies go to chat and big bites pause.
+  overlay: 'overlay', ov: 'overlay'
 };
 
 
@@ -294,6 +296,12 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
   if (call.form === 'redirect') return void (pointer(meLc) || client.say(channel, `@${me} it's ${call.usage} here`));
   if (SYSTEM_BOTS.has(meLc) || isBotSender(me, tags.senderId)) return;
   const chan = channel.replace(/^#/, '').toLowerCase();
+  // Kick emotes in a reply (a custom fish named after one, say) go to chat as Kick's
+  // [emote:<id>:<name>] codes, so they show as the emote and not its name.
+  const raw = client;
+  client = Object.assign(Object.create(raw) as typeof raw, {
+    say: (to: string, text: string) => raw.say(to, withKickEmotes(chan, text, broadcasterIdFor(config as ChannelConfig)))
+  });
   // A reel answering a waiting big bite skips the 5s cooldown: there's one answer per
   // bite, so nothing to spam, and the cast that started it was seconds ago. The same
   // for a snipe at someone else's while it's open: one try each.
@@ -501,7 +509,8 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     if (bite.pull < bite.pulls) return nextPull(biteCtx(), bite);
     takeBite(chan, meLc);
     const item = weightedCatch('trophy', g);
-    if (randomInt(1, 100) > (item.landPercent ?? 100)) {
+    // A paid (reward) bite always lands once every code is right: only the trophy is left to chance.
+    if (!bite.reward && randomInt(1, 100) > (item.landPercent ?? 100)) {
       console.log(`[FISH] ${me}'s trophy ${item.name} snapped free in ${chan}`);
       const snapped = `So close! It was a ${sparkle(item.name)}! It thrashed free on the last pull and snapped the line! 😱`;
       pushOverlay(db!, { username: me, kind: 'miss', text: snapped, item: item.name, rarity: 'Mythic' });
@@ -523,12 +532,33 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     void client.say(channel, `@${me} ${text}`);
   }
 
+  const noOverlay = () => overlayOff(db!)
+    ? `The fishing overlay is switched off, so big bites are paused: ${cmd} fish overlay on brings them back.`
+    : 'Open the fishing overlay first: a big bite needs somewhere to show its code.';
+
+  /** The overlay isn't on stream (a polling copy still counts as showing): off sends every reply to chat and pauses big bites, until on or the next stream. */
+  function overlaySwitch(word: string | undefined): void {
+    const w = (word ?? '').toLowerCase();
+    if (w !== 'on' && w !== 'off') {
+      return void say(overlayOff(db!)
+        ? `The fishing overlay is switched off: replies go to chat and big bites are paused. ${cmd} fish overlay on brings it back.`
+        : `The fishing overlay is on${overlayShowing(db!) ? ' and showing' : ', but none is open right now'}. If it isn't on stream, ${cmd} fish overlay off sends replies to chat and pauses big bites until it's back.`);
+    }
+    const off = w === 'off';
+    if (off === overlayOff(db!)) return void say(`The fishing overlay is already switched ${w}.`);
+    setOverlayOff(db!, off);
+    console.log(`[FISH] ${me} switched the fishing overlay ${w} in ${chan}`);
+    say(off
+      ? `🎣 Fishing overlay switched off: replies go to chat and big bites are paused until ${cmd} fish overlay on (or the next stream).`
+      : '🎣 Fishing overlay back on: replies show on stream and big bites are back.');
+  }
+
   /** Testers only: a big bite on yourself now, live or not (an overlay still has to be showing). */
   function testBite(uid: number): void {
     if (!tester) return;
     if (biteFor(chan, meLc)) return void say('You already have a big bite on your line.');
     if (wheelBusy(chan)) return void say('The wheel is spinning: try once it has landed.');
-    if (!overlayShowing(db!)) return void say('Open the fishing overlay first: a big bite needs somewhere to show its code.');
+    if (!overlayShowing(db!)) return void say(noOverlay());
     startBite(biteCtx(), me, uid);
   }
 
@@ -659,7 +689,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     if (!g.bigBite.enabled) return void say('Big bites are off here.');
     if (channelHasBite(chan)) return void say('Someone already has a big bite on their line.');
     if (wheelBusy(chan)) return void say('The wheel is spinning: start a big bite once it has landed.');
-    if (!overlayShowing(db!)) return void say('Open the fishing overlay first: a big bite needs somewhere to show its code.');
+    if (!overlayShowing(db!)) return void say(noOverlay());
     const who = { channel: chan, db: db!, bigBite: g.bigBite, excluded: (id: number, name: string) => offLimits(id, name) };
     const nameLc = (target ?? '').replace(/^@+/, '').toLowerCase();
     if (!nameLc) {
@@ -2072,6 +2102,10 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       case 'reel':
         if (userId === null || excluded) return ignore('no account or excluded');
         return reelIn(rest[0], userId);
+      case 'overlay':
+        if (!(tags.isBroadcaster || tags.isModUp || isBotOwner(me))) return ignore('overlay is for mods, the streamer and the bot owner');
+        duelReply = true;
+        return overlaySwitch(rest[0]);
       case 'bigbite':
         if (tags.isBroadcaster || isBotOwner(me)) return streamerBite(rest[0]);
         if (userId === null) return ignore('no account');

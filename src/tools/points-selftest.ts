@@ -11,7 +11,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { spawn } from 'child_process';
-import { ChannelConfig, ClientWrapper, KickTags, RawBadge } from '../types';
+import { ChannelConfig, ClientWrapper, KickTags, LivestreamStatusEvent, RawBadge } from '../types';
 import { DEFAULT_BIG_BITE, effectiveCommand, effectivePointsConfig, invalidateLivePointsConfig, validatePointsPatch } from '../points/config';
 import { closeAllPointsDbs, closePointsDb, openPointsDb, PointsDb, reportDbError, runWrite } from '../points/db';
 import { LiveState } from '../points/live';
@@ -28,13 +28,14 @@ import { WebhookPoller } from '../channels/webhook-poller';
 import { points as pointsCommand, SUBCOMMAND_ALIASES } from '../bot-commands/points';
 import { marksFor, wordle as wordleCommand } from '../bot-commands/wordle';
 import { advanceVideos, enqueueVideo, failVideo, hasVideoInLine, isoDurationSeconds, LOAD_PAD_MS, markVideoOverlaySeen, parseYouTubeLink, playingVideo } from '../community/video-share';
-import { moveFish, takeItems, addItem, overflow, nearCap, addXp, levelCost, takeSized, FishData, initialData, isTrophy, rarityOf, stealChance, stealCharges, stealRollChance, ITEMS, landsFish, loadFish, parseSellList, recordCatch, saveFish, sellPrice, weightedCatch } from '../community/fishing';
+import { duelStrength, moveFish, takeItems, addItem, overflow, nearCap, addXp, levelCost, takeSized, FishData, initialData, isTrophy, rarityOf, stealChance, stealCharges, stealRollChance, ITEMS, landsFish, loadFish, parseSellList, recordCatch, saveFish, sellPrice, weightedCatch } from '../community/fishing';
 import { openCommunityDb } from '../community/store';
-import { markOverlaySeen, readOverlay } from '../community/fish-overlay';
-import { biteFor, drawSnipeMs, openSnipes, resetBites, snipeOpen, SNIPE_PENDING, startBite, takeBite as takeBiteForTest } from '../community/big-bite';
+import { markOverlaySeen, overlayOff, overlayShowing, readOverlay } from '../community/fish-overlay';
+import { biteFor, drawSnipeMs, openSnipes, resetBites, rewardBitesWaiting, snipeOpen, SNIPE_PENDING, startBite, takeBite as takeBiteForTest } from '../community/big-bite';
 import { fish as fishCommand, SUBCOMMANDS as FISH_SUBCOMMANDS, BOARDS as FISH_BOARD_MAP, BOARD_SHORT as FISH_BOARD_SHORT } from '../bot-commands/fish';
 import { publicCommands, FISH_BOARDS, feedingGuide } from '../points/public-commands';
-import { duelBoard, publicLedgerText } from '../points/store';
+import { duelBoard, publicLedgerText, setMetaTx } from '../points/store';
+import { mediaShareHeld, setMediaShareHeld } from '../community/mediashare';
 import { answerMatches, makeTrapCheck, normalizeAnswer } from '../community/trap-check';
 import { changeWheel, readWheel, validateWheel } from '../community/wheel';
 import { recordSignal, suspects } from '../community/cheat-signals';
@@ -157,6 +158,9 @@ async function main(): Promise<void> {
       && shark?.weight === 0.5 && shark.price === 1200 && shark.defaultPrice === 1200, { fish, shark });
     const dec = validatePointsPatch({}, { games: { catches: { '🐋': { weight: 0.057 } } } });
     check('decimal odds kept to 2 places', dec.errors.length === 0 && dec.next?.games?.catches?.['🐋']?.weight === 0.06, dec);
+    const msd = validatePointsPatch({}, { video: { mediashareDelaySeconds: 2.5 } });
+    check('a media share delay in tenths is kept', msd.errors.length === 0 && effectivePointsConfig(msd.next).video.mediashareDelaySeconds === 2.5 && effectivePointsConfig({}).video.mediashareDelaySeconds === 0, msd);
+    check('and one past 15 seconds is refused', validatePointsPatch({}, { video: { mediashareDelaySeconds: 20 } }).errors.length === 1);
     const gd = effectivePointsConfig({}).games;
     const tally: Record<string, number> = {};
     for (let i = 0; i < 50_000; i++) { const n = weightedCatch('fish', gd).name; tally[n] = (tally[n] ?? 0) + 1; }
@@ -1512,6 +1516,22 @@ async function main(): Promise<void> {
     const lucky = effectivePointsConfig({ games: { enabled: true, steal: { luckPercent: 25 } } }).games;
     const luckier = effectivePointsConfig({ games: { enabled: true, steal: { luckPercent: 25, oddsCommon: 90 } } }).games;
     const common = ITEMS.find(i => i.type === 'fish' && rarityOf(bal, i.name) === 'Common')!.name;
+    // Steal odds follow rarity with no steps: each tier's standard fish at its odds, the rest between, the rarest far below.
+    const gs = effectivePointsConfig({ games: { enabled: true, steal: { enabled: true }, catches: { '🦞': { weight: 2 }, '🐬': { weight: 1 } }, customFish: [{ name: '🦩', weight: 0.01, price: 1000, type: 'Swift' }] } }).games;
+    const sc = (n: string) => stealChance(gs, n);
+    check('steal odds follow how rare a fish is: tier fish exact, rarer ones harder, trophies by their fighting tier',
+      sc('🐟') === 40 && sc('🐠') === 30 && sc('🦑') === 20 && sc('🐊') === 10 && sc('🐳') === 5
+      && sc('🦞') < 30 && sc('🦞') > 20 && sc('🐬') < 20 && sc('🐬') > 10 && sc('🦩') < 1 && sc('🦩') > 0
+      && sc('🦭') === 20 && sc('🦕') === 10 && sc('🦄') === 5 && sc('🐉') === 2.5,
+      Object.fromEntries(['🐟', '🦞', '🐬', '🐳', '🦩', '🦭', '🐉'].map(n => [n, sc(n)])));
+    // Duel strength rides the same curve: tier fish at the tier's, others between, the rarest past Legendary up to a cap.
+    const ds = (n: string) => duelStrength(gs, n);
+    check('duel strength follows rarity on the same curve as stealing',
+      ds('🐟') === 1 && ds('🐠') === 1.12 && ds('🦑') === 1.25 && ds('🐊') === 1.4 && ds('🐳') === 1.6
+      && ds('🦞') > 1.12 && ds('🦞') < 1.25 && ds('🐬') > 1.25 && ds('🐬') < 1.4 && ds('🦩') > 1.6 && ds('🦩') <= 2
+      && ds('🦭') === 1.25 && ds('🐉') === 1.8
+      && fighterOf(gs, ITEMS.find(i => i.name === '🦩')!, { cm: 50, record: false }).hp > fighterOf(gs, ITEMS.find(i => i.name === '🐳')!, { cm: 50, record: false }).hp,
+      Object.fromEntries(['🦞', '🐬', '🦩', '🐉'].map(n => [n, ds(n)])));
     check('luck raises the roll\'s odds and not the fine\'s', bal.steal.luckPercent === 0 && stealRollChance(bal, common) === 40
       && stealRollChance(lucky, common) === 50 && stealChance(lucky, common) === 40 && stealRollChance(luckier, common) === 100,
       { common, roll: stealRollChance(lucky, common), capped: stealRollChance(luckier, common) });
@@ -1580,7 +1600,55 @@ async function main(): Promise<void> {
       };
 
       check('no big bite without an overlay showing', (await fire(false)) === null);
+      resetBites(ch, bdb);
+      // A mod switches the overlay off when it isn't on stream: big bites pause, replies go to chat, and the next stream undoes it.
+      {
+        const runAs = async (msg: string, who: [string, number], mod: boolean) => {
+          shift += 6_000;
+          const out: string[] = [];
+          const t: KickTags = { username: who[0], 'display-name': who[0], badges: {}, isBroadcaster: false, isModUp: mod, isVIPUp: false, rawBadges: [], senderId: who[1] };
+          await fishCommand({ say: async (_c, m) => { out.push(m); } }, msg, `#${ch}`, t, { channelName: ch } as ChannelConfig);
+          return out[0] ?? '';
+        };
+        check('a viewer can\'t switch the overlay off', (await runAs('$don fish overlay off', ['lurker', 42], false)) === '' && !overlayOff(bdb));
+        const offReply = await runAs('$don fish ov off', ['amod', 44], true);
+        check('a mod switches the overlay off', overlayOff(bdb) && /switched off/.test(offReply), offReply);
+        markOverlaySeen(bdb, Date.now());
+        check('switched off, an overlay polling doesn\'t count as showing', !overlayShowing(bdb));
+        check('and big bites pause', (await fire()) === null);
+        resetBites(ch, bdb);
+        const prevLive = bdb.prepare("SELECT value FROM meta WHERE key = 'live_since'").get() as { value: string | null } | undefined;
+        runWrite(bdb, () => setMetaTx(bdb, 'live_since', String(Date.now() + 1)));
+        check('the next stream starts with it back on', !overlayOff(bdb));
+        runWrite(bdb, () => setMetaTx(bdb, 'live_since', prevLive?.value ?? null));
+        check('it holds through the stream it was set in', overlayOff(bdb));
+        // The media share overlay's hold (!ms pause) goes by the stream the same way.
+        setMediaShareHeld(bdb, true);
+        check('the media share overlay holds through its stream', mediaShareHeld(bdb));
+        runWrite(bdb, () => setMetaTx(bdb, 'live_since', String(Date.now() + 2)));
+        check('and lets go when the next one starts', !mediaShareHeld(bdb));
+        runWrite(bdb, () => setMetaTx(bdb, 'live_since', prevLive?.value ?? null));
+        setMediaShareHeld(bdb, false);
+        check('and !ms play lets it go', !mediaShareHeld(bdb));
+        const onReply = await runAs('$don fish overlay on', ['amod', 44], true);
+        check('and a mod switches it back on', !overlayOff(bdb) && /back on/.test(onReply), onReply);
+        resetBites(ch, bdb);
+      }
+      // A restart keeps the wait: one drawn, the bot's memory gone, and it still isn't due early, then is.
+      chat(41, 'biter', 1);
+      markOverlaySeen(bdb, Date.now());
+      const drawn = await bsvc.bigBiteTick(() => 0.99);
       resetBites(ch);
+      shift += 25 * 60_000;
+      chat(41, 'biter', 1);
+      markOverlaySeen(bdb, Date.now());
+      const soon = await bsvc.bigBiteTick(() => 0);
+      shift += 7 * 60_000;
+      chat(41, 'biter', 1);
+      markOverlaySeen(bdb, Date.now());
+      check('a restart keeps the wait for the next big bite instead of starting it over', drawn === null && soon === null && (await bsvc.bigBiteTick(() => 0)) === 'biter', lastBite());
+      takeBiteForTest(ch, 'biter');
+      resetBites(ch, bdb);
       chat(41, 'biter', 1);
       markOverlaySeen(bdb, Date.now());
       check('the wait is the setting, give or take two minutes: none before it is up',
@@ -2018,6 +2086,82 @@ async function main(): Promise<void> {
     Date.now = realNow;
   }
 
+  // Reward big bites: Kicks over the line, a sub or resub, gifted subs (the gifter), on top of the timer.
+  {
+    const ch = 'rewardbite';
+    writeConfig(root, ch, { enabled: true, currencyName: '$DON', games: { enabled: true, bigBite: { kicksMin: 500, onSub: true, onGift: true } } });
+    const sent: string[] = [];
+    const rsvc = makeService(ch, { broadcaster: 999, sent });
+    const rdb = openPointsDb(ch, { create: true })!;
+    const bc = { user_id: 999, username: ch };
+    const u = (id: number, name: string) => ({ user_id: id, username: name });
+    const m = (id: string) => ({ ageMs: 0, messageId: id });
+    rsvc.onLivestreamStatus({ broadcaster: bc, is_live: true } as LivestreamStatusEvent, { ageMs: 0 });
+    markOverlaySeen(rdb, Date.now());
+    const settle = () => new Promise(r => setTimeout(r, 50));
+    rsvc.onKicksGifted({ broadcaster: bc, sender: u(61, 'smallkick'), gift: { amount: 100 } }, m('k1'));
+    rsvc.onKicksGifted({ broadcaster: bc, sender: u(62, 'bigkick'), gift: { amount: 500 } }, m('k2'));
+    rsvc.onKicksGifted({ broadcaster: bc, sender: u(62, 'bigkick'), gift: { amount: 500 } }, m('k2'));
+    await settle();
+    const kickLine = sent.find(x => x.includes('@bigkick')) ?? '';
+    check('500 Kicks give the sender a big bite at once, never sniped; fewer give none, and a redelivered event only one',
+      !!biteFor(ch, 'bigkick') && !biteFor(ch, 'smallkick') && kickLine.includes('Thanks for the 500 Kicks') && kickLine.includes('Nobody can snipe') && !biteFor(ch, 'bigkick')!.snipeAt
+      && rewardBitesWaiting(ch) === 0, { sent, waiting: rewardBitesWaiting(ch) });
+    // A resub while that bite is on its line waits its turn.
+    rsvc.onSubscriptionRenewal({ broadcaster: bc, subscriber: u(63, 'resubber') }, m('r1'));
+    await settle();
+    const waited = !biteFor(ch, 'resubber') && rewardBitesWaiting(ch) === 1;
+    takeBiteForTest(ch, 'bigkick');
+    markOverlaySeen(rdb, Date.now());
+    await rsvc.bigBiteTick();
+    check('a resub\'s bite waits behind one already on a line, then starts', waited && !!biteFor(ch, 'resubber'), { waiting: rewardBitesWaiting(ch) });
+    takeBiteForTest(ch, 'resubber');
+    // A gifted sub: the recipient's own sub event comes too, and only the gifter gets a bite.
+    rsvc.onSubscriptionNew({ broadcaster: bc, subscriber: u(65, 'giftee') }, m('n1'));
+    rsvc.onSubscriptionGifts({ broadcaster: bc, gifter: u(64, 'gifter'), giftees: [u(65, 'giftee'), u(66, 'giftee2')] }, m('g1'));
+    await settle();
+    const gifted = !!biteFor(ch, 'gifter') && (sent.find(x => x.includes('@gifter')) ?? '').includes('the 2 gifted subs');
+    takeBiteForTest(ch, 'gifter');
+    markOverlaySeen(rdb, Date.now());
+    await rsvc.bigBiteTick();
+    check('gifted subs give the gifter a bite, and not their recipients', gifted && !biteFor(ch, 'giftee') && rewardBitesWaiting(ch) === 0, { sent: sent.slice(-3) });
+    // Nothing for an anonymous gifter, the streamer, or while offline.
+    rsvc.onSubscriptionGifts({ broadcaster: bc, gifter: { user_id: null, username: 'Anonymous', is_anonymous: true }, giftees: [u(67, 'g3')] }, m('g2'));
+    rsvc.onKicksGifted({ broadcaster: bc, sender: u(999, ch), gift: { amount: 1000 } }, m('k3'));
+    rsvc.onLivestreamStatus({ broadcaster: bc, is_live: false } as LivestreamStatusEvent, { ageMs: 0 });
+    rsvc.onKicksGifted({ broadcaster: bc, sender: u(68, 'offkick'), gift: { amount: 900 } }, m('k4'));
+    await settle();
+    check('no reward bite for an anonymous gifter, the streamer, or offline', !biteFor(ch, ch) && !biteFor(ch, 'offkick') && rewardBitesWaiting(ch) === 0);
+    // A paid bite always lands once every code is right, even the 🐉 (10%): 20 in a row.
+    writeConfig(root, ch, { enabled: true, currencyName: '$DON', games: { enabled: true, catches: { '🦭': { weight: 0 }, '🦦': { weight: 0 }, '🦕': { weight: 0 }, '🦖': { weight: 0 }, '🦄': { weight: 0 } }, bigBite: { kicksMin: 500, pulls: 2 } } });
+    rsvc.onLivestreamStatus({ broadcaster: bc, is_live: true } as LivestreamStatusEvent, { ageMs: 0 });
+    const realNow = Date.now;
+    let shift = 0;
+    Date.now = () => realNow() + shift;
+    let landed = 0;
+    try {
+      for (let i = 0; i < 20; i++) {
+        shift += 60_000;
+        markOverlaySeen(rdb, Date.now());
+        rsvc.onKicksGifted({ broadcaster: bc, sender: u(70, 'payer'), gift: { amount: 500 } }, m(`land${i}`));
+        await settle();
+        for (let pull = 0; pull < 2; pull++) {
+          const b = biteFor(ch, 'payer');
+          if (!b) break;
+          shift += 3_000;
+          const t: KickTags = { username: 'payer', 'display-name': 'payer', badges: {}, isBroadcaster: false, isModUp: false, isVIPUp: false, rawBadges: [], senderId: 70 };
+          await fishCommand({ say: async () => {} }, `$don fish reel ${b.code}`, `#${ch}`, t, { channelName: ch } as ChannelConfig);
+        }
+        await settle();
+        landed = loadFish(rdb, 70)?.catch.types['🐉'] ?? 0;
+      }
+    } finally {
+      Date.now = realNow;
+    }
+    check('a paid bite always lands when every code is right, whatever the trophy\'s land chance', landed === 20, { landed });
+    resetBites(ch, rdb);
+  }
+
   // Feeding: a fish eats others, gains their value as XP, and levels up
   {
     const gf = effectivePointsConfig({ games: { enabled: true } }).games;
@@ -2025,9 +2169,10 @@ async function main(): Promise<void> {
     const shark = { cm: 50, record: false } as { cm: number; record: boolean; level?: number; xp?: number };
     const base = sellPrice(it('🦈'), gf, { cm: 50, record: false });
     const plain = fighterOf(gf, it('🦈'), { cm: 50, record: false });
-    check('a level costs the fish\'s own value times the level it\'s going to', levelCost(it('🦈'), gf, shark, 0) === base && levelCost(it('🦈'), gf, shark, 2) === base * 3);
-    const up1 = addXp(it('🦈'), gf, shark, base * 3 - 1);
-    check('XP levels it as far as it reaches, the rest carried', up1 === 1 && shark.level === 1 && shark.xp === base * 2 - 1, shark);
+    const cost = Math.round(base * 0.25);
+    check('every level costs what it adds to the fish\'s value, a quarter of it', levelCost(it('🦈'), gf, shark, 0) === cost && levelCost(it('🦈'), gf, shark, 2) === cost);
+    const up1 = addXp(it('🦈'), gf, shark, cost * 2 - 1);
+    check('XP levels it as far as it reaches, the rest carried', up1 === 1 && shark.level === 1 && shark.xp === cost - 1, shark);
     addXp(it('🦈'), gf, shark, 1);
     const f2 = fighterOf(gf, it('🦈'), shark);
     check('each level adds 10% duel stats and 25% value', shark.level === 2 && !shark.xp && f2.level === 2 && f2.hp === Math.round(plain.hp * 1.2) && Math.abs(f2.attack - plain.attack * 1.2) < 0.2

@@ -542,6 +542,11 @@ export class RewardRedemptionHandler {
           console.error(`[REWARD] "${event.reward.title}" is a points action with no amount — fix the channel config.`);
           return { ok: false, reason: 'this reward is not set up correctly' };
         }
+        // Kick lets the streamer redeem their own channel's rewards without spending points
+        // (sukasblood bought 50,000 $DON for nothing on 2026-10-19): theirs buy nothing.
+        if (sameUser(redeemer, this.deps.channelName)) {
+          return { ok: false, reason: 'your own rewards cost you no channel points on Kick, so they can\'t buy currency' };
+        }
         const shown = amount.toLocaleString('en-US');
         // A test run is refunded, so paying out too would make it free money.
         if (isTest) return { ok: true, announce: `you would get ${shown}`, log: `${redeemer} would get ${shown} (test)` };

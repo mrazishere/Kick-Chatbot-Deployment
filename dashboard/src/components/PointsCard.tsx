@@ -40,6 +40,7 @@ export interface PointsVideo {
   volumePercent?: number;
   /** The video overlay plays the channel's StreamElements media share. */
   mediashare?: boolean;
+  mediashareDelaySeconds?: number;
 }
 
 export interface PointsGive {
@@ -286,6 +287,10 @@ export interface FishBigBite {
   flashSeconds: number;
   /** The first code's last seconds, open to snipers; 0 is off. Absent from an older bot service. */
   snipeSeconds?: number;
+  /** Reward bites: Kicks in one gift that earn the sender a bite (0 off), and subs / gifted subs (the gifter). */
+  kicksMin?: number;
+  onSub?: boolean;
+  onGift?: boolean;
 }
 
 /** The bot's defaults, for a bot service that doesn't report game settings yet. */
@@ -473,6 +478,7 @@ interface SettingsForm {
   videoLiveOnly: boolean;
   videoVolume: string;
   videoMediashare: boolean;
+  videoMediashareDelay: string;
   wordleEnabled: boolean;
   wordlePrize: string;
   wordleGuesses: string;
@@ -536,7 +542,7 @@ interface SettingsForm {
   /** null: a bot service older than custom fish, so none are sent. */
   fishCustom: { name: string; weight: string; price: string; type: CustomFish["type"] }[] | null;
   /** null when the bot service doesn't report big bites. */
-  fishBigBite: { enabled: boolean; everyMinutes: string; activeMinutes: string; windowSeconds: string; pulls: string; pullSeconds: string; flashSeconds: string; snipeSeconds: string } | null;
+  fishBigBite: { enabled: boolean; everyMinutes: string; activeMinutes: string; windowSeconds: string; pulls: string; pullSeconds: string; flashSeconds: string; snipeSeconds: string; kicksMin: string; onSub: boolean; onGift: boolean } | null;
   fishTrapCheck: { enabled: boolean; chancePercent: string; castChancePercent: string; finePercent: string; answerSeconds: string; tries: string } | null;
   /** null when the bot service doesn't report reels. */
   fishReels: { name: string; price: string; odds: string; rarity: string; value: string }[] | null;
@@ -575,6 +581,7 @@ function formFromConfig(c: PointsConfig): SettingsForm {
     videoLiveOnly: c.video?.onlyWhileLive !== false,
     videoVolume: String(c.video?.volumePercent ?? 50),
     videoMediashare: c.video?.mediashare === true,
+    videoMediashareDelay: String(c.video?.mediashareDelaySeconds ?? 0),
     wordleEnabled: c.wordle?.enabled === true,
     wordlePrize: String(c.wordle?.prize ?? 1000),
     wordleGuesses: String(c.wordle?.maxGuesses ?? 6),
@@ -646,6 +653,9 @@ function formFromConfig(c: PointsConfig): SettingsForm {
           pullSeconds: String(c.games.bigBite.pullSeconds ?? 8),
           flashSeconds: String(c.games.bigBite.flashSeconds ?? 3),
           snipeSeconds: String(c.games.bigBite.snipeSeconds ?? 20),
+          kicksMin: String(c.games.bigBite.kicksMin ?? 0),
+          onSub: c.games.bigBite.onSub ?? false,
+          onGift: c.games.bigBite.onGift ?? false,
         }
       : null,
     fishTrapCheck: c.games?.trapCheck
@@ -789,6 +799,7 @@ function buildPatch(f: SettingsForm): { patch: PointsSettingsPatch } | { error: 
       onlyWhileLive: f.videoLiveOnly,
       volumePercent: whole(f.videoVolume, "Video volume", 0, 100),
       mediashare: f.videoMediashare,
+      mediashareDelaySeconds: decimal(f.videoMediashareDelay, "Media share delay", 0, 15),
     },
     wordle: {
       enabled: f.wordleEnabled,
@@ -940,6 +951,9 @@ function buildPatch(f: SettingsForm): { patch: PointsSettingsPatch } | { error: 
       pullSeconds: whole(f.fishBigBite.pullSeconds, "Big bite time per pull", 5, 60),
       flashSeconds: whole(f.fishBigBite.flashSeconds, "Big bite code flash", 0, 60),
       snipeSeconds: whole(f.fishBigBite.snipeSeconds, "Big bite sniping", 0, 60),
+      kicksMin: whole(f.fishBigBite.kicksMin, "Big bite for Kicks", 0, 1_000_000),
+      onSub: f.fishBigBite.onSub,
+      onGift: f.fishBigBite.onGift,
     };
   }
   if (f.fishTrapCheck) {
@@ -1119,8 +1133,21 @@ function BigBiteSettings({ value, command, disabled, onChange }: {
               <input value={value.snipeSeconds} inputMode="numeric" disabled={disabled} onChange={(e) => onChange({ ...value, snipeSeconds: e.target.value })} className={INPUT} />
             </Field>
           </div>
+          <div className="mt-4 space-y-2 rounded-md border border-neutral-800/70 p-3">
+            <p className="text-xs font-medium text-neutral-300">🎁 Reward bites: a big bite for viewers who support the channel, on top of the timed ones</p>
+            <div className="grid gap-4 sm:grid-cols-3">
+              <Field label="For Kicks, at least" hint="sent in one go; 0 = off">
+                <input value={value.kicksMin} inputMode="numeric" disabled={disabled} onChange={(e) => onChange({ ...value, kicksMin: e.target.value })} className={INPUT} />
+              </Field>
+            </div>
+            <Checkbox label="For a new sub or resub" checked={value.onSub} disabled={disabled} onChange={(onSub) => onChange({ ...value, onSub })} />
+            <Checkbox label="For gifting subs (the gifter, not the recipients)" checked={value.onGift} disabled={disabled} onChange={(onGift) => onChange({ ...value, onGift })} />
+            <p className="text-xs text-neutral-500">
+              {`Live with the overlay showing only. A reward bite goes to that viewer straight away, or right after a bite already on a line (they wait up to 15 minutes), says thanks in chat, can't be sniped, always lands if they get every code right, and doesn't move the timer. Not for the streamer or anonymous gifts.`}
+            </p>
+          </div>
           <p className="mt-3 text-xs text-neutral-500">
-            {`While the stream is live and a fishing overlay is showing, a random viewer who chatted recently gets something big on their line, as often as set, give or take two minutes, so 15 means 13 to 17 minutes after the last one (never the same viewer twice in a row). Chat gets two lines, one naming them and one with the result; the reel codes and every pull play on the overlay only, which keeps chat quiet and means chat scripts can't answer. They type $${command} fish reel <code>, and each right answer brings a harder code for the next pull (two digits, then three and four letters and numbers, any case) with less time, shown only for a flash before it hides; from the second code they can type just the code, without the command; the overlay counts each one down, and an answer still counts a few seconds after zero for the stream's delay; after the last pull the trophy lands by its own chance (🦭 90% down to 🐉 40%) or snaps the line. A wrong code or too slow and it gets away. For the first code's last seconds, as set, anyone else chatting can snipe it: the first to type the right code takes the bite from them and reels on from the next pull (one try each, and chat says who took it). It isn't a cast: it doesn't touch their fishing cooldown. With no overlay showing, there are no big bites.`}
+            {`While the stream is live and a fishing overlay is showing, a random viewer who chatted recently gets something big on their line, as often as set, give or take two minutes, so 15 means 13 to 17 minutes after the last one (never the same viewer twice in a row). Chat gets two lines, one naming them and one with the result; the reel codes and every pull play on the overlay only, which keeps chat quiet and means chat scripts can't answer. They type $${command} fish reel <code>, and each right answer brings a harder code for the next pull (two digits, then three and four letters and numbers, any case) with less time, shown only for a flash before it hides; from the second code they can type just the code, without the command; the overlay counts each one down, and an answer still counts a few seconds after zero for the stream's delay; after the last pull the trophy lands by its own chance (🦭 60% down to 🐉 10%) or snaps the line. A wrong code or too slow and it gets away. For the first code's last seconds, as set, anyone else chatting can snipe it with a different code the bot posts in chat: the first to type it takes the bite from them and reels on from the next pull (one try each, and chat says who took it). It isn't a cast: it doesn't touch their fishing cooldown. With no overlay showing, there are no big bites.`}
           </p>
         </>
       ) : null}
@@ -1608,8 +1635,9 @@ function FishOverlayLinks({ links, title = "Fishing overlay", blurb }: { links: 
       <div className="mt-3 space-y-3">
         {links.map((l) => (
           <div key={l.url}>
-            <p className="text-xs font-medium text-neutral-300">{l.label}</p>
-            <p className="text-xs text-neutral-500">{l.hint}</p>
+            {/* A box with one link has its title already: the link's own name would say it twice. */}
+            {links.length > 1 ? <p className="text-xs font-medium text-neutral-300">{l.label}</p> : null}
+            {l.hint ? <p className="text-xs text-neutral-500">{l.hint}</p> : null}
             <div className="mt-1 flex items-center gap-2">
               <input
                 readOnly
@@ -1643,7 +1671,7 @@ function FishOverlayLinks({ links, title = "Fishing overlay", blurb }: { links: 
 }
 
 export default function PointsCard({
-  channel, canAdminister, points, fishOverlays, videoOverlays, onSaved,
+  channel, canAdminister, points, fishOverlays, videoOverlays, mediaPlayers, onSaved,
 }: {
   channel: string;
   /** Owner/admin edit the settings; managers see them read-only but can still adjust balances. */
@@ -1653,6 +1681,7 @@ export default function PointsCard({
   /** The fishing overlay's browser-source links, one per look. */
   fishOverlays: OverlayLink[];
   videoOverlays: OverlayLink[];
+  mediaPlayers: OverlayLink[];
   /** Receives the updated channel after a settings save, so the rest of the page stays current. */
   onSaved: (bot: { points?: PointsConfig | null }) => void;
 }) {
@@ -2212,7 +2241,15 @@ export default function PointsCard({
                   <p className="pl-6 text-xs text-neutral-500">
                     The overlay follows your media share (connect it below) instead of {form.currencyName.trim() || "points"}-paid videos; works with paid videos off.
                   </p>
+                  <div className="pl-6 sm:max-w-xs">
+                    <Field label="Media share delay (s)" hint="0–15, in tenths. If media share's sound reaches the stream late (played on an IRL phone and ingested with the camera, say), the overlay holds the video back this long to match it. Reaches an open overlay within a second.">
+                      {text("videoMediashareDelay", { inputMode: "decimal" })}
+                    </Field>
+                  </div>
                   <MediaShareSetup channel={channel} canAdminister={canAdminister} />
+                  {form.videoMediashare && canAdminister ? (
+                    <FishOverlayLinks links={mediaPlayers} title="Phone player" blurb="Open it on your phone in place of an app's media share player (Stream Buddy, say): it plays your media share with sound, and the video overlay follows it exactly; pause there and the overlay hides. Keep it on screen (a split screen works), and the link private: it can pause and skip your queue." />
+                  ) : null}
                 </div>
                 <div className="mt-3">
                   <FishOverlayLinks links={videoOverlays} title="Video overlay" blurb="Add it as a Browser Source in OBS, sized 16:9, and set its volume there. Keep the link private: anyone with it could show this channel's videos." />

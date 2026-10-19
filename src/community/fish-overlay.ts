@@ -82,15 +82,17 @@ export function pushOverlay(db: PointsDb, event: Omit<OverlayEvent, 'id' | 'ts'>
 const SEEN_KEY = 'overlay_seen_at';
 /** An overlay polls every 1.5s; this long without one and it's taken as closed. */
 const SEEN_FRESH_MS = 15_000;
-let lastMarked = 0;
+/** When each channel's db was last marked: the enrollment service serves every channel's overlay. */
+const lastMarked = new WeakMap<PointsDb, number>();
 
 /**
  * The enrollment service calls this on every overlay poll, so the bot knows a code it
  * shows will be seen. Written at most every 5 seconds; never throws.
  */
 export function markOverlaySeen(db: PointsDb, now = Date.now()): void {
-  if (now - lastMarked < 5_000) return;
-  lastMarked = now;
+  // Per channel: one shared time let one channel's polls starve another's.
+  if (now - (lastMarked.get(db) ?? 0) < 5_000) return;
+  lastMarked.set(db, now);
   try {
     runWrite(db, () => {
       db.prepare('INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(SEEN_KEY, String(now));
@@ -100,8 +102,40 @@ export function markOverlaySeen(db: PointsDb, now = Date.now()): void {
   }
 }
 
-/** Whether a fishing overlay polled in the last few seconds. */
+// ─── Switched off ($<cmd> fish overlay off) ────────────────────────────────
+
+/**
+ * A mod switches the overlay off when it isn't on stream (a polling copy still counts
+ * as showing): fishing replies go to chat and big bites pause until it's back on. The
+ * switch holds the stream it was set in (live_since, or "offline"), so the next stream
+ * starts with it on again.
+ */
+const OFF_KEY = 'overlay_off';
+
+const streamMark = (db: PointsDb): string =>
+  (db.prepare('SELECT value FROM meta WHERE key = ?').get('live_since') as { value: string } | undefined)?.value ?? 'offline';
+
+/** Whether a mod has switched the overlay off for this stream. */
+export function overlayOff(db: PointsDb): boolean {
+  try {
+    const row = db.prepare('SELECT value FROM meta WHERE key = ?').get(OFF_KEY) as { value: string } | undefined;
+    return !!row && row.value === streamMark(db);
+  } catch {
+    return false;
+  }
+}
+
+/** Switch the overlay off for this stream, or back on. */
+export function setOverlayOff(db: PointsDb, off: boolean): void {
+  runWrite(db, () => {
+    if (off) db.prepare('INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(OFF_KEY, streamMark(db));
+    else db.prepare('DELETE FROM meta WHERE key = ?').run(OFF_KEY);
+  });
+}
+
+/** Whether a fishing overlay polled in the last few seconds, and isn't switched off. */
 export function overlayShowing(db: PointsDb, now = Date.now()): boolean {
+  if (overlayOff(db)) return false;
   try {
     const row = db.prepare('SELECT value FROM meta WHERE key = ?').get(SEEN_KEY) as { value: string } | undefined;
     return !!row && now - Number(row.value) < SEEN_FRESH_MS;

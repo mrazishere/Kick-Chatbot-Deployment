@@ -374,6 +374,8 @@ export interface PublicCatch {
   /** A big bite trophy: its chance is a share of big bites. */
   trophy?: boolean;
   price: number;
+  /** Where stealing is on: the chance (%) a steal try on it works, luck included. Rarer fish are harder. */
+  steal?: number;
 }
 
 /** One kind of fish someone has landed, for the Fishing tab's rarest catches. */
@@ -1040,6 +1042,35 @@ export function removeMediaShareToken(channel: string): Promise<MediaShareStatus
 }
 
 /** The overlay couldn't play this video: the bot ends it and refunds the viewer. */
+/** A song as the media share phone player gets it. */
+export interface PlayerSong { key: string; videoId: string; title: string; username: string; start: number; end: number; amount: number | null; tip: boolean }
+
+/** What the phone player plays: the song up, the queue, the last few, and StreamElements' play/pause. */
+export interface PlayerSync {
+  now: number;
+  playing: PlayerSong | null;
+  queue: PlayerSong[];
+  history: PlayerSong[];
+  state: "playing" | "paused";
+  resume: number | null;
+  /** The overlay is hidden for the video up (the player's button or chat's !media hide). */
+  hidden: boolean;
+  /** YouTube's subtitles over the overlay's video. */
+  captions: boolean;
+  /** This page is the one playing the queue; another one is (it waits until told to take over). */
+  active: boolean;
+  otherActive: boolean;
+  acted: boolean | null;
+}
+
+/** The phone player's once-a-second call: where it is in the song up, and any button pressed. */
+export function syncMediaPlayer(
+  channel: string,
+  body: { session?: string; claim?: boolean; takeover?: boolean; report?: { key: string; position: number; paused: boolean; hidden: boolean; latencyMs: number }; action?: { type: "next" | "skip" | "play" | "pause" | "replay" | "hide" | "show" | "captions-on" | "captions-off"; key?: string } },
+): Promise<PlayerSync> {
+  return request(`/internal/bot/${encodeURIComponent(channel)}/mediashare/player`, { method: "POST", body, timeoutMs: 10_000 });
+}
+
 export function reportVideoFailed(channel: string, id: number): Promise<{ ok: boolean; refunded: boolean }> {
   return request(`/internal/bot/${encodeURIComponent(channel)}/overlay/video/failed`, { method: "POST", body: { id }, timeoutMs: 5_000 });
 }

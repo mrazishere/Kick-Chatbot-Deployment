@@ -140,7 +140,9 @@ function RarestCatches({ rows, channel, emotes }: { rows: PublicRareCatch[]; cha
 }
 
 /** How stealing works here: hooks, the odds, fees and fines, and guards, from the channel's settings. */
-function StealGuide({ rules: r, currency, command }: { rules: PublicStealRules; currency: string; command: string }) {
+function StealGuide({ rules: r, currency, command, fish, emotes }: { rules: PublicStealRules; currency: string; command: string; fish: PublicCatch[]; emotes?: Emotes }) {
+  // Each fish's own chance, luck included, easiest first. An older bot sends none: the tiers' then.
+  const odds = fish.filter((f) => typeof f.steal === "number").sort((a, b) => b.steal! - a.steal! || a.chance - b.chance);
   const n = (v: number) => v.toLocaleString("en-US");
   const mins = (m: number) => (m >= 60 && m % 60 === 0 ? `${m / 60} hour${m === 60 ? "" : "s"}` : `${m} minutes`);
   const luck = (p: number) => Math.min(100, Math.round(p * (100 + r.luckPercent)) / 100);
@@ -163,22 +165,38 @@ function StealGuide({ rules: r, currency, command }: { rules: PublicStealRules; 
             {code(`${command} fish steal @user`)} reaches for one random fish they&apos;ve held for over {mins(r.graceMinutes)} (a fresh catch is safe, so it can be sold
             first). It works {when}, and uses your {r.cooldownMinutes}-minute fishing cooldown. Your bucket needs room for the fish.
           </p>
+          {odds.length ? (
+            <>
+              <p className="text-xs text-neutral-400">
+                The chance it works follows how rare the fish is to catch: the rarer, the harder. Trophies go by the tier they fight as.
+              </p>
+              <div className="grid grid-cols-3 gap-x-3 gap-y-0.5 text-xs tabular-nums sm:grid-cols-4">
+                {odds.map((f) => (
+                  <div key={f.emoji} className="flex items-center justify-between gap-1">
+                    <span><FishIcon name={f.emoji} emotes={emotes} /></span>
+                    <span>{f.steal! >= 1 ? f.steal!.toFixed(1).replace(/\.0$/, "") : f.steal!.toFixed(2)}%</span>
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : (
           <table className="w-full max-w-xs text-xs">
-            <thead>
-              <tr className="text-neutral-500">
-                <th className="pb-1 text-left font-normal">The fish grabbed</th>
-                <th className="pb-1 text-right font-normal">Chance it works</th>
-              </tr>
-            </thead>
-            <tbody className="tabular-nums">
-              {(["Common", "Uncommon", "Rare", "Epic", "Legendary"] as const).map((k) => (
-                <tr key={k}>
-                  <td className="py-0.5">{k}{k === "Legendary" ? " & trophies" : ""}</td>
-                  <td className="py-0.5 text-right">{luck(r.odds[k])}%</td>
+              <thead>
+                <tr className="text-neutral-500">
+                  <th className="pb-1 text-left font-normal">The fish grabbed</th>
+                  <th className="pb-1 text-right font-normal">Chance it works</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody className="tabular-nums">
+                {(["Common", "Uncommon", "Rare", "Epic", "Legendary"] as const).map((k) => (
+                  <tr key={k}>
+                    <td className="py-0.5">{k}{k === "Legendary" ? " & trophies" : ""}</td>
+                    <td className="py-0.5 text-right">{luck(r.odds[k])}%</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
         </div>
         <div className="space-y-2">
           <h3 className="font-medium text-neutral-100">💸 Fees and fines</h3>
@@ -318,7 +336,7 @@ function FishingTab({ fishing, currency, channel, command }: { fishing: PublicFi
       </p>
       {fishing.rarest.length ? <RarestCatches rows={fishing.rarest} channel={channel} emotes={fishing.emotes} /> : null}
       {fishing.holders?.length ? <Holders rows={fishing.holders} currency={currency} channel={channel} duel={!!fishing.duel} emotes={fishing.emotes} /> : null}
-      {fishing.stealRules ? <StealGuide rules={fishing.stealRules} currency={currency} command={command} /> : null}
+      {fishing.stealRules ? <StealGuide rules={fishing.stealRules} currency={currency} command={command} fish={[...fishing.fish, ...(fishing.trophies ?? [])]} emotes={fishing.emotes} /> : null}
       {fishing.steal || fishing.heists ? <Heists heists={fishing.heists ?? null} currency={currency} channel={channel} /> : null}
       {fishing.duel || fishing.duels ? <Duels duels={fishing.duels ?? null} currency={currency} channel={channel} /> : null}
       <CatchTable title="Fish" rows={fishing.fish} currency={currency} emotes={fishing.emotes} />

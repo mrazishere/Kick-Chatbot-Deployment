@@ -56,6 +56,8 @@ export interface Bite {
   /** Who has used their one snipe try on this bite, lowercase. */
   tried: Set<string>;
   timer: NodeJS.Timeout;
+  /** A reward bite (a sub, gifted subs, Kicks): theirs alone, never open to snipers, and it always lands once every code is right. */
+  reward?: boolean;
 }
 
 /**
@@ -65,6 +67,30 @@ export interface Bite {
 const bites = new Map<string, Bite>();
 /** When each channel's next big bite is due, and the everyMinutes that wait was drawn for. */
 const dueAt = new Map<string, { at: number; every: number }>();
+
+/**
+ * The due time is also kept in the channel's points db while live, so a restart (a deploy
+ * mid-stream) carries on with the same wait instead of starting it over: three restarts
+ * in an hour once meant no bite for 50 minutes on a 20-minute timer.
+ */
+const DUE_KEY = 'big_bite_due';
+function storedDue(db: PointsDb): { at: number; every: number } | null {
+  try {
+    const row = db.prepare('SELECT value FROM meta WHERE key = ?').get(DUE_KEY) as { value: string } | undefined;
+    const v = row ? JSON.parse(row.value) as { at?: unknown; every?: unknown } : null;
+    return v && typeof v.at === 'number' && typeof v.every === 'number' ? { at: v.at, every: v.every } : null;
+  } catch {
+    return null;
+  }
+}
+function storeDue(db: PointsDb, due: { at: number; every: number } | null): void {
+  try {
+    if (due) db.prepare('INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(DUE_KEY, JSON.stringify(due));
+    else db.prepare('DELETE FROM meta WHERE key = ?').run(DUE_KEY);
+  } catch (err) {
+    console.error(`[FISH] Saving the next big bite's time failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
 /** Who got the last one per channel, so the same chatter doesn't get two in a row. */
 const lastChatter = new Map<string, string>();
 
@@ -220,7 +246,7 @@ function arm(ctx: BiteContext, bite: Bite, windowMs: number, text: string, now: 
   // The stream shows the code this much later, so its time runs from then.
   const delayMs = ctx.delayMs ?? 0;
   bite.until = now + delayMs + windowMs;
-  const snipeMs = bite.pull === 1 ? drawSnipeMs(ctx.bigBite) : 0;
+  const snipeMs = bite.pull === 1 && !bite.reward ? drawSnipeMs(ctx.bigBite) : 0;
   if (snipeMs > 0) bite.snipeAt = bite.until - snipeMs;
   else delete bite.snipeAt;
   delete bite.snipeCode;
@@ -248,21 +274,24 @@ function arm(ctx: BiteContext, bite: Bite, windowMs: number, text: string, now: 
 }
 
 /** Put a big bite on this chatter's line: chat says so, and only the overlay gets the code. */
-export function startBite(ctx: BiteContext, name: string, userId: number): Bite {
+export function startBite(ctx: BiteContext, name: string, userId: number, reward?: string): Bite {
   const now = ctx.now ?? Date.now();
-  const bite: Bite = { username: name, userId, code: '', startedAt: now, until: now, pull: 1, pulls: ctx.bigBite.pulls, tried: new Set(), timer: setTimeout(() => {}, 0) };
+  const bite: Bite = { username: name, userId, code: '', startedAt: now, until: now, pull: 1, pulls: ctx.bigBite.pulls, tried: new Set(), timer: setTimeout(() => {}, 0), ...(reward ? { reward: true } : {}) };
   bites.set(key(ctx.channel, name), bite);
-  // Whoever started it, the wait for the next one begins again.
-  dueAt.delete(ctx.channel);
-  lastChatter.set(ctx.channel, name.toLowerCase());
-  console.log(`[FISH] big bite for ${name} in ${ctx.channel}`);
+  // Whoever started it, the wait for the next one begins again; a reward bite is extra and leaves it be.
+  if (!reward) {
+    dueAt.delete(ctx.channel);
+    storeDue(ctx.db, null);
+    lastChatter.set(ctx.channel, name.toLowerCase());
+  }
+  console.log(`[FISH] big bite for ${name} in ${ctx.channel}${reward ? ` (${reward})` : ''}`);
   const pulls = bite.pulls > 1 ? ` (${bite.pulls} pulls)` : '';
   arm(ctx, bite, ctx.bigBite.windowSeconds * 1000,
     `🎣 Something BIG is tugging at your line! Reel it in with $${ctx.command} fish reel <code> within ${ctx.bigBite.windowSeconds}s!${pulls}`, now);
   // The one chat line: who, and where to look. The code and everything after are on stream.
-  const snipeS = snipeWindowMs(ctx.bigBite) / 1000;
-  const snipers = snipeS > 0 ? ` For about the last ${snipeS}s anyone can snipe it: I'll post a snipe code in chat, and the first to type it takes it!` : '';
-  void ctx.sendMessage(`@${name} 🎣 Something BIG is on your line! A code is showing on stream now: type $${ctx.command} fish reel and that code within ${ctx.bigBite.windowSeconds}s to reel it in!${snipers}`).catch(() => {});
+  const snipeS = reward ? 0 : snipeWindowMs(ctx.bigBite) / 1000;
+  const snipers = snipeS > 0 ? ` For about the last ${snipeS}s anyone can snipe it: I'll post a snipe code in chat, and the first to type it takes it!` : reward ? ' Nobody can snipe this one, and get every code right and it\'s guaranteed to land!' : '';
+  void ctx.sendMessage(`@${name} 🎣 ${reward ? `Thanks for ${reward}! 🎁 ` : ''}Something BIG is on your line! A code is showing on stream now: type $${ctx.command} fish reel and that code within ${ctx.bigBite.windowSeconds}s to reel it in!${snipers}`).catch(() => {});
   return bite;
 }
 
@@ -282,10 +311,51 @@ export interface TickContext extends BiteContext {
   random?: () => number;
 }
 
+// ─── Reward bites ────────────────────────────────────────────────────────────
+
+/** A reward bite waits at most this long for the overlay and any bite on a line. */
+export const REWARD_WAIT_MS = 15 * 60_000;
+/** A sub's bite waits this long first: a gifted sub's recipient also gets a sub event, and only the gifter earns one. */
+export const SUB_HOLD_MS = 15_000;
+/** The most reward bites waiting per channel; past it the oldest go. */
+const REWARD_QUEUE_MAX = 20;
+interface RewardBite { name: string; userId: number; why: string; at: number; notBefore: number }
+const rewardQueue = new Map<string, RewardBite[]>();
+/** Events already turned into a reward bite, so a redelivered one doesn't make a second. */
+const rewardSeen = new Map<string, number>();
+
+/**
+ * Queue a reward bite for a viewer (community/big-bite.ts tick starts it): `eventKey`
+ * names the event, so the same one delivered twice queues once. Returns whether it queued.
+ */
+export function queueRewardBite(channel: string, who: { name: string; userId: number }, why: string, eventKey: string, now = Date.now(), holdMs = 0): boolean {
+  for (const [k, at] of rewardSeen) if (now - at > REWARD_WAIT_MS * 4) rewardSeen.delete(k);
+  const seen = `${channel}|${eventKey}`;
+  if (rewardSeen.has(seen)) return false;
+  rewardSeen.set(seen, now);
+  const q = rewardQueue.get(channel) ?? [];
+  q.push({ name: who.name, userId: who.userId, why, at: now, notBefore: now + holdMs });
+  while (q.length > REWARD_QUEUE_MAX) q.shift();
+  rewardQueue.set(channel, q);
+  console.log(`[FISH] reward big bite queued for ${who.name} in ${channel} (${why})`);
+  return true;
+}
+
+/** Drop the waiting sub bites of these viewers: their sub was a gift, and the gifter earns the bite. */
+export function dropRewardBites(channel: string, userIds: number[]): void {
+  const q = rewardQueue.get(channel);
+  if (!q) return;
+  const ids = new Set(userIds);
+  rewardQueue.set(channel, q.filter(r => !(ids.has(r.userId) && r.why === 'the sub')));
+}
+
+/** Reward bites waiting, for tests. */
+export const rewardBitesWaiting = (channel: string): number => rewardQueue.get(channel)?.length ?? 0;
+
 /**
  * Maybe start a big bite. Called every TICK_MS. While the stream is live each wait is
  * `everyMinutes`, give or take up to two minutes (BITE_JITTER_MS), counted from the
- * last bite (or from going live, a restart, or the setting changing). One that comes due with no overlay
+ * last bite (or from going live, or the setting changing; a restart keeps the wait). One that comes due with no overlay
  * showing, nobody chatting or another still on a line is held until it can go out.
  * The chatter is picked from those who chatted in the last `activeMinutes`.
  * Returns who got it, or null.
@@ -294,16 +364,28 @@ export function tick(ctx: TickContext): string | null {
   const now = ctx.now ?? Date.now();
   const b = ctx.bigBite;
   if (!b.enabled || !ctx.live) {
-    dueAt.delete(ctx.channel);
+    if (dueAt.delete(ctx.channel) || storedDue(ctx.db)) storeDue(ctx.db, null);
+    rewardQueue.delete(ctx.channel);
     return null;
   }
   // Nor while the prize wheel is on the overlay: its code would show behind the wheel.
   if (channelHasBite(ctx.channel) || wheelBusy(ctx.channel, now)) return null;
-  let due = dueAt.get(ctx.channel);
+  // Reward bites first, oldest first: they don't wait for the timer.
+  const q = (rewardQueue.get(ctx.channel) ?? []).filter(r => now - r.at <= REWARD_WAIT_MS);
+  rewardQueue.set(ctx.channel, q);
+  const ready = q.findIndex(r => r.notBefore <= now);
+  if (ready >= 0 && overlayShowing(ctx.db, now)) {
+    const [r] = q.splice(ready, 1);
+    startBite(ctx, r.name, r.userId, r.why);
+    return r.name;
+  }
+  // After a restart, the wait from before it.
+  let due = dueAt.get(ctx.channel) ?? storedDue(ctx.db) ?? undefined;
   if (!due || due.every !== b.everyMinutes) {
     due = { at: now + b.everyMinutes * 60_000 + ((ctx.random ?? Math.random)() * 2 - 1) * BITE_JITTER_MS, every: b.everyMinutes };
-    dueAt.set(ctx.channel, due);
+    storeDue(ctx.db, due);
   }
+  dueAt.set(ctx.channel, due);
   if (now < due.at || !overlayShowing(ctx.db, now)) return null;
 
   const pick = pickChatter(ctx);
@@ -334,8 +416,11 @@ export function pickChatter(ctx: Pick<TickContext, 'channel' | 'db' | 'bigBite' 
   return { username: pick.username, userId: pick.user_id };
 }
 
-/** Forget a channel's bites and history; for tests. */
-export function resetBites(channel: string): void {
+/** Forget a channel's bites and history, as a restart does; with its db, the saved wait too. For tests. */
+export function resetBites(channel: string, db?: PointsDb): void {
+  if (db) storeDue(db, null);
+  rewardQueue.delete(channel);
+  for (const k of [...rewardSeen.keys()]) if (k.startsWith(`${channel}|`)) rewardSeen.delete(k);
   for (const k of [...bites.keys()]) if (k.startsWith(`${channel}|`)) takeBite(channel, k.slice(channel.length + 1));
   dueAt.delete(channel);
   lastChatter.delete(channel);
