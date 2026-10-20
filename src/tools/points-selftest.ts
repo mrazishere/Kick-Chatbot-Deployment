@@ -38,7 +38,7 @@ import { duelBoard, publicLedgerText, setMetaTx } from '../points/store';
 import { mediaShareHeld, setMediaShareHeld } from '../community/mediashare';
 import { answerMatches, makeTrapCheck, normalizeAnswer } from '../community/trap-check';
 import { changeWheel, readWheel, validateWheel } from '../community/wheel';
-import { recordSignal, suspects } from '../community/cheat-signals';
+import { funnels, linkedAccounts, linkedGroups, recordSignal, suspects } from '../community/cheat-signals';
 import { resetWheelBusy, wheelBusy } from '../community/wheel-state';
 import { recentSpins } from '../community/wheel-history';
 import { wheel as wheelCommand } from '../bot-commands/wheel';
@@ -1442,19 +1442,32 @@ async function main(): Promise<void> {
       check('aiming at junk is turned away, nothing spent', (await run('$don fish steal @aimkind 🥫')).includes('only grabs fish') && fishOf(61).hook === 3);
       check('aiming at two fish asks for one', (await run('$don fish steal @aimkind 🐟 🐋')).includes('Name one fish to aim for') && fishOf(61).hook === 3);
       const none = await run('$don fish steal @nokind 🐋');
-      check('a kind they don\'t hold is turned away before anything is spent', none.includes('has no 🐋') && fishOf(61).hook === 3 && balance(ch, 61) === 100_000, none);
+      check('a kind they don\'t hold is turned away before anything is spent', none.includes("doesn't have a 🐋") && fishOf(61).hook === 3 && balance(ch, 61) === 100_000, none);
       const whale = await run('$don fish steal @aimkind 🐋');
       check('aiming at a kind reaches for that kind, past the commoner fish', whale.includes('their ✨🐋✨') && fishOf(61).hook === 2, whale);
       const len = await run('$don fish steal @aimlen 🐟 80cm');
       check('aiming at a length takes that very fish', len.includes('made off with') && len.includes('(80 cm)') && fishOf(61).catch.sizes?.['🐟']?.some(h => h.cm === 80) === true
         && fishOf(63).catch.sizes?.['🐟']?.map(h => h.cm).join() === '20', len);
-      check('a length they don\'t hold is turned away', (await run('$don fish steal @nokind 🐟 55cm')).includes('has no 🐟 55 cm') && fishOf(61).hook === 1);
+      check('a length they don\'t hold is turned away', (await run('$don fish steal @nokind 🐟 55cm')).includes("doesn't have a 🐟 55 cm") && fishOf(61).hook === 1);
       // Landed just now (the run's clock moves on 31 minutes first, so a minute from then).
       runWrite(adb, () => recordCatch(adb, 65, '🐟', 'cast', 70, Date.now() + 30 * 60_000));
       const fresh = await run('$don fish steal @freshlen 🐟 70cm');
-      check('a length landed within the grace time can\'t be aimed at', fresh.includes('has no 🐟 70 cm') && fishOf(61).hook === 1, fresh);
+      check('a length landed within the grace time can\'t be aimed at', fresh.includes('only just caught their 🐟 70 cm') && /safe from thieves for another \d+m/.test(fresh) && fishOf(61).hook === 1, fresh);
+      // Landed again, just as the next run's clock lands.
+      runWrite(adb, () => recordCatch(adb, 65, '🐟', 'cast', 70, Date.now() + 31 * 60_000));
+      const scoutFresh = await run('$don fish steal check @freshlen 🐟 70cm');
+      check('the scout says a fresh fish is safe and for how long, and spends nothing', scoutFresh.includes('freshlen 🐟 70 cm: ❌') && scoutFresh.includes('they only just caught their 🐟 70 cm (safe for another') && fishOf(61).hook === 1, scoutFresh);
+      const scoutOk = await run('$don fish steal check @freshlen 🐟 40cm');
+      check('the scout gives a reachable fish\'s odds, fee and fine', scoutOk.includes('✅ you can try now') && scoutOk.includes('100% chance') && /fee, [\d,]+ \$DON fine if caught/.test(scoutOk) && fishOf(61).hook === 1, scoutOk);
+      const scoutAll = await run('$don fish steal c @aimkind');
+      check('the scout on a target alone counts the fish in reach and the worst it costs', scoutAll.includes('❌ you tried them today') && scoutAll.includes('4 fish in reach') && scoutAll.includes('costs up to'), scoutAll);
+      check('a name that isn\'t a fish asks for one', (await run('$don fish steal check @aimkind 🥫')).includes('only grabs fish'));
       const old = await run('$don fish steal @freshlen 🐟 40cm');
       check('but an older one of the kind can', old.includes('made off with') && old.includes('(40 cm)') && fishOf(61).hook === 0, old);
+      const status = await run('$don fish steal');
+      check('steal alone shows the hook, who was tried today and when they free up', status.includes('no 🪝 hook') && /tried today: aimkind \(\d+h \d+m\), aimlen/.test(status) && status.includes('steal check @user'), status);
+      const scoutTried = await run('$don fish steal check @aimlen');
+      check('the scout lists every block: no hook, tried today', scoutTried.includes('you need a 🪝 hook') && scoutTried.includes('you tried them today'), scoutTried);
       const rows = publicCommands(effectivePointsConfig({ enabled: true, games: { enabled: true, steal: { enabled: true } } })).sections.find(sec => sec.title === 'Fishing')?.rows ?? [];
       check('the Commands tab shows aiming', rows.some(r => r.usage.endsWith('steal @user [fish]') && r.does.includes('72cm')), rows.filter(r => r.usage.includes('steal')));
     } finally {
@@ -1549,6 +1562,8 @@ async function main(): Promise<void> {
       const g2 = await run('$don fish buy guard', ['mark', 32]);
       check('buying a guard charges the minimum for a small collection and never says for how long', g2.includes('hired a guard for 200') && !/\d+h|\d+m/.test(g2) && balance(ch, 32) === 810
         && (fishOf(32).guardUntil ?? 0) > Date.now(), g2);
+      const scoutGuard = await run('$don fish steal check @mark', ['rich', 38]);
+      check('the scout never gives a guard away', !scoutGuard.includes('guard') && fishOf(38).hook === (fishOf(38).hook ?? 0), scoutGuard);
       const shown = await run('$don fish show', ['mark', 32]);
       check('show never gives a guard\'s time, not even to its owner', !shown.includes('guard') && !(await run('$don fish show mark')).includes('guard'), shown);
       check('the thieves board ranks fish stolen', (await run('$don fish top thieves')).includes('master thieves') );
@@ -2602,6 +2617,61 @@ async function main(): Promise<void> {
       check('giving most of your $DON away and fishing on is flagged, naming who got it', !!parked && parked.evidence.includes('95%') && parked.evidence.includes('parkers_alt') && parked.evidence.includes('3 casts'), parked);
       check('a modest give, or parking then stopping, isn\'t', !flagsOf('generous').includes('parked_don') && !flagsOf('retiree').includes('parked_don'));
       check('a normal player and live play aren\'t', !list.some(x => x.username === 'human' || x.username === 'streamwatcher'), list.map(x => [x.username, x.flags.map(f => f.code)]));
+    }
+
+    // Alts: an account in step with another, a games-only farm, money funnelled to one account.
+    {
+      const adb = openPointsDb('altch', { create: true })!;
+      const T0 = 1_800_000_000_000;
+      const H = 3600_000;
+      const users: Array<[number, string]> = [[20, 'mainacct'], [21, 'altacct'], [31, 'lender'], [32, 'borrower'], [33, 'feeder'], [34, 'sink'], [35, 'fishfeeder'], [36, 'santa'], [37, 'elf1'], [38, 'elf2'], [39, 'elf3']];
+      for (let i = 0; i < 12; i++) users.push([50 + i, `crowd${i}`]);
+      const act = (id: number, at: number, reason = 'game:gamble') =>
+        adb.prepare('INSERT INTO ledger (ts, user_id, delta, balance_after, reason) VALUES (?, ?, ?, ?, ?)').run(at, id, -10, 0, reason);
+      const give = (from: number, to: number, amount: number, left: number, at: number) => {
+        const ref = `give:alt-${from}-${to}-${at}`;
+        adb.prepare('INSERT INTO ledger (ts, user_id, delta, balance_after, reason, ref) VALUES (?, ?, ?, ?, ?, ?)').run(at, from, -amount, left, 'give_out', ref);
+        adb.prepare('INSERT INTO ledger (ts, user_id, delta, balance_after, reason, ref) VALUES (?, ?, ?, ?, ?, ?)').run(at, to, amount, amount, 'give_in', ref);
+      };
+      runWrite(adb, () => {
+        for (const [id, name] of users) ensureUserTx(adb, id, name, T0);
+        // Everyone but the alt pair is an old regular with hours watched.
+        adb.prepare('UPDATE users SET first_seen_at = ?, watch_seconds = ? WHERE user_id NOT IN (21, 35)').run(T0 - 60 * 24 * H, 100 * H / 1000);
+        // The main plays five evenings; three minutes later each time, the alt does.
+        for (let d = 0; d < 5; d++) {
+          act(20, T0 + d * 20 * H);
+          act(20, T0 + d * 20 * H + 5 * 60_000);
+          act(21, T0 + d * 20 * H + 3 * 60_000, 'game:fish_sell');
+        }
+        adb.prepare('INSERT INTO ledger (ts, user_id, delta, balance_after, reason) VALUES (?, ?, ?, ?, ?)').run(T0 + 4 * 60_000, 21, 5_000, 5_000, 'game:fish_sell');
+        // The crowd plays at its own times.
+        for (let i = 0; i < 12; i++) for (let k = 0; k < 4; k++) act(50 + i, T0 + 7 * H + i * 37 * 60_000 + k * 21 * H);
+        // A loan paid back the same morning, then fishing on: not parked.
+        give(31, 32, 10_000, 500, T0 + H);
+        give(32, 31, 10_000, 600, T0 + H + 8 * 60_000);
+        for (let i = 0; i < 3; i++) recordSignal(adb, { userId: 32, kind: 'cast', now: T0 + 2 * H + i * 90_000, live: false });
+        // Winnings sent on to one account, in $DON and in fish.
+        adb.prepare('INSERT INTO ledger (ts, user_id, delta, balance_after, reason) VALUES (?, ?, ?, ?, ?)').run(T0 + H, 33, 3_000, 3_000, 'game:fish_sell');
+        give(33, 34, 2_500, 500, T0 + 2 * H);
+        recordSignal(adb, { userId: 35, kind: 'fish_give', now: T0 + 3 * H, detail: JSON.stringify({ to: 34, item: '🦈', n: 2, worth: 1_500 }) });
+        // Handing it round to three people is generosity.
+        adb.prepare('INSERT INTO ledger (ts, user_id, delta, balance_after, reason) VALUES (?, ?, ?, ?, ?)').run(T0 + H, 36, 1_000, 1_000, 'game:fish_sell');
+        for (const to of [37, 38, 39]) give(36, to, 2_000, 1_000, T0 + 4 * H);
+      });
+      const now = T0 + 100 * H;
+      const list = suspects(adb, now, 7);
+      const flagsOf = (name: string) => list.find(x => x.username === name)?.flags ?? [];
+      const linked = flagsOf('altacct').find(f => f.code === 'linked_account');
+      check('an account whose sessions start with another\'s is linked to it, with the odds', !!linked && linked.evidence.includes('5 of their 5') && linked.evidence.includes('mainacct') && linked.evidence.includes('by chance'), list.map(x => [x.username, x.flags.map(f => f.evidence)]));
+      check('a new account that only plays games, never watching, is flagged', flagsOf('altacct').some(f => f.code === 'games_only' && f.evidence.includes('5,000 won')), flagsOf('altacct'));
+      check('the regulars it plays alongside aren\'t linked', !list.some(x => x.username.startsWith('crowd') || x.username === 'mainacct'), list.map(x => x.username));
+      check('paying back a loan isn\'t parking $DON, and neither side of it is a funnel', !flagsOf('borrower').some(f => f.code === 'parked_don' || f.code === 'funnel') && !flagsOf('lender').some(f => f.code === 'funnel'), [flagsOf('borrower'), flagsOf('lender')]);
+      const fed = flagsOf('feeder').find(f => f.code === 'funnel');
+      check('sending your winnings to one account is a funnel', !!fed && fed.evidence.includes('sink') && fed.evidence.includes('2,500 $DON in gives') && fed.evidence.includes('3,000 won'), fed);
+      check('so are fish gifts, at their price', flagsOf('fishfeeder').some(f => f.code === 'funnel' && f.evidence.includes('2 fish and junk worth 1,500')), flagsOf('fishfeeder'));
+      check('giving to several people isn\'t', !flagsOf('santa').some(f => f.code === 'funnel'), flagsOf('santa'));
+      const groups = linkedGroups(adb, [...linkedAccounts(adb, now, 7), ...funnels(adb, now, 7).map(f => ({ userId: f.userId, otherId: f.toId }))]).map(g => g.members.map(m => m.username).sort().join(','));
+      check('linked and funnelling accounts are grouped', groups.includes('altacct,mainacct') && groups.includes('feeder,fishfeeder,sink'), groups);
     }
 
     // The timer ends a window nobody answered, in real time.

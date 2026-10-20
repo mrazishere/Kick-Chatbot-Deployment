@@ -25,7 +25,7 @@ import { ITEMS, rarityName, sellPrice, stealRollChance } from './community/fishi
 import { fighterOf } from './community/fish-duel';
 import { channelEmotes } from './community/emotes';
 import { adjustPoints, backupPoints, caughtFish, duelBoard, heistBoard, heldCatches, getPointsUserDetail, pointsLeaderboard, pointsSummary, resetAllPoints, searchPointsUsers } from './points/store';
-import { RULES as CHEAT_RULES, suspects as cheatSuspects } from './community/cheat-signals';
+import { funnels as cheatFunnels, RULES as CHEAT_RULES, linkedAccounts, linkedGroups, suspects as cheatSuspects } from './community/cheat-signals';
 import { recentSpins } from './community/wheel-history';
 import { changeWheel, MAX_ITEMS as WHEEL_MAX_ITEMS, MAX_LABEL as WHEEL_MAX_LABEL, readWheel, SPIN_SECONDS as WHEEL_SPIN_SECONDS, validateWheel } from './community/wheel';
 import { noteSocketClose, PUSHER_BAD_KEY_CODES, pusherUrl, refreshPusherKey, watchChatSocket } from './channels/pusher-key';
@@ -2758,9 +2758,10 @@ app.get('/internal/bot/:channel/points/suspects', internalGuard(false), (req, re
   if (!cfg.enabled) return res.status(404).json({ error: 'Points are off in this channel' });
   const days = Math.min(30, Math.max(1, Math.round(Number(req.query['days']) || 7)));
   const db = openPointsDb(channel, { create: false });
-  if (!db) return res.json({ days, rules: CHEAT_RULES, suspects: [] });
+  if (!db) return res.json({ days, rules: CHEAT_RULES, suspects: [], groups: [] });
   try {
-    return res.json({ days, rules: CHEAT_RULES, suspects: cheatSuspects(db, Date.now(), days) });
+    const now = Date.now();
+    return res.json({ days, rules: CHEAT_RULES, suspects: cheatSuspects(db, now, days), groups: linkedGroups(db, [...linkedAccounts(db, now, days), ...cheatFunnels(db, now, days).map(f => ({ userId: f.userId, otherId: f.toId }))]) });
   } catch (e) {
     return pointsUnavailable(res, channel, e);
   }

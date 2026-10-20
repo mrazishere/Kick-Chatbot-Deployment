@@ -798,7 +798,7 @@ export function deleteReward(channel: string, rewardId: string): Promise<Channel
 
 /** One flag on a possible cheater, with the numbers behind it (the bot's community/cheat-signals.ts). */
 export interface CheatFlag {
-  code: "fast_answers" | "instant_traps" | "no_sleep" | "clockwork_casts" | "parked_don";
+  code: "fast_answers" | "instant_traps" | "no_sleep" | "clockwork_casts" | "parked_don" | "linked_account" | "games_only" | "funnel";
   label: string;
   evidence: string;
 }
@@ -816,6 +816,8 @@ export interface CheatSuspect {
 export interface CheatSuspects {
   days: number;
   suspects: CheatSuspect[];
+  /** Accounts that play in step, grouped (an alt of an alt is one group). Absent from an older bot service. */
+  groups?: Array<{ members: Array<{ userId: number; username: string }> }>;
 }
 
 export function getCheatSuspects(channel: string, days: number): Promise<CheatSuspects> {

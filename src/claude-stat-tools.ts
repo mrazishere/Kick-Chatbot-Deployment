@@ -97,6 +97,18 @@ function withDb<T>(channel: string, fn: (db: PointsDb) => T): T | { error: strin
   return fn(db);
 }
 
+/** Fish caught or stolen within the steal grace time, which no one can steal yet, with the minutes left. */
+function stealProtected(db: PointsDb, userId: number, graceMinutes: number): Array<{ fish: string; cm: number | null; safeForMinutes: number }> {
+  const now = Date.now();
+  const since = now - graceMinutes * 60_000;
+  const rows = db.prepare(
+    `SELECT name, cm, ts FROM catches WHERE user_id = ? AND ts > ?
+     UNION ALL SELECT name, cm, ts FROM steals WHERE thief_id = ? AND ts > ? AND outcome = 'stolen'`
+  ).all(userId, since, userId, since) as Array<{ name: string; cm: number | null; ts: number }>;
+  return rows.filter(r => ITEMS.some(i => i.name === r.name && i.type === 'fish'))
+    .map(r => ({ fish: r.name, cm: r.cm, safeForMinutes: Math.ceil((r.ts - since) / 60_000) }));
+}
+
 function viewerStats(ctx: StatToolContext, raw: unknown): unknown {
   let name = String(raw ?? '').trim().replace(/^@+/, '').toLowerCase();
   if (!name || name === 'me' || name === 'myself') name = ctx.asker.toLowerCase();
@@ -132,6 +144,11 @@ function viewerStats(ctx: StatToolContext, raw: unknown): unknown {
         fishHeld: d.catch.fish,
         junkHeld: d.catch.junk,
         heldByKind: held,
+        // Lengths of the fish held per kind; fish from older traps and catches have none.
+        heldLengthsCm: Object.fromEntries(Object.keys(held).flatMap(name => {
+          const cms = (d.catch.sizes?.[name] ?? []).slice(0, d.catch.types[name] ?? 0).map(h => h.cm);
+          return ITEMS.find(i => i.name === name && i.type === 'fish') ? [[name, cms]] : [];
+        })),
         heldValue: heldFishValue(d, cfg.games),
         // Fish levelled up by feeding ($ fish feed), with the XP toward their next level.
         fedFish: Object.entries(d.catch.sizes ?? {}).flatMap(([name, list]) => {
@@ -149,6 +166,7 @@ function viewerStats(ctx: StatToolContext, raw: unknown): unknown {
         bestLuckyStreak: L.luckyStreak,
         worstDryStreak: L.dryStreak,
         trapsSet: L.trap.times,
+        ...(cfg.games.steal.enabled ? { stealProtected: stealProtected(db, u.user_id, cfg.games.steal.graceMinutes) } : {}),
         ...(cfg.games.steal.enabled ? { fishStolen: L.steal.stolen, caughtStealing: L.steal.caught, fishLostToThieves: L.steal.lost } : {}),
         ...(cfg.games.duel.enabled ? { duelsWon: L.duel.wins, duelsLost: L.duel.losses } : {})
       };
@@ -329,6 +347,7 @@ function channelRules(ctx: StatToolContext, raw: unknown): unknown {
     return {
       needs: `a grappling hook (${st.hookPrice} ${cur}, ${st.hookUses} tries)`,
       aiming: '$<cmd> fish steal @user grabs a random fish they hold; $<cmd> fish steal @user 🦈 aims at that kind, and 🦈 72cm at that very fish. Aimed or not, the chance, fee and fine are that fish\'s own',
+      scouting: '$<cmd> fish steal check @user [fish] tells a thief for free whether they can try now and every reason not (no hook, cooldown, tried them today, target on alert, fish too fresh or not held, not enough on hand), plus the chance, fee and fine; it never reveals a guard. $<cmd> fish steal alone shows their hook tries, cooldown and who they tried today with when each frees up',
       when: st.onlyWhileLive ? 'only while live' : g.onlyWhileOffline ? 'only while offline, like casting' : 'any time',
       successPercentByRarity: { Common: st.oddsCommon, Uncommon: st.oddsUncommon, Rare: st.oddsRare, Epic: st.oddsEpic, Legendary: st.oddsLegendary },
       oddsFollowRarity: 'each fish\'s chance follows how rare it is to catch, with no steps: the tiers\' standard fish get the tier odds above, rarer ones less, down to a fraction of a percent for the rarest; trophies use the tier they fight as (the 🐉 half a Legendary\'s)',
@@ -336,7 +355,7 @@ function channelRules(ctx: StatToolContext, raw: unknown): unknown {
       luck: st.luckPercent > 0 ? `every success chance by rarity above is raised by ${st.luckPercent}% of itself (so ${st.oddsCommon}% becomes ${Math.round(st.oddsCommon * (1 + st.luckPercent / 100) * 100) / 100}%, ${st.oddsLegendary}% becomes ${Math.round(st.oddsLegendary * (1 + st.luckPercent / 100) * 100) / 100}%), while fines stay priced from the lower odds, so stealing pays a little on average` : 'none: the odds above are the real ones',
       fee: `every try that goes ahead costs ${st.feePercent}% of the grabbed fish's value, at least ${st.feeMinimum}`,
       fine: `a caught thief also pays a fine, at least ${st.fineMinimum}, priced so the average try loses ${st.edgePercent}% before luck`,
-      graceMinutes: `a fish can't be stolen until held ${st.graceMinutes} min`,
+      graceMinutes: `a fish can't be stolen until held ${st.graceMinutes} min, trap hauls included, so a thief can't snipe a haul the moment it's posted; a steal aimed at such a fish (or at a length they don't hold) gets "has no <fish> you can get your hook into right now". viewer_stats lists a viewer's still-protected fish under stealProtected`,
       protectMinutes: `after a try, the target is safe ${st.protectMinutes} min`,
       guard: `${st.guardPercent}% of the fish value held, at least ${st.guardMinimum}, lasts ${st.guardHours}h; a try on a guarded viewer only uses a hook try`,
       cooldown: `a try costs the fishing cooldown (${g.catchCooldownMinutes} min)`

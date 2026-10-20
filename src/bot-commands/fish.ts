@@ -64,7 +64,7 @@ import { wheelBusy } from '../community/wheel-state';
 import { recordSignal } from '../community/cheat-signals';
 import { BITE_TOO_FAST_MS, STREAM_GRACE_MS, biteFor, canBite, channelBite, channelHasBite, codeMatches, getAway, nextPull, pickChatter, snipeBite, snipeOpen, startBite, takeBite, type BiteContext } from '../community/big-bite';
 import {
-  addItem, itemByWord, giveItems, baitPrice, baitRoll, currentReel, heldFishValue, freshLengths, landsFish, moveFish, pickHeld, stealableFish, stealChance, stealCharges, stealRollChance, worstStealCharges, parseSellList, takeSized, addXp, levelCost, levelOf, MAX_LEVEL, capOf, emoteWord, isWordName, nearCap, overflow, CatchItem, CatchType, FAILURE_EMOTES, FishData, findBait, hasFishedBefore, initialData, rarityOf, recordCatch,
+  addItem, itemByWord, giveItems, baitPrice, baitRoll, currentReel, heldFishValue, freshCatches, landsFish, moveFish, pickHeld, stealableFish, stealChance, stealCharges, stealRollChance, worstStealCharges, parseSellList, takeSized, addXp, levelCost, levelOf, MAX_LEVEL, capOf, emoteWord, isWordName, nearCap, overflow, CatchItem, CatchType, FAILURE_EMOTES, FishData, findBait, hasFishedBefore, initialData, rarityOf, recordCatch,
   ITEMS, JUNK_MESSAGES, loadFish, MISS_DELAY_MS, pick, randomInt, rollCatch, saveFish, sellPrice, STORY_STYLES, SUCCESS_EMOTES,
   takeItems, TYPE_DESCRIPTIONS, weightedCatch, type HeldFish
 } from '../community/fishing';
@@ -1260,6 +1260,8 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       const cap = capOf(g, item.type);
       const room = cap > 0 ? Math.max(0, cap - (r.catch[item.type] ?? 0)) : Infinity;
       if (room < n) return room === 0 ? `@${to.username}'s ${item.type === 'fish' ? 'bucket' : 'junk pile'} is full (${cap}), so they can't take it.` : `@${to.username} only has room for ${room} more ${item.type}.`;
+      // What it's worth, for the cheat signals: that length's price, or an average 50 cm one's.
+      const each = cm !== undefined ? sellPrice(item, g, { cm, record: false }) : sellPrice(item, g);
       let moved: number;
       if (cm === undefined) moved = giveItems(d, r, item, n);
       else {
@@ -1272,6 +1274,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       }
       saveFish(db!, uid, d, now);
       saveFish(db!, to.user_id, r, now);
+      recordSignal(db!, { userId: uid, kind: 'fish_give', now, detail: JSON.stringify({ to: to.user_id, item: item.name, n: moved, worth: each * moved }) });
       lastGive.set(`${chan}|${meLc}`, now);
       const size = cm !== undefined ? ` (${cm} cm)` : '';
       console.log(`[FISH] ${me} gave ${moved} ${item.name}${size} to ${to.username} in ${chan}`);
@@ -1289,6 +1292,145 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
    * try. A guard, or a thief who couldn't pay for the costliest fish the hook could
    * grab (the one aimed at, or any), costs one hook use and nothing else.
    */
+  type StealAim = { item: CatchItem; cm?: number };
+  /** The fish named after a steal's target: one fish, a kind or a length. A string says what's wrong. */
+  const parseAim = (words: string[], victimName: string): StealAim | string => {
+    const parsed = parsePicks(words);
+    const usage = `Name one fish to aim for, like ${cmd} fish steal @${victimName} 🦈 or 🦈 72cm`;
+    if ('error' in parsed) return parsed.error === 'unknown' ? pickError('unknown', 'sell') : usage;
+    const [p] = parsed.picks;
+    if (parsed.picks.length !== 1 || p.counted || p.n !== 1) return usage;
+    if (p.item.type !== 'fish') return 'Your hook only grabs fish, not junk.';
+    return { item: p.item, cm: p.cm };
+  };
+  const WENT = "outcome IN ('stolen', 'caught')";
+  /** How long the target stays on alert after the last try on them; 0 when they aren't. */
+  const alertLeft = (victimId: number, now: number): number => {
+    const t = (db!.prepare(`SELECT MAX(ts) AS t FROM steals WHERE victim_id = ? AND ${WENT}`).get(victimId) as { t: number | null }).t;
+    return t === null ? 0 : Math.max(0, t + g.steal.protectMinutes * 60_000 - now);
+  };
+  /** How long until this thief may try this target again (once a day); 0 when they may. */
+  const pairLeft = (uid: number, victimId: number, now: number): number => {
+    const t = (db!.prepare(`SELECT MAX(ts) AS t FROM steals WHERE thief_id = ? AND victim_id = ? AND ${WENT}`).get(uid, victimId) as { t: number | null }).t;
+    return t === null ? 0 : Math.max(0, t + 86_400_000 - now);
+  };
+  /**
+   * Whether the fish aimed at is within reach: held, and held past the grace time. A
+   * kind alone leaves which one to chance (aimed null); a length is that very fish.
+   * Otherwise why not, with when a fresh one comes within reach.
+   */
+  function aimAt(v: FishData | null, victim: { user_id: number; username: string }, aim: StealAim, now: number, they = false): { aimed: { index: number; held?: HeldFish } | null } | { blocked: string } {
+    const label = `${aim.item.name}${aim.cm !== undefined ? ` ${aim.cm} cm` : ''}`;
+    const have = v?.catch.types[aim.item.name] ?? 0;
+    const sized = (v?.catch.sizes?.[aim.item.name] ?? []).slice(0, have);
+    const held = aim.cm === undefined ? have : sized.filter(h => h.cm === aim.cm).length;
+    if (!held) return { blocked: they ? `they don't have a ${label}` : `${victim.username} doesn't have a ${label}.` };
+    const graceMs = g.steal.graceMinutes * 60_000;
+    const fresh = freshCatches(db!, victim.user_id, aim.item.name, now, graceMs).filter(f => aim.cm === undefined || f.cm === aim.cm);
+    if (held <= fresh.length) {
+      // The first comes within reach once enough fresh ones age past the grace time.
+      const left = span(fresh[fresh.length - held].ts + graceMs - now);
+      return { blocked: they ? `they only just caught their ${label} (safe for another ${left})` : `${victim.username} only just caught their ${label}. It's safe from thieves for another ${left}.` };
+    }
+    if (aim.cm === undefined) return { aimed: null };
+    const index = sized.findIndex(h => h.cm === aim.cm);
+    return { aimed: { index, held: sized[index] } };
+  }
+  /** Steals are open now (games.steal.onlyWhileLive, else the casting rule)? Unlike liveOk, says nothing. */
+  const stealHours = async (): Promise<string | null> => {
+    const st = g.steal;
+    if (tester || (!st.onlyWhileLive && !g.onlyWhileLive && !g.onlyWhileOffline)) return null;
+    const want = st.onlyWhileLive || g.onlyWhileLive;
+    return (await svc.isLiveNow()) === want ? null : `stealing is only open while the stream is ${want ? 'live' : 'offline'}`;
+  };
+
+  /** `fish steal` alone: the thief's hook, cooldown and who they've tried today. Changes nothing. */
+  async function stealStatus(uid: number): Promise<void> {
+    const st = g.steal;
+    if (!st.enabled && !tester) return void say("Nobody steals fish here. Go catch your own!");
+    const now = Date.now();
+    const d = loadFish(db!, uid) ?? initialData();
+    const parts: string[] = [];
+    const closed = await stealHours();
+    if (closed) parts.push(closed);
+    parts.push((d.hook ?? 0) > 0 ? `🪝 ${tries(d.hook!)} left on your hook` : `no 🪝 hook (${cmd} fish buy hook, ${groupDigits(st.hookPrice)} ${cur} for ${tries(st.hookUses)})`);
+    if (!tester && d.readyTimestamp !== 0 && now < d.readyTimestamp) parts.push(`cooldown ${span(d.readyTimestamp - now)}`);
+    const tried = db!.prepare(
+      `SELECT u.username, MAX(s.ts) AS t FROM steals s JOIN users u ON u.user_id = s.victim_id
+       WHERE s.thief_id = ? AND s.ts > ? AND s.${WENT} GROUP BY s.victim_id ORDER BY t`
+    ).all(uid, now - 86_400_000) as Array<{ username: string; t: number }>;
+    if (tried.length) {
+      const shown = tried.slice(0, 6).map(r => `${r.username} (${span(r.t + 86_400_000 - now)})`);
+      parts.push(`tried today: ${shown.join(', ')}${tried.length > shown.length ? ` +${tried.length - shown.length} more` : ''}`);
+    }
+    parts.push(`scout a target free with ${cmd} fish steal check @user [fish]`);
+    say(parts.join(' · '));
+  }
+
+  /**
+   * `fish steal check @user [fish]`: everything a steal would run into, without trying,
+   * bar a guard. Nothing is spent and no cooldown starts.
+   */
+  async function stealCheck(targetRaw: string, uid: number, aimWords: string[]): Promise<void> {
+    const st = g.steal;
+    if (!st.enabled && !tester) return void say("Nobody steals fish here. Go catch your own!");
+    const name = parseUsername(targetRaw);
+    if (!name) return void say(`Check whom? ${cmd} fish steal check @user [fish]`);
+    const nameLc = name.toLowerCase();
+    if (isBotSender(name) || SYSTEM_BOTS.has(nameLc)) return void say("My fish are bolted down. Nice try!");
+    const victim = findUserByName(db!, nameLc);
+    if (!victim) return void say('No such user exists!');
+    if (victim.user_id === uid) return void say("You can't steal from yourself!");
+    if (nameLc === chan || (!tester && offLimits(victim.user_id, nameLc))) return void say(`${victim.username}'s fish are off limits.`);
+    const aim = aimWords.length ? parseAim(aimWords, victim.username) : null;
+    if (typeof aim === 'string') return void say(aim);
+
+    const now = Date.now();
+    const d = loadFish(db!, uid) ?? initialData();
+    const v = loadFish(db!, victim.user_id);
+    const no: string[] = [];
+    const closed = await stealHours();
+    if (closed) no.push(closed);
+    if (!hasFishedBefore(d)) no.push('you need to go fishing once first');
+    if ((d.hook ?? 0) <= 0) no.push(`you need a 🪝 hook (${cmd} fish buy hook)`);
+    if (capOf(g, 'fish') > 0 && d.catch.fish >= capOf(g, 'fish')) no.push('your bucket is full');
+    if (!tester && d.readyTimestamp !== 0 && now < d.readyTimestamp) no.push(`your cooldown has ${span(d.readyTimestamp - now)} left`);
+    // A guard stays secret, as everywhere: finding one out costs a hook try.
+    const alert = tester ? 0 : alertLeft(victim.user_id, now);
+    if (alert > 0) no.push(`they're on alert for ${span(alert)}`);
+    const pair = tester ? 0 : pairLeft(uid, victim.user_id, now);
+    if (pair > 0) no.push(`you tried them today (${span(pair)} left)`);
+
+    // What a try would cost, and its odds: on the fish aimed at, else the worst they hold.
+    const pool = v ? stealableFish(db!, v, victim.user_id, now, st.graceMinutes * 60_000) : [];
+    let odds = '';
+    let needed = 0;
+    if (aim) {
+      const reach = aimAt(v, victim, aim, now, true);
+      if ('blocked' in reach) no.push(reach.blocked);
+      const chance = Math.round(stealRollChance(g, aim.item.name) * 10) / 10;
+      if (!('blocked' in reach) && reach.aimed) {
+        const { fee, fine } = stealCharges(g, sellPrice(aim.item, g, reach.aimed.held), stealChance(g, aim.item.name));
+        needed = fee + fine;
+        odds = `${chance}% chance · ${groupDigits(fee)} ${cur} fee, ${groupDigits(fine)} ${cur} fine if caught`;
+      } else if (v && !('blocked' in reach)) {
+        needed = worstStealCharges(v, g, pool.filter(p => p.item.name === aim.item.name));
+        odds = `${chance}% chance · up to ${groupDigits(needed)} ${cur} in fee and fine, by which one you grab`;
+      }
+    } else if (!v || !pool.length) {
+      no.push('they have no fish in reach');
+    } else {
+      needed = worstStealCharges(v, g, pool);
+      const n = pool.reduce((sum, p) => sum + p.n, 0);
+      odds = `${n} fish in reach · a random grab costs up to ${groupDigits(needed)} ${cur} in fee and fine · aim with ${cmd} fish steal @${victim.username} 🦈 72cm`;
+    }
+    const balance = getUser(db!, uid)?.balance ?? 0;
+    if (needed > balance) no.push(`you need ${groupDigits(needed)} ${cur} on hand to cover it, you have ${groupDigits(balance)}`);
+
+    const label = `${victim.username}${aim ? ` ${aim.item.name}${aim.cm !== undefined ? ` ${aim.cm} cm` : ''}` : ''}`;
+    say(`${label}: ${no.length ? `❌ ${no.join(' · ')}` : '✅ you can try now'}${odds ? ` | ${odds}` : ''}`);
+  }
+
   async function steal(targetRaw: string | undefined, uid: number, aimWords: string[] = []): Promise<void> {
     const st = g.steal;
     if (!st.enabled && !tester) return void say("Nobody steals fish here. Go catch your own!");
@@ -1301,17 +1443,8 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     if (!victim) return void say('No such user exists!');
     if (victim.user_id === uid) return void say("You can't steal from yourself!");
     if (nameLc === chan || (!tester && offLimits(victim.user_id, nameLc))) return void say(`${victim.username}'s fish are off limits.`);
-    // A fish named after the target: that kind, or with a length that very fish.
-    let aim: { item: CatchItem; cm?: number } | null = null;
-    if (aimWords.length) {
-      const parsed = parsePicks(aimWords);
-      const usage = `Name one fish to aim for, like ${cmd} fish steal @${victim.username} 🦈 or 🦈 72cm`;
-      if ('error' in parsed) return void say(parsed.error === 'unknown' ? pickError('unknown', 'sell') : usage);
-      const [p] = parsed.picks;
-      if (parsed.picks.length !== 1 || p.counted || p.n !== 1) return void say(usage);
-      if (p.item.type !== 'fish') return void say('Your hook only grabs fish, not junk.');
-      aim = { item: p.item, cm: p.cm };
-    }
+    const aim = aimWords.length ? parseAim(aimWords, victim.username) : null;
+    if (typeof aim === 'string') return void say(aim);
 
     let overlay: { kind: OverlayKind; item: string } | null = null;
     const text = once(now => {
@@ -1335,31 +1468,17 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
         const left = d.hook > 0 ? `${tries(d.hook)} left on it` : "that was its last try";
         return `@${victim.username} has a guard watching their fish! Your 🪝 hook bounced off (${left}).`;
       }
-      const went = "outcome IN ('stolen', 'caught')";
-      const lastOnVictim = (db!.prepare(`SELECT MAX(ts) AS t FROM steals WHERE victim_id = ? AND ${went}`).get(victim.user_id) as { t: number | null }).t;
-      if (!tester && lastOnVictim !== null && now - lastOnVictim < st.protectMinutes * 60_000) {
-        return `${victim.username} is still on alert after the last attempt. Try again in ${span(lastOnVictim + st.protectMinutes * 60_000 - now)}.`;
-      }
-      const lastPair = (db!.prepare(`SELECT MAX(ts) AS t FROM steals WHERE thief_id = ? AND victim_id = ? AND ${went}`).get(uid, victim.user_id) as { t: number | null }).t;
-      if (!tester && lastPair !== null && now - lastPair < 86_400_000) {
-        return `You already tried ${victim.username} today. You can try them again in ${span(lastPair + 86_400_000 - now)}.`;
-      }
+      const alert = alertLeft(victim.user_id, now);
+      if (!tester && alert > 0) return `${victim.username} is still on alert after the last attempt. Try again in ${span(alert)}.`;
+      const pair = pairLeft(uid, victim.user_id, now);
+      if (!tester && pair > 0) return `You already tried ${victim.username} today. You can try them again in ${span(pair)}.`;
       const pool = v ? stealableFish(db!, v, victim.user_id, now, st.graceMinutes * 60_000) : [];
       if (!v || !pool.length) return `${victim.username} has no fish you can get your hook into right now.`;
-      // Aimed: the kind must be reachable, and a length must be a fish they hold past the grace time.
       let aimed: { index: number; held?: HeldFish } | null = null;
       if (aim) {
-        const label = `${aim.item.name}${aim.cm !== undefined ? ` ${aim.cm} cm` : ''}`;
-        if (!pool.some(p => p.item.name === aim!.item.name)) return `${victim.username} has no ${label} you can get your hook into right now.`;
-        if (aim.cm !== undefined) {
-          const have = v.catch.types[aim.item.name] ?? 0;
-          const sized = (v.catch.sizes?.[aim.item.name] ?? []).slice(0, have);
-          const index = sized.findIndex(h => h.cm === aim!.cm);
-          const held = sized.filter(h => h.cm === aim!.cm).length;
-          const fresh = freshLengths(db!, victim.user_id, aim.item.name, now, st.graceMinutes * 60_000).filter(cm => cm === aim!.cm).length;
-          if (index < 0 || held <= fresh) return `${victim.username} has no ${label} you can get your hook into right now.`;
-          aimed = { index, held: sized[index] };
-        }
+        const reach = aimAt(v, victim, aim, now);
+        if ('blocked' in reach) return reach.blocked;
+        aimed = reach.aimed;
       }
       // The thief must be able to pay for the worst the hook could grab: the fee and the
       // fine on the fish aimed at, or on the target's most valuable one. Short of that,
@@ -2141,6 +2260,9 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
         return await trap('answer', userId, rest.join(' ').trim() || undefined);
       case 'steal':
         if (userId === null || excluded) return ignore('no account or excluded');
+        // Alone, the thief's own status; `check @user [fish]` scouts a target. Neither spends anything.
+        if (rest[0] === undefined) return await stealStatus(userId);
+        if (/^(check|c)$/i.test(rest[0]) && rest[1] !== undefined) return await stealCheck(rest[1], userId, rest.slice(2));
         return await steal(rest[0], userId, rest.slice(1));
       case 'give':
         if (userId === null || excluded) return ignore('no account or excluded');

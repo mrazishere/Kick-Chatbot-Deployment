@@ -1,7 +1,8 @@
 "use client";
 
 // Possible cheaters in the offline fishing games: players whose timing looks like a
-// script or an AI agent (the bot's community/cheat-signals.ts). Evidence for the owner
+// script or an AI agent, and accounts that look like someone's alt (the bot's
+// community/cheat-signals.ts). Evidence for the owner
 // to judge; nothing happens to anyone automatically.
 
 import { useCallback, useEffect, useState } from "react";
@@ -25,6 +26,9 @@ const FLAG_TONE: Record<CheatSuspect["flags"][number]["code"], string> = {
   no_sleep: "border-violet-900 bg-violet-950/40 text-violet-300",
   clockwork_casts: "border-sky-900 bg-sky-950/40 text-sky-300",
   parked_don: "border-emerald-900 bg-emerald-950/40 text-emerald-300",
+  linked_account: "border-rose-900 bg-rose-950/40 text-rose-300",
+  games_only: "border-orange-900 bg-orange-950/40 text-orange-300",
+  funnel: "border-fuchsia-900 bg-fuchsia-950/40 text-fuchsia-300",
 };
 
 export default function SuspectsCard({ channel }: { channel: string }) {
@@ -81,13 +85,31 @@ export default function SuspectsCard({ channel }: { channel: string }) {
           after they fill. <b className="text-neutral-400">No sleep</b>: offline play in 18+ hours of one day, never stopping 4 hours.{" "}
           <b className="text-neutral-400">Clockwork casting</b>: 11+ casts in a row whose gaps barely vary. <b className="text-neutral-400">Parked $DON</b>: gave
           away 80%+ of their balance (1,000+) and kept fishing offline within a day — a check&apos;s fine is a share of the balance, so an emptied account fails
-          checks for free; the evidence names who got it (often an alt). These are evidence, not proof: a dedicated player can trip
+          checks for free; the evidence names who got it (often an alt); paying back a give from the day before doesn&apos;t count.{" "}
+          <b className="text-neutral-400">Plays in step with another account</b>: a new or barely watching account whose play sessions keep starting within
+          10 minutes of the same other account, far more often than the chat&apos;s own rhythm explains — one person switching accounts.{" "}
+          <b className="text-neutral-400">New, games only</b>: first seen in the last 14 days, under 30 minutes watched, yet 1,000+ won from games.{" "}
+          <b className="text-neutral-400">Funnels to one account</b>: 1,000+ in $DON gives and fish gifts (at their price) sent to the same account, 70%+ of all they gave away and at least half
+          of what the sender won from games — or any such amount from a new or barely watching account. The bot sees no IPs, so alts are judged on timing and
+          money alone. These are evidence, not proof: a dedicated player can trip
           one, so look for several together or a pattern that keeps coming back. Nothing happens automatically — a $DON reset is in the viewer search above.
         </p>
 
         {!data && busy ? (
           <div className="flex items-center gap-2 text-sm text-neutral-500">
             <Loader2 className="h-4 w-4 animate-spin" /> Loading…
+          </div>
+        ) : null}
+
+        {data?.groups?.length ? (
+          <div className="rounded-lg border border-rose-900/60 bg-rose-950/20 p-3">
+            <p className="text-xs font-medium uppercase tracking-wide text-rose-300">Linked accounts</p>
+            <ul className="mt-1.5 space-y-1 text-sm text-neutral-200">
+              {data.groups.map((g) => (
+                <li key={g.members.map((m) => m.userId).join("-")}>{g.members.map((m) => m.username).join(" · ")}</li>
+              ))}
+            </ul>
+            <p className="mt-1.5 text-xs text-neutral-500">Accounts whose play keeps lining up, or that funnel to each other, joined up: an alt of an alt is one group. The flags below give the numbers.</p>
           </div>
         ) : null}
 
@@ -104,8 +126,8 @@ export default function SuspectsCard({ channel }: { channel: string }) {
               </span>
             </div>
             <ul className="mt-2 space-y-1.5">
-              {s.flags.map((f) => (
-                <li key={f.code} className="flex flex-wrap items-start gap-2 text-sm">
+              {s.flags.map((f, i) => (
+                <li key={`${f.code}-${i}`} className="flex flex-wrap items-start gap-2 text-sm">
                   <span className={`shrink-0 rounded border px-1.5 py-0.5 text-xs font-medium ${FLAG_TONE[f.code]}`}>{f.label}</span>
                   <span className="text-neutral-300">{f.evidence}</span>
                 </li>

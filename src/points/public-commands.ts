@@ -195,7 +195,9 @@ export function publicCommands(cfg: PointsConfig, opts: { channel?: BotCommandCh
         ...(steal ? [
           { usage: `${f} buy hook`, short: `${s} b h`, does: 'A grappling hook, needed to steal' },
           { usage: `${f} buy guard`, short: `${s} b g`, does: 'A guard to watch your fish' },
-          { usage: `${f} steal @user [fish]`, short: `${s} sl @user 🦈`, does: 'Try to steal one of their fish: a random one, the kind you name, or the very one (🦈 72cm); the odds are that fish\'s own' }
+          { usage: `${f} steal @user [fish]`, short: `${s} sl @user 🦈`, does: 'Try to steal one of their fish: a random one, the kind you name, or the very one (🦈 72cm); the odds are that fish\'s own' },
+          { usage: `${f} steal check @user [fish]`, short: `${s} sl c @user 🦈`, does: 'Scout a target for free: whether you can try now and if not why, the chance, fee and fine' },
+          { usage: `${f} steal`, short: `${s} sl`, does: 'Your hook tries, cooldown, and who you\'ve tried today with when each frees up' }
         ] : []),
         ...(g.duel.enabled ? [
           { usage: `${f} duel @user [fish | random] [amount${g.duel.allowKeeps ? ' | keeps' : ''}]`, short: `${s} d @user`, does: `Challenge them to a fish duel with your strongest fish, the one you name (emoji or word, like shark; add its length for that very one, like 🦈 72cm) or a random one: for glory, for a ${cur} wager${g.duel.allowKeeps ? ", or for keeps (the winner takes the loser's fish)" : ''}` },

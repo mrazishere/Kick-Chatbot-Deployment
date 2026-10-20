@@ -822,11 +822,17 @@ export function stealableFish(db: PointsDb, d: FishData, userId: number, now: nu
  * fish (null for an unsized one): the ones a thief aiming at a length can't reach yet.
  */
 export function freshLengths(db: PointsDb, userId: number, name: string, now: number, graceMs: number): Array<number | null> {
+  return freshCatches(db, userId, name, now, graceMs).map(r => r.cm);
+}
+
+/** freshLengths with when each one was landed or stolen, oldest first. */
+export function freshCatches(db: PointsDb, userId: number, name: string, now: number, graceMs: number): Array<{ cm: number | null; ts: number }> {
   const since = now - graceMs;
-  return (db.prepare(
-    `SELECT cm FROM catches WHERE user_id = ? AND name = ? AND ts > ?
-     UNION ALL SELECT cm FROM steals WHERE thief_id = ? AND name = ? AND ts > ? AND outcome = 'stolen'`
-  ).all(userId, name, since, userId, name, since) as Array<{ cm: number | null }>).map(r => r.cm);
+  return db.prepare(
+    `SELECT cm, ts FROM catches WHERE user_id = ? AND name = ? AND ts > ?
+     UNION ALL SELECT cm, ts FROM steals WHERE thief_id = ? AND name = ? AND ts > ? AND outcome = 'stolen'
+     ORDER BY ts`
+  ).all(userId, name, since, userId, name, since) as Array<{ cm: number | null; ts: number }>;
 }
 
 /**
