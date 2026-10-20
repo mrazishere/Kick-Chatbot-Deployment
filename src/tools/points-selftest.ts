@@ -667,6 +667,24 @@ async function main(): Promise<void> {
     const liveStats = await run('$don fish stats', 'dawn', 34);
     check('onlyWhileOffline: casting and trapping stay silent while live, lookups still answer',
       liveCast.length === 0 && liveTrap.length === 0 && liveStats.length === 1, { liveCast, liveTrap, liveStats });
+    // Traps laid offline: collecting or lifting them live stays silent too (it skipped the trap check); cancelling answers
+    {
+      const odb = openPointsDb(ch, { create: true })!;
+      const lay = (id: number, name: string, full: boolean) => runWrite(odb, () => {
+        ensureUserTx(odb, id, name, 1);
+        const d = initialData();
+        const start = Date.now() - 2 * 3_600_000;
+        d.trap = { active: true, start, end: full ? start + 3_600_000 : Date.now() + 3_600_000, duration: 3_600_000 };
+        saveFish(odb, id, d, 1);
+      });
+      lay(35, 'reef', true); lay(36, 'shoal', false); lay(37, 'cove', true);
+      const collected = await run('$don fish trap', 'reef', 35);
+      const lifted = await run('$don fish trap lift', 'shoal', 36);
+      const cancelled = await run('$don fish trap cancel', 'cove', 37);
+      check('onlyWhileOffline: full traps can\'t be collected or lifted while live, only cancelled',
+        collected.length === 0 && lifted.length === 0 && loadFish(odb, 35)!.trap.active && loadFish(odb, 36)!.trap.active
+        && cancelled.length === 1 && !loadFish(odb, 37)!.trap.active, { collected, lifted, cancelled });
+    }
     const ch2 = 'fishoffline2';
     writeConfig(root, ch2, { enabled: true, currencyName: '$DON', games: { enabled: true, onlyWhileLive: false, onlyWhileOffline: true } });
     makeService(ch2, { broadcaster: 999, live: async () => ({ isLive: false, startedAt: null }) });

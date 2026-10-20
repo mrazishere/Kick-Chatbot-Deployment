@@ -770,13 +770,15 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       const wait = before.trapCheck.until - Date.now();
       if (!answer && wait >= 0) return void say(`Your traps are waiting on this: ${before.trapCheck.question} Reply "${cmd} fish answer" followed by your answer (${span(wait)} left).`);
     }
-    // Laying traps is fishing, so it follows the live rule; collecting or cancelling doesn't.
-    // An answer to a reset lays them again too, but if it can't, it still collects.
+    // Laying, collecting and lifting are fishing, so they follow the live rule (collecting
+    // live also skipped the offline-only trap check, 2026-10-20); cancelling gives nothing, so it doesn't.
+    // An answer to a check asked offline still counts; to a reset it lays them again, but if it can't, it still collects.
     const laysTraps = operation === 'answer'
       ? before.trapCheck!.reset
       : operation !== 'cancel' && operation !== 'lift' && (!before.trap.active || operation === 'reset');
-    const mayLay = laysTraps && (await liveOk());
-    if (laysTraps && !mayLay && operation !== 'answer') return;
+    const ruled = operation !== 'cancel' && operation !== 'answer';
+    const mayLay = (ruled || laysTraps) && (await liveOk());
+    if (ruled && !mayLay) return;
     // Checks only ask offline; an unknown live state counts as offline.
     const liveNow = (await svc!.isLiveNow()) === true;
     const mayAsk = tc.enabled && operation !== 'answer' && operation !== 'cancel' && before.trap.active && !before.trapCheck && !liveNow;
