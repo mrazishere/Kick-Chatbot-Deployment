@@ -208,6 +208,8 @@ export interface FishData {
   /** Our addition: the question full traps wait on (community/trap-check.ts), until it's answered. */
   trapCheck?: TrapCheck;
   readyTimestamp: number;
+  /** Our addition: when the thief can try another steal (ms). Its own cooldown: fishing and stealing never hold each other up. */
+  stealReady?: number;
   /** Our addition: how many of the channel's reels have been bought, in order. */
   reel?: number;
   /** Our addition: tries left on the grappling hook stealing needs; 0 or absent is none. */
@@ -624,6 +626,7 @@ function withDefaults(raw: Partial<FishData>): FishData {
     trap: { ...d.trap, ...(raw.trap ?? {}) },
     ...(raw.trapCheck ? { trapCheck: raw.trapCheck } : {}),
     readyTimestamp: raw.readyTimestamp ?? 0,
+    stealReady: raw.stealReady ?? 0,
     reel: raw.reel ?? 0,
     hook: raw.hook ?? 0,
     guardUntil: raw.guardUntil ?? 0,

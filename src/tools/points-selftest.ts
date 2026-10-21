@@ -30,7 +30,7 @@ import { marksFor, readStats as readWordleStats, wordle as wordleCommand } from 
 import { advanceVideos, enqueueVideo, failVideo, hasVideoInLine, isoDurationSeconds, LOAD_PAD_MS, markVideoOverlaySeen, parseYouTubeLink, playingVideo } from '../community/video-share';
 import { duelStrength, moveFish, takeItems, addItem, overflow, nearCap, addXp, levelCost, takeSized, FishData, initialData, isTrophy, rarityOf, stealChance, stealCharges, stealRollChance, ITEMS, landsFish, loadFish, parseSellList, recordCatch, saveFish, sellPrice, weightedCatch } from '../community/fishing';
 import { openCommunityDb } from '../community/store';
-import { markOverlaySeen, overlayOff, overlayShowing, readOverlay } from '../community/fish-overlay';
+import { markOverlaySeen, noteOverlayHealth, overlayHealth, overlayOff, overlayReloadToken, overlayShowing, readOverlay, requestOverlayReload, watchOverlay } from '../community/fish-overlay';
 import { biteFor, drawSnipeMs, openSnipes, resetBites, rewardBitesWaiting, snipeOpen, SNIPE_PENDING, startBite, takeBite as takeBiteForTest } from '../community/big-bite';
 import { fish as fishCommand, parseTrapMinutes, SUBCOMMANDS as FISH_SUBCOMMANDS, BOARDS as FISH_BOARD_MAP, BOARD_SHORT as FISH_BOARD_SHORT } from '../bot-commands/fish';
 import { publicCommands, FISH_BOARDS, feedingGuide } from '../points/public-commands';
@@ -598,6 +598,59 @@ async function main(): Promise<void> {
     await new Promise(r => setTimeout(r, 20));
     check('offline-only fishing keeps replies out of live chat too: they show on the overlay', liveOut.length === 0 && readOverlay(ldb).events.length === 1 && readOverlay(ldb).events[0].kind === 'info', { liveOut, e: readOverlay(ldb).events });
     check('chatReplies off: with no overlay showing, or offline, chat still gets the reply', noOverlay.length === 1 && offOut.length === 1 && readOverlay(qdb).events.length === 4, { noOverlay, offOut });
+    {
+      // A page that polls but has stopped drawing (2026-10-21, IRL Toolkit): not showing, so big bites wait.
+      writeConfig(root, 'fishdraw', { enabled: true, currencyName: '$DON', games: { enabled: true } });
+      const ddb = openPointsDb('fishdraw', { create: true })!;
+      const t0 = Date.now();
+      markOverlaySeen(ddb, t0);
+      const before = overlayShowing(ddb, t0) && overlayHealth(ddb, t0) === null;
+      noteOverlayHealth(ddb, { painted: 5, stallMs: 16 }, t0);
+      const drawing = overlayShowing(ddb, t0 + 1_000) && overlayHealth(ddb, t0 + 1_000)?.painted === 5;
+      noteOverlayHealth(ddb, { painted: 5, stallMs: 9_000 }, t0 + 1_500);
+      const stuck = !overlayShowing(ddb, t0 + 2_000);
+      noteOverlayHealth(ddb, { painted: 5, stallMs: 4_000 }, t0 + 2_100);
+      // No newer report: its stall keeps growing until the page is taken as closed.
+      const grows = !overlayShowing(ddb, t0 + 7_000) && overlayHealth(ddb, t0 + 20_000) === null;
+      check('overlay health: no report counts as before; drawing shows; stopped drawing pauses, and a silent page\'s stall grows',
+        before && drawing && stuck && grows, { before, drawing, stuck, grows });
+      const first = requestOverlayReload(ddb, true, t0);
+      const tooSoon = requestOverlayReload(ddb, true, t0 + 60_000);
+      const mod = requestOverlayReload(ddb, false, t0 + 61_000);
+      const later = requestOverlayReload(ddb, true, t0 + 61_000 + 2 * 60_000);
+      check('overlay reload: the bot asks at most every 2 minutes, a mod always', first && !tooSoon && mod && later && overlayReloadToken(ddb) === t0 + 61_000 + 2 * 60_000,
+        { first, tooSoon, mod, later, token: overlayReloadToken(ddb) });
+    }
+    {
+      // The watchdog: a showing page that stopped drawing is reloaded, code or no code; still stuck
+      // after 5 minutes, the owner hears, and again once it draws. Hidden (its scene is off) or offline: left alone.
+      writeConfig(root, 'fishwatch', { enabled: true, currencyName: '$DON', games: { enabled: true } });
+      const wdb = openPointsDb('fishwatch', { create: true })!;
+      const said: string[] = [];
+      const alerts = { frozen: (c: string, m: number) => void said.push(`frozen ${c} ${m}`), recovered: (c: string, m: number) => void said.push(`back ${c} ${m}`) };
+      const t1 = Date.now() + 3_600_000;
+      markOverlaySeen(wdb, t1);
+      noteOverlayHealth(wdb, { painted: 3, stallMs: 60_000, hidden: true }, t1);
+      watchOverlay(wdb, 'fishwatch', true, alerts, t1);
+      const hiddenLeft = overlayReloadToken(wdb) === 0 && !overlayShowing(wdb, t1);
+      noteOverlayHealth(wdb, { painted: 3, stallMs: 40_000 }, t1 + 3_000);
+      watchOverlay(wdb, 'fishwatch', false, alerts, t1 + 3_000);
+      const offlineLeft = overlayReloadToken(wdb) === 0;
+      watchOverlay(wdb, 'fishwatch', true, alerts, t1 + 3_000);
+      const reloaded = overlayReloadToken(wdb) === t1 + 3_000 && said.length === 0;
+      // Reloaded, and still not drawing: the new page's stall counts from its load, the freeze from first noticed.
+      noteOverlayHealth(wdb, { painted: 3, stallMs: 20_000 }, t1 + 5 * 60_000);
+      watchOverlay(wdb, 'fishwatch', true, alerts, t1 + 5 * 60_000);
+      const toldOnce = said.length === 1 && said[0] === 'frozen fishwatch 6';
+      noteOverlayHealth(wdb, { painted: 3, stallMs: 30_000 }, t1 + 5 * 60_000 + 3_000);
+      watchOverlay(wdb, 'fishwatch', true, alerts, t1 + 5 * 60_000 + 3_000);
+      markOverlaySeen(wdb, t1 + 6 * 60_000);
+      noteOverlayHealth(wdb, { painted: 4, stallMs: 16 }, t1 + 6 * 60_000);
+      watchOverlay(wdb, 'fishwatch', true, alerts, t1 + 6 * 60_000);
+      const back = said.length === 2 && said[1] === 'back fishwatch 7' && overlayShowing(wdb, t1 + 6 * 60_000);
+      check('overlay watchdog: reloads a showing frozen page, leaves hidden or offline ones, alerts once after 5 min and on recovery',
+        hiddenLeft && offlineLeft && reloaded && toldOnce && back, { hiddenLeft, offlineLeft, reloaded, toldOnce, back, said });
+    }
     const demoOff = validatePointsPatch({}, { games: { overlayDemo: false } });
     check('overlayDemo is on unless turned off',
       effectivePointsConfig({}).games.overlayDemo && demoOff.errors.length === 0 && !effectivePointsConfig(demoOff.next).games.overlayDemo, demoOff);
@@ -1542,7 +1595,8 @@ async function main(): Promise<void> {
         && fishOf(32).catch.sizes?.['🐟']?.length === 2 && fishOf(31).hook === 2 && balance(ch, 31) === 1840
         && fishOf(31).lifetime.steal.stolen === 1 && fishOf(32).lifetime.steal.lost === 1 && fishOf(31).lifetime.fish === 0, got);
       check('a stolen fish reaches the overlay', readOverlay(sdb).events.some(e => e.kind === 'steal' && e.item === '🐟'));
-      check('a steal takes the fishing cooldown', (await run('$don fish steal @mark3')).includes("Hol' up partner"));
+      const again = await run('$don fish steal @mark3');
+      check('a steal starts the steal cooldown and leaves fishing alone', again.includes('try another steal in') && (fishOf(31).stealReady ?? 0) > Date.now() && fishOf(31).readyTimestamp <= Date.now(), again);
       shift += 31 * 60_000;
       check('a target is left alone for a while after a try', (await run('$don fish steal @mark')).includes('still on alert') && fishOf(31).hook === 2);
 
@@ -1565,6 +1619,7 @@ async function main(): Promise<void> {
       check('caught: the fine is burned, one hook try is used, the fish stays', caught.includes('caught you red-handed') && caught.includes('25 $DON fine')
         && fishOf(31).hook === 0 && balance(ch, 31) === 1805 && balance(ch, 34) === 10 && fishOf(34).catch.types['🐟'] === 2
         && fishOf(31).lifetime.steal.caught === 1, caught);
+      check('caught: the steal cooldown starts too, fishing stays free', caught.includes('next steal in') && (fishOf(31).stealReady ?? 0) > Date.now() && fishOf(31).readyTimestamp <= Date.now(), caught);
       // A 🐋 at 100 cm is worth 3,000: a 3% fee of 90 when it works.
       cfgWith({ oddsLegendary: 100 });
       const whale = await run('$don fish steal @whale', ['rich', 38]);

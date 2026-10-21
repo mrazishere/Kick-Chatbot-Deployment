@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { validChannel } from "@/lib/bot-auth";
 import { loadFishOverlay, validOverlayKey } from "@/lib/fish-overlay";
-import { noteOverlayBuild } from "@/lib/overlay-stale-log";
+import { noteOverlayHealth } from "@/lib/overlay-health";
+import { noteOverlayBuild, noteOverlayPoller, noteOverlayStall } from "@/lib/overlay-stale-log";
 
 // The fishing overlay's feed, polled by the browser source. ?key=<overlay key>
 export async function GET(req: NextRequest, { params }: { params: Promise<{ channel: string }> }): Promise<NextResponse> {
@@ -11,6 +12,9 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ chan
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
   noteOverlayBuild(slug, "fishing", req.nextUrl.searchParams.get("v"));
+  noteOverlayStall(slug, "fishing", req.nextUrl.searchParams.get("stall"), req.nextUrl.searchParams.get("h") === "1");
+  noteOverlayHealth(slug, req.nextUrl.searchParams, req.headers.get("user-agent") ?? "");
+  noteOverlayPoller(slug, "fishing", req.headers.get("x-real-ip") ?? req.headers.get("x-forwarded-for") ?? "?", req.headers.get("user-agent") ?? "?", req.nextUrl.searchParams.get("v"));
   const r = await loadFishOverlay(slug);
   const headers = { "Cache-Control": "no-store" };
   if (r.kind === "not-found") return NextResponse.json({ error: "Fishing is off in this channel" }, { status: 404, headers });

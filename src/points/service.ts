@@ -20,9 +20,25 @@ import * as penalties from './penalties';
 import * as antispam from './antispam';
 import { LiveState, checkLive } from './live';
 import * as bigBite from '../community/big-bite';
+import { watchOverlay, type OverlayWatchAlerts } from '../community/fish-overlay';
 import { PresenceTracker } from './presence';
 import { LastMessages, presenceVerdict } from './presence-rules';
 import { Exclusions, applyOnce, creditTx, isApplied, drawRaffle, dueRaffles, exclusionsFor, expiredDuels, findUserByName, getMeta, getUser, isExcluded, openRaffle, pruneApplied, raffleEntries, RaffleRow, refundDuel, setMetaTx } from './store';
+
+/** The overlay watchdog's alerts, to the owner's Telegram. Loaded on first use: the selftest must never reach Telegram. */
+const overlayAlerts: OverlayWatchAlerts = {
+  frozen: (channel, minutes) => telegram()?.notifyOverlayFrozen(channel, minutes).catch(() => false),
+  recovered: (channel, minutes) => telegram()?.notifyOverlayRecovered(channel, minutes).catch(() => false)
+};
+type OverlayNotifier = { notifyOverlayFrozen(c: string, m: number): Promise<boolean>; notifyOverlayRecovered(c: string, m: number): Promise<boolean> };
+let notifier: OverlayNotifier | null | undefined;
+function telegram(): OverlayNotifier | null {
+  if (notifier !== undefined) return notifier;
+  if (process.env.POINTS_SELFTEST === '1') return (notifier = null);
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  const TelegramNotifier = require('../telegram-notifier') as new () => OverlayNotifier;
+  return (notifier = new TelegramNotifier());
+}
 
 const USERNAME_RE = /^[a-z0-9_]{2,25}$/;
 /** Idempotency keys are kept this long; Kick re-delivers within hours, not weeks. */
@@ -342,10 +358,13 @@ export class PointsService {
   async bigBiteTick(random?: () => number): Promise<string | null> {
     try {
       const cfg = this.config();
-      if (!cfg.enabled || !cfg.games.enabled || !cfg.games.bigBite.enabled) return null;
+      if (!cfg.enabled || !cfg.games.enabled) return null;
       const db = this.db();
       if (!db) return null;
       const live = (await this.isLiveNow()) === true;
+      // The fishing overlay, big bites or not: reload a source that stopped drawing, alert if it stays stuck.
+      watchOverlay(db, this.channel, live, overlayAlerts);
+      if (!cfg.games.bigBite.enabled) return null;
       const ex = this.exclusions();
       return bigBite.tick({
         channel: this.channel, db, bigBite: cfg.games.bigBite, delayMs: cfg.games.streamDelaySeconds * 1000, command: effectiveCommand(cfg), live, now: this.now(), random,

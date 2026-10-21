@@ -398,6 +398,34 @@ Kick changes its chat socket without notice (it isn't in the public API). Channe
     return await this.sendOnce(alertKey('chat-socket-down'), 6 * HOUR, message, false); // audible
   }
 
+  // Alert: a channel's fishing overlay is on a showing scene but hasn't drawn for a while, and the
+  // bot's reloads haven't brought it back (community/fish-overlay.ts watchOverlay). Big bites wait.
+  async notifyOverlayFrozen(channel: string, minutes: number): Promise<boolean> {
+    const message = `
+⚠️ <b>Kick Bot - Fishing Overlay Frozen</b>
+
+<b>Channel:</b> ${esc(channel)}
+<b>Not drawing for:</b> ${esc(minutes)} min, on a showing scene
+
+The streaming tool's browser source is polling but has stopped drawing the page, and reloading it hasn't helped yet. The bot keeps asking it to reload every 2 minutes, and big bites wait until it draws again. If it stays stuck, the source itself needs refreshing in the streamer's OBS.
+    `.trim();
+    return await this.sendOnce(alertKey('overlay-frozen', channel), 6 * HOUR, message, false); // audible
+  }
+
+  // Informational: the fishing overlay is drawing again.
+  async notifyOverlayRecovered(channel: string, minutes: number): Promise<boolean> {
+    if (!(await this.forget([alertKey('overlay-frozen', channel)]))) return false;
+    const message = `
+✅ <b>Kick Bot - Fishing Overlay Back</b>
+
+<b>Channel:</b> ${esc(channel)}
+<b>Frozen for:</b> about ${esc(minutes)} min
+
+It's drawing again and big bites are back on. No action needed.
+    `.trim();
+    return await this.sendMessage(message, true);
+  }
+
   // Informational: the chat WebSocket is back. Sent once, by whichever process clears the alert.
   async notifyChatSocketRecovered(who: string): Promise<boolean> {
     if (!(await this.forget([alertKey('chat-socket-down')]))) return false;

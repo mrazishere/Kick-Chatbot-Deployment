@@ -19,7 +19,7 @@ import { commandWordCollides, effectiveCommand, effectivePointsConfig, readSubsc
 import { publicCommands } from './points/public-commands';
 import type { BotCommandChannel } from './points/public-bot-commands';
 import { closePointsDb, openPointsDb } from './points/db';
-import { markOverlaySeen, readOverlay } from './community/fish-overlay';
+import { markOverlaySeen, noteOverlayHealth, overlayReloadToken, readOverlay } from './community/fish-overlay';
 import { publicUserHistory, publicViewerSearch } from './points/store';
 import { ITEMS, rarityName, sellPrice, stealRollChance } from './community/fishing';
 import { fighterOf } from './community/fish-duel';
@@ -2976,11 +2976,17 @@ app.get('/internal/bot/:channel/overlay/fishing', internalGuard(false), (req, re
   if (!db) return res.json({ lastId: 0, events: [], demo, size, clear, leadMs, graceMs });
   try {
     markOverlaySeen(db);
+    // What the open pages last said about drawing (painted: the newest id drawn; stall: ms without a frame), as the dashboard sums it up.
+    const painted = Number(req.query['painted']);
+    const stall = Number(req.query['stall']);
+    const hidden = req.query['hidden'] === '1';
+    if (Number.isInteger(painted) && painted >= 0 && Number.isFinite(stall) && stall >= 0) noteOverlayHealth(db, { painted, stallMs: stall, hidden });
     // The bot's clock, so the overlay counts a big bite down to the real deadline.
     // Spins on the video overlay instead (wheel onVideoOverlay) aren't the fishing overlay's to show.
     const feed = readOverlay(db);
     const events = readWheel(channel).onVideoOverlay ? feed.events.filter(e => e.kind !== 'wheel') : feed.events;
-    return res.json({ lastId: feed.lastId, events, now: Date.now(), demo, size, clear, leadMs, graceMs });
+    // reload: open pages reload when it changes ($cmd fish overlay reload, or a code that wasn't drawn).
+    return res.json({ lastId: feed.lastId, events, now: Date.now(), demo, size, clear, leadMs, graceMs, reload: overlayReloadToken(db) });
   } catch (e) {
     return pointsUnavailable(res, channel, e);
   }

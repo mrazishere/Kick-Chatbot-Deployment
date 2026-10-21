@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import type { FishOverlayEvent } from "@/lib/bot-api";
-import { isStale, reloadInto, takeCursor, withBuild } from "@/lib/overlay-build";
+import { STALE_WAIT_MS, freshReloadDue, isStale, paintStalled, reloadAfterStall, reloadAsked, reloadFresh, reloadInto, noteFeedStart, reloadNow, takeCursor, usePaintReport, withBuild } from "@/lib/overlay-build";
 import { snipeIsOpen, syncClock, useCodeHidden, useCountdown } from "@/lib/overlay-clock";
 import { demoBigBite, demoGenerator, type DemoOdds } from "@/lib/fish-demo";
 import { useWheel } from "@/components/FishWheelStage";
@@ -517,6 +517,9 @@ export default function FishOverlay({
     const url = `${BASE_PATH}/api/overlay/${encodeURIComponent(channel)}/fishing?key=${encodeURIComponent(overlayKey)}`;
     // After reloading into a new build, carry on from where the old page was.
     let after: number | null = takeCursor(url);
+    if (after !== null) noteFeedStart(after);
+    // Since when the feed has been on a newer build than this page.
+    let staleSince: number | null = null;
     const poll = async () => {
       try {
         const res = await fetch(withBuild(url), { cache: "no-store" });
@@ -524,7 +527,9 @@ export default function FishOverlay({
           setDemoAllowed((a) => a ?? true); // no feed (fishing off, say): the demo still previews
           return;
         }
-        const data = (await res.json()) as { lastId: number; events: FishOverlayEvent[]; now?: number; build?: string; demo?: boolean; size?: number; clear?: { w: number; h: number }; leadMs?: number; graceMs?: number };
+        const data = (await res.json()) as { lastId: number; events: FishOverlayEvent[]; now?: number; build?: string; demo?: boolean; size?: number; clear?: { w: number; h: number }; leadMs?: number; graceMs?: number; reload?: number };
+        // Told to reload (a mod's command, or the bot after a code went undrawn): now, busy or not.
+        if (reloadAsked(data.reload)) return reloadNow(url, after);
         syncClock(data.now, data.leadMs, data.graceMs);
         setDemoAllowed(data.demo !== false);
         setSize((data.size ?? 100) / 100);
@@ -532,6 +537,7 @@ export default function FishOverlay({
         setClear((was) => (was?.w === c?.w && was?.h === c?.h ? was : c));
         if (after === null || data.lastId < after) {
           after = data.lastId; // first load, or the feed restarted
+          noteFeedStart(after);
           return;
         }
         const fresh = data.events.filter((e) => e.id > (after as number));
@@ -539,8 +545,18 @@ export default function FishOverlay({
           after = Math.max(...fresh.map((e) => e.id));
           enqueue(takeDuels(takeWheel(fresh)));
         }
-        // A newer dashboard build is live: reload into it once nothing is on screen.
-        if (isStale(data.build) && !lanes.current.some(Boolean) && queue.current.length === 0 && !duelsBusy() && !wheelBusy()) reloadInto(data.build!, url, after);
+        // A newer dashboard build is live: reload into it once nothing is on screen, or after
+        // STALE_WAIT_MS anyway (a page that never went quiet stayed on an old build for good) unless a code is up.
+        const idle = !lanes.current.some(Boolean) && queue.current.length === 0 && !duelsBusy() && !wheelBusy();
+        if (isStale(data.build)) {
+          staleSince ??= Date.now();
+          const waited = Date.now() - staleSince >= STALE_WAIT_MS && !lanes.current.some((l) => l && l.scene.v === "bite");
+          if (idle || waited) reloadInto(data.build!, url, after);
+        }
+        // Not drawing any more, so nothing on screen is being seen anyway: reload to get it going.
+        else if (paintStalled()) reloadAfterStall(url, after);
+        // Open a long while: a fresh copy, while there's nothing on it to see go.
+        else if (idle && freshReloadDue()) reloadFresh(url, after);
       } catch {
         // offline for a moment; the next poll catches up
         setDemoAllowed((a) => a ?? true);
@@ -641,6 +657,8 @@ export default function FishOverlay({
     }, TICK_MS);
     return () => clearInterval(t);
   }, [laneCount, wheelShowing]);
+
+  usePaintReport(lanes.current.flatMap((l) => (l ? [l.ev.id] : [])));
 
   return (
     <>

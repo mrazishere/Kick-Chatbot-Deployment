@@ -27,7 +27,7 @@ import { isBotSender } from '../bot-identity';
 import { SYSTEM_BOTS } from '../system-bots';
 import type { PointsDb } from '../points/db';
 import type { FishBigBiteSetting } from '../types';
-import { overlayShowing, pushOverlay } from './fish-overlay';
+import { overlayHealth, overlayShowing, pushOverlay, requestOverlayReload } from './fish-overlay';
 import { wheelBusy } from './wheel-state';
 
 /** A big bite waiting for its reel code. */
@@ -270,7 +270,25 @@ function arm(ctx: BiteContext, bite: Bite, windowMs: number, text: string, now: 
   // The overlay gets no snipe time: its "Anyone can snipe!" would reach viewers with a short
   // stream delay before the chat line, and chat is the signal.
   const snipe = {};
-  pushOverlay(ctx.db, { username: bite.username, kind: 'bite', text, code, until: bite.until, pull: bite.pull, pulls: bite.pulls, ...flash, ...snipe }, now);
+  const id = pushOverlay(ctx.db, { username: bite.username, kind: 'bite', text, code, until: bite.until, pull: bite.pull, pulls: bite.pulls, ...flash, ...snipe }, now);
+  if (id !== null) {
+    const t = setTimeout(() => checkCodeDrawn(ctx, id), DRAW_WAIT_MS);
+    t.unref?.();
+  }
+}
+
+/** How long a page has to draw a code before the bot reloads it: a poll or two and a frame. */
+const DRAW_WAIT_MS = 8_000;
+
+/**
+ * A code the overlay still hasn't drawn DRAW_WAIT_MS on (by its own report, so only pages
+ * from 2026-10-21 on): the browser source is stuck, so every open overlay is told to reload.
+ * The reload picks the feed up where it was, code included.
+ */
+function checkCodeDrawn(ctx: BiteContext, id: number): void {
+  const health = overlayHealth(ctx.db);
+  if (!health || health.painted >= id) return;
+  if (requestOverlayReload(ctx.db, true)) console.log(`[FISH] overlay in ${ctx.channel} hadn't drawn big bite code #${id} after ${DRAW_WAIT_MS / 1000}s: told it to reload`);
 }
 
 /** Put a big bite on this chatter's line: chat says so, and only the overlay gets the code. */

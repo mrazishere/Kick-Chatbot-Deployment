@@ -2,7 +2,7 @@
 
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { FishOverlayEvent } from "@/lib/bot-api";
-import { isStale, reloadInto, takeCursor, withBuild } from "@/lib/overlay-build";
+import { STALE_WAIT_MS, freshReloadDue, isStale, paintStalled, reloadAfterStall, reloadAsked, reloadFresh, reloadInto, noteFeedStart, reloadNow, takeCursor, usePaintReport, withBuild } from "@/lib/overlay-build";
 import { snipeIsOpen, syncClock, useCodeHidden, useCountdown } from "@/lib/overlay-clock";
 import { demoBigBite, demoGenerator, type DemoOdds } from "@/lib/fish-demo";
 import { useWheel } from "@/components/FishWheelStage";
@@ -304,6 +304,9 @@ export default function FishOverlayCards({
     const url = `${BASE_PATH}/api/overlay/${encodeURIComponent(channel)}/fishing?key=${encodeURIComponent(overlayKey)}`;
     // After reloading into a new build, carry on from where the old page was.
     let after: number | null = takeCursor(url);
+    if (after !== null) noteFeedStart(after);
+    // Since when the feed has been on a newer build than this page.
+    let staleSince: number | null = null;
     const poll = async () => {
       try {
         const res = await fetch(withBuild(url), { cache: "no-store" });
@@ -311,7 +314,9 @@ export default function FishOverlayCards({
           setDemoAllowed((a) => a ?? true); // no feed (fishing off, say): the demo still previews
           return;
         }
-        const data = (await res.json()) as { lastId: number; events: FishOverlayEvent[]; now?: number; build?: string; demo?: boolean; size?: number; clear?: Clear; leadMs?: number; graceMs?: number };
+        const data = (await res.json()) as { lastId: number; events: FishOverlayEvent[]; now?: number; build?: string; demo?: boolean; size?: number; clear?: Clear; leadMs?: number; graceMs?: number; reload?: number };
+        // Told to reload (a mod's command, or the bot after a code went undrawn): now, busy or not.
+        if (reloadAsked(data.reload)) return reloadNow(url, after);
         syncClock(data.now, data.leadMs, data.graceMs);
         setDemoAllowed(data.demo !== false);
         setSize((data.size ?? 100) / 100);
@@ -319,6 +324,7 @@ export default function FishOverlayCards({
         setClear((was) => (was?.w === c?.w && was?.h === c?.h ? was : c));
         if (after === null || data.lastId < after) {
           after = data.lastId; // first load, or the feed restarted
+          noteFeedStart(after);
           return;
         }
         const all = data.events.filter((e) => e.id > (after as number));
@@ -330,8 +336,18 @@ export default function FishOverlayCards({
           queue.current.push(...fresh.filter((e) => e.kind !== "bite"));
           trimQueue(queue.current);
         }
-        // A newer dashboard build is live: reload into it once nothing is on screen.
-        if (isStale(data.build) && cards.current.length === 0 && queue.current.length === 0 && !duelsBusy() && !wheelBusy()) reloadInto(data.build!, url, after);
+        // A newer dashboard build is live: reload into it once nothing is on screen, or after
+        // STALE_WAIT_MS anyway (a page that never went quiet stayed on an old build for good) unless a code is up.
+        const idle = cards.current.length === 0 && queue.current.length === 0 && !duelsBusy() && !wheelBusy();
+        if (isStale(data.build)) {
+          staleSince ??= Date.now();
+          const waited = Date.now() - staleSince >= STALE_WAIT_MS && !cards.current.some((c) => c.phase === "in" && c.ev.kind === "bite");
+          if (idle || waited) reloadInto(data.build!, url, after);
+        }
+        // Not drawing any more, so nothing on screen is being seen anyway: reload to get it going.
+        else if (paintStalled()) reloadAfterStall(url, after);
+        // Open a long while: a fresh copy, while there's nothing on it to see go.
+        else if (idle && freshReloadDue()) reloadFresh(url, after);
       } catch {
         // offline for a moment; the next poll catches up
         setDemoAllowed((a) => a ?? true);
@@ -482,6 +498,8 @@ export default function FishOverlayCards({
     return () => clearInterval(t);
   }, [max, wheelShowing]);
 
+  usePaintReport(cards.current.filter((c) => c.phase === "in").map((c) => c.ev.id));
+
   return (
     <>
       <style>{CSS}</style>
@@ -548,28 +566,27 @@ const CSS = `
 
 .fo-uncommon{border-color:rgba(80,220,150,.45)} .fo-uncommon .fo-rarity{color:#6ee7b7}
 .fo-rare{border-color:rgba(90,180,255,.6);box-shadow:0 0 1em rgba(60,150,255,.3),0 .3em 1.2em rgba(0,0,0,.45)} .fo-rare .fo-rarity{color:#7dd3fc}
-.fo-epic{border-color:rgba(220,120,255,.7)}
-.fo-in>.fo-epic{animation:fo-slide .6s cubic-bezier(.2,1.35,.4,1) both,fo-epic 1.6s ease-in-out .6s infinite}
+/* Glows hold still: a blurred shadow redrawn every frame stalled a streaming tool's cloud OBS, which draws without a GPU. */
+.fo-epic{border-color:rgba(220,120,255,.7);box-shadow:0 0 1.1em rgba(210,100,255,.35),0 .3em 1.2em rgba(0,0,0,.45)}
 .fo-epic .fo-rarity{color:#f0abfc}
 .fo-epic .fo-icon{background:radial-gradient(circle at 35% 30%,rgba(220,120,255,.5),rgba(80,20,110,.4))}
-@keyframes fo-epic{50%{box-shadow:0 0 1.6em rgba(210,100,255,.55),0 .3em 1.2em rgba(0,0,0,.45)}}
-.fo-legendary{border:1.5px solid rgba(255,200,70,.9);background:linear-gradient(135deg,rgba(60,40,8,.92),rgba(18,12,4,.9))}
-.fo-in>.fo-legendary{animation:fo-slide .6s cubic-bezier(.2,1.35,.4,1) both,fo-legend 1.2s ease-in-out .6s infinite}
+.fo-legendary{border:1.5px solid rgba(255,200,70,.9);background:linear-gradient(135deg,rgba(60,40,8,.92),rgba(18,12,4,.9));box-shadow:0 0 1.3em rgba(255,190,60,.45),0 .3em 1.2em rgba(0,0,0,.45)}
 .fo-legendary .fo-rarity{color:#fcd34d}
 .fo-legendary .fo-icon{background:radial-gradient(circle at 35% 30%,rgba(255,210,90,.65),rgba(120,70,0,.45));font-size:1.45em}
-@keyframes fo-legend{50%{box-shadow:0 0 2.2em rgba(255,190,60,.7),0 .3em 1.2em rgba(0,0,0,.45)}}
 .fo-shine{position:absolute;inset:0;pointer-events:none;background:linear-gradient(110deg,transparent 30%,rgba(255,235,160,.35) 50%,transparent 70%);
-  transform:translateX(-100%);animation:fo-shine 2.2s ease-in-out .5s infinite}
+  transform:translateX(-100%);will-change:transform;animation:fo-shine 2.2s ease-in-out .5s 3}
 @keyframes fo-shine{60%,100%{transform:translateX(100%)}}
-.fo-bite{border:1.5px solid rgba(253,224,71,.9);animation:fo-legend 1s ease-in-out infinite}
+.fo-bite{border:1.5px solid rgba(253,224,71,.9);box-shadow:0 0 1em rgba(255,190,60,.4),0 .3em 1.2em rgba(0,0,0,.45)}
+/* A big bite's code still throbs, but only an inner glow's opacity changes: nothing is redrawn, only blended. */
+.fo-bite::after{content:"";position:absolute;inset:0;border-radius:inherit;pointer-events:none;box-shadow:inset 0 0 1.2em rgba(253,224,71,.6);
+  opacity:0;will-change:opacity;animation:fo-throb .5s ease-in-out infinite alternate}
+@keyframes fo-throb{to{opacity:1}}
 .fo-bigcode{margin-top:.3em;font-size:.8em;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:#fde047}
 .fo-bigcode b{margin-left:.3em;font-size:2em;letter-spacing:.04em;color:#fff;vertical-align:middle;text-shadow:0 0 .3em rgba(253,224,71,.8)}
 .fo-bigsecs{margin-left:.6em;font-size:1em;color:#fbbf24}
 /* The first code's last seconds, open to everyone. */
 .fo-sniping{color:#f87171}
-.fo-mythic{border:1.5px solid rgba(244,114,182,.9);background:linear-gradient(135deg,rgba(60,14,48,.92),rgba(14,20,50,.9))}
-.fo-in>.fo-mythic{animation:fo-slide .6s cubic-bezier(.2,1.35,.4,1) both,fo-mythic 1.2s ease-in-out .6s infinite}
+.fo-mythic{border:1.5px solid rgba(244,114,182,.9);background:linear-gradient(135deg,rgba(60,14,48,.92),rgba(14,20,50,.9));box-shadow:0 0 1.4em rgba(244,114,182,.45),0 .3em 1.2em rgba(0,0,0,.45)}
 .fo-mythic .fo-rarity{color:#f9a8d4}
 .fo-mythic .fo-icon{background:conic-gradient(rgba(244,114,182,.6),rgba(96,165,250,.6),rgba(52,211,153,.6),rgba(250,204,21,.6),rgba(244,114,182,.6));font-size:1.5em}
-@keyframes fo-mythic{50%{box-shadow:0 0 2.4em rgba(244,114,182,.7),0 .3em 1.2em rgba(0,0,0,.45)}}
 `;

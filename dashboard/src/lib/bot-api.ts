@@ -1012,6 +1012,8 @@ export interface FishOverlayFeed {
   leadMs?: number;
   /** How long the bot still takes a big bite answer past its deadline (ms), so the overlay says "last chance!" then; absent means 0. */
   graceMs?: number;
+  /** Open pages reload when this changes ($cmd fish overlay reload, or the bot after a code went undrawn). */
+  reload?: number;
 }
 
 /** The video overlay's feed: the paid video to play now (points.video). */
@@ -1079,8 +1081,10 @@ export function reportVideoFailed(channel: string, id: number): Promise<{ ok: bo
   return request(`/internal/bot/${encodeURIComponent(channel)}/overlay/video/failed`, { method: "POST", body: { id }, timeoutMs: 5_000 });
 }
 
-export function getFishOverlay(channel: string): Promise<FishOverlayFeed> {
-  return request(`/internal/bot/${encodeURIComponent(channel)}/overlay/fishing`, { timeoutMs: 5_000 });
+export function getFishOverlay(channel: string, health?: { painted: number; stall: number; hidden: boolean } | null): Promise<FishOverlayFeed> {
+  // health: what the open pages say about drawing, for the bot's big bites (dashboard lib/overlay-health).
+  const q = health ? `?painted=${health.painted}&stall=${health.stall}${health.hidden ? "&hidden=1" : ""}` : "";
+  return request(`/internal/bot/${encodeURIComponent(channel)}/overlay/fishing${q}`, { timeoutMs: 5_000 });
 }
 
 export function getPointsLeaderboard(channel: string, limit = 100): Promise<PointsLeaderboard> {

@@ -1,5 +1,6 @@
 import "server-only";
 import crypto from "crypto";
+import { overlayHealthFor } from "./overlay-health";
 import { BotApiError, getFishOverlay, type FishDuel, type FishDuelSide, type FishOverlayEvent, type FishOverlayFeed, type FishOverlayWheel, type WheelItem } from "./bot-api";
 
 /**
@@ -160,7 +161,8 @@ function shape(raw: FishOverlayFeed): FishOverlayFeed {
     ...(typeof raw.size === "number" && raw.size >= 50 && raw.size <= 300 && raw.size !== 100 ? { size: raw.size } : {}),
     ...(clearOf(raw.clear) ? { clear: clearOf(raw.clear)! } : {}),
     ...(typeof raw.leadMs === "number" && raw.leadMs > 0 && raw.leadMs <= 30_000 ? { leadMs: raw.leadMs } : {}),
-    ...(typeof raw.graceMs === "number" && raw.graceMs > 0 && raw.graceMs <= 30_000 ? { graceMs: raw.graceMs } : {}) };
+    ...(typeof raw.graceMs === "number" && raw.graceMs > 0 && raw.graceMs <= 30_000 ? { graceMs: raw.graceMs } : {}),
+    ...(typeof raw.reload === "number" && Number.isFinite(raw.reload) ? { reload: raw.reload } : {}) };
 }
 
 export type OverlayResult = { kind: "ok"; data: FishOverlayFeed } | { kind: "not-found" } | { kind: "unavailable" };
@@ -173,7 +175,7 @@ export async function loadFishOverlay(channel: string): Promise<OverlayResult> {
   if (hit && Date.now() - hit.at < TTL_MS) return { kind: "ok", data: aged(hit) };
   let pending = inFlight.get(channel);
   if (!pending) {
-    pending = getFishOverlay(channel).then(shape).finally(() => inFlight.delete(channel));
+    pending = getFishOverlay(channel, overlayHealthFor(channel)).then(shape).finally(() => inFlight.delete(channel));
     inFlight.set(channel, pending);
   }
   try {

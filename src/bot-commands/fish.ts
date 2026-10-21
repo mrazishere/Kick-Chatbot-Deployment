@@ -56,7 +56,7 @@ import { makeCooldown, parseUsername, span } from '../community/format';
 import { gameInvocation } from '../community/stakes';
 import { addReminder, cancelSelfRemindersStartingWith, openCommunityDb } from '../community/store';
 import { bestEmote, broadcasterIdFor, emoteImages, withKickEmotes } from '../community/emotes';
-import { OverlayKind, overlayOff, overlayShowing, pushOverlay, setOverlayOff } from '../community/fish-overlay';
+import { OverlayKind, overlayHealth, overlayOff, overlayShowing, pushOverlay, requestOverlayReload, setOverlayOff } from '../community/fish-overlay';
 import { addChallenge, challengeBy, challengeFor, closeInValue, describe, fighterOf, describeTeam, dropChallenge, fight, findTeam, fishSpecs, fishNamed, heldFish, TYPE_EMOJI, isLength, specText, splitLengths, fishValue, keepsRange, overlayDuel, overlayTeamDuel, pickByValue, pickFighter, pickForKeeps, pickTeam, sameFish, playMs, randomFish, switchesIn, teamFight, teamSizeOf, teamValue, wantsRandom, type Challenge, type DuelStake, type OverlayDuel, type Picked } from '../community/fish-duel';
 import { parseBet } from './points';
 import { answerMatches, makeTrapCheck, type TrapCheck } from '../community/trap-check';
@@ -412,7 +412,9 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     d.catch.luckyStreak++;
     if (d.catch.luckyStreak > d.lifetime.luckyStreak) d.lifetime.luckyStreak = d.catch.luckyStreak;
     // A big bite isn't a cast, so it leaves casting alone.
-    if (cooldown) d.readyTimestamp = now + g.catchCooldownMinutes * 60_000;
+    if (cooldown) {
+      d.readyTimestamp = now + g.catchCooldownMinutes * 60_000;
+    }
     if (!item.size) {
       recordCatch(db!, uid, item.name, 'cast', null, now);
       return item.trophy ? `Worth ${groupDigits(sellPrice(item, g, undefined, reel?.valueMultiplier ?? 1))} ${cur}.` : '';
@@ -555,6 +557,14 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
   /** The overlay isn't on stream (a polling copy still counts as showing): off sends every reply to chat and pauses big bites, until on or the next stream. */
   function overlaySwitch(word: string | undefined): void {
     const w = (word ?? '').toLowerCase();
+    // reload: every open overlay reloads on its next poll, stuck or busy (pages from 2026-10-21 on).
+    if (w === 'reload') {
+      requestOverlayReload(db!, false);
+      console.log(`[FISH] ${me} asked the fishing overlay to reload in ${chan}`);
+      return void say(overlayHealth(db!)
+        ? '🔄 Told the fishing overlay to reload: it should be back in a couple of seconds.'
+        : "🔄 Told the fishing overlay to reload, but the one that's open is from before reloading could be asked for: it needs refreshing in OBS once.");
+    }
     if (w !== 'on' && w !== 'off') {
       return void say(overlayOff(db!)
         ? `The fishing overlay is switched off: replies go to chat and big bites are paused. ${cmd} fish overlay on brings it back.`
@@ -1356,7 +1366,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     const closed = await stealHours();
     if (closed) parts.push(closed);
     parts.push((d.hook ?? 0) > 0 ? `🪝 ${tries(d.hook!)} left on your hook` : `no 🪝 hook (${cmd} fish buy hook, ${groupDigits(st.hookPrice)} ${cur} for ${tries(st.hookUses)})`);
-    if (!tester && d.readyTimestamp !== 0 && now < d.readyTimestamp) parts.push(`cooldown ${span(d.readyTimestamp - now)}`);
+    if (!tester && now < (d.stealReady ?? 0)) parts.push(`next steal in ${span(d.stealReady! - now)}`);
     const tried = db!.prepare(
       `SELECT u.username, MAX(s.ts) AS t FROM steals s JOIN users u ON u.user_id = s.victim_id
        WHERE s.thief_id = ? AND s.ts > ? AND s.${WENT} GROUP BY s.victim_id ORDER BY t`
@@ -1396,7 +1406,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     if (!hasFishedBefore(d)) no.push('you need to go fishing once first');
     if ((d.hook ?? 0) <= 0) no.push(`you need a 🪝 hook (${cmd} fish buy hook)`);
     if (capOf(g, 'fish') > 0 && d.catch.fish >= capOf(g, 'fish')) no.push('your bucket is full');
-    if (!tester && d.readyTimestamp !== 0 && now < d.readyTimestamp) no.push(`your cooldown has ${span(d.readyTimestamp - now)} left`);
+    if (!tester && now < (d.stealReady ?? 0)) no.push(`your steal cooldown has ${span(d.stealReady! - now)} left`);
     // A guard stays secret, as everywhere: finding one out costs a hook try.
     const alert = tester ? 0 : alertLeft(victim.user_id, now);
     if (alert > 0) no.push(`they're on alert for ${span(alert)}`);
@@ -1456,7 +1466,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       // A full bucket can't take a stolen fish: nothing is spent.
       if (capOf(g, 'fish') > 0 && d.catch.fish >= capOf(g, 'fish')) return `Your bucket is full (${capOf(g, 'fish')} fish): sell some before you steal more.`;
       if ((d.hook ?? 0) <= 0) return `You need a 🪝 grappling hook to steal. Get one with ${cmd} fish buy hook (${groupDigits(st.hookPrice)} ${cur} for ${tries(st.hookUses)}).`;
-      if (!tester && d.readyTimestamp !== 0 && now < d.readyTimestamp) return `Hol' up partner! You can go fishing or stealing again in ${span(d.readyTimestamp - now)}!`;
+      if (!tester && now < (d.stealReady ?? 0)) return `Hol' up partner! You can try another steal in ${span(d.stealReady! - now)}. Fishing isn't held up by it.`;
       const v = loadFish(db!, victim.user_id);
       const log = (outcome: string, item: string | null, cm: number | null, money: { worth: number; fee: number; fine: number } | null = null) =>
         db!.prepare('INSERT INTO steals (ts, thief_id, victim_id, name, cm, outcome, worth, fee, fine) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
@@ -1497,9 +1507,10 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
         return `You fumbled your 🪝 hook (${left}). To try ${victim.username} you need ${groupDigits(needed)} ${cur} on hand: the fee and the fine for ${aimed ? 'that fish' : aim ? `their costliest ${aim.item.name}` : 'the costliest fish they hold'}.`;
       }
 
-      // The attempt goes ahead: a hook use and the fishing cooldown are spent whatever happens, and the fee once the fish is known.
+      // The attempt goes ahead: a hook use and the steal cooldown are spent whatever happens, and the fee once the fish is known.
+      // The steal cooldown is its own: a thief can still fish, and a fish never holds up a steal (owner, 2026-10-21).
       d.hook = (d.hook ?? 1) - 1;
-      d.readyTimestamp = now + g.catchCooldownMinutes * 60_000;
+      d.stealReady = now + g.catchCooldownMinutes * 60_000;
       d.lifetime.steal.attempts++;
       let r = randomInt(1, pool.reduce((sum, p) => sum + p.n, 0));
       const item = aim ? aim.item : pool.find(p => (r -= p.n) <= 0)!.item;
@@ -1508,7 +1519,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       const chance = stealChance(g, item.name);
       const { fee, fine } = stealCharges(g, worth, chance);
       if (fee > 0) debitTx(db!, { userId: uid, amount: fee, reason: 'game:fish_steal', actor: `chat:${me}`, note: `${victim.username} ${item.name}`, now });
-      const cooldown = `${g.catchCooldownMinutes}m cooldown`;
+      const cooldown = `next steal in ${g.catchCooldownMinutes}m`;
 
       // Luck raises the roll's odds, not the fine's.
       if (randomInt(1, 1000) <= Math.round(stealRollChance(g, item.name) * 10)) {
