@@ -15,6 +15,7 @@
  *     responding in this channel. Changes take effect immediately (no restart needed).
  */
 
+import { anthropicFetch, noteChatSend, noteCommandError, noteCommandLoadFailed } from '../health-alerts';
 import 'dotenv/config';
 import axios from 'axios';
 import WebSocket from 'ws';
@@ -273,6 +274,7 @@ class KickChatBot {
         if (error instanceof Error) {
           console.error(`[COMMANDS] Failed to load command from ${file}: ${error.message}`);
           console.error(`[COMMANDS] Command "${path.basename(file, '.js')}" is DISABLED — fix the module and restart to re-enable`);
+          noteCommandLoadFailed(this.channelName, path.basename(file, '.js'), error.message);
         }
       }
     });
@@ -798,12 +800,14 @@ class KickChatBot {
         Promise.resolve(commandFunction(clientWrapper, message, `#${this.channelName}`, kickTags, this.config)).catch((error: unknown) => {
           if (error instanceof Error && !error.message.includes('Not our command')) {
             console.error(`[COMMANDS] Command ${commandName} failed: ${error.message}`);
+            noteCommandError(this.channelName, commandName, error.message);
           }
         });
       } catch (error) {
         // Only log actual errors, not "not our command" type messages
         if (error instanceof Error && !error.message.includes('Not our command')) {
           console.error(`[COMMANDS] Command ${commandName} failed: ${error.message}`);
+          noteCommandError(this.channelName, commandName, error.message);
         }
       }
     });
@@ -1063,7 +1067,7 @@ Rules:
 
     let resolved: ResolvedLocation;
     try {
-      const response = await fetch('https://api.anthropic.com/v1/messages', {
+      const response = await anthropicFetch({
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -1319,13 +1323,16 @@ Rules:
 
       console.log(`[SENT] ${sanitized}`);
       markBotOutput(this.channelName, sanitized);
+      noteChatSend(this.channelName, true);
       return response.data;
     } catch (error) {
       if (axios.isAxiosError(error)) {
         const errData = error.response?.data as { message?: string } | undefined;
         console.error(`[ERROR] Failed to send message: ${errData?.message || error.message}`);
+        noteChatSend(this.channelName, false, `${error.response?.status ?? 'no answer'} ${errData?.message || error.message}`);
       } else if (error instanceof Error) {
         console.error(`[ERROR] Failed to send message: ${error.message}`);
+        noteChatSend(this.channelName, false, error.message);
       }
       throw error;
     }

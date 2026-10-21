@@ -7,17 +7,21 @@ import { notFound, redirect } from "next/navigation";
 import BotManager from "@/components/BotManager";
 import { overlayLinks } from "@/lib/fish-overlay";
 import { videoOverlayLinks } from "@/lib/video-overlay";
+import { parseBotPath } from "@/lib/bot-sections";
 
 export const dynamic = "force-dynamic";
 
 export default async function BotPage({
   params,
 }: {
-  params: Promise<{ channel: string }>;
+  params: Promise<{ channel: string; section?: string[] }>;
 }) {
-  const { channel } = await params;
+  const { channel, section: segments } = await params;
   const slug = channel.toLowerCase();
   if (!validChannel(slug)) notFound();
+  // Which menu page: /<channel>/bot is the overview, /<channel>/bot/fishing/steals a fishing tab.
+  const at = parseBotPath(segments);
+  if (!at) notFound();
 
   const session = await getSession();
   if (!session.userId || !session.username) redirect("/login");
@@ -27,6 +31,8 @@ export default async function BotPage({
   if (!gate.ok) redirect(`/${session.username}/bot`);
   const { role, canAdminister } = gate.auth;
   const admin = isAdmin(session.userId);
+  // Team is the broadcaster's, Admin the bot owner's: anyone else lands on the overview.
+  if ((at.section === "team" && !canAdminister) || (at.section === "admin" && !admin)) redirect(`/${slug}/bot`);
 
   let bot: BotChannel | null = null;
   let available: string[] = [];
@@ -132,6 +138,8 @@ export default async function BotPage({
       fishOverlays={overlayLinks(slug)}
       videoOverlays={videoOverlayLinks(slug)}
       mediaPlayers={mediaPlayerLinks(slug)}
+      section={at.section}
+      fishingTab={at.tab}
     />
   );
 }

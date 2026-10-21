@@ -22,6 +22,7 @@
  * sticks even when a run was waiting on the API as it landed.
  */
 
+import { anthropicFetch } from './health-alerts';
 import fetch from 'node-fetch';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -327,7 +328,7 @@ async function scoreGroup(group: ShameEvent[], apiKey: string): Promise<ItemScor
     'Judge with humor but consistency. Return ONLY a JSON array, one object per item, like ' +
     '[{"i":1,"dumb":7,"trolled":5},{"i":2,"dumb":2,"trolled":9}]. No prose, no code fences.';
 
-  const resp = await fetch('https://api.anthropic.com/v1/messages', {
+  const resp = await anthropicFetch({
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',

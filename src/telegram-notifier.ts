@@ -398,6 +398,18 @@ Kick changes its chat socket without notice (it isn't in the public API). Channe
     return await this.sendOnce(alertKey('chat-socket-down'), 6 * HOUR, message, false); // audible
   }
 
+  // A problem without a method of its own (health-alerts.ts): sent once per key per
+  // `cooldownMs` across every process, audible; `resolved` closes it, sent once.
+  async notifyProblem(key: string, title: string, detail: string, cooldownMs = 6 * HOUR): Promise<boolean> {
+    const message = `⚠️ <b>Kick Bot - ${esc(title)}</b>\n\n${esc(detail)}`;
+    return await this.sendOnce(key, cooldownMs, message, false);
+  }
+
+  async notifyResolved(key: string, title: string, detail: string): Promise<boolean> {
+    if (!(await this.forget([key]))) return false;
+    return await this.sendMessage(`✅ <b>Kick Bot - ${esc(title)}</b>\n\n${esc(detail)}`, true);
+  }
+
   // Alert: a channel's fishing overlay is on a showing scene but hasn't drawn for a while, and the
   // bot's reloads haven't brought it back (community/fish-overlay.ts watchOverlay). Big bites wait.
   async notifyOverlayFrozen(channel: string, minutes: number): Promise<boolean> {

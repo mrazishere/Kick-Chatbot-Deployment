@@ -17,6 +17,7 @@ import { exec } from 'child_process';
 import { ModerationBannedEvent, RawBadge, TimeoutRequest, TimeoutResult, VanishResult } from '../types';
 import { getBotIdentity } from '../bot-identity';
 import { SYSTEM_BOTS } from '../system-bots';
+import { clearAlert, raiseAlert } from '../health-alerts';
 
 const API = 'https://api.kick.com/public/v1';
 
@@ -264,6 +265,7 @@ export class ChannelModerator {
     const { token, isChannelToken } = await this.deps.getToken().catch(() => ({ token: '', isChannelToken: false }));
     if (!isChannelToken || !token) {
       console.error(`[MODERATION] Timeout of ${target} skipped — ${this.deps.channelName} has no streamer token. Channel must re-authorize.`);
+      this.cantModerate(`${this.deps.channelName} has no streamer authorization, so the bot has no token to moderate with. The streamer must authorize again on the dashboard.`);
       return { ok: false, error: 'timeouts are not set up for this channel' };
     }
     const scopes = await this.grantedScopes(token);
@@ -273,6 +275,7 @@ export class ChannelModerator {
         `[MODERATION] Timeout of ${target} skipped — neither the bot nor ${this.deps.channelName}'s token carries moderation:ban ` +
         `(channel granted: ${scopes.join(' ') || 'none'}).`
       );
+      this.cantModerate(`Neither the bot nor ${this.deps.channelName}'s authorization carries the moderation:ban permission (granted: ${scopes.join(' ') || 'none'}). The streamer must authorize again on the dashboard.`);
       return { ok: false, error: 'timeouts are not set up for this channel' };
     }
 
@@ -522,11 +525,14 @@ export class ChannelModerator {
     what: string,
     call: (token: string) => Promise<unknown>
   ): Promise<ModerationActor | null> {
+    let botRefused: string | null = null;
     for (const [i, actor] of actors.entries()) {
       try {
         await call(actor.token);
+        if (what.startsWith('Timeout')) this.moderated(actor, botRefused);
         return actor;
       } catch (err) {
+        if (actor.isBot) botRefused = describeError(err);
         const detail = describeError(err);
         const next = actors[i + 1];
         if (next) {
@@ -541,10 +547,26 @@ export class ChannelModerator {
           console.log(`[MODERATION] ${what} as ${actor.name} refused: ${detail} — retrying as ${next.name}.${hint}`);
         } else {
           console.error(`[MODERATION] ${what} failed as ${actor.name}: ${detail}`);
+          // Timeouts only: a message already gone or a ban already lifted is refused too, and that's fine.
+          if (what.startsWith('Timeout')) this.cantModerate(`${what} was refused for every account the bot can act as (last: ${actor.name}, ${detail}). Timeouts, reward punishments and spam penalties aren't happening. Check that the bot's account kick.com/${getBotIdentity()?.username ?? "the bot account"} is still a moderator in ${this.deps.channelName}, and the streamer's authorization.`);
         }
       }
     }
     return null;
+  }
+
+  /** A moderation call went through: close any alert about moderating here, and say if the bot itself was turned away. */
+  private moderated(actor: ModerationActor, botRefused: string | null): void {
+    const ch = this.deps.channelName;
+    clearAlert(`moderation:${ch}`, 'Bot Moderating Again', `Timeouts work in ${ch} again.`);
+    if (actor.isBot) clearAlert(`bot-not-mod:${ch}`, 'Bot Is A Moderator Again', `The bot's account moderates in ${ch} again.`);
+    else if (botRefused) {
+      raiseAlert(`bot-not-mod:${ch}`, 'Bot Isn\'t A Moderator', `Kick refused a timeout from the bot's own account in ${ch} (${botRefused}), so it went out under ${ch}'s name instead. It still works, but the bot's account kick.com/${getBotIdentity()?.username ?? "the bot account"} has probably been un-modded there: mod it again (the account, not the [bot]-badged app).`);
+    }
+  }
+
+  private cantModerate(detail: string): void {
+    raiseAlert(`moderation:${this.deps.channelName}`, 'Bot Can\'t Moderate', detail);
   }
 
   /** Remove a ban as whoever issued it, falling back to the streamer token. Returns success. */

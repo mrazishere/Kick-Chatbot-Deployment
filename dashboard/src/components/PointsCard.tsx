@@ -2,8 +2,10 @@
 
 import { COUNTERPARTY_PREFIX, REASON_LABEL } from "@/lib/points-labels";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Check, ChevronDown, Coins, Copy, ExternalLink, Loader2, Search } from "lucide-react";
+import { Check, Coins, Copy, ExternalLink, Fish, Gamepad2, Layers, Loader2, Search } from "lucide-react";
 import type { OverlayLink } from "@/lib/fish-overlay";
+import { FISHING_TABS, type FishingTab } from "@/lib/bot-sections";
+import FishOverlayStatus from "./FishOverlayStatus";
 import { Button, Card, Checkbox, Stat, Toggle } from "./ui";
 import MediaShareSetup from "./MediaShareSetup";
 
@@ -730,6 +732,25 @@ function parseIgnoreList(raw: string): string[] {
  * Validate the form into a settings patch, mirroring the bot service's rules so a
  * mistake shows here instead of as a failed save. The service still has the final say.
  */
+const isPlain = (v: unknown): v is Record<string, unknown> => !!v && typeof v === "object" && !Array.isArray(v);
+
+/**
+ * The parts of `next` that differ from `base`, as a patch: nested settings field by field (the bot
+ * merges them), anything else (lists included) whole. Undefined when nothing changed.
+ */
+function changedOnly(next: unknown, base: unknown): Record<string, unknown> | undefined {
+  if (!isPlain(next) || !isPlain(base)) return undefined;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(next)) {
+    if (!(k in base)) out[k] = v;
+    else if (isPlain(v) && isPlain(base[k])) {
+      const inner = changedOnly(v, base[k]);
+      if (inner) out[k] = inner;
+    } else if (JSON.stringify(v) !== JSON.stringify(base[k])) out[k] = v;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
 function buildPatch(f: SettingsForm): { patch: PointsSettingsPatch } | { error: string } {
   const errors: string[] = [];
   const whole = (raw: string, label: string, min: number, max: number): number => {
@@ -1301,7 +1322,7 @@ function StealSettings({ value, currency, command, disabled, onChange }: {
             ))}
           </div>
           <p className="mt-3 text-xs text-neutral-500">
-            {`A thief first buys a 🪝 grappling hook with $${command} fish buy hook, then picks a target; the hook grabs one random fish that target has held longer than the safe time. Every try uses one hook try, the fishing cooldown and a fee on the grabbed fish's value. `}
+            {`A thief first buys a 🪝 grappling hook with $${command} fish buy hook, then picks a target; the hook grabs one random fish that target has held longer than the safe time. Every try, caught or not, uses one hook try, a fee on the grabbed fish's value and starts the steal cooldown (as long as the catch cooldown), which holds up only stealing: thieves can still fish and lay traps. `}
             {`It works at the chance for that fish's rarity; otherwise the thief is caught and pays a fine on top. The fine is set from the odds so that, on average, a thief loses the edge % of what a try could expect to win, whether the hook grabs a frog or a whale; at the defaults a thief loses about a fifth, and cheap fish don't repay the hook. Fees and fines go nowhere: nobody receives them. `}
             {`A thief must hold the fee and fine for the target's costliest fish before trying; short of that, the try only costs a hook use, and the reply says how much they need. Steals always reply in chat, whatever the chat setting above, and also play on the overlay. `}
             {`A viewer can hire a guard with $${command} fish buy guard, priced on what their fish are worth right now. A guarded target turns every try away for one hook use and nothing else. How long a guard lasts is set below but never shown in chat, not even to its owner, since chat is public. Prices are in ${currency}.`}
@@ -1677,8 +1698,21 @@ function FishOverlayLinks({ links, title = "Fishing overlay", blurb }: { links: 
   );
 }
 
+/** Unsaved settings edits by channel, kept while the dashboard is open, against the saved copy they were made on. */
+const drafts = new Map<string, { base: string; form: SettingsForm }>();
+
+const TITLES: Record<PointsSection, (currency: string, tab: FishingTab | null) => string> = {
+  loyalty: (currency) => `Loyalty points · ${currency}`,
+  games: () => "Mini-game settings",
+  overlays: () => "Video sharing",
+  fishing: (_currency, tab) => `Fishing · ${FISHING_TABS.find((t) => t.key === tab)?.label ?? "General"}`,
+};
+
+/** Which menu page the card draws its share of the settings for (lib/bot-sections). */
+export type PointsSection = "loyalty" | "games" | "fishing" | "overlays";
+
 export default function PointsCard({
-  channel, canAdminister, points, fishOverlays, videoOverlays, mediaPlayers, onSaved,
+  channel, canAdminister, points, fishOverlays, videoOverlays, mediaPlayers, onSaved, section, fishingTab,
 }: {
   channel: string;
   /** Owner/admin edit the settings; managers see them read-only but can still adjust balances. */
@@ -1691,10 +1725,19 @@ export default function PointsCard({
   mediaPlayers: OverlayLink[];
   /** Receives the updated channel after a settings save, so the rest of the page stays current. */
   onSaved: (bot: { points?: PointsConfig | null }) => void;
+  section: PointsSection;
+  /** On Fishing, which tab. */
+  fishingTab: FishingTab | null;
 }) {
   const [saved, setSaved] = useState<PointsConfig | null>(points);
-  const [form, setForm] = useState<SettingsForm | null>(points ? formFromConfig(points) : null);
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  // Edits not saved yet come back when this card does: each menu page and fishing tab draws a
+  // new card, and switching used to drop them, so one Save now keeps every page's changes.
+  const [form, setForm] = useState<SettingsForm | null>(() => {
+    if (!points) return null;
+    const fresh = formFromConfig(points);
+    const draft = drafts.get(channel);
+    return draft && draft.base === JSON.stringify(fresh) ? draft.form : fresh;
+  });
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -1745,6 +1788,19 @@ export default function PointsCard({
         : current,
     );
   }, [points]);
+
+  // Keep this card's unsaved edits for the next page, and warn before the tab closes with them.
+  const unsaved = !!form && !!saved && JSON.stringify(form) !== JSON.stringify(formFromConfig(saved));
+  useEffect(() => {
+    if (unsaved && form && saved) drafts.set(channel, { base: JSON.stringify(formFromConfig(saved)), form });
+    else drafts.delete(channel);
+  }, [channel, unsaved, form, saved]);
+  useEffect(() => {
+    if (!unsaved) return;
+    const warn = (e: BeforeUnloadEvent) => e.preventDefault();
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [unsaved]);
 
   const loadSummary = useCallback(async () => {
     const r = await callApi<PointsSummary>(channel, "/points");
@@ -1841,15 +1897,19 @@ export default function PointsCard({
   );
 
   const saveForm = useCallback(() => {
-    if (!form) return;
+    if (!form || !saved) return;
     const built = buildPatch(form);
     if ("error" in built) {
       setError(built.error);
       setNotice(null);
       return;
     }
-    void saveSettings(built.patch, "Points settings saved — applies within 15 seconds, no restart.", "points-save", true);
-  }, [form, saveSettings]);
+    // Only what was changed goes: a page shows a share of the settings, and resending the rest
+    // from this copy would undo a change made since in another tab.
+    const base = buildPatch(formFromConfig(saved));
+    const patch = "error" in base ? built.patch : (changedOnly(built.patch, base.patch) ?? {});
+    void saveSettings(patch as PointsSettingsPatch, "Settings saved — applies within 15 seconds, no restart.", "points-save", true);
+  }, [form, saved, saveSettings]);
 
   const submitAdjust = useCallback(async () => {
     if (!detail) return;
@@ -1975,13 +2035,136 @@ export default function PointsCard({
     />
   );
   const subscriptions = Object.entries(summary?.subscriptions ?? {}).sort(([a], [b]) => a.localeCompare(b));
+  const tab = (t: FishingTab) => fishingTab === t;
+  // The viewer picked in the list: balance, adjust and history.
+  const detailPanel = (
+    <div className="mb-3 space-y-4 rounded-lg border border-neutral-800 bg-neutral-900/40 p-4">
+      {detailError ? (
+        <p className="text-sm text-red-400">{detailError}</p>
+      ) : !detail ? (
+        <p className="flex items-center gap-2 text-sm text-neutral-500">
+          <Loader2 className="h-4 w-4 animate-spin" /> Loading…
+        </p>
+      ) : (
+        <>
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <span className="font-medium text-neutral-100">{detail.user.username}</span>
+            <span className="text-xs text-neutral-500">
+              {detail.user.isSub ? "Subscriber · " : ""}first seen {formatDate(detail.user.firstSeenAt)}
+            </span>
+          </div>
+          <dl className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+            <Stat label="Balance" value={`${detail.user.balance.toLocaleString()} · #${detail.user.rank}`} />
+            <Stat label="Active time" value={formatWatch(detail.user.watchSeconds)} />
+            <Stat label="Lifetime earned" value={detail.user.lifetimeEarned.toLocaleString()} />
+            <Stat label="Last seen" value={formatDate(detail.user.lastSeenAt)} />
+          </dl>
+          {detail.gamble && detail.gamble.gambles > 0 ? (
+            <dl className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+              <Stat label="Gambles" value={detail.gamble.gambles.toLocaleString()} />
+              <Stat label="Win rate" value={`${((detail.gamble.wins / detail.gamble.gambles) * 100).toFixed(1)}% · ${detail.gamble.wins.toLocaleString()} won`} />
+              <Stat label="Staked" value={detail.gamble.staked.toLocaleString()} />
+              <Stat label="Gamble net" value={`${detail.gamble.net > 0 ? "+" : ""}${detail.gamble.net.toLocaleString()}`} />
+            </dl>
+          ) : null}
+
+          <div className="space-y-3 border-t border-neutral-800 pt-4">
+            <h4 className={LABEL}>Adjust balance</h4>
+            {readOnly ? (
+              <p className="text-sm text-neutral-500">Only the broadcaster can adjust balances.</p>
+            ) : (
+            <>
+            <div className="flex flex-wrap gap-2">
+              {(["add", "remove", "set"] as const).map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  onClick={() => setMode(m)}
+                  disabled={!!busy}
+                  className={`rounded-lg border px-3 py-1.5 text-sm capitalize transition disabled:opacity-40 ${
+                    mode === m
+                      ? "border-[#53FC18]/40 bg-[#53FC18]/10 text-[#53FC18]"
+                      : "border-neutral-700 text-neutral-400 hover:border-neutral-500 hover:text-neutral-200"
+                  }`}
+                >
+                  {m}
+                </button>
+              ))}
+            </div>
+            <div className="grid gap-3 sm:grid-cols-[10rem_1fr]">
+              <input
+                value={amount}
+                onChange={(e) => setAmount(e.target.value)}
+                inputMode="numeric"
+                placeholder="Amount"
+                disabled={!!busy}
+                className={INPUT}
+              />
+              <input
+                value={reason}
+                onChange={(e) => setReason(e.target.value)}
+                maxLength={200}
+                placeholder="Reason (required, shown in the history)"
+                disabled={!!busy}
+                className={INPUT}
+              />
+            </div>
+            {adjustError ? <p className="text-sm text-red-400">{adjustError}</p> : null}
+            {adjustNotice ? <p className="text-sm text-[#53FC18]">{adjustNotice}</p> : null}
+            <Button variant="primary" onClick={() => void submitAdjust()} busy={busy === "adjust"} disabled={!!busy}>
+              Apply
+            </Button>
+            </>
+            )}
+          </div>
+
+          <div className="border-t border-neutral-800 pt-4">
+            <h4 className={LABEL}>History</h4>
+            {detail.ledger.length === 0 ? (
+              <p className="text-sm text-neutral-500">No changes besides active-time earnings yet.</p>
+            ) : (
+              <ul className="divide-y divide-neutral-800">
+                {detail.ledger.map((entry) => (
+                  <li key={entry.id} className="flex flex-col gap-1 py-2 text-sm sm:flex-row sm:items-start sm:gap-4">
+                    <span className="w-40 shrink-0 text-xs text-neutral-500">{formatDate(entry.ts)}</span>
+                    <span
+                      className={`w-24 shrink-0 tabular-nums ${
+                        entry.delta >= 0 ? "text-[#53FC18]" : "text-red-400"
+                      }`}
+                    >
+                      {entry.delta >= 0 ? "+" : ""}
+                      {entry.delta.toLocaleString()}
+                    </span>
+                    <span className="min-w-0 flex-1 text-neutral-300">
+                      {REASON_LABEL[entry.reason] ?? entry.reason}
+                      {entry.counterparty && COUNTERPARTY_PREFIX[entry.reason] ? (
+                        <span className="text-neutral-400">
+                          {` ${COUNTERPARTY_PREFIX[entry.reason]} `}
+                          <span className="text-neutral-200">{entry.counterparty}</span>
+                        </span>
+                      ) : null}
+                      {entry.note ? <span className="text-neutral-500"> — {entry.note}</span> : null}
+                      {entry.actor ? <span className="block text-xs text-neutral-600">{entry.actor}</span> : null}
+                    </span>
+                    <span className="shrink-0 text-xs tabular-nums text-neutral-500">
+                      = {entry.balanceAfter.toLocaleString()}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
 
   return (
     <Card
-      title={`Loyalty points · ${currency}`}
-      icon={<Coins className="h-4 w-4" />}
+      title={TITLES[section](currency, fishingTab)}
+      icon={section === "fishing" ? <Fish className="h-4 w-4" /> : section === "games" ? <Gamepad2 className="h-4 w-4" /> : section === "overlays" ? <Layers className="h-4 w-4" /> : <Coins className="h-4 w-4" />}
       actions={
-        saved.enabled && saved.publicLeaderboard ? (
+        section === "loyalty" && saved.enabled && saved.publicLeaderboard ? (
           <a
             href={leaderboardUrl}
             target="_blank"
@@ -1997,6 +2180,13 @@ export default function PointsCard({
         {error ? <p className="text-sm text-red-400">{error}</p> : null}
         {notice ? <p className="text-sm text-[#53FC18]">{notice}</p> : null}
 
+        {section !== "loyalty" && !saved.enabled ? (
+          <p className="text-sm text-amber-300/80">
+            Loyalty points are off, so none of this is available in chat. Turn them on under Loyalty.
+          </p>
+        ) : null}
+
+        {section === "loyalty" ? (<>
         <Toggle
           label={`${currency} loyalty points`}
           description={
@@ -2084,22 +2274,16 @@ export default function PointsCard({
             </>
           )}
         </div>
+        </>) : null}
 
         {/* ---------------------------------------------------------- settings */}
         <div>
-          <button
-            type="button"
-            onClick={() => setSettingsOpen((o) => !o)}
-            className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wider text-neutral-400 transition hover:text-neutral-200"
-          >
-            Settings
-            <ChevronDown className={`h-3.5 w-3.5 transition ${settingsOpen ? "rotate-180" : ""}`} />
-          </button>
-
-          {settingsOpen ? (
-            <div className="mt-3 space-y-5 rounded-lg border border-neutral-800 bg-neutral-900/40 p-4">
+          {section === "loyalty" ? <h3 className={SECTION}>Settings</h3> : null}
+          {section === "fishing" && fishingTab === "overlay" ? <FishOverlayStatus channel={channel} canReload={saved.enabled && !!saved.games?.enabled} /> : null}
+          <div className="mt-3 space-y-5 rounded-lg border border-neutral-800 bg-neutral-900/40 p-4">
               {readOnly ? <p className="text-xs text-amber-500">Only the broadcaster can change these.</p> : null}
 
+              {section === "loyalty" ? (<>
               <div className="grid gap-4 sm:grid-cols-2">
                 <Field label="Currency name" hint={`Chat command: $${commandPreview || "…"}`}>
                   {text("currencyName", { maxLength: 24, placeholder: "$DON" })}
@@ -2182,6 +2366,9 @@ export default function PointsCard({
                 </div>
               </div>
 
+              </>) : null}
+
+              {section === "games" ? (<>
               <div>
                 <h4 className={LABEL}>Wordle</h4>
                 <Checkbox
@@ -2203,6 +2390,9 @@ export default function PointsCard({
                 </div>
               </div>
 
+              </>) : null}
+
+              {section === "overlays" ? (<>
               <div>
                 <h4 className={LABEL}>Video sharing</h4>
                 <Checkbox
@@ -2263,6 +2453,9 @@ export default function PointsCard({
                 </div>
               </div>
 
+              </>) : null}
+
+              {section === "games" ? (<>
               <div>
                 <h4 className={LABEL}>Gamble</h4>
                 <Checkbox
@@ -2356,8 +2549,11 @@ export default function PointsCard({
                 </p>
               </div>
 
+              </>) : null}
+
+              {section === "fishing" ? (
               <div>
-                <h4 className={LABEL}>Fishing</h4>
+                {tab("general") ? (<>
                 <Checkbox
                   label={`Turn on fishing for ${form.currencyName.trim() || "points"}`}
                   checked={form.gamesEnabled}
@@ -2367,9 +2563,15 @@ export default function PointsCard({
                 <div className="mt-3 grid gap-4 sm:grid-cols-4">
                   <Field label="Catch odds (1 in …)" hint="supibot: 20">{text("fishOdds", { inputMode: "numeric" })}</Field>
                   <Field label="Cooldown after a catch (min)" hint="supibot: 30">{text("fishCatchCooldown", { inputMode: "numeric" })}</Field>
+                </div>
+                </>) : null}
+                {tab("traps") ? (
+                <div className="grid gap-4 sm:grid-cols-2">
                   <Field label="Trap time (min)" hint="31–1440, supibot: 60">{text("fishTrapMinutes", { inputMode: "numeric" })}</Field>
                   <Field label="Longest trap (min)" hint={`Chatters can name a time from 31 min up to this: $${commandPreview || "…"} fish trap 2h. At least the trap time`}>{text("fishTrapMax", { inputMode: "numeric" })}</Field>
                 </div>
+                ) : null}
+                {tab("general") ? (
                 <div className="mt-3 grid gap-4 sm:grid-cols-4">
                   {form.fishCatches.length === 0 ? (
                     <Field label="Sell prices (%)" hint="100 = fish 50, junk 1–20">{text("fishSellPct", { inputMode: "numeric" })}</Field>
@@ -2378,7 +2580,8 @@ export default function PointsCard({
                   <Field label="Most fish held" hint="Per viewer; past it new fish sell on the spot, warned from 90%. 0 = no cap">{text("fishMaxFish", { inputMode: "numeric" })}</Field>
                   <Field label="Most junk held" hint="Per viewer; past it new junk is thrown away. 0 = no cap">{text("fishMaxJunk", { inputMode: "numeric" })}</Field>
                 </div>
-                {form.fishReels ? (
+                ) : null}
+                {tab("catches") && form.fishReels ? (
                   <ReelTable
                     rows={form.fishReels}
                     currency={form.currencyName.trim() || "points"}
@@ -2387,7 +2590,7 @@ export default function PointsCard({
                     onChange={(rows) => set("fishReels", rows)}
                   />
                 ) : null}
-                {form.fishBigBite ? (
+                {tab("bigbites") && form.fishBigBite ? (
                   <BigBiteSettings
                     value={form.fishBigBite}
                     command={commandPreview || "…"}
@@ -2395,7 +2598,7 @@ export default function PointsCard({
                     onChange={(v) => set("fishBigBite", v)}
                   />
                 ) : null}
-                {form.fishTrapCheck ? (
+                {tab("traps") && form.fishTrapCheck ? (
                   <TrapCheckSettings
                     value={form.fishTrapCheck}
                     currency={form.currencyName.trim() || "points"}
@@ -2404,7 +2607,7 @@ export default function PointsCard({
                     onChange={(v) => set("fishTrapCheck", v)}
                   />
                 ) : null}
-                {form.fishSteal ? (
+                {tab("steals") && form.fishSteal ? (
                   <StealSettings
                     value={form.fishSteal}
                     currency={form.currencyName.trim() || "points"}
@@ -2413,7 +2616,7 @@ export default function PointsCard({
                     onChange={(v) => set("fishSteal", v)}
                   />
                 ) : null}
-                {form.fishDuel ? (
+                {tab("duels") && form.fishDuel ? (
                   <DuelSettings
                     value={form.fishDuel}
                     currency={form.currencyName.trim() || "points"}
@@ -2422,7 +2625,7 @@ export default function PointsCard({
                     onChange={(v) => set("fishDuel", v)}
                   />
                 ) : null}
-                {form.fishCatches.length > 0 ? (
+                {tab("catches") && form.fishCatches.length > 0 ? (
                   <CatchTable
                     rows={form.fishCatches}
                     currency={form.currencyName.trim() || "points"}
@@ -2430,7 +2633,7 @@ export default function PointsCard({
                     onChange={(rows) => set("fishCatches", rows)}
                   />
                 ) : null}
-                {form.fishCustom ? (
+                {tab("catches") && form.fishCustom ? (
                   <CustomFishTable
                     rows={form.fishCustom}
                     builtInTotal={form.fishCatches.filter((c) => c.type === "fish" && !c.trophy).reduce((sum, c) => sum + (Number(c.weight) > 0 ? Number(c.weight) : 0), 0)}
@@ -2440,6 +2643,7 @@ export default function PointsCard({
                     onChange={(rows) => set("fishCustom", rows)}
                   />
                 ) : null}
+                {tab("general") ? (
                 <div className="mt-3 space-y-2">
                   <Checkbox
                     label="Only fish and lay traps while the stream is live"
@@ -2506,6 +2710,10 @@ export default function PointsCard({
                       While the stream is live with a fishing overlay open, every fishing reply shows on the overlay only. Offline, or with no overlay open, replies still go to chat. A big bite&apos;s ping and result always go to chat.
                     </p>
                   ) : null}
+                </div>
+                ) : null}
+                {tab("overlay") ? (<>
+                <div className="space-y-2">
                   <Checkbox
                     label="Let the fishing overlay play its demo (&demo=1)"
                     checked={form.fishOverlayDemo}
@@ -2537,14 +2745,19 @@ export default function PointsCard({
                 <div className="mt-4">
                   <FishOverlayLinks links={fishOverlays} />
                 </div>
+                </>) : null}
+                {tab("general") ? (
                 <p className="mt-3 text-xs text-neutral-500">
                   {`supibot's fishing game, played as $${commandPreview || "…"} fish like every command that uses ${form.currencyName.trim() || "points"}: cast (with worm, fly or cricket bait), then sell, show, stats, top and trap. `}
                   Catches are kept until sold; selling pays {form.currencyName.trim() || "points"}, bait costs it. A fish's price scales with its length (half at 1 cm, double at 100 cm), plus 50% for beating a record. A miss waits 30–90 seconds and
                   snags junk 1 time in 4. Laying traps pings the viewer in chat when they&apos;re full, if !remind is on. With this off fishing isn&apos;t available. !cookie and !slots don&apos;t use points and are
                   switched on under Commands.
                 </p>
+                ) : null}
               </div>
+              ) : null}
 
+              {section === "loyalty" ? (<>
               <div>
                 <h4 className={LABEL}>Timeout penalty</h4>
                 <Checkbox
@@ -2638,9 +2851,10 @@ export default function PointsCard({
                   />
                 </div>
               </div>
+              </>) : null}
 
               {readOnly ? null : (
-                <div className="flex flex-wrap gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   <Button variant="primary" onClick={saveForm} busy={busy === "points-save"} disabled={!!busy || !dirty}>
                     Save settings
                   </Button>
@@ -2653,12 +2867,15 @@ export default function PointsCard({
                   >
                     Reset
                   </Button>
+                  {dirty ? (
+                    <span className="text-xs text-amber-300/80">Unsaved changes, here or on other pages: Save keeps them all, Reset drops them all.</span>
+                  ) : null}
                 </div>
               )}
-            </div>
-          ) : null}
+          </div>
         </div>
 
+        {section === "loyalty" ? (<>
         {/* ----------------------------------------------------------- viewers */}
         <div>
           <h3 className={SECTION}>Viewers</h3>
@@ -2701,132 +2918,14 @@ export default function PointsCard({
                       {u.balance.toLocaleString()} {currency} · {formatWatch(u.watchSeconds)}
                     </span>
                   </button>
+                  {/* Opens under the viewer clicked, not after the whole list. */}
+                  {selectedId === u.userId ? detailPanel : null}
                 </li>
               ))}
             </ul>
           ) : null}
 
-          {selectedId !== null ? (
-            <div className="mt-4 space-y-4 rounded-lg border border-neutral-800 bg-neutral-900/40 p-4">
-              {detailError ? (
-                <p className="text-sm text-red-400">{detailError}</p>
-              ) : !detail ? (
-                <p className="flex items-center gap-2 text-sm text-neutral-500">
-                  <Loader2 className="h-4 w-4 animate-spin" /> Loading…
-                </p>
-              ) : (
-                <>
-                  <div className="flex flex-wrap items-baseline justify-between gap-2">
-                    <span className="font-medium text-neutral-100">{detail.user.username}</span>
-                    <span className="text-xs text-neutral-500">
-                      {detail.user.isSub ? "Subscriber · " : ""}first seen {formatDate(detail.user.firstSeenAt)}
-                    </span>
-                  </div>
-                  <dl className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-                    <Stat label="Balance" value={`${detail.user.balance.toLocaleString()} · #${detail.user.rank}`} />
-                    <Stat label="Active time" value={formatWatch(detail.user.watchSeconds)} />
-                    <Stat label="Lifetime earned" value={detail.user.lifetimeEarned.toLocaleString()} />
-                    <Stat label="Last seen" value={formatDate(detail.user.lastSeenAt)} />
-                  </dl>
-                  {detail.gamble && detail.gamble.gambles > 0 ? (
-                    <dl className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-                      <Stat label="Gambles" value={detail.gamble.gambles.toLocaleString()} />
-                      <Stat label="Win rate" value={`${((detail.gamble.wins / detail.gamble.gambles) * 100).toFixed(1)}% · ${detail.gamble.wins.toLocaleString()} won`} />
-                      <Stat label="Staked" value={detail.gamble.staked.toLocaleString()} />
-                      <Stat label="Gamble net" value={`${detail.gamble.net > 0 ? "+" : ""}${detail.gamble.net.toLocaleString()}`} />
-                    </dl>
-                  ) : null}
-
-                  <div className="space-y-3 border-t border-neutral-800 pt-4">
-                    <h4 className={LABEL}>Adjust balance</h4>
-                    {readOnly ? (
-                      <p className="text-sm text-neutral-500">Only the broadcaster can adjust balances.</p>
-                    ) : (
-                    <>
-                    <div className="flex flex-wrap gap-2">
-                      {(["add", "remove", "set"] as const).map((m) => (
-                        <button
-                          key={m}
-                          type="button"
-                          onClick={() => setMode(m)}
-                          disabled={!!busy}
-                          className={`rounded-lg border px-3 py-1.5 text-sm capitalize transition disabled:opacity-40 ${
-                            mode === m
-                              ? "border-[#53FC18]/40 bg-[#53FC18]/10 text-[#53FC18]"
-                              : "border-neutral-700 text-neutral-400 hover:border-neutral-500 hover:text-neutral-200"
-                          }`}
-                        >
-                          {m}
-                        </button>
-                      ))}
-                    </div>
-                    <div className="grid gap-3 sm:grid-cols-[10rem_1fr]">
-                      <input
-                        value={amount}
-                        onChange={(e) => setAmount(e.target.value)}
-                        inputMode="numeric"
-                        placeholder="Amount"
-                        disabled={!!busy}
-                        className={INPUT}
-                      />
-                      <input
-                        value={reason}
-                        onChange={(e) => setReason(e.target.value)}
-                        maxLength={200}
-                        placeholder="Reason (required, shown in the history)"
-                        disabled={!!busy}
-                        className={INPUT}
-                      />
-                    </div>
-                    {adjustError ? <p className="text-sm text-red-400">{adjustError}</p> : null}
-                    {adjustNotice ? <p className="text-sm text-[#53FC18]">{adjustNotice}</p> : null}
-                    <Button variant="primary" onClick={() => void submitAdjust()} busy={busy === "adjust"} disabled={!!busy}>
-                      Apply
-                    </Button>
-                    </>
-                    )}
-                  </div>
-
-                  <div className="border-t border-neutral-800 pt-4">
-                    <h4 className={LABEL}>History</h4>
-                    {detail.ledger.length === 0 ? (
-                      <p className="text-sm text-neutral-500">No changes besides active-time earnings yet.</p>
-                    ) : (
-                      <ul className="divide-y divide-neutral-800">
-                        {detail.ledger.map((entry) => (
-                          <li key={entry.id} className="flex flex-col gap-1 py-2 text-sm sm:flex-row sm:items-start sm:gap-4">
-                            <span className="w-40 shrink-0 text-xs text-neutral-500">{formatDate(entry.ts)}</span>
-                            <span
-                              className={`w-24 shrink-0 tabular-nums ${
-                                entry.delta >= 0 ? "text-[#53FC18]" : "text-red-400"
-                              }`}
-                            >
-                              {entry.delta >= 0 ? "+" : ""}
-                              {entry.delta.toLocaleString()}
-                            </span>
-                            <span className="min-w-0 flex-1 text-neutral-300">
-                              {REASON_LABEL[entry.reason] ?? entry.reason}
-                              {entry.counterparty && COUNTERPARTY_PREFIX[entry.reason] ? (
-                                <span className="text-neutral-400">
-                                  {` ${COUNTERPARTY_PREFIX[entry.reason]} `}
-                                  <span className="text-neutral-200">{entry.counterparty}</span>
-                                </span>
-                              ) : null}
-                              {entry.note ? <span className="text-neutral-500"> — {entry.note}</span> : null}
-                              {entry.actor ? <span className="block text-xs text-neutral-600">{entry.actor}</span> : null}
-                            </span>
-                            <span className="shrink-0 text-xs tabular-nums text-neutral-500">
-                              = {entry.balanceAfter.toLocaleString()}
-                            </span>
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </div>
-                </>
-              )}
-            </div>
-          ) : null}
+          {selectedId !== null && !users?.some((u) => u.userId === selectedId) ? <div className="mt-4">{detailPanel}</div> : null}
         </div>
 
         {canAdminister ? (
@@ -2901,6 +3000,7 @@ export default function PointsCard({
             )}
           </div>
         ) : null}
+        </>) : null}
       </div>
     </Card>
   );

@@ -20,7 +20,7 @@ import * as penalties from './penalties';
 import * as antispam from './antispam';
 import { LiveState, checkLive } from './live';
 import * as bigBite from '../community/big-bite';
-import { watchOverlay, type OverlayWatchAlerts } from '../community/fish-overlay';
+import { watchOverlay, watchOverlayOpen, type OverlayWatchAlerts } from '../community/fish-overlay';
 import { PresenceTracker } from './presence';
 import { LastMessages, presenceVerdict } from './presence-rules';
 import { Exclusions, applyOnce, creditTx, isApplied, drawRaffle, dueRaffles, exclusionsFor, expiredDuels, findUserByName, getMeta, getUser, isExcluded, openRaffle, pruneApplied, raffleEntries, RaffleRow, refundDuel, setMetaTx } from './store';
@@ -364,6 +364,7 @@ export class PointsService {
       const live = (await this.isLiveNow()) === true;
       // The fishing overlay, big bites or not: reload a source that stopped drawing, alert if it stays stuck.
       watchOverlay(db, this.channel, live, overlayAlerts);
+      watchOverlayOpen(db, this.channel, live, cfg.games.bigBite.enabled);
       if (!cfg.games.bigBite.enabled) return null;
       const ex = this.exclusions();
       return bigBite.tick({

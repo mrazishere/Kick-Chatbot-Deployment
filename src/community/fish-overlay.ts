@@ -7,6 +7,7 @@
  */
 
 import { PointsDb, runWrite } from '../points/db';
+import { clearAlert, raiseAlert } from '../health-alerts';
 import type { OverlayDuel } from './fish-duel';
 import type { WheelItem } from './wheel';
 
@@ -279,6 +280,32 @@ export function watchOverlay(db: PointsDb, channel: string, live: boolean, alert
     alerted.add(channel);
     alerts.frozen(channel, Math.round((now - from) / 60_000));
   }
+}
+
+/** Live this long with no fishing overlay polling, big bites on, and the owner hears. */
+const MISSING_ALERT_MS = 10 * 60_000;
+
+/**
+ * While live with big bites on: no overlay page polling for MISSING_ALERT_MS (the source was
+ * removed, or never loaded) means big bites pause the whole stream without a word. Alerts once
+ * the stream's been up that long; an overlay polling again closes it. Switched off by a mod: fine.
+ */
+export function watchOverlayOpen(db: PointsDb, channel: string, live: boolean, bigBites: boolean, now = Date.now()): void {
+  const key = `overlay-missing:${channel}`;
+  let seenAt = 0;
+  let liveSince = 0;
+  try {
+    seenAt = Number((db.prepare('SELECT value FROM meta WHERE key = ?').get(SEEN_KEY) as { value: string } | undefined)?.value ?? 0);
+    liveSince = Number((db.prepare('SELECT value FROM meta WHERE key = ?').get('live_since') as { value: string } | undefined)?.value ?? 0);
+  } catch {
+    return;
+  }
+  if (now - seenAt < SEEN_FRESH_MS) {
+    clearAlert(key, 'Fishing Overlay Open Again', `${channel}'s fishing overlay is polling again: big bites can go out.`);
+    return;
+  }
+  if (!live || !bigBites || overlayOff(db) || !liveSince || now - liveSince < MISSING_ALERT_MS || now - seenAt < MISSING_ALERT_MS) return;
+  raiseAlert(key, 'No Fishing Overlay Open', `${channel} has been live ${Math.round((now - liveSince) / 60_000)} min with big bites on, but no fishing overlay has polled for ${seenAt ? `${Math.round((now - seenAt) / 60_000)} min` : 'this whole stream'}. Big bites wait for one, so none go out. The browser source may be missing or failing to load in the streaming software. If the overlay isn't meant to be on this stream, a mod can say ${'$'}<cmd> fish overlay off.`);
 }
 
 /** The latest replies, oldest first, and the newest id (0 when there are none). */

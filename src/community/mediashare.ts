@@ -18,6 +18,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { PointsDb, runWrite } from '../points/db';
+import { clearAlert, raiseAlert } from '../health-alerts';
 
 const API = 'https://api.streamelements.com/kappa/v2/songrequest';
 /** How often StreamElements is asked, while an overlay is asking. */
@@ -120,12 +121,17 @@ export interface MediaShareNow {
   exact?: boolean;
 }
 
+/** StreamElements failing this long while the overlay asks: worth a message. */
+const SE_ALERT_MS = 10 * 60_000;
+
 interface Mirror {
   timer: ReturnType<typeof setTimeout> | null;
   askedAt: number;
   now: MediaShareNow | null;
   /** The last error, for the log once per kind. */
   lastError: string | null;
+  /** Since when every poll has failed; alerted past SE_ALERT_MS. */
+  failingSince?: number;
   /** The player's state at the last poll: only a change of it says the video was paused or played. */
   lastState: string | null;
   /** The video that played to its end: StreamElements keeps it as playing until the next one. */
@@ -161,6 +167,10 @@ async function step(channel: string, m: Mirror): Promise<void> {
       getJson<Song>(`${API}/${creds.channelId}/playing`, creds.jwt)
     ]);
     m.lastError = null;
+    if (m.failingSince !== undefined) {
+      m.failingSince = undefined;
+      clearAlert(`mediashare:${channel}`, 'Media Share Back', `StreamElements answers ${channel}'s media share again: the video overlay follows it.`);
+    }
     const t = Date.now();
     // The player's state can sit at "paused" while media share plays (on 2026-10-18 it said so
     // through two videos sukasblood's stream played in full), so the video up is taken as
@@ -217,6 +227,10 @@ async function step(channel: string, m: Mirror): Promise<void> {
     const msg = err instanceof Error ? err.message : String(err);
     if (msg !== m.lastError) console.error(`[MEDIASHARE] ${channel}: ${msg}`);
     m.lastError = msg;
+    m.failingSince ??= Date.now();
+    if (Date.now() - m.failingSince >= SE_ALERT_MS) {
+      raiseAlert(`mediashare:${channel}`, 'Media Share Not Answering', `StreamElements hasn't answered ${channel}'s media share for ${Math.round((Date.now() - m.failingSince) / 60_000)} min, so the video overlay can't follow it. If it says 401 or 403, the StreamElements connection needs setting up again on the dashboard (Overlays).\n\n${msg}`);
+    }
   }
 }
 

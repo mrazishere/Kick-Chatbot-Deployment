@@ -6,9 +6,11 @@ import {
   Gift, MapPin, Pencil, Play, Plus, Power, RefreshCw, ScrollText, ShieldCheck, Sparkles, Terminal, Trash2, Users, X,
 } from "lucide-react";
 import SiteHeader from "./SiteHeader";
+import { BotNav, FishingTabs } from "./BotNav";
+import { BOT_SECTIONS, type BotSection, type FishingTab } from "@/lib/bot-sections";
 import WheelCard from "./WheelCard";
 import SuspectsCard from "./SuspectsCard";
-import PointsCard, { type PointsConfig } from "./PointsCard";
+import PointsCard, { type PointsConfig, type PointsSection } from "./PointsCard";
 import type { OverlayLink } from "@/lib/fish-overlay";
 import ClipSessionCard from "./ClipSessionCard";
 import { Button, Card, Checkbox, Stat, Toggle } from "./ui";
@@ -413,6 +415,7 @@ export default function BotManager({
   channel, username, avatarUrl, channelAvatarUrl, isAdmin, role, canAdminister,
   initialBot, availableCommands, initialManagers, managerSuggestions, managersError, switcher,
   isLive, viewerCount, loadError, initialCustomCommands, customCommandsError, fishOverlays, videoOverlays, mediaPlayers,
+  section, fishingTab,
 }: {
   channel: string;
   username: string;
@@ -441,10 +444,21 @@ export default function BotManager({
   fishOverlays: OverlayLink[];
   videoOverlays: OverlayLink[];
   mediaPlayers: OverlayLink[];
+  /** Which menu page this is (lib/bot-sections), and on Fishing which tab. */
+  section: BotSection;
+  fishingTab: FishingTab | null;
 }) {
   const [bot, setBot] = useState<BotChannel | null>(initialBot);
   const [error, setError] = useState<string | null>(loadError);
   const [notice, setNotice] = useState<string | null>(null);
+  // A notice is about the page it was given on.
+  useEffect(() => setNotice(null), [section, fishingTab]);
+  // The menu: Team is the broadcaster's own, Admin the bot owner's.
+  const sections = BOT_SECTIONS.map((s) => s.key).filter((k) => (k !== "team" || canAdminister) && (k !== "admin" || isAdmin));
+  const show = (s: BotSection) => section === s;
+  // The points card draws a page's share of the settings; Fishing's Cheaters tab is a card of its own.
+  const pointsSection =
+    section === "loyalty" || section === "games" || section === "overlays" || (section === "fishing" && fishingTab !== "cheaters");
   const [busy, setBusy] = useState<string | null>(null);
 
   // Command toggles are staged locally so a channel can flip several at once
@@ -480,7 +494,6 @@ export default function BotManager({
   // Rewards load from Kick after the page renders, so a slow Kick never holds the page up.
   const [rewards, setRewards] = useState<ChannelRewards | null>(null);
   const [rewardsError, setRewardsError] = useState<string | null>(null);
-  const [rewardsOpen, setRewardsOpen] = useState(false);
   const [rewardDraft, setRewardDraft] = useState<RewardDraft | null>(null);
   const [confirmDeleteReward, setConfirmDeleteReward] = useState<string | null>(null);
 
@@ -731,9 +744,11 @@ export default function BotManager({
   // the card to its rewards view on the next poll; keyed to the initial value, this
   // load never ran and "Loading rewards from Kick…" stayed up for good.
   const hasChannelOAuth = bot?.token.hasChannelOAuth ?? false;
+  // Only the Rewards page shows them: every other page asking Kick too got the calls refused.
+  const onRewards = section === "rewards";
 
   useEffect(() => {
-    if (!hasChannelOAuth) return;
+    if (!hasChannelOAuth || !onRewards) return;
     let cancelled = false;
     (async () => {
       try {
@@ -749,7 +764,7 @@ export default function BotManager({
     return () => {
       cancelled = true;
     };
-  }, [channel, hasChannelOAuth]);
+  }, [channel, hasChannelOAuth, onRewards]);
 
   const rewardsCall = useCallback(
     async (key: string, path: string, init?: RequestInit): Promise<ChannelRewards | null> => {
@@ -1124,8 +1139,14 @@ export default function BotManager({
         }
       />
 
-      <div className="mx-auto max-w-4xl px-4 py-8 sm:px-6">
-      <div className="mb-8">
+      <div className={`mx-auto px-4 py-8 sm:px-6 ${bot ? "max-w-6xl lg:grid lg:grid-cols-[12rem_minmax(0,1fr)] lg:gap-8" : "max-w-4xl"}`}>
+      {bot ? (
+        <div className="mb-6 lg:mb-0">
+          <BotNav channel={channel} section={section} sections={sections} />
+        </div>
+      ) : null}
+      <div className="min-w-0 max-w-4xl">
+      <div className="mb-6">
         <p className="text-sm text-neutral-500">
           Mr-AI-is-Here bot management
           {role !== "owner" ? (
@@ -1134,6 +1155,14 @@ export default function BotManager({
             </span>
           ) : null}
         </p>
+        {bot ? (
+          <h1 className="mt-1 text-xl font-semibold text-neutral-100">{BOT_SECTIONS.find((s) => s.key === section)?.label}</h1>
+        ) : null}
+        {bot && section === "fishing" && fishingTab ? (
+          <div className="mt-4">
+            <FishingTabs channel={channel} tab={fishingTab} />
+          </div>
+        ) : null}
       </div>
 
       {/* banners */}
@@ -1178,6 +1207,7 @@ export default function BotManager({
       ) : (
         <div className="space-y-5">
           {/* ---------------------------------------------------------- status */}
+          {show("overview") ? (<>
           <Card
             title="Bot status"
             icon={<Activity className="h-4 w-4" />}
@@ -1235,7 +1265,9 @@ export default function BotManager({
             ) : null}
           </Card>
 
+          </>) : null}
           {/* ------------------------------------------------------ authorization */}
+          {show("overview") ? (<>
           <Card
             title="Kick authorization"
             icon={<KeyRound className="h-4 w-4" />}
@@ -1312,7 +1344,9 @@ export default function BotManager({
             )}
           </Card>
 
+          </>) : null}
           {/* -------------------------------------------------------- commands */}
+          {show("chat") ? (<>
           <Card
             title={`Commands (${listedCommands.filter((c) => !excluded.has(c)).length}/${listedCommands.length} enabled)`}
             locked={canAdminister ? undefined : "Only the broadcaster can change this."}
@@ -1415,7 +1449,9 @@ export default function BotManager({
             )}
           </Card>
 
+          </>) : null}
           {/* ------------------------------------------------- custom commands */}
+          {show("chat") ? (<>
           <Card
             title={`Custom commands (${customCommands.length})`}
             icon={<Terminal className="h-4 w-4" />}
@@ -1660,7 +1696,9 @@ export default function BotManager({
             )}
           </Card>
 
+          </>) : null}
           {/* ------------------------------------------- channel point rewards */}
+          {show("rewards") ? (<>
           <Card
             title={rewards ? `Channel point rewards (${rewards.rewards.length})` : "Channel point rewards"}
             icon={<Gift className="h-4 w-4" />}
@@ -1670,7 +1708,6 @@ export default function BotManager({
                   {canAdminister ? (
                     <Button
                       onClick={() => {
-                        setRewardsOpen(true);
                         setConfirmDeleteReward(null);
                         setRewardDraft(draftFromReward(null));
                       }}
@@ -1682,12 +1719,6 @@ export default function BotManager({
                   <Button onClick={() => void rewardsCall("rewards-refresh", "")} busy={busy === "rewards-refresh"} disabled={!!busy}>
                     <RefreshCw className="h-4 w-4" /> Refresh
                   </Button>
-                  {rewards && rewards.rewards.length > 0 ? (
-                    <Button onClick={() => setRewardsOpen((v) => !v)} disabled={!!busy}>
-                      <ChevronDown className={`h-4 w-4 transition-transform ${rewardsOpen ? "rotate-180" : ""}`} />
-                      {rewardsOpen ? "Collapse" : "Manage"}
-                    </Button>
-                  ) : null}
                 </div>
               ) : null
             }
@@ -1977,26 +2008,6 @@ export default function BotManager({
                   rewardsError ? null : <p className="text-sm text-neutral-500">Loading rewards from Kick…</p>
                 ) : rewards.rewards.length === 0 ? (
                   rewardDraft ? null : <p className="text-sm text-neutral-500">No channel point rewards on Kick yet.</p>
-                ) : !rewardsOpen ? (
-                  rewards.rewards.some((r) => r.action) ? (
-                    <div className="flex flex-wrap items-center gap-2">
-                      {rewards.rewards
-                        .filter((r) => r.action)
-                        .map((r) => (
-                          <span
-                            key={r.id}
-                            className="rounded-full border border-neutral-700 bg-neutral-900 px-2.5 py-1 text-xs text-neutral-400"
-                          >
-                            {r.title} → {describeRewardAction(r.action as RewardActionConfig)}
-                            {r.action?.testMode ? " (test)" : ""}
-                          </span>
-                        ))}
-                    </div>
-                  ) : (
-                    <p className="text-sm text-neutral-500">
-                      {rewards.rewards.length} {rewards.rewards.length === 1 ? "reward" : "rewards"} on Kick, none with a bot action.
-                    </p>
-                  )
                 ) : (
                   <>
                     <ul className="divide-y divide-neutral-800">
@@ -2125,12 +2136,16 @@ export default function BotManager({
             )}
           </Card>
 
+          </>) : null}
           {/* ------------------------------------------------- clip session */}
+          {show("admin") ? (<>
           {/* The bot account's own credential, not the channel's, so it is the
               owner's to manage and shows for nobody else. */}
           {isAdmin ? <ClipSessionCard /> : null}
 
+          </>) : null}
           {/* -------------------------------------------------- loyalty points */}
+          {pointsSection ? (<>
           <PointsCard
             channel={channel}
             canAdminister={canAdminister}
@@ -2139,15 +2154,23 @@ export default function BotManager({
             videoOverlays={videoOverlays}
             mediaPlayers={mediaPlayers}
             onSaved={(data) => setBot(data as unknown as BotChannel)}
+            section={section as PointsSection}
+            fishingTab={fishingTab}
           />
 
+          </>) : null}
           {/* ------------------------------------------------- possible cheaters */}
+          {section === "fishing" && fishingTab === "cheaters" ? (<>
           {bot.points?.enabled && bot.points?.games?.enabled ? <SuspectsCard channel={channel} /> : null}
 
+          </>) : null}
           {/* ---------------------------------------------------- prize wheel */}
+          {show("games") ? (<>
           <WheelCard channel={channel} fishingOn={!!bot.points?.enabled && !!bot.points?.games?.enabled} />
 
+          </>) : null}
           {/* -------------------------------------------------------- settings */}
+          {show("chat") ? (<>
           <Card title="Settings" icon={<ShieldCheck className="h-4 w-4" />} locked={canAdminister ? undefined : "Only the broadcaster can change this."}>
             <div className="space-y-5">
               <Toggle
@@ -2267,7 +2290,9 @@ export default function BotManager({
             </div>
           </Card>
 
+          </>) : null}
           {/* ---------------------------------------------------------- claude */}
+          {show("chat") ? (<>
           <Card
             title="AI personality"
             locked={canAdminister ? undefined : "Only the broadcaster can change this."}
@@ -2401,7 +2426,9 @@ export default function BotManager({
             )}
           </Card>
 
+          </>) : null}
           {/* -------------------------------------------------------- location */}
+          {show("chat") ? (<>
           <Card
             title="Location"
             locked={canAdminister ? undefined : "Only the broadcaster can change this."}
@@ -2467,7 +2494,9 @@ export default function BotManager({
             </div>
           </Card>
 
+          </>) : null}
           {/* ------------------------------------------------------------ logs */}
+          {show("overview") ? (<>
           <Card
             title="Recent activity"
             icon={<ScrollText className="h-4 w-4" />}
@@ -2496,7 +2525,9 @@ export default function BotManager({
             )}
           </Card>
 
+          </>) : null}
           {/* ---------------------------------------------------- bot managers */}
+          {show("team") ? (<>
           {canAdminister ? (
             <Card
               title={`Bot managers (${managers.length})`}
@@ -2616,7 +2647,9 @@ export default function BotManager({
             </Card>
           ) : null}
 
+          </>) : null}
           {/* ------------------------------------------------------ danger zone */}
+          {show("overview") ? (<>
           {canAdminister ? (
           <Card title="Danger zone" icon={<Trash2 className="h-4 w-4" />}>
             {confirmRemove ? (
@@ -2644,8 +2677,10 @@ export default function BotManager({
             )}
           </Card>
           ) : null}
+          </>) : null}
         </div>
       )}
+      </div>
       </div>
     </div>
   );

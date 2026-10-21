@@ -11,6 +11,7 @@
  * Usage:   !chatsummary   - also !csum and !catchup
  */
 
+import { anthropicFetch } from '../health-alerts';
 import fetch from 'node-fetch';
 import { CommandFn } from '../types';
 import { tailChat } from '../community/chatlog';
@@ -63,7 +64,7 @@ export const chatsummary: CommandFn = async function chatsummary(client, message
     'Say what chat has been talking about and any notable moments; name people only when it matters.';
 
   try {
-    const resp = await fetch('https://api.anthropic.com/v1/messages', {
+    const resp = await anthropicFetch({
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

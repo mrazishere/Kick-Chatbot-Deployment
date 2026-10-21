@@ -13,6 +13,7 @@
  *   !fx <FROM> <TO> [amount]    — convert FROM currency code to TO currency code
  */
 
+import { anthropicFetch } from '../health-alerts';
 import fetch from 'node-fetch';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -212,7 +213,7 @@ async function resolveLocationToIso(locationString: string): Promise<string | nu
     const timer = setTimeout(() => controller.abort(), 5000);
 
     try {
-        const response = await fetch('https://api.anthropic.com/v1/messages', {
+        const response = await anthropicFetch({
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',

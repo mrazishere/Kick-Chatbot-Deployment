@@ -168,7 +168,10 @@ export async function scrapeVods(slug: string): Promise<ScrapedVod[]> {
   try {
     const res = await fetch(
       `http://localhost:${ENROLLMENT_PORT}/internal/vods/${encodeURIComponent(slug)}`,
-      { next: { revalidate: 120 }, headers: { "x-internal-secret": process.env.INTERNAL_API_SECRET ?? "" } }
+      // Not cached here: the bot service keeps the list 5 minutes. Next's cache sits in the build
+      // folder and answered the first load after a deploy with a list from before the latest
+      // stream, so its VOD link was missing (2026-10-22).
+      { cache: "no-store", headers: { "x-internal-secret": process.env.INTERNAL_API_SECRET ?? "" } }
     );
     if (!res.ok) return [];
     const { vods } = (await res.json()) as { vods?: ScrapedVod[] };

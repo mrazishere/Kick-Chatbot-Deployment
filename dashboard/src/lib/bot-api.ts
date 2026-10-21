@@ -1087,6 +1087,23 @@ export function getFishOverlay(channel: string, health?: { painted: number; stal
   return request(`/internal/bot/${encodeURIComponent(channel)}/overlay/fishing${q}`, { timeoutMs: 5_000 });
 }
 
+/** The fishing overlay as the bot sees it: big bites go out while it's showing. */
+export interface FishOverlayBotStatus {
+  showing: boolean;
+  /** Switched off for this stream ($cmd fish overlay off). */
+  off: boolean;
+  health: { painted: number; stallMs: number; hidden?: boolean } | null;
+}
+
+export function getFishOverlayStatus(channel: string): Promise<FishOverlayBotStatus> {
+  return request(`/internal/bot/${encodeURIComponent(channel)}/overlay/fishing/status`, { timeoutMs: 5_000 });
+}
+
+/** Every open fishing overlay reloads now, busy or not. */
+export function reloadFishOverlay(channel: string): Promise<{ ok: true }> {
+  return request(`/internal/bot/${encodeURIComponent(channel)}/overlay/fishing/reload`, { method: "POST", timeoutMs: 5_000 });
+}
+
 export function getPointsLeaderboard(channel: string, limit = 100): Promise<PointsLeaderboard> {
   return request(`/internal/bot/${encodeURIComponent(channel)}/points/leaderboard?limit=${limit}`, {
     timeoutMs: 10_000,

@@ -19,6 +19,7 @@
  *          !claudeclear - Clear channel conversation history (mods only)
  */
 
+import { anthropicFetch } from '../health-alerts';
 import { isBotOwner } from '../bot-identity';
 import fetch from 'node-fetch';
 import * as fs from 'fs';
@@ -643,7 +644,7 @@ async function callClaudeAPI(messages: ApiMessage[], systemPromptText: string, t
 
   while (retries < maxRetries) {
     try {
-      const response = await fetch('https://api.anthropic.com/v1/messages', {
+      const response = await anthropicFetch({
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -771,7 +772,7 @@ async function callClaudeAPIWithSearch(messages: Array<{ role: string; content: 
         "Be extremely concise. Respond as if you already know the information.";
 
       // Call Claude API with search results as context (no web search tool needed)
-      const response = await fetch('https://api.anthropic.com/v1/messages', {
+      const response = await anthropicFetch({
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -985,7 +986,7 @@ async function callClaudeAPIWithVision(
   const maxRetries = 5;
   while (retries < maxRetries) {
     try {
-      const response = await fetch('https://api.anthropic.com/v1/messages', {
+      const response = await anthropicFetch({
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

@@ -13,6 +13,7 @@ import { LivePointsConfig } from './config';
 import { PointsDb, reportDbError, runWrite } from './db';
 import { LiveState } from './live';
 import { Exclusions, getMeta, grantTick, isExcluded, setMetaTx, tickExists } from './store';
+import { clearAlert, raiseAlert } from '../health-alerts';
 
 /** Run this long after the boundary, so presence noted right before it is written. */
 const TICK_DELAY_MS = 5_000;
@@ -43,6 +44,9 @@ export interface EarnerContext {
   onLiveState(isLive: boolean): void;
   now(): number;
 }
+
+/** Skips that mean viewers should have been paid and weren't; offline or points off are fine. */
+const BROKEN_SKIPS = new Set(['database unavailable', 'live status unknown']);
 
 export interface TickOutcome {
   status: 'granted' | 'duplicate' | 'skipped';
@@ -108,11 +112,33 @@ export class Earner {
     this.timer = setTimeout(() => {
       this.timer = null;
       this.runTick(next)
-        .catch(err => console.error(`[POINTS] Tick failed for ${this.ctx.channel}: ${err instanceof Error ? err.message : String(err)}`))
+        .then(outcome => this.notePayout(outcome.status === 'skipped' && BROKEN_SKIPS.has(outcome.reason ?? '') ? outcome.reason! : null))
+        .catch(err => {
+          console.error(`[POINTS] Tick failed for ${this.ctx.channel}: ${err instanceof Error ? err.message : String(err)}`);
+          this.notePayout(err instanceof Error ? err.message : String(err));
+        })
         .finally(() => this.schedule());
     }, Math.max(0, next + TICK_DELAY_MS - now));
     this.timer.unref();
   }
+
+  /**
+   * Each scheduled tick's result for the owner's alerts: `problem` is why viewers weren't paid when
+   * they should have been (null: paid, or nothing was due). Two in a row alert; a paid one clears it.
+   */
+  private notePayout(problem: string | null): void {
+    const key = `payout:${this.ctx.channel}`;
+    if (!problem) {
+      if (this.failedTicks > 0) clearAlert(key, 'Points Payouts Working', `${this.ctx.channel}'s viewers are earning again.`);
+      this.failedTicks = 0;
+      return;
+    }
+    this.failedTicks++;
+    if (this.failedTicks >= 2) {
+      raiseAlert(key, 'Points Payouts Stopped', `${this.ctx.channel}'s last ${this.failedTicks} payouts didn't happen, so viewers aren't earning: ${problem}.`);
+    }
+  }
+  private failedTicks = 0;
 
   private skip(reason: string, boundaryMs: number, log = true): TickOutcome {
     // One line per change of reason, not one every ten minutes of a long offline stretch.

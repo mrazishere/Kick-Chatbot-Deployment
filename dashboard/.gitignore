@@ -1,7 +1,7 @@
 .next/
 node_modules/
 .env.local
-logs/
+/logs/
 *.tsbuildinfo
 .backups/
 .next-a/

@@ -19,7 +19,7 @@ import { commandWordCollides, effectiveCommand, effectivePointsConfig, readSubsc
 import { publicCommands } from './points/public-commands';
 import type { BotCommandChannel } from './points/public-bot-commands';
 import { closePointsDb, openPointsDb } from './points/db';
-import { markOverlaySeen, noteOverlayHealth, overlayReloadToken, readOverlay } from './community/fish-overlay';
+import { markOverlaySeen, noteOverlayHealth, overlayHealth, overlayOff, overlayReloadToken, overlayShowing, readOverlay, requestOverlayReload } from './community/fish-overlay';
 import { publicUserHistory, publicViewerSearch } from './points/store';
 import { ITEMS, rarityName, sellPrice, stealRollChance } from './community/fishing';
 import { fighterOf } from './community/fish-duel';
@@ -31,6 +31,7 @@ import { changeWheel, MAX_ITEMS as WHEEL_MAX_ITEMS, MAX_LABEL as WHEEL_MAX_LABEL
 import { noteSocketClose, PUSHER_BAD_KEY_CODES, pusherUrl, refreshPusherKey, watchChatSocket } from './channels/pusher-key';
 import { toHandleChatFormat } from './channels/webhook-poller';
 import { STREAM_GRACE_MS } from './community/big-bite';
+import { clearAlert, raiseAlert } from './health-alerts';
 import { advanceVideos, failVideo, markVideoOverlaySeen, waitingVideos } from './community/video-share';
 import { PlayerView, mediaShareCaptions, mediaShareHeld, mediaShareHiddenKey, mediaShareNow, setMediaShareCaptions, setMediaShareHiddenKey, mediaShareStatus, playerAction, playerView, removeMediaShareToken, reportPlayer, saveMediaShareToken } from './community/mediashare';
 
@@ -312,11 +313,19 @@ async function subscribeChannelToWebhook(broadcasterUserId: number, channelName?
       if (!results[name]) results[name] = { ok: false, error: 'Kick did not report this subscription' };
     }
     recordSubscriptionStatus(channel, results);
+    const failed = Object.entries(results).filter(([, r]) => !r.ok);
+    const who = channel ?? `broadcaster ${broadcasterUserId}`;
+    if (failed.length) {
+      raiseAlert(`webhooks:${who}`, 'Kick Events Not Subscribed', `Kick refused ${failed.length} of the event subscriptions for ${who}, so those events don't reach the bot (follows, subs, Kicks, rewards, live status):\n\n${failed.map(([n, r]) => `${n}: ${r.error ?? 'failed'}`).join('\n').slice(0, 600)}`);
+    } else {
+      clearAlert(`webhooks:${who}`, 'Kick Events Subscribed', `Every Kick event subscription for ${who} is in place again.`);
+    }
   } catch (e) {
     const detail = axios.isAxiosError(e)
       ? (JSON.stringify(e.response?.data as unknown) || e.message)
       : (e instanceof Error ? e.message : String(e));
     console.error(`[WEBHOOK] Subscription failed for broadcaster ${broadcasterUserId}:`, detail);
+    raiseAlert(`webhooks:${channel ?? `broadcaster ${broadcasterUserId}`}`, 'Kick Events Not Subscribed', `Subscribing ${channel ?? `broadcaster ${broadcasterUserId}`} to Kick's events failed: ${String(detail).slice(0, 400)}\n\nKick keeps earlier subscriptions, so events may still arrive; the next check (every 30 min) tries again.`);
     // Kick keeps subscriptions made earlier, so a failed retry says nothing about
     // them. Only a channel with no record at all is marked failed.
     if (channel && !readSubscriptionStatus(channel)) {
@@ -364,6 +373,42 @@ async function unsubscribeRemovedChannels(): Promise<void> {
   if (enrolled.size === 0) return;
   const dropped = await unsubscribeFromWebhook(id => !enrolled.has(id));
   if (dropped > 0) console.log(`[WEBHOOK] Removed ${dropped} subscription(s) left by removed channels`);
+}
+
+/**
+ * Kick can drop a subscription on its side (after failed deliveries, say), and then follows,
+ * subs, Kicks, rewards and live status stop arriving without a word. Every
+ * WEBHOOK_CHECK_MS each enrolled channel's subscriptions are listed, and a channel missing
+ * any is subscribed again (which alerts if that fails).
+ */
+const WEBHOOK_CHECK_MS = 30 * 60_000;
+async function verifyWebhookSubscriptions(): Promise<void> {
+  const configDir = path.join(KICK_BASE_PATH, 'data', 'channel-configs');
+  if (!fs.existsSync(configDir)) return;
+  const appToken = await getWebhookAppToken();
+  const res = await axios.get('https://api.kick.com/public/v1/events/subscriptions', { headers: { 'Authorization': `Bearer ${appToken}` } });
+  const have = new Map<number, Set<string>>();
+  for (const sub of (res.data as { data?: Array<{ broadcaster_user_id?: number; event?: string; name?: string }> }).data ?? []) {
+    const id = sub.broadcaster_user_id;
+    const name = sub.event ?? sub.name;
+    if (typeof id !== 'number' || !name) continue;
+    if (!have.has(id)) have.set(id, new Set());
+    have.get(id)!.add(name);
+  }
+  for (const file of fs.readdirSync(configDir).filter(f => f.endsWith('.json'))) {
+    try {
+      const config = JSON.parse(fs.readFileSync(path.join(configDir, file), 'utf8')) as { broadcasterUserId?: number; channelName?: string };
+      if (!config.broadcasterUserId) continue;
+      const missing = WEBHOOK_EVENTS.filter(name => !have.get(config.broadcasterUserId!)?.has(name));
+      if (!missing.length) continue;
+      const channel = config.channelName || file.replace('.json', '');
+      console.log(`[WEBHOOK] ${channel} is missing ${missing.join(', ')} on Kick: subscribing again`);
+      await subscribeChannelToWebhook(config.broadcasterUserId, channel);
+      await new Promise(r => setTimeout(r, 500));
+    } catch (e) {
+      console.error(`[WEBHOOK] Check of ${file} failed:`, e instanceof Error ? e.message : String(e));
+    }
+  }
 }
 
 async function subscribeAllChannelsToWebhook(): Promise<void> {
@@ -1733,6 +1778,59 @@ async function pm2List(): Promise<Pm2Proc[]> {
   return pm2InFlight;
 }
 
+// ─── Bot watch: a channel bot down or crash-looping, with nobody told ─────────
+
+const BOT_WATCH_MS = 60_000;
+/** Not running this long (and not stopped on purpose) and the owner hears. */
+const BOT_DOWN_ALERT_MS = 2 * 60_000;
+/** This many restarts within BOT_CRASH_WINDOW_MS is a crash loop; quiet for BOT_CRASH_QUIET_MS closes it. */
+const BOT_CRASH_RESTARTS = 3;
+const BOT_CRASH_WINDOW_MS = 15 * 60_000;
+const BOT_CRASH_QUIET_MS = 30 * 60_000;
+const botWatch = new Map<string, { downSince?: number; restarts: Array<{ at: number; n: number }>; lastRestartAt?: number; crashing?: boolean }>();
+
+async function watchBots(): Promise<void> {
+  const procs = await pm2List();
+  if (!procs.length) return; // pm2 didn't answer: say nothing rather than call every bot down
+  const configDir = path.join(KICK_BASE_PATH, 'data', 'channel-configs');
+  const now = Date.now();
+  for (const file of fs.readdirSync(configDir).filter(f => f.endsWith('.json'))) {
+    const channel = file.replace('.json', '');
+    const config = readChannelConfig(channel);
+    if (!config) continue;
+    const proc = procs.find(p => p.name === `kick-${channel}`);
+    const w = botWatch.get(channel) ?? { restarts: [] };
+    botWatch.set(channel, w);
+    const status = proc?.pm2_env?.status ?? 'missing';
+    const online = status === 'online';
+    if (online || deliberateStop(config, proc)) {
+      if (w.downSince !== undefined && online) clearAlert(`bot-down:${channel}`, 'Bot Back Up', `The bot in ${channel} is running again.`);
+      w.downSince = undefined;
+    } else {
+      w.downSince ??= now;
+      if (now - w.downSince >= BOT_DOWN_ALERT_MS) {
+        raiseAlert(`bot-down:${channel}`, 'Bot Down', `The bot in ${channel} hasn't been running for ${Math.round((now - w.downSince) / 60_000)} min (pm2: ${status}). Nothing answers in chat: commands, points, games. Its log is on the dashboard (Overview, Recent activity); Start there, or pm2 restart kick-${channel}.`);
+      }
+    }
+    // Restarts: pm2's count going up means the process died and came back (or was restarted).
+    const n = proc?.pm2_env?.restart_time ?? 0;
+    const prev = w.restarts[w.restarts.length - 1];
+    if (!prev || n !== prev.n) {
+      if (prev && n > prev.n) w.lastRestartAt = now;
+      w.restarts.push({ at: now, n });
+    }
+    w.restarts = w.restarts.filter(r => now - r.at <= BOT_CRASH_WINDOW_MS);
+    const recent = n - (w.restarts[0]?.n ?? n);
+    if (recent >= BOT_CRASH_RESTARTS) {
+      w.crashing = true;
+      raiseAlert(`bot-crashing:${channel}`, 'Bot Crash-Looping', `The bot in ${channel} restarted ${recent} times in the last ${BOT_CRASH_WINDOW_MS / 60_000} min, so it keeps dropping out of chat. Its log is on the dashboard (Overview, Recent activity), and in logs/kick-${channel}-err.log.`);
+    } else if (w.crashing && w.lastRestartAt !== undefined && now - w.lastRestartAt >= BOT_CRASH_QUIET_MS) {
+      w.crashing = false;
+      clearAlert(`bot-crashing:${channel}`, 'Bot Stable Again', `The bot in ${channel} hasn't restarted for ${BOT_CRASH_QUIET_MS / 60_000} min.`);
+    }
+  }
+}
+
 function execAsync(cmd: string, maxLen = 500): Promise<{ ok: boolean; message: string }> {
   if (cmd.startsWith('pm2 ')) pm2Cached = null;
   return new Promise((resolve) => {
@@ -2943,6 +3041,32 @@ app.get('/internal/bot/:channel/points/leaderboard', internalGuard(false), async
   } catch (e) {
     return pointsUnavailable(res, channel, e);
   }
+});
+
+// Liveness for the server's health check (tools/health-check.ts): answering at all is the point.
+app.get('/health', (_req, res) => {
+  res.json({ ok: true, uptimeSeconds: Math.round(process.uptime()) });
+});
+
+// The fishing overlay as the bot sees it, for the dashboard's Fishing > Overlay tab: whether it
+// counts as showing (big bites go out), switched off for the stream, and the pages' last report.
+app.get('/internal/bot/:channel/overlay/fishing/status', internalGuard(false), (req, res) => {
+  const channel = String(req.params['channel'] ?? '').toLowerCase();
+  if (!validateChannelName(channel)) return res.status(400).json({ error: 'Invalid channel name' });
+  const db = openPointsDb(channel, { create: false });
+  if (!db) return res.json({ showing: false, off: false, health: null });
+  return res.json({ showing: overlayShowing(db), off: overlayOff(db), health: overlayHealth(db) });
+});
+
+// Reload every open fishing overlay now, as $<cmd> fish overlay reload does: the dashboard's button.
+app.post('/internal/bot/:channel/overlay/fishing/reload', internalGuard(true), (req, res) => {
+  const channel = String(req.params['channel'] ?? '').toLowerCase();
+  if (!validateChannelName(channel)) return res.status(400).json({ error: 'Invalid channel name' });
+  const db = openPointsDb(channel, { create: false });
+  if (!db) return res.status(404).json({ error: 'Points are off in this channel' });
+  if (!requestOverlayReload(db, false)) return res.status(500).json({ error: 'Could not ask the overlay to reload' });
+  console.log(`[FISH] fishing overlay in ${channel} told to reload from the dashboard`);
+  return res.json({ ok: true });
 });
 
 // The fishing overlay's feed: the latest fish replies, for the dashboard's browser-source
@@ -4459,6 +4583,12 @@ function parseWebhookTimestamp(raw: string): number | null {
   return Number.isFinite(ms) ? ms : null;
 }
 
+// Kick only POSTs here. A GET answers so the server's health check can see the public route
+// (DNS, nginx, certificate, this service) end to end, the way Kick reaches it.
+app.get('/kick-webhook', (_req, res) => {
+  res.json({ ok: true });
+});
+
 app.post('/kick-webhook', express.raw({ type: '*/*' }), async (req: express.Request, res: express.Response) => {
   // Acknowledge immediately — Kick expects a fast 2xx
   res.status(200).send('OK');
@@ -4651,8 +4781,10 @@ async function backupAllPoints(): Promise<void> {
     try {
       const file = await backupPoints(channel);
       if (file) console.log(`[POINTS] Backed up ${channel} to ${path.relative(KICK_BASE_PATH, file)}`);
+      clearAlert(`backup:${channel}`, 'Points Backup Working', `${channel}'s points database backed up again.`);
     } catch (e) {
       console.error(`[POINTS] Backup of ${channel} failed:`, e instanceof Error ? e.message : String(e));
+      raiseAlert(`backup:${channel}`, 'Points Backup Failed', `The daily backup of ${channel}'s points database (balances, fish, trophies) failed, so there's no fresh copy to restore from if it's lost or corrupted:\n\n${e instanceof Error ? e.message : String(e)}`);
     }
   }
 }
@@ -4675,6 +4807,12 @@ app.listen(Number(PORT), '127.0.0.1', () => {
   ready.then(() => {
     startDeploymentBot();
     subscribeAllChannelsToWebhook().catch(e => console.error('[WEBHOOK] subscribeAllChannels error:', e));
+    setInterval(() => {
+      watchBots().catch(e => console.error('[WATCH] Bot check failed:', e instanceof Error ? e.message : String(e)));
+    }, BOT_WATCH_MS).unref();
+    setInterval(() => {
+      verifyWebhookSubscriptions().catch(e => console.error('[WEBHOOK] Subscription check failed:', e instanceof Error ? e.message : String(e)));
+    }, WEBHOOK_CHECK_MS).unref();
   });
 });
 

@@ -11,6 +11,8 @@ interface Report {
   stall: number;
   hidden: boolean;
   obs: boolean;
+  /** The dashboard build the page runs (?v=). */
+  build: string | null;
 }
 
 /** A page that hasn't polled for this long is closed. */
@@ -24,7 +26,16 @@ export function noteOverlayHealth(channel: string, query: URLSearchParams, ua: s
   if (!page || !/^[a-z0-9]{1,16}$/.test(page) || !Number.isInteger(painted) || painted < 0 || !Number.isFinite(stall) || stall < 0) return;
   let open = pages.get(channel);
   if (!open) pages.set(channel, (open = new Map()));
-  open.set(page, { at: Date.now(), painted, stall: Math.floor(stall), hidden: query.get("h") === "1", obs: /\bOBS\//.test(ua) });
+  open.set(page, { at: Date.now(), painted, stall: Math.floor(stall), hidden: query.get("h") === "1", obs: /\bOBS\//.test(ua), build: query.get("v") });
+}
+
+/** Each open page's last report, for the dashboard's Fishing > Overlay tab: newest poll first. */
+export function overlayPagesFor(channel: string): Array<Omit<Report, "at"> & { id: string; agoMs: number }> {
+  const now = Date.now();
+  return [...(pages.get(channel) ?? new Map<string, Report>()).entries()]
+    .filter(([, r]) => now - r.at < FRESH_MS)
+    .map(([id, { at, ...r }]) => ({ id, agoMs: now - at, ...r }))
+    .sort((a, b) => a.agoMs - b.agoMs);
 }
 
 /** The channel's summed-up report, or null when no reporting page is open. Hidden only when every counted page is. */

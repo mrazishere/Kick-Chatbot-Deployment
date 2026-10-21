@@ -44,6 +44,7 @@
  * points-database transaction keyed on the Kick message id.
  */
 
+import { anthropicFetch } from '../health-alerts';
 import fetch from 'node-fetch';
 import { ChannelConfig, CommandFn, FishReelSetting } from '../types';
 import { isBotOwner, isBotSender } from '../bot-identity';
@@ -268,7 +269,7 @@ export async function story(user: string, fishType: string, sizeString: string):
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) return null;
   const prompt = `Write a short, ${pick(STORY_STYLES)} fishing story about a user named "${user}" who catches a ${fishType} in the water and keeps it! ${sizeString} Make it very concise - a maximum of 150 characters.`;
-  const resp = await fetch('https://api.anthropic.com/v1/messages', {
+  const resp = await anthropicFetch({
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
     body: JSON.stringify({
