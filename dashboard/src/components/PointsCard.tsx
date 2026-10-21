@@ -162,6 +162,7 @@ export interface PointsGames {
   steal?: FishSteal;
   /** `fish duel`. Absent from a bot service older than duels. */
   duel?: FishDuelSettings;
+  trade?: FishTradeSettings;
   /** Big bites. Absent from a bot service older than them. */
   bigBite?: FishBigBite;
   /** Trap and cast checks. Absent from a bot service older than them. */
@@ -194,6 +195,20 @@ export interface FishDuelSettings {
 }
 
 type DuelNumber = "expirySeconds" | "cooldownSeconds" | "maxWager";
+
+/** `fish trade`: fish and/or currency for another viewer's, a burned fee on the proposer. Mirrors the bot's FishTradeSetting. */
+export interface FishTradeSettings {
+  enabled: boolean;
+  feePercent: number;
+  feeMinimum: number;
+  expirySeconds: number;
+}
+type TradeNumber = "feePercent" | "feeMinimum" | "expirySeconds";
+const TRADE_FIELDS: Array<{ key: TradeNumber; label: string; hint: string; min: number; max: number; decimal?: boolean }> = [
+  { key: "feePercent", label: "Fee (% of the trade)", hint: "fish at sell value plus currency, both sides; default 3", min: 0, max: 50, decimal: true },
+  { key: "feeMinimum", label: "Smallest fee", hint: "default 10", min: 0, max: 1_000_000_000 },
+  { key: "expirySeconds", label: "Seconds to answer", hint: "default 120", min: 30, max: 600 },
+];
 
 /** The duel settings' inputs, in the order shown, with the bot's bounds and defaults. */
 const DUEL_FIELDS: Array<{ key: DuelNumber; label: string; hint: string; min: number; max: number }> = [
@@ -556,6 +571,7 @@ interface SettingsForm {
   fishSteal: ({ enabled: boolean; onlyWhileLive: boolean } & Record<StealNumber, string>) | null;
   /** null when the bot service doesn't report duels. */
   fishDuel: ({ enabled: boolean; onlyWhileLive: boolean; allowKeeps: boolean } & Record<DuelNumber, string>) | null;
+  fishTrade: ({ enabled: boolean } & Record<TradeNumber, string>) | null;
 }
 
 function formFromConfig(c: PointsConfig): SettingsForm {
@@ -697,6 +713,12 @@ function formFromConfig(c: PointsConfig): SettingsForm {
           onlyWhileLive: c.games.duel.onlyWhileLive,
           allowKeeps: c.games.duel.allowKeeps,
           ...(Object.fromEntries(DUEL_FIELDS.map(({ key }) => [key, String(c.games!.duel![key])])) as Record<DuelNumber, string>),
+        }
+      : null,
+    fishTrade: c.games?.trade
+      ? {
+          enabled: c.games.trade.enabled,
+          ...(Object.fromEntries(TRADE_FIELDS.map(({ key }) => [key, String(c.games!.trade![key])])) as Record<TradeNumber, string>),
         }
       : null,
   };
@@ -1004,6 +1026,16 @@ function buildPatch(f: SettingsForm): { patch: PointsSettingsPatch } | { error: 
     for (const { key, label, min, max } of DUEL_FIELDS) duel[key] = whole(f.fishDuel[key], `Fish duels: ${label}`, min, max);
     patch.games.duel = duel;
   }
+  if (f.fishTrade) {
+    const trade = { enabled: f.fishTrade.enabled } as FishTradeSettings;
+    for (const { key, label, min, max, decimal } of TRADE_FIELDS) {
+      const raw = f.fishTrade[key].trim();
+      const v = Number(raw);
+      if (raw === "" || !Number.isFinite(v) || v < min || v > max || (!decimal && !Number.isInteger(v))) errors.push(`Fish trades: ${label} must be ${decimal ? "a number" : "a whole number"} from ${min} to ${max.toLocaleString()}`);
+      else trade[key] = v;
+    }
+    patch.games.trade = trade;
+  }
 
   return errors.length > 0 ? { error: errors.join("; ") } : { patch };
 }
@@ -1222,6 +1254,50 @@ function TrapCheckSettings({ value, currency, command, disabled, onChange }: {
     </div>
   );
 }
+type TradeForm = NonNullable<SettingsForm["fishTrade"]>;
+
+/** `fish trade`, off until a channel turns it on. */
+function TradeSettings({ value, currency, command, disabled, onChange }: {
+  value: TradeForm;
+  currency: string;
+  command: string;
+  disabled: boolean;
+  onChange: (v: TradeForm) => void;
+}) {
+  return (
+    <div className="rounded-md border border-neutral-800 p-3">
+      <Checkbox
+        label={`Let viewers trade fish ($${command} fish trade @user 🦈 72cm for 🐋)`}
+        checked={value.enabled}
+        disabled={disabled}
+        onChange={(enabled) => onChange({ ...value, enabled })}
+      />
+      {value.enabled ? (
+        <>
+          <div className="mt-3 grid gap-4 sm:grid-cols-3">
+            {TRADE_FIELDS.map(({ key, label, hint, decimal }) => (
+              <Field key={key} label={label} hint={hint}>
+                <input
+                  value={value[key]}
+                  inputMode={decimal ? "decimal" : "numeric"}
+                  disabled={disabled}
+                  onChange={(e) => onChange({ ...value, [key]: e.target.value })}
+                  className={INPUT}
+                />
+              </Field>
+            ))}
+          </div>
+          <p className="mt-3 text-xs text-neutral-500">
+            {`A viewer offers fish and/or ${currency} for another's with $${command} fish trade @user 🦈 72cm for 🐋 (left of "for" is what the proposer gives, right is what they want; a number first on a side, over 100, or written 50$ is ${currency}). `}
+            {`The other answers $${command} fish accept or $${command} fish decline in time; $${command} fish trade cancel takes an offer back. Any time, live or offline. The offer names the very fish, and everything is checked again on accept. `}
+            {`Whoever offered pays the fee when it goes through, a share of everything that changes hands (fish at sell value plus ${currency}), burned like steal fees so alts can't shuffle value around for free. Every trade is recorded, and a lopsided one counts as a gift for the cheat flags.`}
+          </p>
+        </>
+      ) : null}
+    </div>
+  );
+}
+
 type DuelForm = NonNullable<SettingsForm["fishDuel"]>;
 
 /** `fish duel`, off until a channel turns it on; the rest only shows once it's on. */
@@ -2616,6 +2692,15 @@ export default function PointsCard({
                     onChange={(v) => set("fishSteal", v)}
                   />
                 ) : null}
+                {tab("trades") && form.fishTrade ? (
+                  <TradeSettings
+                    value={form.fishTrade}
+                    currency={form.currencyName.trim() || "points"}
+                    command={commandPreview || "…"}
+                    disabled={readOnly || !!busy}
+                    onChange={(v) => set("fishTrade", v)}
+                  />
+                ) : null}
                 {tab("duels") && form.fishDuel ? (
                   <DuelSettings
                     value={form.fishDuel}
@@ -2690,7 +2775,7 @@ export default function PointsCard({
                   />
                   {form.fishFeed ? (
                     <div className="pl-6 sm:w-1/3">
-                      <Field label="Chance a feeding fails (%)" hint="The food is lost and no XP gained. Food gives its sell value as XP; each level (up to 10) adds 10% duel health and attack and 25% value.">
+                      <Field label="Chance a feeding fails (%)" hint="The food is lost and no XP gained. Food gives its sell value as XP; each level (up to 10) adds 3% duel health and attack, up to a full-length fish of the next rarity up, and 25% value.">
                         {text("fishFeedFail", { inputMode: "numeric" })}
                       </Field>
                     </div>

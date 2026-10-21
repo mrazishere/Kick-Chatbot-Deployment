@@ -22,6 +22,7 @@ export const FISHING_TABS = [
   { key: "traps", label: "Traps" },
   { key: "steals", label: "Steals" },
   { key: "duels", label: "Duels" },
+  { key: "trades", label: "Trades" },
   { key: "overlay", label: "Overlay" },
   { key: "cheaters", label: "Cheaters" },
 ] as const;

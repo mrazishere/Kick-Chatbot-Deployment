@@ -416,6 +416,7 @@ export interface PointsGamesConfig {
   steal: FishStealSetting;
   /** Fish duels: two viewers each send a fish and the bot plays the fight out. */
   duel: FishDuelSetting;
+  trade: FishTradeSetting;
   /** Big bites: now and then while live, a random active chatter can reel in a trophy with the code shown on the overlay. */
   bigBite: FishBigBiteSetting;
   /** Trap checks: a question now and then before an offline trap haul, against macros. */
@@ -493,6 +494,21 @@ export interface FishDuelSetting {
   cooldownSeconds: number;
   /** The most a wager can be; 0 for no limit. */
   maxWager: number;
+}
+
+/**
+ * Fish trades (our addition, 2026-10-22): one viewer offers fish and/or currency for
+ * another's, who accepts or declines. Any time, live or not. The proposer pays a fee when it
+ * goes through, burned like steal fees, so alts can't shuffle value around for free.
+ */
+export interface FishTradeSetting {
+  enabled: boolean;
+  /** Fee, as a share of everything that changes hands (fish at their sell value, plus currency). */
+  feePercent: number;
+  /** The smallest fee. */
+  feeMinimum: number;
+  /** How long an offer waits for an answer. */
+  expirySeconds: number;
 }
 
 /**
@@ -625,7 +641,7 @@ export type StoredPointsConfig = Partial<Omit<PointsConfig, 'bonuses' | 'give' |
   gamble?: Partial<PointsGambleConfig>;
   duel?: Partial<PointsDuelConfig>;
   raffle?: Partial<PointsRaffleConfig>;
-  games?: Partial<Omit<PointsGamesConfig, 'catches' | 'steal' | 'duel' | 'bigBite' | 'trapCheck'>> & { catches?: StoredFishCatches; steal?: Partial<FishStealSetting>; duel?: Partial<FishDuelSetting>; bigBite?: Partial<FishBigBiteSetting>; trapCheck?: Partial<FishTrapCheckSetting> };
+  games?: Partial<Omit<PointsGamesConfig, 'catches' | 'steal' | 'duel' | 'trade' | 'bigBite' | 'trapCheck'>> & { catches?: StoredFishCatches; steal?: Partial<FishStealSetting>; duel?: Partial<FishDuelSetting>; trade?: Partial<FishTradeSetting>; bigBite?: Partial<FishBigBiteSetting>; trapCheck?: Partial<FishTrapCheckSetting> };
   /** Staging only, set by editing the file: treat the channel as live. Never exposed by the API. */
   debugForceLive?: boolean;
   /** Staging only, set by editing the file: who can test stealing and big bites (see InternalPointsConfig). */

@@ -68,7 +68,7 @@ export function feedingGuide(cfg: PointsConfig): string {
   const f = `$${effectiveCommand(cfg)} fish`;
   return [
     `FEEDING (${f} feed 🦈 72cm 🐟 🐟 🦀, short ${f.replace(' fish', ' f')} fd): the first fish named eats the rest and gains what they would sell for as XP (their length and their own levels count).`,
-    `Levels go up to Lv${MAX_LEVEL}. Each one adds ${LEVEL_STATS * 100}% to the fish's duel health and attack and ${LEVEL_VALUE * 100}% to its sell value.`,
+    `Levels go up to Lv${MAX_LEVEL}. Each one adds ${LEVEL_STATS * 100}% to the fish's duel health and attack, up to a full-length fish of the next rarity up (Legendary and Mythic fish have no ceiling), and ${LEVEL_VALUE * 100}% to its sell value.`,
     `Every level costs the same XP: ${LEVEL_VALUE * 100}% of the eater's own unlevelled price at its length, which is what the level adds to its value, so the food's worth goes into the fish and the duel stats come on top. A big or rare fish needs more food. One feeding can gain several levels; XP past Lv${MAX_LEVEL} is lost, and a Lv${MAX_LEVEL} fish can't eat.`,
     'Named without a length, the eater is your highest-level, then longest, fish of that kind. Food is fish only, never junk, named the same way as for selling (kinds, counts, lengths); it can be the same kind as the eater but not the eater itself. If any of the food is missing, nothing is eaten.',
     g.feedFailPercent > 0 ? `${g.feedFailPercent}% of feedings fail: the fish chokes, the food is gone and no XP is gained.` : 'Feedings never fail here.',
@@ -179,8 +179,12 @@ export function publicCommands(cfg: PointsConfig, opts: { channel?: BotCommandCh
         ...(g.giveEnabled ? [
           { usage: `${f} give @user 🐟 [count] [length]`, short: `${s} gv @user 🐟`, does: `Give one kind of fish or junk to someone, by emoji or name (2 sharks), oldest first, or a certain fish by its length (🦈 72cm)${g.giveCooldownSeconds > 0 ? `; ${g.giveCooldownSeconds}s between gives` : ''}` }
         ] : []),
+        ...(g.trade.enabled ? [
+          { usage: `${f} trade @user 🦈 72cm for 🐋`, short: `${s} tr @user 🦈 for 🐋`, does: `Offer fish and/or ${cur} for someone's: left of "for" is yours, right is theirs. A number first on a side, over 100, or written 50$ is ${cur} (🦦 for 5000). They answer ${s} accept or ${s} decline within ${Math.round(g.trade.expirySeconds / 60)}m. You pay a ${g.trade.feePercent}% fee on everything that changes hands, at least ${g.trade.feeMinimum}, burned` },
+          { usage: `${f} trade`, short: `${s} tr`, does: 'Your trade offers waiting, either way; trade cancel takes yours back' }
+        ] : []),
         ...(g.feedEnabled ? [
-          { usage: `${f} feed 🦈 72cm 🐟 🐟 🦀`, short: `${s} fd 🦈 🐟`, does: `Level a fish up: the first fish eats the rest and gains their sell value as XP. Each level (up to 10) adds 10% duel health and attack and 25% value${g.feedFailPercent > 0 ? `; ${g.feedFailPercent}% of feedings fail and the food is lost` : ''}` }
+          { usage: `${f} feed 🦈 72cm 🐟 🐟 🦀`, short: `${s} fd 🦈 🐟`, does: `Level a fish up: the first fish eats the rest and gains their sell value as XP. Each level (up to 10) adds ${LEVEL_STATS * 100}% duel health and attack and ${LEVEL_VALUE * 100}% value${g.feedFailPercent > 0 ? `; ${g.feedFailPercent}% of feedings fail and the food is lost` : ''}` }
         ] : []),
         { usage: `${f} stats [@user | global]`, short: `${s} st`, does: 'Attempts, catches, traps, bait, sales and streaks' },
         { usage: `${f} top [board]`, short: `${s} tp`, does: `Top 10 on a board, fish by default: ${fishBoards('catch')}` },

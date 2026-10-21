@@ -63,6 +63,7 @@ import { parseBet } from './points';
 import { answerMatches, makeTrapCheck, type TrapCheck } from '../community/trap-check';
 import { wheelBusy } from '../community/wheel-state';
 import { recordSignal } from '../community/cheat-signals';
+import { addTrade, dropTrade, sideText, tradeBy, tradeFor, type TradeItem, type TradeOffer, type TradeSide } from '../community/fish-trade';
 import { BITE_TOO_FAST_MS, STREAM_GRACE_MS, biteFor, canBite, channelBite, channelHasBite, codeMatches, getAway, nextPull, pickChatter, snipeBite, snipeOpen, startBite, takeBite, type BiteContext } from '../community/big-bite';
 import {
   addItem, itemByWord, giveItems, baitPrice, baitRoll, currentReel, heldFishValue, freshCatches, landsFish, moveFish, pickHeld, stealableFish, stealChance, stealCharges, stealRollChance, worstStealCharges, parseSellList, takeSized, addXp, levelCost, levelOf, MAX_LEVEL, capOf, emoteWord, isWordName, nearCap, overflow, CatchItem, CatchType, FAILURE_EMOTES, FishData, findBait, hasFishedBefore, initialData, rarityOf, recordCatch,
@@ -79,13 +80,14 @@ const pointer = makeCooldown(60_000);
 /** The timer that ends each waiting trap check when its time runs out, by channel and user id. */
 const checkTimers = new Map<string, NodeJS.Timeout>();
 
-export const SUBCOMMANDS: Record<string, 'buy' | 'sell' | 'show' | 'stats' | 'top' | 'trap' | 'steal' | 'give' | 'duel' | 'accept' | 'deny' | 'reel' | 'bigbite' | 'answer' | 'remove' | 'feed' | 'add' | 'overlay'> = {
+export const SUBCOMMANDS: Record<string, 'buy' | 'sell' | 'show' | 'stats' | 'top' | 'trap' | 'steal' | 'give' | 'trade' | 'duel' | 'accept' | 'deny' | 'reel' | 'bigbite' | 'answer' | 'remove' | 'feed' | 'add' | 'overlay'> = {
   buy: 'buy', b: 'buy', sell: 'sell', s: 'sell',
   show: 'show', sh: 'show', count: 'show', display: 'show', collection: 'show',
   stats: 'stats', st: 'stats', top: 'top', tp: 'top', leaderboard: 'top',
   trap: 'trap', t: 'trap', net: 'trap', trawl: 'trap',
   steal: 'steal', sl: 'steal', rob: 'steal',
   give: 'give', gv: 'give', gift: 'give',
+  trade: 'trade', tr: 'trade', swap: 'trade', offer: 'trade',
   // Level a fish up by feeding it others.
   feed: 'feed', fd: 'feed', eat: 'feed', evolve: 'feed',
   // The streamer or the bot owner: take fish off a viewer.
@@ -1296,6 +1298,232 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     if (text) say(text);
   }
 
+  // ── trade ──
+  /**
+   * `fish trade @user 🦈 72cm 500 for 🐋`: offer fish and/or currency for theirs. Left of "for" is
+   * what you give, right of it what you want. A number first on a side, over 100, or with $, k or
+   * the currency's name after it is currency; otherwise, after a fish, it's how many. They answer with
+   * `fish accept` / `fish decline` (or `fish trade accept|decline`); `fish trade cancel` takes it
+   * back; `fish trade` alone shows what's waiting. The proposer pays games.trade's fee, burned.
+   * Fish named by kind alone go oldest first, unlevelled ones before any fed one; the offer names
+   * the very fish, and only those change hands.
+   */
+  const coinWord = (w: string): boolean => {
+    const x = w.toLowerCase().replace(/^\$/, '');
+    return x === cmd.toLowerCase().replace(/^\$/, '') || x === cur.toLowerCase().replace(/^\$/, '') || /^(coins?|points?|pts)$/.test(x);
+  };
+  /** One side's words: currency apart, the rest read as for sell. */
+  function tradeSideOf(words: string[]): { coins: number; picks: FishPick[] } | { error: string } {
+    let coins = 0;
+    const rest: string[] = [];
+    words.forEach((w, i) => {
+      const m = /^\$?(\d[\d,]*)(k|m)?\$?$/i.exec(w);
+      // After a fish a small number is how many; nobody holds more than 100 of a kind, so more is currency.
+      const isCoins = m && (rest.length === 0 || /[$km]/i.test(w) || (words[i + 1] !== undefined && coinWord(words[i + 1])) || Number(m[1].replace(/,/g, '')) > 100);
+      if (isCoins) {
+        coins += Number(m![1].replace(/,/g, '')) * (m![2]?.toLowerCase() === 'k' ? 1_000 : m![2]?.toLowerCase() === 'm' ? 1_000_000 : 1);
+        return;
+      }
+      if (coinWord(w)) return;
+      rest.push(w);
+    });
+    if (!Number.isSafeInteger(coins)) return { error: 'That amount is too big.' };
+    if (!rest.length) return { coins, picks: [] };
+    const parsed = parsePicks(rest);
+    if ('error' in parsed) return { error: pickError(parsed.error, 'sell') };
+    return { coins, picks: parsed.picks };
+  }
+  /** The very fish (and junk) a side's picks come to from what's held, or what's short. */
+  function resolveSide(d: FishData | null, picks: FishPick[]): { items: TradeItem[] } | { short: string } {
+    const items: TradeItem[] = [];
+    const taken = new Map<string, number[]>();
+    const used = (name: string) => taken.get(name) ?? (taken.set(name, []), taken.get(name)!);
+    // Lengths first, then kinds from what's left: like sell.
+    for (const p of [...picks.filter(x => x.cm !== undefined), ...picks.filter(x => x.cm === undefined)]) {
+      const name = p.item.name;
+      if (p.item.type !== 'fish') {
+        const have = (d?.catch.types[name] ?? 0) - used(name).length;
+        if (have < p.n) return { short: have > 0 ? `only ${have} ${name}` : `no ${name}` };
+        for (let i = 0; i < p.n; i++) { used(name).push(-1); items.push({ name, cm: null }); }
+        continue;
+      }
+      const sized = d?.catch.sizes?.[name] ?? [];
+      const unsized = Math.max(0, (d?.catch.types[name] ?? 0) - sized.length);
+      for (let k = 0; k < p.n; k++) {
+        const free = sized.map((h, i) => ({ h, i })).filter(({ h, i }) => !used(name).includes(i) && (p.cm === undefined || h.cm === p.cm));
+        // By kind: the oldest without a level, a fed one only when nothing else is left.
+        const pick = p.cm !== undefined ? free[0] : free.find(({ h }) => !levelOf(h)) ?? free[0];
+        if (pick) {
+          used(name).push(pick.i);
+          items.push({ name, cm: pick.h.cm, ...(levelOf(pick.h) ? { level: levelOf(pick.h) } : {}) });
+        } else if (p.cm === undefined && used(name).filter(i => i === -2).length < unsized) {
+          used(name).push(-2);
+          items.push({ name, cm: null });
+        } else {
+          const total = d?.catch.types[name] ?? 0;
+          return { short: p.cm !== undefined ? `no ${name} ${p.cm} cm` : total ? `only ${total} ${name}` : `no ${name}` };
+        }
+      }
+    }
+    return { items };
+  }
+  const itemWorth = (d: FishData | null, i: TradeItem): number => {
+    const item = ITEMS.find(x => x.name === i.name)!;
+    const held = i.cm !== null ? d?.catch.sizes?.[i.name]?.find(h => h.cm === i.cm) : undefined;
+    return sellPrice(item, g, held ?? (i.cm !== null ? { cm: i.cm, record: false } : undefined));
+  };
+  const sideWorth = (d: FishData | null, side: TradeSide): number => side.items.reduce((sum, i) => sum + itemWorth(d, i), 0) + side.coins;
+  /** Move a side's items from one collection to another; false (nothing moved) if any is gone. */
+  function moveSide(from: FishData, to: FishData, side: TradeSide): boolean {
+    for (const i of side.items) {
+      const item = ITEMS.find(x => x.name === i.name)!;
+      if (i.cm === null) {
+        const unsized = item.type === 'fish' ? (from.catch.types[i.name] ?? 0) - (from.catch.sizes?.[i.name]?.length ?? 0) : (from.catch.types[i.name] ?? 0);
+        if (unsized < 1) return false;
+        if (item.type === 'fish') moveFish(from, to, item, { index: -1 });
+        else giveItems(from, to, item, 1);
+        continue;
+      }
+      const sized = from.catch.sizes?.[i.name] ?? [];
+      // That very fish: its length, and its level as offered when there's a choice.
+      let index = sized.findIndex(h => h.cm === i.cm && levelOf(h) === (i.level ?? 0));
+      if (index < 0) index = sized.findIndex(h => h.cm === i.cm);
+      if (index < 0) return false;
+      moveFish(from, to, item, { index, held: sized[index] });
+    }
+    return true;
+  }
+  /** Room left for a side's fish and junk in a collection, or what's over. */
+  function roomFor(d: FishData, side: TradeSide, whose: string): string | null {
+    for (const type of ['fish', 'junk'] as const) {
+      const n = side.items.filter(i => ITEMS.find(x => x.name === i.name)?.type === type).length;
+      const cap = capOf(g, type);
+      if (n && cap > 0 && (d.catch[type] ?? 0) + n > cap) return `${whose} ${type === 'fish' ? 'bucket' : 'junk pile'} would be over its ${cap}`;
+    }
+    return null;
+  }
+
+  async function trade(parts: string[], uid: number): Promise<void> {
+    const t = g.trade;
+    if (!t.enabled && !tester) return void say('Fish trading is off here.');
+    const op = (parts[0] ?? '').toLowerCase();
+    if (!parts.length) {
+      const mine = tradeBy(chan, uid);
+      const theirs = tradeFor(chan, uid);
+      if (!mine && !theirs) return void say(`No trades waiting. Offer one: ${cmd} fish trade @user 🦈 72cm for 🐋 (or for 5000).`);
+      return void say([
+        theirs ? `@${theirs.from} offers ${sideText(theirs.give, cur)} for your ${sideText(theirs.get, cur)} (${span(theirs.expiresAt - Date.now())} left: ${cmd} fish accept or decline).` : '',
+        mine ? `Your offer to @${mine.to}: ${sideText(mine.give, cur)} for ${sideText(mine.get, cur)} (${span(mine.expiresAt - Date.now())} left, ${cmd} fish trade cancel takes it back).` : ''
+      ].filter(Boolean).join(' '));
+    }
+    if (/^(accept|a|yes|y)$/.test(op)) return void acceptTrade(uid);
+    if (/^(decline|deny|no|n|dn)$/.test(op)) return void declineTrade(uid);
+    if (/^(cancel|c|back|withdraw)$/.test(op)) {
+      const mine = tradeBy(chan, uid);
+      if (!mine) return void say('You have no trade offer waiting.');
+      dropTrade(chan, mine);
+      return void say(`You took back your trade offer to @${mine.to}.`);
+    }
+
+    const usage = `Trade what for what? ${cmd} fish trade @user 🦈 72cm for 🐋 (left of "for" is yours, right is theirs; a number first on a side is ${cur}, like for 5000)`;
+    const at = parts.findIndex(p => p.startsWith('@'));
+    const who = at >= 0 ? at : 0;
+    const name = parseUsername(parts[who]);
+    const words = parts.filter((_, i) => i !== who);
+    const split = words.findIndex(w => /^for$/i.test(w));
+    if (!name || split < 0) return void say(usage);
+    const mineSide = tradeSideOf(words.slice(0, split));
+    const theirSide = tradeSideOf(words.slice(split + 1));
+    if ('error' in mineSide) return void say(mineSide.error);
+    if ('error' in theirSide) return void say(theirSide.error);
+    if ((!mineSide.picks.length && !mineSide.coins) || (!theirSide.picks.length && !theirSide.coins)) {
+      return void say(`Both sides need something. To hand fish over for nothing, use ${cmd} fish give.`);
+    }
+    if (!mineSide.picks.length && !theirSide.picks.length) return void say(`There's no fish in that. Trades are for fish: ${cmd} give sends ${cur}.`);
+    const nameLc = name.toLowerCase();
+    if (isBotSender(name) || SYSTEM_BOTS.has(nameLc)) return void say("Bots don't trade fish. Find a human!");
+    const to = findUserByName(db!, nameLc);
+    if (!to) return void say('No such user exists!');
+    if (to.user_id === uid) return void say("You can't trade with yourself!");
+    if (offLimits(to.user_id, nameLc)) return void say(`${to.username} can't trade fish.`);
+    const already = tradeBy(chan, uid);
+    if (already) return void say(`You already have an offer waiting for @${already.to}: ${cmd} fish trade cancel to take it back first.`);
+    if (tradeFor(chan, to.user_id)) return void say(`@${to.username} already has a trade offer waiting. Try again in a bit.`);
+
+    const mine = loadFish(db!, uid);
+    const theirs = loadFish(db!, to.user_id);
+    const give = resolveSide(mine, mineSide.picks);
+    if ('short' in give) return void say(`You can't offer that: you have ${give.short}.`);
+    const get = resolveSide(theirs, theirSide.picks);
+    if ('short' in get) return void say(`@${to.username} has ${get.short}. ${cmd} fish show @${to.username} lists theirs.`);
+    const giveSide: TradeSide = { items: give.items, coins: mineSide.coins };
+    const getSide: TradeSide = { items: get.items, coins: theirSide.coins };
+    const value = sideWorth(mine, giveSide) + sideWorth(theirs, getSide);
+    const fee = Math.max(t.feeMinimum, Math.round(value * t.feePercent / 100));
+    const balance = getUser(db!, uid)?.balance ?? 0;
+    if (balance < giveSide.coins + fee) return void say(`You need ${groupDigits(giveSide.coins + fee)} ${cur} on hand for that: ${giveSide.coins ? `the ${groupDigits(giveSide.coins)} you offer and ` : ''}a ${groupDigits(fee)} ${cur} fee.`);
+    if (getSide.coins > (getUser(db!, to.user_id)?.balance ?? 0)) return void say(`@${to.username} doesn't have ${groupDigits(getSide.coins)} ${cur}.`);
+    const now = Date.now();
+    const offer: TradeOffer = { fromId: uid, from: me, toId: to.user_id, to: to.username, give: giveSide, get: getSide, value, fee, at: now, expiresAt: now + t.expirySeconds * 1000 };
+    addTrade(chan, offer);
+    console.log(`[FISH] ${me} offered ${to.username} a trade in ${chan}: ${sideText(giveSide, cur)} for ${sideText(getSide, cur)} (fee ${fee})`);
+    await announce(`🤝 @${to.username}, ${me} offers ${sideText(giveSide, cur)} for your ${sideText(getSide, cur)}. ${cmd} fish accept or ${cmd} fish decline (${span(t.expirySeconds * 1000)}). ${me} pays a ${groupDigits(fee)} ${cur} fee.`);
+  }
+
+  function declineTrade(uid: number): void {
+    const offer = tradeFor(chan, uid);
+    if (!offer) return void say('Nobody has offered you a trade.');
+    dropTrade(chan, offer);
+    void announce(`@${offer.from} ${me} turned down your trade.`);
+  }
+
+  function acceptTrade(uid: number): void {
+    const offer = tradeFor(chan, uid);
+    if (!offer) return void say('Nobody has offered you a trade.');
+    const text = once((now): { off: string } | { done: true } => {
+      ensureUserTx(db!, uid, me, now);
+      const a = loadFish(db!, offer.fromId) ?? initialData();
+      const b = loadFish(db!, uid) ?? initialData();
+      // Everything again, as it is now: either side may have sold, fed or lost something since.
+      const balA = getUser(db!, offer.fromId)?.balance ?? 0;
+      const balB = getUser(db!, uid)?.balance ?? 0;
+      if (balA < offer.give.coins + offer.fee) return { off: `${offer.from} no longer has the ${groupDigits(offer.give.coins + offer.fee)} ${cur} it takes, so the trade is off.` };
+      if (balB < offer.get.coins) return { off: `You don't have the ${groupDigits(offer.get.coins)} ${cur} anymore, so the trade is off.` };
+      const full = roomFor(b, offer.give, 'Your') ?? roomFor(a, offer.get, `${offer.from}'s`);
+      if (full) return { off: `${full}, so the trade is off.` };
+      const worthA = sideWorth(a, offer.give);
+      const worthB = sideWorth(b, offer.get);
+      if (!moveSide(a, b, offer.give)) return { off: `${offer.from} no longer has everything they offered, so the trade is off.` };
+      if (!moveSide(b, a, offer.get)) return { off: `You no longer have everything they asked for, so the trade is off.` };
+      saveFish(db!, offer.fromId, a, now);
+      saveFish(db!, uid, b, now);
+      const ref = `trade:${offer.fromId}:${uid}:${offer.at}`;
+      if (offer.give.coins) {
+        debitTx(db!, { userId: offer.fromId, amount: offer.give.coins, reason: 'game:fish_trade_out', ref, actor: `chat:${offer.from}`, note: offer.to, now });
+        creditTx(db!, { userId: uid, username: me, amount: offer.give.coins, reason: 'game:fish_trade_in', ref, actor: `chat:${offer.from}`, note: offer.from, now });
+      }
+      if (offer.get.coins) {
+        debitTx(db!, { userId: uid, amount: offer.get.coins, reason: 'game:fish_trade_out', ref, actor: `chat:${me}`, note: offer.from, now });
+        creditTx(db!, { userId: offer.fromId, username: offer.from, amount: offer.get.coins, reason: 'game:fish_trade_in', ref, actor: `chat:${me}`, note: offer.to, now });
+      }
+      if (offer.fee) debitTx(db!, { userId: offer.fromId, amount: offer.fee, reason: 'game:fish_trade_fee', ref, actor: `chat:${offer.from}`, note: offer.to, now });
+      db!.prepare('INSERT INTO fish_trades (ts, from_id, to_id, from_items, from_coins, to_items, to_coins, value, fee) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)')
+        .run(now, offer.fromId, uid, JSON.stringify(offer.give.items), offer.give.coins, JSON.stringify(offer.get.items), offer.get.coins, Math.round(worthA + worthB), offer.fee);
+      // A lopsided trade is a gift of the difference, for the cheat signals' funnel check.
+      const lean = worthA - worthB;
+      if (Math.abs(lean) >= 1) {
+        const [giver, taker, items] = lean > 0 ? [offer.fromId, uid, offer.give.items] : [uid, offer.fromId, offer.get.items];
+        recordSignal(db!, { userId: giver, kind: 'fish_give', now, detail: JSON.stringify({ to: taker, item: 'trade', n: items.length, worth: Math.round(Math.abs(lean)) }) });
+      }
+      return { done: true };
+    });
+    if (!text) return;
+    dropTrade(chan, offer);
+    if ('off' in text) return void say(text.off);
+    console.log(`[FISH] trade in ${chan}: ${offer.from} gave ${sideText(offer.give, cur)}, ${offer.to} gave ${sideText(offer.get, cur)}, fee ${offer.fee}`);
+    void announce(`🤝 Trade done! @${offer.from} got ${sideText(offer.get, cur)}, @${offer.to} got ${sideText(offer.give, cur)}. ${offer.from} paid a ${groupDigits(offer.fee)} ${cur} fee.`);
+  }
+
   // ── steal ──
   /**
    * Reach for one random fish the target has held past the grace time, weighted by
@@ -1604,9 +1832,15 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       const name = head.item.name;
       const list = d?.catch.sizes?.[name] ?? [];
       // The one that eats: of those that long (or any), the highest level, then the longest.
+      // Named without a length, not one named as food by its length when another will do:
+      // "feed 🦦 🦦57cm" means another 🦦 eats the 57 cm one, not that it eats itself.
+      const asFood = new Set(food.filter(p => p.item.name === name && p.cm !== undefined).map(p => p.cm));
+      const held = list.slice(0, d?.catch.types[name] ?? 0);
+      const spareOne = head.cm === undefined && held.some(h => !asFood.has(h.cm));
       let at = -1;
-      list.slice(0, d?.catch.types[name] ?? 0).forEach((h, i) => {
+      held.forEach((h, i) => {
         if (head.cm !== undefined && h.cm !== head.cm) return;
+        if (spareOne && asFood.has(h.cm)) return;
         if (at < 0 || levelOf(h) > levelOf(list[at]) || (levelOf(h) === levelOf(list[at]) && h.cm > list[at].cm)) at = i;
       });
       if (!d || at < 0) return `You don't have a ${name}${head.cm !== undefined ? ` ${head.cm} cm` : ''}. ${cmd} fish show ${name} lists yours.`;
@@ -1632,22 +1866,32 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       });
       if (short.length || shortKinds.length) {
         putBack();
-        return `Nothing eaten: you have ${[...short, ...shortKinds].join(', ')}${food.some(p => p.item.name === name) ? ` besides the ${name} eating` : ''}.`;
+        return `Nothing eaten: you have ${[...short, ...shortKinds].join(', ')}${food.some(p => p.item.name === name) ? ` besides the ${name} ${eater.cm} cm eating` : ''}.`;
       }
-      // Its food is worth what it would sell for, before any reel bonus.
+      // Its food is worth what it would sell for, before any reel bonus. It eats one at a time
+      // and stops once it's full (Lv10): XP past that was lost, so the rest stays in the bucket.
+      let toFull = -(eater.xp ?? 0);
+      for (let l = levelOf(eater); l < MAX_LEVEL; l++) toFull += levelCost(head.item, g, eater, l);
       const sold = d.lifetime.sold;
       let xp = 0;
       const eaten: string[] = [];
+      const leftOver: string[] = [];
+      const tally = (into: string[], label: string, k: number) => { if (k > 0) into.push(`${label}${k > 1 ? ` x${k}` : ''}`); };
       for (const w of want.values()) {
-        xp += takeSized(d, w.item, w.cm, w.n, g)!;
-        eaten.push(`${w.item.name} ${w.cm} cm${w.n > 1 ? ` x${w.n}` : ''}`);
+        let ate = 0;
+        while (ate < w.n && xp < toFull) { xp += takeSized(d, w.item, w.cm, 1, g)!; ate++; }
+        tally(eaten, `${w.item.name} ${w.cm} cm`, ate);
+        tally(leftOver, `${w.item.name} ${w.cm} cm`, w.n - ate);
       }
       for (const [n, k] of byKind) {
-        xp += takeItems(d, ITEMS.find(i => i.name === n)!, k, g);
-        eaten.push(`${n}${k > 1 ? ` x${k}` : ''}`);
+        let ate = 0;
+        while (ate < k && xp < toFull) { xp += takeItems(d, ITEMS.find(i => i.name === n)!, 1, g); ate++; }
+        tally(eaten, n, ate);
+        tally(leftOver, n, k - ate);
       }
       d.lifetime.sold = sold;
       putBack();
+      const full = leftOver.length ? ` It was full: ${leftOver.join(', ')} went back to your bucket.` : '';
       const label = `${name} ${eater.cm} cm`;
       if (randomInt(1, 100) <= g.feedFailPercent) {
         saveFish(db!, uid, d, now);
@@ -1660,7 +1904,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       const f = fighterOf(g, head.item, eater);
       console.log(`[FISH] ${me}'s ${label} ate ${eaten.join(' ')} in ${chan}: +${xp} XP, Lv${lv}`);
       const next = lv < MAX_LEVEL ? ` ${groupDigits(eater.xp ?? 0)}/${groupDigits(levelCost(head.item, g, eater, lv))} XP to Lv${lv + 1}.` : ' That\'s the top level!';
-      return `🍽️ Your ${label} ate ${eaten.join(', ')} (+${groupDigits(xp)} XP)${gained ? ` and grew to Lv${lv}! 🎉` : `. It's Lv${lv}.`}${next} ❤️${f.hp} ⚔️${f.attack} 💰${groupDigits(sellPrice(head.item, g, eater))}`;
+      return `🍽️ Your ${label} ate ${eaten.join(', ')} (+${groupDigits(xp)} XP)${gained ? ` and grew to Lv${lv}! 🎉` : `. It's Lv${lv}.`}${next}${full} ❤️${f.hp} ⚔️${f.attack} 💰${groupDigits(sellPrice(head.item, g, eater))}`;
     });
     if (text) say(text);
   }
@@ -2282,6 +2526,10 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
         if (userId === null || excluded) return ignore('no account or excluded');
         duelReply = true;
         return give(rest, userId);
+      case 'trade':
+        if (userId === null || excluded) return ignore('no account or excluded');
+        duelReply = true;
+        return await trade(rest, userId);
       case 'feed':
         if (userId === null || excluded) return ignore('no account or excluded');
         return feed(rest, userId);
@@ -2301,10 +2549,19 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
         return await duel(rest, userId);
       case 'accept':
         if (userId === null || excluded) return ignore('no account or excluded');
+        // A trade offer answers to accept/decline too, when no duel challenge is waiting.
+        if (!challengeFor(chan, userId) && tradeFor(chan, userId)) {
+          duelReply = true;
+          return acceptTrade(userId);
+        }
         duelReply = g.duel.enabled;
         return await accept(rest, userId);
       case 'deny':
         if (userId === null || excluded) return ignore('no account or excluded');
+        if (!challengeFor(chan, userId) && tradeFor(chan, userId)) {
+          duelReply = true;
+          return declineTrade(userId);
+        }
         duelReply = g.duel.enabled;
         return await deny(userId);
       case 'reel':

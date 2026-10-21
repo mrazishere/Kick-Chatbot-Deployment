@@ -181,11 +181,24 @@ export interface HeldFish {
   level?: number;
   /** XP toward the next level; absent is 0. */
   xp?: number;
+  /**
+   * Keeps the levelling rules from before 2026-10-22: LEGACY_LEVEL_STATS a level and no ceiling.
+   * Given by the owner as a reward (anothercull's 🐟 and 🦐, for finding how cheap fish out-levelled
+   * rare ones). It goes with the fish wherever it goes.
+   */
+  legacyLevels?: true;
 }
 
 /** Feeding: the highest level, and what each level adds to a fish's duel stats and its value. */
 export const MAX_LEVEL = 10;
-export const LEVEL_STATS = 0.1;
+/**
+ * Duel health and attack per feeding level. Was 0.1 until 2026-10-22: a level's cost follows the
+ * fish's value, so a cheap 🐟 maxed for ~380 XP doubled and out-fought a Lv0 🐋 worth 100,000.
+ * At 3% a Lv10 fish is +30%: worth levelling, but no common fish beats the top tiers.
+ */
+export const LEVEL_STATS = 0.03;
+/** The old rate, for fish marked legacyLevels. */
+export const LEGACY_LEVEL_STATS = 0.1;
 export const LEVEL_VALUE = 0.25;
 
 /** A held fish's level, 0 for none. */
@@ -883,7 +896,8 @@ export function moveFish(from: FishData, to: FishData, item: CatchItem, picked: 
     const lv = levelOf(picked.held);
     (to.catch.sizes[item.name] ??= []).push({
       cm: picked.held.cm, record: false, ...(stolen || picked.held.stolen ? { stolen: true } : {}),
-      ...(lv > 0 ? { level: lv } : {}), ...(picked.held.xp ? { xp: picked.held.xp } : {})
+      ...(lv > 0 ? { level: lv } : {}), ...(picked.held.xp ? { xp: picked.held.xp } : {}),
+      ...(picked.held.legacyLevels ? { legacyLevels: true as const } : {})
     });
   } else {
     const hot = stolen || (unsizedBefore > 0 && fromHot >= unsizedBefore);

@@ -10,6 +10,9 @@ export const COUNTERPARTY_PREFIX: Record<string, string> = {
   "game:duel_stake": "vs",
   "game:duel_win": "beat",
   "game:duel_refund": "vs",
+  "game:fish_trade_in": "from",
+  "game:fish_trade_out": "to",
+  "game:fish_trade_fee": "with",
 };
 
 export const REASON_LABEL: Record<string, string> = {
@@ -43,6 +46,10 @@ export const REASON_LABEL: Record<string, string> = {
   "game:fish_sell": "Sold catch",
   "game:fish_reel": "Bought a reel",
   "game:fish_reel_refund": "Reel taken back, refunded",
+  "game:fish_feed_refund": "Feeding past Lv10, refunded",
+  "game:fish_trade_in": "Fish trade",
+  "game:fish_trade_out": "Fish trade",
+  "game:fish_trade_fee": "Fish trade fee",
   "game:fish_hook": "Bought a grappling hook",
   "game:fish_guard": "Hired a fish guard",
   "game:fish_steal": "Steal attempt fee",

@@ -25,7 +25,7 @@ import { readState, avgDumb, avgTrolled, topAskers, topDumb, topTrolled } from '
 /** How many tool rounds one !claude reply may take. */
 export const MAX_TOOL_ROUNDS = 3;
 
-const RULE_TOPICS = ['bot-commands', 'earning', 'games', 'fishing', 'fish-table', 'fish-shop', 'stealing', 'fish-duels', 'big-bites', 'feeding', 'wheel'];
+const RULE_TOPICS = ['bot-commands', 'earning', 'games', 'fishing', 'fish-table', 'fish-shop', 'stealing', 'trading', 'fish-duels', 'big-bites', 'feeding', 'wheel'];
 const FISH_BOARDS = ['fish', 'total-fish', 'total-coins', 'junk', 'lucky', 'unlucky', 'traps', 'attempts', 'thieves', 'caught', 'robbed', 'duelists'];
 const BOARD_NAMES = ['balance', 'activetime', 'gamble', 'gamble-losers', 'wordle', 'shame-roasted', 'shame-dumb', 'shame-yap', ...FISH_BOARDS.map(b => `fishing-${b}`)];
 
@@ -64,8 +64,20 @@ export function statTools(channel: string): Array<Record<string, unknown>> {
       description: 'This channel\'s real game settings, as the bot uses them right now: prices, odds, limits, cooldowns and how things work. Use it for any question about how a $<currency> command, game or the !wheel works or what it costs: reel, bait, hook and guard prices, fish odds, rarities and sell prices, trap time, bucket caps, stealing chances and fines, fish duel types, big bites, feeding, gambling odds and limits, duels, raffles, wordle, video prices, earning rates and bonuses, timeout and spam costs, channel point rewards, the wheel.',
       input_schema: {
         type: 'object',
-        properties: { topic: { type: 'string', enum: RULE_TOPICS, description: 'bot-commands: limits and cooldowns of the ! commands (!claude, !clip, !blerp, !remind, !catch, !cookie, !slots, translation, !chatsummary); earning: how currency is earned, bonuses, giving, timeout and spam costs, channel point rewards; games: gamble, duel, raffle, wordle, video; fishing: casting, traps, cooldowns, caps, selling, gifts; fish-table: every fish, junk and trophy with odds, rarity, price and duel type; fish-shop: reels, bait, hook and guard; stealing; fish-duels; big-bites; feeding; wheel' } },
+        properties: { topic: { type: 'string', enum: RULE_TOPICS, description: 'bot-commands: limits and cooldowns of the ! commands (!claude, !clip, !blerp, !remind, !catch, !cookie, !slots, translation, !chatsummary); earning: how currency is earned, bonuses, giving, timeout and spam costs, channel point rewards; games: gamble, duel, raffle, wordle, video; fishing: casting, traps, cooldowns, caps, selling, gifts; fish-table: every fish, junk and trophy with odds, rarity, price and duel type; fish-shop: reels, bait, hook and guard; stealing; trading: fish trades between viewers, the fee; fish-duels; big-bites; feeding; wheel' } },
         required: ['topic']
+      }
+    }, {
+      name: 'fishing_history',
+      description: 'A viewer\'s fishing events one by one, newest first, with dates, the fish (kind and length), who else was involved and what happened. kind: robbed = steal tries on them (who, which fish, whether it was taken, the thief was caught, or a guard blocked it); thefts = their own steal tries; catches = fish, junk and trophies they landed (cast, trap or big bite); fish-duels = their fish duels with both fish, the winner and the stake; trades = their fish trades, what each side gave and the fee. Use it when someone asks which fish, who, or when, not just how many: "what fish were stolen from me", "who stole from me", "what did I catch today", "who did I duel". Pass "me" for the person asking.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          username: { type: 'string', description: 'Kick username without @, or "me"' },
+          kind: { type: 'string', enum: ['robbed', 'thefts', 'catches', 'fish-duels', 'trades'] },
+          limit: { type: 'integer', description: 'How many, newest first: 1-25, default 10' }
+        },
+        required: ['username', 'kind']
       }
     }, {
       name: 'channel_stats',
@@ -107,6 +119,112 @@ function stealProtected(db: PointsDb, userId: number, graceMinutes: number): Arr
   ).all(userId, since, userId, since) as Array<{ name: string; cm: number | null; ts: number }>;
   return rows.filter(r => ITEMS.some(i => i.name === r.name && i.type === 'fish'))
     .map(r => ({ fish: r.name, cm: r.cm, safeForMinutes: Math.ceil((r.ts - since) / 60_000) }));
+}
+
+/** When, for a history row: the date and time in UTC, and how long ago. */
+function when(ts: number): { at: string; daysAgo: number } {
+  return { at: new Date(ts).toISOString().slice(0, 16).replace('T', ' ') + ' UTC', daysAgo: Math.floor((Date.now() - ts) / 86_400_000) };
+}
+
+const STEAL_OUTCOME: Record<string, string> = {
+  stolen: 'taken: the thief got the fish',
+  caught: 'thief caught: the fish stayed, the thief paid a fine',
+  blocked: 'blocked by a guard: nothing taken',
+  short: 'thief could not afford the fee and fine: nothing taken'
+};
+
+/** A viewer's catches, steals (either side) or fish duels, newest first. */
+function fishingHistory(ctx: StatToolContext, rawName: unknown, rawKind: unknown, rawLimit: unknown): unknown {
+  let name = String(rawName ?? '').trim().replace(/^@+/, '').toLowerCase();
+  if (!name || name === 'me' || name === 'myself') name = ctx.asker.toLowerCase();
+  if (!/^[a-z0-9_]{1,30}$/.test(name)) return { error: 'Not a Kick username.' };
+  const kind = String(rawKind ?? '');
+  const limit = Math.min(25, Math.max(1, Math.floor(Number(rawLimit) || 10)));
+  if (!readLivePointsConfig(ctx.channel).cfg.enabled) return { error: 'This channel has no fishing.' };
+  return withDb(ctx.channel, db => {
+    const found = findUserByName(db, name);
+    if (!found) return { error: `${name} has never been seen in this channel.` };
+    const id = found.user_id;
+    const fish = (n: string | null, cm: number | null) => (n ? `${n}${cm ? ` ${cm} cm` : ''}` : 'unknown');
+    if (kind === 'robbed' || kind === 'thefts') {
+      const robbed = kind === 'robbed';
+      const rows = db.prepare(
+        `SELECT s.ts, s.name, s.cm, s.outcome, s.worth, s.fee, s.fine, o.username AS other
+         FROM steals s JOIN users o ON o.user_id = ${robbed ? 's.thief_id' : 's.victim_id'}
+         WHERE ${robbed ? 's.victim_id' : 's.thief_id'} = ? ORDER BY s.ts DESC LIMIT ?`
+      ).all(id, limit) as Array<{ ts: number; name: string | null; cm: number | null; outcome: string; worth: number | null; fee: number | null; fine: number | null; other: string }>;
+      const totals = db.prepare(`SELECT outcome, COUNT(*) AS n FROM steals WHERE ${robbed ? 'victim_id' : 'thief_id'} = ? GROUP BY outcome`).all(id) as Array<{ outcome: string; n: number }>;
+      return {
+        username: found.username,
+        kind: robbed ? 'steal tries on them' : 'their steal tries',
+        allTime: Object.fromEntries(totals.map(t => [t.outcome, t.n])),
+        newestFirst: rows.map(r => ({
+          ...when(r.ts),
+          [robbed ? 'thief' : 'target']: r.other,
+          fish: fish(r.name, r.cm),
+          result: STEAL_OUTCOME[r.outcome] ?? r.outcome,
+          ...(r.worth != null ? { fishWorth: r.worth } : {}),
+          ...(!robbed && r.fee != null ? { feePaid: r.fee } : {}),
+          ...(!robbed && r.outcome === 'caught' && r.fine != null ? { finePaid: r.fine } : {})
+        }))
+      };
+    }
+    if (kind === 'catches') {
+      const rows = db.prepare('SELECT ts, name, cm, source FROM catches WHERE user_id = ? ORDER BY ts DESC LIMIT ?').all(id, limit) as Array<{ ts: number; name: string; cm: number | null; source: string }>;
+      return { username: found.username, kind: 'catches', newestFirst: rows.map(r => ({ ...when(r.ts), caught: fish(r.name, r.cm), how: r.source })) };
+    }
+    if (kind === 'fish-duels') {
+      const rows = db.prepare(
+        `SELECT d.ts, d.challenger_id, d.winner_id, d.challenger_fish, d.challenger_cm, d.opponent_fish, d.opponent_cm, d.stake, d.amount,
+                c.username AS challenger, o.username AS opponent
+         FROM fish_duels d JOIN users c ON c.user_id = d.challenger_id JOIN users o ON o.user_id = d.opponent_id
+         WHERE d.challenger_id = ? OR d.opponent_id = ? ORDER BY d.ts DESC LIMIT ?`
+      ).all(id, id, limit) as Array<{ ts: number; challenger_id: number; winner_id: number; challenger_fish: string; challenger_cm: number | null; opponent_fish: string; opponent_cm: number | null; stake: string; amount: number | null; challenger: string; opponent: string }>;
+      return {
+        username: found.username,
+        kind: 'fish duels',
+        newestFirst: rows.map(r => {
+          const theyChallenged = r.challenger_id === id;
+          return {
+            ...when(r.ts),
+            against: theyChallenged ? r.opponent : r.challenger,
+            theyChallenged,
+            theirFish: theyChallenged ? fish(r.challenger_fish, r.challenger_cm) : fish(r.opponent_fish, r.opponent_cm),
+            otherFish: theyChallenged ? fish(r.opponent_fish, r.opponent_cm) : fish(r.challenger_fish, r.challenger_cm),
+            result: r.winner_id === id ? 'won' : 'lost',
+            stake: r.stake === 'wager' && r.amount ? `${r.amount} each` : r.stake
+          };
+        })
+      };
+    }
+    if (kind === 'trades') {
+      const rows = db.prepare(
+        `SELECT t.ts, t.from_id, t.from_items, t.from_coins, t.to_items, t.to_coins, t.fee, f.username AS from_name, o.username AS to_name
+         FROM fish_trades t JOIN users f ON f.user_id = t.from_id JOIN users o ON o.user_id = t.to_id
+         WHERE t.from_id = ? OR t.to_id = ? ORDER BY t.ts DESC LIMIT ?`
+      ).all(id, id, limit) as Array<{ ts: number; from_id: number; from_items: string; from_coins: number; to_items: string; to_coins: number; fee: number; from_name: string; to_name: string }>;
+      const list = (json: string, coins: number) => {
+        const items = (JSON.parse(json) as Array<{ name: string; cm: number | null }>).map(i => fish(i.name, i.cm));
+        return coins ? [...items, `${coins} currency`] : items;
+      };
+      return {
+        username: found.username,
+        kind: 'fish trades',
+        newestFirst: rows.map(r => {
+          const theyOffered = r.from_id === id;
+          return {
+            ...when(r.ts),
+            with: theyOffered ? r.to_name : r.from_name,
+            theyOffered,
+            theyGave: theyOffered ? list(r.from_items, r.from_coins) : list(r.to_items, r.to_coins),
+            theyGot: theyOffered ? list(r.to_items, r.to_coins) : list(r.from_items, r.from_coins),
+            ...(theyOffered ? { feePaid: r.fee } : {})
+          };
+        })
+      };
+    }
+    return { error: 'kind must be robbed, thefts, catches, fish-duels or trades.' };
+  });
 }
 
 function viewerStats(ctx: StatToolContext, raw: unknown): unknown {
@@ -341,6 +459,18 @@ function channelRules(ctx: StatToolContext, raw: unknown): unknown {
       } : {})
     };
   }
+  if (topic === 'trading') {
+    if (!g.trade.enabled) return off('Fish trading');
+    const t = g.trade;
+    return {
+      how: '$<cmd> fish trade @user <what you give> for <what you want>: fish (an emoji, a name, a length like 72cm for that very fish, a count) and/or $<currency> on either side. A number first on a side, over 100, or written 50$ is $<currency>; a small number after a fish is how many. The offer names the very fish (by kind alone, oldest unfed first); only those change hands',
+      answer: `the other viewer says $<cmd> fish accept or $<cmd> fish decline within ${Math.round(t.expirySeconds / 60)} min; $<cmd> fish trade cancel takes an offer back; $<cmd> fish trade shows what is waiting. One offer at a time each way`,
+      fee: `${t.feePercent}% of everything that changes hands (fish at sell value plus $<currency>), at least ${t.feeMinimum}, paid by whoever offered when it goes through, and burned`,
+      when: 'any time, live or offline',
+      checked: 'everything is checked again on accept: both still hold what they offered, can pay, and have bucket room; otherwise it is off',
+      levels: 'a fish keeps its level, XP and any old-rules levelling when traded'
+    };
+  }
   if (topic === 'stealing') {
     if (!g.steal.enabled) return off('Stealing');
     const st = g.steal;
@@ -365,7 +495,7 @@ function channelRules(ctx: StatToolContext, raw: unknown): unknown {
     if (!g.duel.enabled) return off('Fish duels');
     return {
       types: 'Predator beats Swift, Swift beats Armored, Armored beats Predator: a small edge',
-      stats: 'rarer and longer fish have more health and attack; each feeding level adds 10%; luck is small',
+      stats: 'rarer and longer fish have more health and attack; each feeding level adds 3% (Lv10 = +30%), but never past a full-length Lv0 fish of the next rarity up (Legendary and Mythic have no ceiling); luck is small',
       teams: '1v1, 2v2 or 3v3',
       allowKeeps: g.duel.allowKeeps, answerWithinSeconds: g.duel.expirySeconds, cooldownSeconds: g.duel.cooldownSeconds, maxWager: g.duel.maxWager || 'no max',
       onlyWhileLive: g.duel.onlyWhileLive
@@ -400,6 +530,7 @@ export function runStatTool(ctx: StatToolContext, name: string, input: unknown):
       : name === 'top_list' ? topList(ctx, args.board)
       : name === 'channel_stats' ? channelStats(ctx)
       : name === 'channel_rules' ? channelRules(ctx, args.topic)
+      : name === 'fishing_history' ? fishingHistory(ctx, args.username, args.kind, args.limit)
       : { error: `No tool named ${name}.` };
     return JSON.stringify(result).slice(0, 6000);
   } catch (err) {

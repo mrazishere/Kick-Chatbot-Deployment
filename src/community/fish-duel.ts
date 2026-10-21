@@ -25,7 +25,7 @@
 
 import * as crypto from 'crypto';
 import type { PointsGamesConfig } from '../types';
-import { CatchItem, duelStrength, FishData, HeldFish, ITEMS, itemByWord, LEVEL_STATS, levelOf, rarityOf, sellPrice } from './fishing';
+import { CatchItem, duelStrength, FishData, HeldFish, ITEMS, itemByWord, LEGACY_LEVEL_STATS, LEVEL_STATS, levelOf, rarityOf, sellPrice, TIER_STRENGTH } from './fishing';
 
 export type DuelType = 'Predator' | 'Swift' | 'Armored';
 
@@ -71,6 +71,17 @@ export interface Fighter {
   level: number;
 }
 
+/**
+ * The most a levelled fish can reach (owner, 2026-10-22): a full-length Lv0 fish of the next
+ * tier up, never more, so feeding can't lift a fish past a rarer one. From Legendary strength
+ * up there's no tier above: those keep the whole level bonus. Null for no ceiling.
+ */
+function levelCeiling(strength: number): { hp: number; attack: number } | null {
+  const above = [TIER_STRENGTH.Uncommon, TIER_STRENGTH.Rare, TIER_STRENGTH.Epic, TIER_STRENGTH.Legendary].find(t => t > strength + 1e-9);
+  if (above === undefined) return null;
+  return { hp: Math.round((70 + 100 * 0.3) * above), attack: Math.round(BASE_ATTACK * (1 + (100 - UNSIZED_CM) * 0.003) * above * 10) / 10 };
+}
+
 export function fighterOf(g: PointsGamesConfig, item: CatchItem, held?: HeldFish): Fighter {
   const rarity = rarityOf(g, item.name) ?? 'Common';
   // Strength follows how rare the fish is, like its steal odds; a trophy fights as its tier,
@@ -78,15 +89,27 @@ export function fighterOf(g: PointsGamesConfig, item: CatchItem, held?: HeldFish
   const level = duelStrength(g, item.name);
   const cm = Math.min(100, Math.max(1, held?.cm ?? UNSIZED_CM));
   const fed = levelOf(held);
-  const boost = 1 + LEVEL_STATS * fed;
+  // A fish the owner let keep the old rules: the old rate a level, and no ceiling.
+  const legacy = held?.legacyLevels === true;
+  const boost = 1 + (legacy ? LEGACY_LEVEL_STATS : LEVEL_STATS) * fed;
+  let hp = Math.round((70 + cm * 0.3) * level * boost);
+  // 0.3% more for each cm over 50, as much less for each under.
+  let attack = Math.round(BASE_ATTACK * (1 + (cm - UNSIZED_CM) * 0.003) * level * boost * 10) / 10;
+  const ceiling = fed > 0 && !legacy ? levelCeiling(level) : null;
+  if (ceiling) {
+    // Levels lift it only as far as the ceiling; a fish already past it unfed (none at 100 cm or less) stays as it is.
+    const unfedHp = Math.round((70 + cm * 0.3) * level);
+    const unfedAttack = Math.round(BASE_ATTACK * (1 + (cm - UNSIZED_CM) * 0.003) * level * 10) / 10;
+    hp = Math.max(unfedHp, Math.min(hp, ceiling.hp));
+    attack = Math.max(unfedAttack, Math.min(attack, ceiling.attack));
+  }
   return {
     fish: item.name,
     cm: held ? held.cm : null,
     type: typeOf(item.name),
     rarity,
-    hp: Math.round((70 + cm * 0.3) * level * boost),
-    // 0.3% more for each cm over 50, as much less for each under.
-    attack: Math.round(BASE_ATTACK * (1 + (cm - UNSIZED_CM) * 0.003) * level * boost * 10) / 10,
+    hp,
+    attack,
     level: fed
   };
 }

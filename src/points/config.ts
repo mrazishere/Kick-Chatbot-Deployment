@@ -9,7 +9,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { CustomFishSetting, FishBigBiteSetting, FishTrapCheckSetting, FishDuelSetting, PointsAntiSpamConfig, FishCatchSetting, FishReelSetting, FishStealSetting, PointsBonusesConfig, PointsConfig, PointsDuelConfig, PointsGambleConfig, PointsGamesConfig, PointsGiveConfig, PointsVideoConfig, PointsWordleConfig, PointsRaffleConfig, StoredFishCatches, StoredPointsConfig, PointsTimeoutPenaltyConfig } from '../types';
+import { CustomFishSetting, FishBigBiteSetting, FishTrapCheckSetting, FishDuelSetting, FishTradeSetting, PointsAntiSpamConfig, FishCatchSetting, FishReelSetting, FishStealSetting, PointsBonusesConfig, PointsConfig, PointsDuelConfig, PointsGambleConfig, PointsGamesConfig, PointsGiveConfig, PointsVideoConfig, PointsWordleConfig, PointsRaffleConfig, StoredFishCatches, StoredPointsConfig, PointsTimeoutPenaltyConfig } from '../types';
 import { builtInName, defaultSellPrice, ITEMS, registerCustomFish } from '../community/fishing';
 
 export function defaultPointsConfig(): PointsConfig {
@@ -102,6 +102,7 @@ export function defaultPointsConfig(): PointsConfig {
       reels: DEFAULT_REELS.map(r => ({ ...r })),
       steal: { ...DEFAULT_STEAL },
       duel: { ...DEFAULT_FISH_DUEL },
+      trade: { ...DEFAULT_FISH_TRADE },
       bigBite: { ...DEFAULT_BIG_BITE },
       trapCheck: { ...DEFAULT_TRAP_CHECK }
     }
@@ -223,6 +224,29 @@ const FISH_DUEL_NUMBERS: Record<Exclude<keyof FishDuelSetting, typeof FISH_DUEL_
   cooldownSeconds: { min: 0, max: 3600, integer: true },
   maxWager: { min: 0, max: 1_000_000_000, integer: true }
 };
+
+/** Off until a channel turns it on. */
+export const DEFAULT_FISH_TRADE: Readonly<FishTradeSetting> = {
+  enabled: false,
+  feePercent: 3,
+  feeMinimum: 10,
+  expirySeconds: 120
+};
+const FISH_TRADE_NUMBERS: Record<Exclude<keyof FishTradeSetting, 'enabled'>, Rule> = {
+  feePercent: { min: 0, max: 50, integer: false },
+  feeMinimum: { min: 0, max: 1_000_000_000, integer: true },
+  expirySeconds: { min: 30, max: 600, integer: true }
+};
+
+/** The stored trade settings with values clamped; anything not stored keeps its default. */
+export function effectiveFishTrade(stored: unknown): FishTradeSetting {
+  const tr = obj(stored);
+  const out: FishTradeSetting = { ...DEFAULT_FISH_TRADE, enabled: bool(tr.enabled, DEFAULT_FISH_TRADE.enabled) };
+  for (const [key, rule] of Object.entries(FISH_TRADE_NUMBERS) as Array<[keyof typeof FISH_TRADE_NUMBERS, Rule]>) {
+    out[key] = num(tr[key], DEFAULT_FISH_TRADE[key], rule.min, rule.max, rule.integer ?? false);
+  }
+  return out;
+}
 
 /** The stored duel settings with values clamped; anything not stored keeps its default. */
 export function effectiveFishDuel(stored: unknown): FishDuelSetting {
@@ -586,6 +610,7 @@ export function internalPointsConfig(raw: unknown): InternalPointsConfig {
     reels: effectiveReels(ga.reels),
     steal: effectiveSteal(ga.steal),
     duel: effectiveFishDuel(ga.duel),
+    trade: effectiveFishTrade(ga.trade),
     bigBite: effectiveBigBite(ga.bigBite),
     trapCheck: effectiveTrapCheck(ga.trapCheck)
   };
@@ -1164,6 +1189,26 @@ export function validatePointsPatch(current: unknown, patch: unknown): { next?: 
           for (const key of Object.keys(out) as Array<keyof FishDuelSetting>) if (out[key] === DEFAULT_FISH_DUEL[key]) delete out[key];
           if (Object.keys(out).length) next.games!.duel = out;
           else delete next.games!.duel;
+        }
+      }
+      if (ga.trade === null) delete next.games!.trade;
+      else if (ga.trade !== undefined) {
+        if (!ga.trade || typeof ga.trade !== 'object' || Array.isArray(ga.trade)) errors.push('games.trade must be an object');
+        else {
+          const tr = ga.trade as Record<string, unknown>;
+          const out: Partial<FishTradeSetting> = { ...(next.games!.trade ?? {}) };
+          for (const [key, rule] of Object.entries(FISH_TRADE_NUMBERS)) {
+            if (tr[key] === undefined) continue;
+            const v = checkNumber(`games.trade.${key}`, tr[key], rule, errors);
+            if (v !== undefined) (out as Record<string, unknown>)[key] = v;
+          }
+          if (tr.enabled !== undefined) {
+            if (typeof tr.enabled !== 'boolean') errors.push('games.trade.enabled must be true or false');
+            else out.enabled = tr.enabled;
+          }
+          for (const key of Object.keys(out) as Array<keyof FishTradeSetting>) if (out[key] === DEFAULT_FISH_TRADE[key]) delete out[key];
+          if (Object.keys(out).length) next.games!.trade = out;
+          else delete next.games!.trade;
         }
       }
       if (ga.customFish === null) delete next.games!.customFish;

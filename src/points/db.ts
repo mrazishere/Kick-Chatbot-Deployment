@@ -319,7 +319,28 @@ CREATE TABLE wheel_spins (
 CREATE INDEX wheel_spins_ts ON wheel_spins(ts);
 `;
 
-const SCHEMA_VERSION = 13;
+/**
+ * v14: fish trades, one row each that went through: who offered, who accepted, what each gave
+ * (JSON lists of { name, cm }, cm null for junk) plus currency, and the fee the proposer paid.
+ */
+const SCHEMA_V14 = `
+CREATE TABLE fish_trades (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts INTEGER NOT NULL,
+  from_id INTEGER NOT NULL REFERENCES users(user_id),
+  to_id INTEGER NOT NULL REFERENCES users(user_id),
+  from_items TEXT NOT NULL,
+  from_coins INTEGER NOT NULL,
+  to_items TEXT NOT NULL,
+  to_coins INTEGER NOT NULL,
+  value INTEGER NOT NULL,
+  fee INTEGER NOT NULL
+);
+CREATE INDEX fish_trades_from_ts ON fish_trades(from_id, ts);
+CREATE INDEX fish_trades_to_ts ON fish_trades(to_id, ts);
+`;
+
+const SCHEMA_VERSION = 14;
 
 export function migrate(db: PointsDb): void {
   if ((db.pragma('user_version', { simple: true }) as number) >= SCHEMA_VERSION) return;
@@ -341,6 +362,7 @@ export function migrate(db: PointsDb): void {
     if (version < 11) db.exec(SCHEMA_V11);
     if (version < 12) db.exec(SCHEMA_V12);
     if (version < 13) db.exec(SCHEMA_V13);
+    if (version < 14) db.exec(SCHEMA_V14);
     if (version < SCHEMA_VERSION) db.pragma(`user_version = ${SCHEMA_VERSION}`);
   }).immediate();
 }

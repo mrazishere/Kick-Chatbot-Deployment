@@ -250,7 +250,8 @@ export function funnels(db: PointsDb, now: number, days = 7): Funnel[] {
   } catch {
     return [];
   }
-  const won = db.prepare("SELECT COALESCE(SUM(delta), 0) AS w FROM ledger WHERE user_id = ? AND reason LIKE 'game:%' AND delta > 0 AND ts >= ?");
+  // Winnings: not currency a trade brought in, nor a refund.
+  const won = db.prepare("SELECT COALESCE(SUM(delta), 0) AS w FROM ledger WHERE user_id = ? AND reason LIKE 'game:%' AND reason NOT IN ('game:fish_trade_in', 'game:fish_feed_refund') AND delta > 0 AND ts >= ?");
   const info = db.prepare('SELECT watch_seconds, first_seen_at FROM users WHERE user_id = ?');
   const sentBy = new Map<number, number>();
   for (const f of sent.values()) sentBy.set(f.userId, (sentBy.get(f.userId) ?? 0) + f.don + f.fishWorth);

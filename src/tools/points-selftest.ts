@@ -227,7 +227,7 @@ async function main(): Promise<void> {
   // Store basics
   {
     const db = openPointsDb('basics', { create: true })!;
-    check('migrated to user_version 13', db.pragma('user_version', { simple: true }) === 13);
+    check('migrated to user_version 14', db.pragma('user_version', { simple: true }) === 14);
     runWrite(db, () => creditTx(db, { userId: 1, username: 'alice', amount: 100, reason: 'mod_add', now: 1 }));
     const over = runWrite(db, () => debitTx(db, { userId: 1, amount: 150, reason: 'mod_remove', now: 2 }));
     check('debit beyond balance refused', !over.ok && over.balance === 100);
@@ -1531,7 +1531,9 @@ async function main(): Promise<void> {
       const scoutOk = await run('$don fish steal check @freshlen 🐟 40cm');
       check('the scout gives a reachable fish\'s odds, fee and fine', scoutOk.includes('✅ you can try now') && scoutOk.includes('100% chance') && /fee, [\d,]+ \$DON fine if caught/.test(scoutOk) && fishOf(61).hook === 1, scoutOk);
       const scoutAll = await run('$don fish steal c @aimkind');
-      check('the scout on a target alone counts the fish in reach and the worst it costs', scoutAll.includes('❌ you tried them today') && scoutAll.includes('4 fish in reach') && scoutAll.includes('costs up to'), scoutAll);
+      // The 🐋 steal above works or not by chance: aimkind holds 3 or 4 fish now.
+      const held = fishOf(62).catch.fish;
+      check('the scout on a target alone counts the fish in reach and the worst it costs', scoutAll.includes('❌ you tried them today') && scoutAll.includes(`${held} fish in reach`) && scoutAll.includes('costs up to'), { scoutAll, held });
       check('a name that isn\'t a fish asks for one', (await run('$don fish steal check @aimkind 🥫')).includes('only grabs fish'));
       const old = await run('$don fish steal @freshlen 🐟 40cm');
       check('but an older one of the kind can', old.includes('made off with') && old.includes('(40 cm)') && fishOf(61).hook === 0, old);
@@ -2325,8 +2327,15 @@ async function main(): Promise<void> {
     check('XP levels it as far as it reaches, the rest carried', up1 === 1 && shark.level === 1 && shark.xp === cost - 1, shark);
     addXp(it('🦈'), gf, shark, 1);
     const f2 = fighterOf(gf, it('🦈'), shark);
-    check('each level adds 10% duel stats and 25% value', shark.level === 2 && !shark.xp && f2.level === 2 && f2.hp === Math.round(plain.hp * 1.2) && Math.abs(f2.attack - plain.attack * 1.2) < 0.2
+    check('each level adds 3% duel stats and 25% value', shark.level === 2 && !shark.xp && f2.level === 2 && Math.abs(f2.hp - plain.hp * 1.06) <= 1 && Math.abs(f2.attack - plain.attack * 1.06) < 0.2
       && sellPrice(it('🦈'), gf, shark) === Math.round(base * 1.5), { shark, f2, plain });
+    // A level's bonus stops at the next tier's best: a maxed 🐟 is at most a full-length Lv0 🐠, a 🐳 has no ceiling.
+    const maxedCommon = fighterOf(gf, it('🐟'), { cm: 100, record: false, level: 10 });
+    const bestUncommon = fighterOf(gf, it('🐠'), { cm: 100, record: false });
+    const maxedTop = fighterOf(gf, it('🐳'), { cm: 100, record: false, level: 10 });
+    const topBase = fighterOf(gf, it('🐳'), { cm: 100, record: false });
+    check('levels stop at the next tier\'s best, top tiers keep the whole bonus', maxedCommon.hp === bestUncommon.hp && maxedCommon.attack === bestUncommon.attack
+      && maxedTop.hp === Math.round(topBase.hp * 1.3), { maxedCommon, bestUncommon, maxedTop, topBase });
     addXp(it('🦈'), gf, shark, 1e9);
     check('it stops at Lv10, the XP past it lost', shark.level === 10 && !shark.xp);
     const from = initialData(), to = initialData();
@@ -2383,7 +2392,7 @@ async function main(): Promise<void> {
       const d = loadFish(fdb, 36)!.catch;
       const eater = d.sizes!['🦈'].find(h => h.cm === 50)!;
       check('feed: the first fish eats the rest, gaining their sell value as XP; food not held and the fish itself are refused',
-        notHeld.includes('Nothing eaten: you have only 3 🐟') && itself.includes('Nothing eaten: you have no 🦈 besides the 🦈 eating')
+        notHeld.includes('Nothing eaten: you have only 3 🐟') && itself.includes('Nothing eaten: you have no 🦈 besides the 🦈 50 cm eating')
         && ate.includes(`Your 🦈 50 cm ate 🐟 x3 (+${food} XP)`) && (d.types['🐟'] ?? 0) === 0 && d.types['🦈'] === 2 && eater.xp === food && !eater.level, { notHeld, itself, ate, eater });
       const failed = await say(ch2, '$don fish feed 🦈 🐟 🐟');
       const d2 = loadFish(fdb2, 36)!.catch;
@@ -2391,9 +2400,75 @@ async function main(): Promise<void> {
       runWrite(fdb, () => { const x = loadFish(fdb, 36)!; x.catch.sizes!['🦈'][0].level = 4; saveFish(fdb, 36, x, 1); });
       const shown = await say(ch, '$don fish show 🦈');
       check('show lists a fish\'s level', /50 cm Lv4 ❤️/.test(shown), shown);
+      // "feed 🦈 🦈50cm": the highest-level 🦈 is the 50 cm one, named as food, so another 🦈 eats it.
+      const other = await say(ch, '$don fish feed 🦈 🦈50cm');
+      check('feed: an eater named without a length isn\'t the fish named as food', other.includes('Your 🦈 80 cm ate 🦈 50 cm') && loadFish(fdb, 36)!.catch.types['🦈'] === 1, other);
+      // Full at Lv10: a 🐟 100 cm needs 10 levels of 38 XP; four 🐟 90 cm (~140 each) are one too many, so one goes back.
+      runWrite(fdb, () => {
+        const x = loadFish(fdb, 36)!;
+        for (const cm of [100, 90, 90, 90, 90]) { addItem(x, it('🐟')); ((x.catch.sizes ??= {})['🐟'] ??= []).push({ cm, record: false }); }
+        saveFish(fdb, 36, x, 1);
+      });
+      const full = await say(ch, '$don fish feed 🐟 100cm 🐟 90cm 4');
+      const afterFull = loadFish(fdb, 36)!.catch;
+      check('feed: a fish stops eating at Lv10 and what it didn\'t eat stays', full.includes('grew to Lv10') && full.includes('went back to your bucket') && full.includes('🐟 90 cm')
+        && afterFull.types['🐟'] === 2 && afterFull.sizes!['🐟'].filter(h => h.cm === 90).length === 1, { full, left: afterFull.sizes!['🐟'] });
     } finally {
       Date.now = realNow;
     }
+  }
+
+  // Fish trades: an offer names the very fish, the other side accepts, both move, the proposer's fee burns.
+  {
+    const ch = 'tradech';
+    writeConfig(root, ch, { enabled: true, currencyName: '$DON', games: { enabled: true, onlyWhileLive: false, trade: { enabled: true, feePercent: 3, feeMinimum: 10 } } });
+    makeService(ch, { broadcaster: 999, live: async () => ({ isLive: false, startedAt: null }) });
+    const tdb = openPointsDb(ch, { create: true })!;
+    const it = (n: string) => ITEMS.find(i => i.name === n)!;
+    const gt = effectivePointsConfig({ games: { enabled: true } }).games;
+    runWrite(tdb, () => {
+      for (const [id, name, bal, fish] of [[71, 'alice', 5000, [['🦈', 72, 0], ['🐟', 40, 0], ['🐟', 50, 4]]], [72, 'bob', 100, [['🦭', 95, 0]]]] as const) {
+        ensureUserTx(tdb, id, name, 1);
+        creditTx(tdb, { userId: id, username: name, amount: bal, reason: 'mod_add', now: 1 });
+        const d = initialData();
+        d.lifetime.attempts = 1;
+        for (const [n, cm, level] of fish) { addItem(d, it(n)); ((d.catch.sizes ??= {})[n] ??= []).push({ cm, record: false, ...(level ? { level } : {}), ...(n === '🦭' ? { legacyLevels: true as const } : {}) }); }
+        saveFish(tdb, id, d, 1);
+      }
+    });
+    const realNow = Date.now;
+    let shift = 0;
+    Date.now = () => realNow() + shift;
+    const say = async (who: [string, number], msg: string) => {
+      shift += 6_000; // past the 5s between one viewer's commands
+      const out: string[] = [];
+      const t: KickTags = { username: who[0], 'display-name': who[0], badges: {}, isBroadcaster: false, isModUp: false, isVIPUp: false, rawBadges: [], senderId: who[1] };
+      await fishCommand({ say: async (_c, m) => { out.push(m); } }, msg, `#${ch}`, t, { channelName: ch } as ChannelConfig);
+      return out.join(' | ');
+    };
+    const A: [string, number] = ['alice', 71], B: [string, number] = ['bob', 72];
+    const short = await say(A, '$don fish trade @bob 🐋 for 🦭');
+    const notTheirs = await say(A, '$don fish trade @bob 🦈 for 🐋');
+    // By kind, 🐟 is the unfed 40 cm one, not the Lv4: the offer names it.
+    const offer = await say(A, '$don fish trade @bob 🦈 72cm 🐟 1000 for 🦭');
+    const worth = sellPrice(it('🦈'), gt, { cm: 72, record: false }) + sellPrice(it('🐟'), gt, { cm: 40, record: false }) + 1000 + sellPrice(it('🦭'), gt, { cm: 95, record: false });
+    const fee = Math.max(10, Math.round(worth * 0.03));
+    const twice = await say(A, '$don fish trade @bob 🐟 for 🦭');
+    const done = await say(B, '$don fish accept');
+    const a = loadFish(tdb, 71)!.catch, b = loadFish(tdb, 72)!.catch;
+    const bal = (id: number) => getUser(tdb, id)!.balance;
+    check('trade: short or not held is refused, the offer names the very fish and the fee', short.includes("You can't offer that") && notTheirs.includes('bob has no 🐋')
+      && offer.includes('🦈 72 cm, 🐟 40 cm, 1,000 $DON for your 🦭 95 cm') && offer.includes(`pays a ${fee.toLocaleString('en-US')} $DON fee`) && twice.includes('already have an offer'), { short, notTheirs, offer, twice });
+    check('trade: accepted, the fish and currency change hands, the fee burns, a fish keeps its legacy levels', done.includes('Trade done') && b.sizes!['🦈']?.[0]?.cm === 72 && b.sizes!['🐟']?.[0]?.cm === 40
+      && a.sizes!['🦭']?.[0]?.legacyLevels === true && a.sizes!['🐟'].length === 1 && a.sizes!['🐟'][0].level === 4 && !b.sizes!['🦭']?.length
+      && bal(71) === 5000 - 1000 - fee && bal(72) === 100 + 1000
+      && (tdb.prepare('SELECT COUNT(*) AS n FROM fish_trades').get() as { n: number }).n === 1, { done, a: a.sizes, b: b.sizes, b71: bal(71), b72: bal(72), fee });
+    const back = await say(B, '$don fish trade @alice 🦈 for 🦭');
+    const no = await say(A, '$don fish decline');
+    const gone = await say(B, '$don fish trade');
+    check('trade: declined, nothing moves, nothing waits', back.includes('offers 🦈 72 cm for your 🦭 95 cm') && no.includes('turned down your trade') && gone.includes('No trades waiting')
+      && loadFish(tdb, 72)!.catch.sizes!['🦈'].length === 1, { back, no, gone });
+    Date.now = realNow;
   }
 
   // A cap on what one viewer holds: past it new fish sell on the spot, new junk is binned
@@ -3368,25 +3443,25 @@ async function main(): Promise<void> {
     const mch = 'migrate1ch';
     const mdb = openPointsDb(mch, { create: true })!;
     runWrite(mdb, () => creditTx(mdb, { userId: 1, username: 'old', amount: 77, reason: 'mod_add', now: 1 }));
-    mdb.exec('DROP TABLE wheel_spins; DROP TABLE video_queue; DROP TABLE fish_signals; DROP TABLE fish_duels; DROP TABLE steals; DROP TABLE overlay_feed; DROP TABLE catches; DROP TABLE fish; DROP TABLE duels; DROP TABLE raffle_entries; DROP TABLE raffles; DROP INDEX ledger_ref');
+    mdb.exec('DROP TABLE fish_trades; DROP TABLE wheel_spins; DROP TABLE video_queue; DROP TABLE fish_signals; DROP TABLE fish_duels; DROP TABLE steals; DROP TABLE overlay_feed; DROP TABLE catches; DROP TABLE fish; DROP TABLE duels; DROP TABLE raffle_entries; DROP TABLE raffles; DROP INDEX ledger_ref');
     mdb.pragma('user_version = 1');
     closePointsDb(mch);
     const reopened = openPointsDb(mch, { create: false })!;
     const hasTable = (n: string) => !!reopened.prepare('SELECT 1 FROM sqlite_master WHERE name = ?').get(n);
     check('a v1 database migrates to the latest version keeping balances',
-      reopened.pragma('user_version', { simple: true }) === 13 && balance(mch, 1) === 77 && hasTable('video_queue') && hasTable('wheel_spins')
+      reopened.pragma('user_version', { simple: true }) === 14 && balance(mch, 1) === 77 && hasTable('video_queue') && hasTable('wheel_spins') && hasTable('fish_trades')
       && hasTable('duels') && hasTable('raffles') && hasTable('raffle_entries') && hasTable('fish') && hasTable('catches') && hasTable('overlay_feed') && hasTable('steals') && hasTable('fish_duels') && hasTable('fish_signals'));
 
     // v2 → v3 specifically: a database that already has duels gains the raffle tables.
     const m2 = 'migrate2ch';
     const m2db = openPointsDb(m2, { create: true })!;
     runWrite(m2db, () => creditTx(m2db, { userId: 1, username: 'old2', amount: 42, reason: 'mod_add', now: 1 }));
-    m2db.exec('DROP TABLE wheel_spins; DROP TABLE video_queue; DROP TABLE fish_signals; DROP TABLE fish_duels; DROP TABLE steals; DROP TABLE overlay_feed; DROP TABLE catches; DROP TABLE fish; DROP TABLE raffle_entries; DROP TABLE raffles; DROP INDEX ledger_ref');
+    m2db.exec('DROP TABLE fish_trades; DROP TABLE wheel_spins; DROP TABLE video_queue; DROP TABLE fish_signals; DROP TABLE fish_duels; DROP TABLE steals; DROP TABLE overlay_feed; DROP TABLE catches; DROP TABLE fish; DROP TABLE raffle_entries; DROP TABLE raffles; DROP INDEX ledger_ref');
     m2db.pragma('user_version = 2');
     closePointsDb(m2);
     const re2 = openPointsDb(m2, { create: false })!;
     check('a v2 database gains the raffle tables and keeps its balances',
-      re2.pragma('user_version', { simple: true }) === 13 && balance(m2, 1) === 42
+      re2.pragma('user_version', { simple: true }) === 14 && balance(m2, 1) === 42
       && !!re2.prepare("SELECT 1 FROM sqlite_master WHERE name = 'raffles'").get());
     void svc;
     makeService(ch, { broadcaster: 999 });
