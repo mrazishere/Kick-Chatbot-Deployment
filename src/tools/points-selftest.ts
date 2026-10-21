@@ -2463,7 +2463,8 @@ async function main(): Promise<void> {
       && a.sizes!['🦭']?.[0]?.legacyLevels === true && a.sizes!['🐟'].length === 1 && a.sizes!['🐟'][0].level === 4 && !b.sizes!['🦭']?.length
       && bal(71) === 5000 - 1000 - fee && bal(72) === 100 + 1000
       && (tdb.prepare('SELECT COUNT(*) AS n FROM fish_trades').get() as { n: number }).n === 1, { done, a: a.sizes, b: b.sizes, b71: bal(71), b72: bal(72), fee });
-    const back = await say(B, '$don fish trade @alice 🦈 for 🦭');
+    // The newer order: what you give, then who, then what you want.
+    const back = await say(B, '$don fish trade 🦈 @alice 🦭');
     const no = await say(A, '$don fish decline');
     const gone = await say(B, '$don fish trade');
     check('trade: declined, nothing moves, nothing waits', back.includes('offers 🦈 72 cm for your 🦭 95 cm') && no.includes('turned down your trade') && gone.includes('No trades waiting')

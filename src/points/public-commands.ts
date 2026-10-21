@@ -180,7 +180,7 @@ export function publicCommands(cfg: PointsConfig, opts: { channel?: BotCommandCh
           { usage: `${f} give @user 🐟 [count] [length]`, short: `${s} gv @user 🐟`, does: `Give one kind of fish or junk to someone, by emoji or name (2 sharks), oldest first, or a certain fish by its length (🦈 72cm)${g.giveCooldownSeconds > 0 ? `; ${g.giveCooldownSeconds}s between gives` : ''}` }
         ] : []),
         ...(g.trade.enabled ? [
-          { usage: `${f} trade @user 🦈 72cm for 🐋`, short: `${s} tr @user 🦈 for 🐋`, does: `Offer fish and/or ${cur} for someone's: left of "for" is yours, right is theirs. A number first on a side, over 100, or written 50$ is ${cur} (🦦 for 5000). They answer ${s} accept or ${s} decline within ${Math.round(g.trade.expirySeconds / 60)}m. You pay a ${g.trade.feePercent}% fee on everything that changes hands, at least ${g.trade.feeMinimum}, burned` },
+          { usage: `${f} trade 🦈 72cm @user 🐋`, short: `${s} tr 🦈 @user 🐋`, does: `Offer fish and/or ${cur} for someone's: what you give, then who, then what you want (${s} tr 5000 @user 🦦 buys their 🦦). A number first on a side, over 100, or written 50$ is ${cur}. They answer ${s} accept or ${s} decline within ${Math.round(g.trade.expirySeconds / 60)}m. You pay a ${g.trade.feePercent}% fee on everything that changes hands, at least ${g.trade.feeMinimum}, burned` },
           { usage: `${f} trade`, short: `${s} tr`, does: 'Your trade offers waiting, either way; trade cancel takes yours back' }
         ] : []),
         ...(g.feedEnabled ? [

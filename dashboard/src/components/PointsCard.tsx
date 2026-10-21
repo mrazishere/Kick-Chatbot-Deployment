@@ -1267,7 +1267,7 @@ function TradeSettings({ value, currency, command, disabled, onChange }: {
   return (
     <div className="rounded-md border border-neutral-800 p-3">
       <Checkbox
-        label={`Let viewers trade fish ($${command} fish trade @user 🦈 72cm for 🐋)`}
+        label={`Let viewers trade fish ($${command} fish trade 🦈 72cm @user 🐋)`}
         checked={value.enabled}
         disabled={disabled}
         onChange={(enabled) => onChange({ ...value, enabled })}
@@ -1288,7 +1288,7 @@ function TradeSettings({ value, currency, command, disabled, onChange }: {
             ))}
           </div>
           <p className="mt-3 text-xs text-neutral-500">
-            {`A viewer offers fish and/or ${currency} for another's with $${command} fish trade @user 🦈 72cm for 🐋 (left of "for" is what the proposer gives, right is what they want; a number first on a side, over 100, or written 50$ is ${currency}). `}
+            {`A viewer offers fish and/or ${currency} for another's with $${command} fish trade 🦈 72cm @user 🐋: what they give, then who, then what they want ($${command} fish trade 5000 @user 🦦 buys a 🦦). A number first on a side, over 100, or written 50$ is ${currency}. `}
             {`The other answers $${command} fish accept or $${command} fish decline in time; $${command} fish trade cancel takes an offer back. Any time, live or offline. The offer names the very fish, and everything is checked again on accept. `}
             {`Whoever offered pays the fee when it goes through, a share of everything that changes hands (fish at sell value plus ${currency}), burned like steal fees so alts can't shuffle value around for free. Every trade is recorded, and a lopsided one counts as a gift for the cheat flags.`}
           </p>

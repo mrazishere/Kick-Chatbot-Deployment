@@ -1300,8 +1300,8 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
 
   // ── trade ──
   /**
-   * `fish trade @user 🦈 72cm 500 for 🐋`: offer fish and/or currency for theirs. Left of "for" is
-   * what you give, right of it what you want. A number first on a side, over 100, or with $, k or
+   * `fish trade 🦈 72cm 500 @user 🐋`: offer fish and/or currency for theirs, what you give before
+   * the name and what you want after it (`fish trade @user 🦈 for 🐋`, the first form, also works). A number first on a side, over 100, or with $, k or
    * the currency's name after it is currency; otherwise, after a fish, it's how many. They answer with
    * `fish accept` / `fish decline` (or `fish trade accept|decline`); `fish trade cancel` takes it
    * back; `fish trade` alone shows what's waiting. The proposer pays games.trade's fee, burned.
@@ -1410,7 +1410,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     if (!parts.length) {
       const mine = tradeBy(chan, uid);
       const theirs = tradeFor(chan, uid);
-      if (!mine && !theirs) return void say(`No trades waiting. Offer one: ${cmd} fish trade @user 🦈 72cm for 🐋 (or for 5000).`);
+      if (!mine && !theirs) return void say(`No trades waiting. Offer one: ${cmd} fish trade 🦈 72cm @user 🐋 (what you give, who, what you want).`);
       return void say([
         theirs ? `@${theirs.from} offers ${sideText(theirs.give, cur)} for your ${sideText(theirs.get, cur)} (${span(theirs.expiresAt - Date.now())} left: ${cmd} fish accept or decline).` : '',
         mine ? `Your offer to @${mine.to}: ${sideText(mine.give, cur)} for ${sideText(mine.get, cur)} (${span(mine.expiresAt - Date.now())} left, ${cmd} fish trade cancel takes it back).` : ''
@@ -1425,15 +1425,28 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       return void say(`You took back your trade offer to @${mine.to}.`);
     }
 
-    const usage = `Trade what for what? ${cmd} fish trade @user 🦈 72cm for 🐋 (left of "for" is yours, right is theirs; a number first on a side is ${cur}, like for 5000)`;
+    const usage = `Trade what for what? ${cmd} fish trade 🦈 72cm @user 🐋: what you give, then who, then what you want (${cmd} fish trade 5000 @user 🦦 buys their 🦦)`;
+    // "🦈 72cm @bob 🐋": yours before the name, theirs after it ("for" between is optional).
+    // "@bob 🦈 72cm for 🐋", the first form, still works: then "for" splits the sides.
     const at = parts.findIndex(p => p.startsWith('@'));
     const who = at >= 0 ? at : 0;
     const name = parseUsername(parts[who]);
-    const words = parts.filter((_, i) => i !== who);
-    const split = words.findIndex(w => /^for$/i.test(w));
-    if (!name || split < 0) return void say(usage);
-    const mineSide = tradeSideOf(words.slice(0, split));
-    const theirSide = tradeSideOf(words.slice(split + 1));
+    if (!name) return void say(usage);
+    let giveWords: string[];
+    let wantWords: string[];
+    if (who > 0) {
+      giveWords = parts.slice(0, who);
+      wantWords = parts.slice(who + 1);
+      if (/^for$/i.test(wantWords[0] ?? '')) wantWords = wantWords.slice(1);
+    } else {
+      const words = parts.slice(1);
+      const split = words.findIndex(w => /^for$/i.test(w));
+      if (split < 0) return void say(usage);
+      giveWords = words.slice(0, split);
+      wantWords = words.slice(split + 1);
+    }
+    const mineSide = tradeSideOf(giveWords);
+    const theirSide = tradeSideOf(wantWords);
     if ('error' in mineSide) return void say(mineSide.error);
     if ('error' in theirSide) return void say(theirSide.error);
     if ((!mineSide.picks.length && !mineSide.coins) || (!theirSide.picks.length && !theirSide.coins)) {

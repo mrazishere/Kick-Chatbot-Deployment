@@ -463,7 +463,7 @@ function channelRules(ctx: StatToolContext, raw: unknown): unknown {
     if (!g.trade.enabled) return off('Fish trading');
     const t = g.trade;
     return {
-      how: '$<cmd> fish trade @user <what you give> for <what you want>: fish (an emoji, a name, a length like 72cm for that very fish, a count) and/or $<currency> on either side. A number first on a side, over 100, or written 50$ is $<currency>; a small number after a fish is how many. The offer names the very fish (by kind alone, oldest unfed first); only those change hands',
+      how: '$<cmd> fish trade <what you give> @user <what you want> (e.g. $<cmd> fish trade 🦈 72cm @bob 🐋; $<cmd> fish trade 5000 @bob 🦦 buys their 🦦; the older form $<cmd> fish trade @user <give> for <want> also works): fish (an emoji, a name, a length like 72cm for that very fish, a count) and/or $<currency> on either side. A number first on a side, over 100, or written 50$ is $<currency>; a small number after a fish is how many. The offer names the very fish (by kind alone, oldest unfed first); only those change hands',
       answer: `the other viewer says $<cmd> fish accept or $<cmd> fish decline within ${Math.round(t.expirySeconds / 60)} min; $<cmd> fish trade cancel takes an offer back; $<cmd> fish trade shows what is waiting. One offer at a time each way`,
       fee: `${t.feePercent}% of everything that changes hands (fish at sell value plus $<currency>), at least ${t.feeMinimum}, paid by whoever offered when it goes through, and burned`,
       when: 'any time, live or offline',
