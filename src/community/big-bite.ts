@@ -56,8 +56,13 @@ export interface Bite {
   /** Who has used their one snipe try on this bite, lowercase. */
   tried: Set<string>;
   timer: NodeJS.Timeout;
-  /** A reward bite (a sub, gifted subs, Kicks): theirs alone, never open to snipers, and it always lands once every code is right. */
+  /**
+   * A reward bite (a sub, gifted subs, Kicks): it always lands once every code is right. It opens
+   * to snipers like any bite, but a right snipe code only ends it (rewardSnipeFails): it's theirs alone.
+   */
   reward?: boolean;
+  /** Who it was for, once sniped. */
+  snipedFrom?: string;
 }
 
 /**
@@ -167,6 +172,7 @@ export function snipeBite(ctx: BiteContext, bite: Bite, name: string, userId: nu
   const from = bite.username;
   bites.delete(key(ctx.channel, from));
   clearTimeout(bite.timer);
+  bite.snipedFrom ??= from;
   bite.username = name;
   bite.userId = userId;
   delete bite.snipeAt;
@@ -175,6 +181,21 @@ export function snipeBite(ctx: BiteContext, bite: Bite, name: string, userId: nu
   console.log(`[FISH] ${name} sniped ${from}'s big bite in ${ctx.channel}`);
   pushOverlay(ctx.db, { username: from, kind: 'miss', text: `🪝 ${name} sniped your big bite!` });
   void ctx.sendMessage(`@${from} too slow! 🪝 @${name} sniped your big bite and is reeling it in!`).catch(() => {});
+}
+
+/**
+ * A sniper answered a reward bite's snipe code right: it only bites for the viewer it was for,
+ * so it ends there, for both (asked for 2026-10-22: snipers may try, but never win one).
+ */
+export function rewardSnipeFails(ctx: BiteContext, bite: Bite, name: string): void {
+  const from = bite.username;
+  bites.delete(key(ctx.channel, from));
+  clearTimeout(bite.timer);
+  console.log(`[FISH] ${name} sniped ${from}'s reward bite in ${ctx.channel}: it spat the hook`);
+  recordBite(ctx.db, bite, 'spat', { why: `sniped by ${name}` });
+  const text = `🪝 ${name} hooked it... and it spat the hook! This big one only bites for ${from}. It's gone!`;
+  pushOverlay(ctx.db, { username: from, kind: 'miss', text });
+  void ctx.sendMessage(`🪝 @${name} hooked it... and it spat the hook! This big one only bites for @${from}. It's gone!`).catch(() => {});
 }
 
 export interface BiteContext {
@@ -192,9 +213,27 @@ export interface BiteContext {
 /** snipeAt while the "SNIPE OPEN" line is being posted: answers then are too early, nobody can have seen it. */
 export const SNIPE_PENDING = Number.MAX_SAFE_INTEGER;
 
-/** A big bite lost: the overlay and chat say so (chat's result line). Nothing else changes. */
-export function getAway(ctx: BiteContext, name: string, why: string): void {
+export type BiteOutcome = 'landed' | 'snapped' | 'got-away' | 'spat';
+
+/**
+ * Keep how a big bite ended (big_bites), for !claude: who had it, whether it was sniped, how
+ * far it got and, past the last pull, the trophy and its land chance. A failed write only logs.
+ */
+export function recordBite(db: PointsDb, bite: Bite, outcome: BiteOutcome, extra: { trophy?: string; cm?: number | null; landPercent?: number; why?: string } = {}, now = Date.now()): void {
+  try {
+    db.prepare(`INSERT INTO big_bites (ts, user_id, username, for_name, sniped, reward, outcome, pull, trophy, cm, land_percent, why)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(now, bite.userId, bite.username, bite.snipedFrom ?? bite.username,
+      bite.snipedFrom ? 1 : 0, bite.reward ? 1 : 0, outcome, bite.pull, extra.trophy ?? null, extra.cm ?? null, extra.landPercent ?? null, extra.why ?? null);
+  } catch (err) {
+    console.error(`[FISH] Saving a big bite's result failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+/** A big bite lost: the overlay and chat say so (chat's result line), and big_bites keeps it. */
+export function getAway(ctx: BiteContext, bite: Bite, why: string): void {
+  const name = bite.username;
   console.log(`[FISH] ${name}'s big bite got away in ${ctx.channel}: ${why}`);
+  recordBite(ctx.db, bite, 'got-away', { why });
   const text = `The big one got away... ${why}`;
   pushOverlay(ctx.db, { username: name, kind: 'miss', text });
   void ctx.sendMessage(`@${name} ${text}`).catch(() => {});
@@ -246,7 +285,7 @@ function arm(ctx: BiteContext, bite: Bite, windowMs: number, text: string, now: 
   // The stream shows the code this much later, so its time runs from then.
   const delayMs = ctx.delayMs ?? 0;
   bite.until = now + delayMs + windowMs;
-  const snipeMs = bite.pull === 1 && !bite.reward ? drawSnipeMs(ctx.bigBite) : 0;
+  const snipeMs = bite.pull === 1 ? drawSnipeMs(ctx.bigBite) : 0;
   if (snipeMs > 0) bite.snipeAt = bite.until - snipeMs;
   else delete bite.snipeAt;
   delete bite.snipeCode;
@@ -261,7 +300,7 @@ function arm(ctx: BiteContext, bite: Bite, windowMs: number, text: string, now: 
   bite.timer = setTimeout(() => {
     if (bites.get(k) !== bite || bite.code !== code) return;
     bites.delete(k);
-    getAway(ctx, bite.username, bite.pull > 1 ? 'It pulled too hard and swam off!' : 'It was too strong and swam off!');
+    getAway(ctx, bite, bite.pull > 1 ? 'It pulled too hard and swam off!' : 'It was too strong and swam off!');
   }, delayMs + windowMs + STREAM_GRACE_MS + 500);
   bite.timer.unref?.();
   // From the second pull the code flashes: the overlay hides it flashSeconds after it first
@@ -307,8 +346,10 @@ export function startBite(ctx: BiteContext, name: string, userId: number, reward
   arm(ctx, bite, ctx.bigBite.windowSeconds * 1000,
     `🎣 Something BIG is tugging at your line! Reel it in with $${ctx.command} fish reel <code> within ${ctx.bigBite.windowSeconds}s!${pulls}`, now);
   // The one chat line: who, and where to look. The code and everything after are on stream.
-  const snipeS = reward ? 0 : snipeWindowMs(ctx.bigBite) / 1000;
-  const snipers = snipeS > 0 ? ` For about the last ${snipeS}s anyone can snipe it: I'll post a snipe code in chat, and the first to type it takes it!` : reward ? ' Nobody can snipe this one, and get every code right and it\'s guaranteed to land!' : '';
+  const snipeS = snipeWindowMs(ctx.bigBite) / 1000;
+  const snipers = reward
+    ? ` Get every code right and it's guaranteed to land!${snipeS > 0 ? ` Don't leave it too long: for about the last ${snipeS}s, snipers get a shot at it.` : ''}`
+    : snipeS > 0 ? ` For about the last ${snipeS}s anyone can snipe it: I'll post a snipe code in chat, and the first to type it takes it!` : '';
   void ctx.sendMessage(`@${name} 🎣 ${reward ? `Thanks for ${reward}! 🎁 ` : ''}Something BIG is on your line! A code is showing on stream now: type $${ctx.command} fish reel and that code within ${ctx.bigBite.windowSeconds}s to reel it in!${snipers}`).catch(() => {});
   return bite;
 }

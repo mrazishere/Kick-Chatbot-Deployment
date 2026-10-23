@@ -81,6 +81,7 @@ const TOOLS: Row[] = [
   { file: 'fx', usage: '!fx [amount]', does: 'Convert money from where the stream is to the streamer\'s home currency' },
   { file: 'fx', usage: '!fx <FROM> <TO> [amount]', does: 'Convert between any two currencies, like !fx USD SGD 20' },
   { file: 'weather', usage: '!weather [place]', does: 'The weather where the stream is, or anywhere' },
+  { file: 'place', usage: '!place <name>', does: 'Look up any restaurant, shop or spot on Google Maps: rating, reviews, open now, address and what it\'s known for' },
   { file: 'earnings', usage: '!earnings', does: 'This stream\'s estimated earnings' },
   { file: 'kpp', usage: '!kpp', does: 'This stream\'s engagement score for Kick\'s partner payout' },
   { file: 'media', usage: '!media', does: 'What\'s playing on media share now, and who asked for it' },

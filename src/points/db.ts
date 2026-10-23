@@ -340,7 +340,33 @@ CREATE INDEX fish_trades_from_ts ON fish_trades(from_id, ts);
 CREATE INDEX fish_trades_to_ts ON fish_trades(to_id, ts);
 `;
 
-const SCHEMA_VERSION = 14;
+/**
+ * v15: big_bites, how each big bite ended. user_id/username is who had it at the end (the
+ * sniper, if sniped), for_name who it was for. outcome: landed, snapped (every code right, the
+ * land roll failed), got-away (a wrong code or too slow) or spat (a reward bite sniped).
+ * land_percent is the trophy's land chance at the time; trophy is null unless the last pull was reached.
+ */
+const SCHEMA_V15 = `
+CREATE TABLE big_bites (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts INTEGER NOT NULL,
+  user_id INTEGER NOT NULL,
+  username TEXT NOT NULL,
+  for_name TEXT NOT NULL,
+  sniped INTEGER NOT NULL,
+  reward INTEGER NOT NULL,
+  outcome TEXT NOT NULL,
+  pull INTEGER NOT NULL,
+  trophy TEXT,
+  cm INTEGER,
+  land_percent INTEGER,
+  why TEXT
+);
+CREATE INDEX big_bites_ts ON big_bites(ts);
+CREATE INDEX big_bites_user_ts ON big_bites(user_id, ts);
+`;
+
+const SCHEMA_VERSION = 15;
 
 export function migrate(db: PointsDb): void {
   if ((db.pragma('user_version', { simple: true }) as number) >= SCHEMA_VERSION) return;
@@ -363,6 +389,7 @@ export function migrate(db: PointsDb): void {
     if (version < 12) db.exec(SCHEMA_V12);
     if (version < 13) db.exec(SCHEMA_V13);
     if (version < 14) db.exec(SCHEMA_V14);
+    if (version < 15) db.exec(SCHEMA_V15);
     if (version < SCHEMA_VERSION) db.pragma(`user_version = ${SCHEMA_VERSION}`);
   }).immediate();
 }

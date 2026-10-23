@@ -383,11 +383,19 @@ export async function playerAction(channel: string, action: 'next' | 'skip' | 'p
     const h = await getJson<{ history?: Array<{ _id?: string; song?: Song }> }>(`${API}/${creds.channelId}/history?limit=50`, creds.jwt);
     const entry = (h?.history ?? []).find(e => e._id === key);
     if (!entry?.song) return false;
+    // A Kick tip's user has providerId "", which the history hands out but /replay refuses (400,
+    // "user.providerId too small"): every tipped song failed to replay until 2026-10-22.
+    const song: Record<string, unknown> = { ...entry.song, _id: entry._id };
+    if (entry.song.user) song.user = Object.fromEntries(Object.entries(entry.song.user).filter(([, v]) => v !== ''));
     const res = await fetch(`${API}/${creds.channelId}/replay`, {
       method: 'POST', headers: { Authorization: `Bearer ${creds.jwt}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...entry.song, _id: entry._id }), signal: AbortSignal.timeout(5_000)
+      body: JSON.stringify(song), signal: AbortSignal.timeout(5_000)
     });
-    if (!res.ok) throw new Error(`StreamElements answered ${res.status}`);
+    if (!res.ok) {
+      // Told to the page as "couldn't replay", not as the whole sync failing.
+      console.log(`[MEDIASHARE] ${channel} replay refused: ${res.status} ${(await res.text().catch(() => '')).slice(0, 200)}`);
+      return false;
+    }
     return true;
   }
   const up = toSong(await getJson<Song>(`${API}/${creds.channelId}/playing`, creds.jwt));

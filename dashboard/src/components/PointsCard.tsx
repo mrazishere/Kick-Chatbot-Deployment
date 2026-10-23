@@ -1203,7 +1203,7 @@ function BigBiteSettings({ value, command, disabled, onChange }: {
             <Checkbox label="For a new sub or resub" checked={value.onSub} disabled={disabled} onChange={(onSub) => onChange({ ...value, onSub })} />
             <Checkbox label="For gifting subs (the gifter, not the recipients)" checked={value.onGift} disabled={disabled} onChange={(onGift) => onChange({ ...value, onGift })} />
             <p className="text-xs text-neutral-500">
-              {`Live with the overlay showing only. A reward bite goes to that viewer straight away, or right after a bite already on a line (they wait up to 15 minutes), says thanks in chat, can't be sniped, always lands if they get every code right, and doesn't move the timer. Not for the streamer or anonymous gifts.`}
+              {`Live with the overlay showing only. A reward bite goes to that viewer straight away, or right after a bite already on a line (they wait up to 15 minutes), says thanks in chat, opens to snipers like any bite but a right snipe code only ends it (nobody else can win it), always lands if they get every code right, and doesn't move the timer. Not for the streamer or anonymous gifts.`}
             </p>
           </div>
           <p className="mt-3 text-xs text-neutral-500">

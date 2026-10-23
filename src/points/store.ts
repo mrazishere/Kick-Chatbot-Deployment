@@ -735,6 +735,39 @@ export function pointsSummary(channel: string): {
   });
 }
 
+/**
+ * Fishing's $ channel-wide since sinceMs: earned selling fish, spent on the game (reels, bait,
+ * hooks, guards, steal fees, fines, trade fees; refunds taken off), and the net new currency.
+ * Trades and fish duels move currency between viewers, so they're left out of spent and cancel in net.
+ */
+export interface FishingEconomy { soldFish: number; spent: number; net: number }
+const FISH_TRANSFERS = ['game:fish_trade_out', 'game:fish_trade_in', 'game:fish_duel', 'game:fish_duel_win'];
+export function fishingEconomy(db: PointsDb, sinceMs = 0): FishingEconomy {
+  const row = db.prepare(
+    `SELECT COALESCE(SUM(CASE WHEN reason = 'game:fish_sell' THEN delta ELSE 0 END), 0) AS sold,
+       COALESCE(SUM(delta), 0) AS net
+     FROM ledger WHERE reason LIKE 'game:fish%' AND reason NOT IN (?, ?, ?, ?) AND ts >= ?`
+  ).get(...FISH_TRANSFERS, sinceMs) as { sold: number; net: number };
+  return { soldFish: row.sold, spent: row.sold - row.net, net: row.net };
+}
+
+/**
+ * Where the channel's currency comes from, for !claude: gambling and fishing net new currency
+ * all-time, the last 7 days and this stream (null while not live). Mod corrections stay out.
+ */
+export type EconomyPeriod = { gambling: GambleStats; fishing: FishingEconomy };
+export function economySummary(channel: string): { allTime: EconomyPeriod; last7Days: EconomyPeriod; thisStream: EconomyPeriod | null } | null {
+  return withReadDb<ReturnType<typeof economySummary>>(channel, null, db => {
+    const liveSince = Number(getMeta(db, 'live_since'));
+    const at = (since: number) => ({ gambling: gambleStats(db, since), fishing: fishingEconomy(db, since) });
+    return {
+      allTime: at(0),
+      last7Days: at(Date.now() - 7 * 86_400_000),
+      thisStream: Number.isFinite(liveSince) && liveSince > 0 ? at(liveSince) : null
+    };
+  });
+}
+
 /** Viewers whose name starts with `q`, or the top balances when `q` is empty. Includes excluded accounts (rank 0). */
 export function searchPointsUsers(channel: string, cfg: PointsConfig, q: string, limit: number, broadcasterUserId?: number | null): PointsUserRow[] {
   const n = Math.min(50, Math.max(1, Math.floor(limit) || 20));

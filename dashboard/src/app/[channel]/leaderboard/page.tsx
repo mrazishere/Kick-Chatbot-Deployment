@@ -224,11 +224,23 @@ function StealGuide({ rules: r, currency, command, fish, emotes }: { rules: Publ
 
 const TYPE_EMOJI: Record<string, string> = { Predator: "🦷", Swift: "💨", Armored: "🪨" };
 
-/** One viewer's fish, each kind by length: duel stats (❤️ health, ⚔️ attack) and what it sells for. */
+/**
+ * One viewer's fish, a row per kind: each kind's fish strongest first by ❤️ health × ⚔️ attack
+ * (the measure a duel picks someone's best fish by, so a levelled fish ranks above a longer
+ * unfed one), and the kinds in order of their strongest fish. Each with its duel stats and
+ * what it sells for.
+ */
 function HeldList({ fish, currency, duel, emotes }: { fish: PublicHolder["fish"]; currency: string; duel: boolean; emotes?: Emotes }) {
+  type Each = NonNullable<PublicHolder["fish"][number]["each"]>[number];
+  const power = (e: Each) => e.hp * e.attack;
+  const byStrength = (a: Each, b: Each) => power(b) - power(a) || b.worth - a.worth || (b.cm ?? -1) - (a.cm ?? -1);
+  const kinds = fish
+    .map((f) => ({ ...f, each: [...(f.each ?? [])].sort(byStrength) }))
+    .filter((f) => f.each.length)
+    .sort((a, b) => byStrength(a.each[0], b.each[0]));
   return (
     <div className="space-y-2 bg-neutral-900/20 px-5 py-3 sm:pl-14">
-      {fish.map((f) => (
+      {kinds.map((f) => (
         <div key={f.emoji} className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
           <span className="w-full text-xs text-neutral-400 sm:w-44 sm:shrink-0">
             <span className="mr-1 text-base"><FishIcon name={f.emoji} emotes={emotes} /></span>
@@ -236,7 +248,7 @@ function HeldList({ fish, currency, duel, emotes }: { fish: PublicHolder["fish"]
             {f.rarity}
           </span>
           <span className="flex min-w-0 flex-1 flex-wrap gap-1.5">
-            {(f.each ?? []).map((e) => (
+            {f.each.map((e) => (
               <span
                 key={`${e.cm}-${e.worth}-${e.level ?? 0}`}
                 title={`${e.worth.toLocaleString("en-US")} ${currency} each`}
@@ -252,25 +264,24 @@ function HeldList({ fish, currency, duel, emotes }: { fish: PublicHolder["fish"]
         </div>
       ))}
       <p className="pt-1 text-xs text-neutral-600">
-        ❤️ health and ⚔️ attack in a fish duel, 💰 what one sells for.{duel ? " Duel a certain one by its length, like 🦈 72cm." : ""}
+        Grouped by kind, strongest first. ❤️ health and ⚔️ attack in a fish duel, 💰 what one sells for.{duel ? " Duel a certain one by its length, like 🦈 72cm." : ""}
       </p>
     </div>
   );
 }
 
-/** The fish each viewer holds unsold, the most valuable haul first. */
 function Holders({ rows, currency, channel, duel, emotes }: { rows: PublicHolder[]; currency: string; channel: string; duel: boolean; emotes?: Emotes }) {
   const total = rows.reduce((sum, r) => sum + r.count, 0);
   return (
     <section className="overflow-hidden rounded-xl border border-neutral-800 bg-neutral-950/60">
       <h2 className="border-b border-neutral-800 px-5 py-2 text-xs text-neutral-500">
         <span className="text-neutral-300">🪣 Holding right now</span>
-        {` · ${total.toLocaleString("en-US")} unsold fish, by what they'd sell for. Tap someone to see their fish, each with its length and stats.`}
+        {` · ${total.toLocaleString("en-US")} unsold fish, by what they'd sell for. Tap someone to see their fish by kind, strongest first, each with its length and stats.`}
       </h2>
       <ol className="divide-y divide-neutral-800">
         {rows.map((r, i) => {
           const detailed = r.fish.some((f) => f.each?.length);
-          // Collapsed: who and what it's worth. Open: every kind they hold, then each fish by length.
+          // Collapsed: who and what it's worth. Open: every kind they hold, strongest kind first, each kind's fish strongest first.
           return (
             <li key={r.name} className="text-sm">
               <details className="group">

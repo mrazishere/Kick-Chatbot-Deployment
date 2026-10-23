@@ -67,12 +67,14 @@ export const ITEMS: CatchItem[] = [
   // like supibot's fish, so a channel that triples fish prices sets these itself.
   // 2026-10-18: big bites flooded the market (18 landed a day, trophies 8-0 in duels against
   // fish), so prices halved, land chances lowered and fighting strength set by tier.
-  { name: '🦭', type: 'fish', price: 500, weight: 30, size: true, trophy: true, landPercent: 60, duelRarity: 'Rare' },
-  { name: '🦦', type: 'fish', price: 750, weight: 25, size: true, trophy: true, landPercent: 50, duelRarity: 'Rare' },
-  { name: '🦕', type: 'fish', price: 1_250, weight: 20, size: true, trophy: true, landPercent: 40, duelRarity: 'Epic' },
-  { name: '🦖', type: 'fish', price: 2_000, weight: 10, size: true, trophy: true, landPercent: 30, duelRarity: 'Epic' },
-  { name: '🦄', type: 'fish', price: 3_000, weight: 10, size: true, trophy: true, landPercent: 20, duelRarity: 'Legendary' },
-  { name: '🐉', type: 'fish', price: 12_500, weight: 5, size: true, trophy: true, landPercent: 10, duelRarity: 'Mythic' }
+  // 2026-10-23: land chances up 10 points each, so a fully reeled bite lands 54% of the time on
+  // average instead of 44%: chat read a run of snaps as rigged.
+  { name: '🦭', type: 'fish', price: 500, weight: 30, size: true, trophy: true, landPercent: 70, duelRarity: 'Rare' },
+  { name: '🦦', type: 'fish', price: 750, weight: 25, size: true, trophy: true, landPercent: 60, duelRarity: 'Rare' },
+  { name: '🦕', type: 'fish', price: 1_250, weight: 20, size: true, trophy: true, landPercent: 50, duelRarity: 'Epic' },
+  { name: '🦖', type: 'fish', price: 2_000, weight: 10, size: true, trophy: true, landPercent: 40, duelRarity: 'Epic' },
+  { name: '🦄', type: 'fish', price: 3_000, weight: 10, size: true, trophy: true, landPercent: 30, duelRarity: 'Legendary' },
+  { name: '🐉', type: 'fish', price: 12_500, weight: 5, size: true, trophy: true, landPercent: 20, duelRarity: 'Mythic' }
 ];
 
 /** Custom fish by lowercase name, for typing an emote's name in any case. */
@@ -183,8 +185,9 @@ export interface HeldFish {
   xp?: number;
   /**
    * Keeps the levelling rules from before 2026-10-22: LEGACY_LEVEL_STATS a level and no ceiling.
-   * Given by the owner as a reward (anothercull's 🐟 and 🦐, for finding how cheap fish out-levelled
-   * rare ones). It goes with the fish wherever it goes.
+   * Given by the owner as a reward (anothercull's 🐟, for finding how cheap fish out-levelled rare
+   * ones; their 🦐 had it too until 2026-10-22, taken off as too strong). It goes with the fish
+   * wherever it goes.
    */
   legacyLevels?: true;
 }

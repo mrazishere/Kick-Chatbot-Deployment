@@ -470,7 +470,7 @@ export interface FishBigBiteSetting {
    * Reward bites, on top of the timed ones: a big bite for the viewer who sends at least
    * this many Kicks at once (0 is off), who subscribes or resubscribes (onSub), or who
    * gifts subs (onGift, the gifter only). Live with the overlay showing only; they queue
-   * behind a bite already on a line, don't move the timer and can't be sniped.
+   * behind a bite already on a line, don't move the timer; a snipe only ends them.
    */
   kicksMin: number;
   onSub: boolean;

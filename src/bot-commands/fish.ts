@@ -64,7 +64,7 @@ import { answerMatches, makeTrapCheck, type TrapCheck } from '../community/trap-
 import { wheelBusy } from '../community/wheel-state';
 import { recordSignal } from '../community/cheat-signals';
 import { addTrade, dropTrade, sideText, tradeBy, tradeFor, type TradeItem, type TradeOffer, type TradeSide } from '../community/fish-trade';
-import { BITE_TOO_FAST_MS, STREAM_GRACE_MS, biteFor, canBite, channelBite, channelHasBite, codeMatches, getAway, nextPull, pickChatter, snipeBite, snipeOpen, startBite, takeBite, type BiteContext } from '../community/big-bite';
+import { BITE_TOO_FAST_MS, STREAM_GRACE_MS, biteFor, canBite, channelBite, channelHasBite, codeMatches, getAway, nextPull, pickChatter, recordBite, rewardSnipeFails, snipeBite, snipeOpen, startBite, takeBite, type BiteContext } from '../community/big-bite';
 import {
   addItem, itemByWord, giveItems, baitPrice, baitRoll, currentReel, heldFishValue, freshCatches, landsFish, moveFish, pickHeld, stealableFish, stealChance, stealCharges, stealRollChance, worstStealCharges, parseSellList, takeSized, addXp, levelCost, levelOf, MAX_LEVEL, capOf, emoteWord, isWordName, nearCap, overflow, CatchItem, CatchType, FAILURE_EMOTES, FishData, findBait, hasFishedBefore, initialData, rarityOf, recordCatch,
   ITEMS, JUNK_MESSAGES, loadFish, MISS_DELAY_MS, pick, randomInt, rollCatch, saveFish, sellPrice, STORY_STYLES, SUCCESS_EMOTES,
@@ -519,10 +519,11 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       other.tried.add(meLc);
       // Snipers answer with the code from the SNIPE OPEN line, not the overlay's.
       if (!codeMatches(codeRaw, other.snipeCode!)) return void say(`Wrong code! You missed your one shot at sniping ${other.username}'s big bite.${codeMatches(codeRaw, other.code) ? ' Snipes take the code from the SNIPE OPEN line in chat.' : ''}`);
+      if (other.reward) return rewardSnipeFails(biteCtx(), other, me);
       snipeBite(biteCtx(), other, me, uid);
       bite = other;
     } else {
-      const fail = (why: string) => { takeBite(chan, meLc); getAway(biteCtx(), me, why); };
+      const fail = (why: string) => { takeBite(chan, meLc); getAway(biteCtx(), bite!, why); };
       if (at > bite.until + STREAM_GRACE_MS) return fail('Too slow! It shook the hook and swam off.');
       if (at - bite.startedAt < BITE_TOO_FAST_MS) return fail('You yanked too early and snapped the line!');
       if (!codeMatches(codeRaw, bite.code)) return fail('Wrong move! The line snapped.');
@@ -533,6 +534,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     // A paid (reward) bite always lands once every code is right: only the trophy is left to chance.
     if (!bite.reward && randomInt(1, 100) > (item.landPercent ?? 100)) {
       console.log(`[FISH] ${me}'s trophy ${item.name} snapped free in ${chan}`);
+      recordBite(db!, bite, 'snapped', { trophy: item.name, landPercent: item.landPercent });
       const snapped = `So close! It was a ${sparkle(item.name)}! It thrashed free on the last pull and snapped the line! 😱`;
       pushOverlay(db!, { username: me, kind: 'miss', text: snapped, item: item.name, rarity: 'Mythic' });
       return void client.say(channel, `@${me} ${snapped}`);
@@ -541,12 +543,14 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       ensureUserTx(db!, uid, me, now);
       const d = loadFish(db!, uid) ?? initialData();
       const sizeString = land(d, uid, item, currentReel(d, g), now, false);
+      const cm = item.size ? d.catch.sizes?.[item.name]?.at(-1)?.cm ?? null : null;
       const bucket = fitCatch(d, uid, item, currentReel(d, g)?.valueMultiplier ?? 1, now);
       saveFish(db!, uid, d, now);
-      return { item, sizeString: sizeString + bucket };
+      return { item, cm, sizeString: sizeString + bucket };
     });
     if (!out) return;
     console.log(`[FISH] ${me} reeled in a trophy ${out.item.name} in ${chan}`);
+    recordBite(db!, bite, 'landed', { trophy: out.item.name, cm: out.cm, landPercent: bite.reward ? 100 : item.landPercent });
     // The result line: to chat as well as the overlay, whatever the chat-replies setting.
     const text = `🏆 You reeled it in! A MYTHIC ${sparkle(out.item.name)}! ${out.sizeString}`;
     pushOverlay(db!, { username: me, kind: 'catch', text, item: out.item.name, rarity: 'Mythic' });

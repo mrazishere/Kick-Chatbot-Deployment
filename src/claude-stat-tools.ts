@@ -13,7 +13,7 @@ import { openPointsDb, PointsDb } from './points/db';
 import * as fs from 'fs';
 import { channelConfigPath, effectiveCommand, readLivePointsConfig } from './points/config';
 import type { PointsConfig, RewardAction } from './types';
-import { exclusionsFor, findUserByName, getUser, gambleStatsFor, gambleTop, isExcluded, pointsSummary, rankBy, topBy, caughtFish } from './points/store';
+import { economySummary, exclusionsFor, findUserByName, getUser, gambleStatsFor, gambleTop, isExcluded, pointsSummary, rankBy, topBy, caughtFish } from './points/store';
 import { loadFish, hasFishedBefore, currentReel, heldFishValue, ITEMS, levelOf, levelCost, MAX_LEVEL, BAITS, baitPrice, baitRoll, rarityName, stealRollChance } from './community/fishing';
 import { fighterOf } from './community/fish-duel';
 import { readWheel } from './community/wheel';
@@ -80,11 +80,110 @@ export function statTools(channel: string): Array<Record<string, unknown>> {
         required: ['username', 'kind']
       }
     }, {
+      name: 'big_bites',
+      description: 'How big bites ended, newest first: who it was for, who sniped it, how far it got and the result (landed; snapped = every code right but the trophy\'s land roll failed, chat calls it trashed; got away = a wrong code or too slow; spat = a reward bite someone sniped), the trophy and its land chance. With a username, only bites they had at the end (their own, or ones they sniped), plus their record: last pulls reached, landed, snapped, their land rate against the rate their land chances predict, and how likely a run that bad or good is by chance, next to everyone else\'s. Use it for "the last big bites", "who sniped", "why does X keep losing big bites", "is X unlucky or rigged". Pass "me" for the person asking; leave username out for the whole channel.',
+      input_schema: {
+        type: 'object',
+        properties: {
+          username: { type: 'string', description: 'Kick username without @, or "me"; leave out for everyone' },
+          limit: { type: 'integer', description: 'How many, newest first: 1-25, default 10' }
+        }
+      }
+    }, {
       name: 'channel_stats',
-      description: 'Channel-wide totals: viewers with currency, all currency in circulation, gambling and duel totals all-time and this stream, and the rarest fish ever caught with who caught them first.',
+      description: 'Channel-wide totals: viewers with currency, all currency in circulation, gambling and duel totals all-time and this stream, the rarest fish ever caught with who caught them first, and where the currency comes from (newCurrency): for all time, the last 7 days and this stream, gambling\'s net (winnings minus stakes) and fishing\'s (earned selling fish, spent on reels, bait, hooks, guards, steal fees and fines, and the net). A positive net is new currency that source made; a negative one is currency it took out. Use it for questions about the economy, where the money comes from or which source makes more.',
       input_schema: { type: 'object', properties: {} }
     }] : [])
   ];
+}
+
+const BITE_OUTCOME: Record<string, string> = {
+  landed: 'landed the trophy',
+  snapped: 'every code right, but the trophy snapped free on its land roll',
+  'got-away': 'got away: a wrong code or too slow',
+  spat: 'a reward bite someone sniped: it spat the hook'
+};
+
+/** What each got-away line (community/big-bite.ts, bot-commands/fish.ts) means, in plain words. */
+const GOT_AWAY_CAUSE: Record<string, string> = {
+  'It was too strong and swam off!': 'too slow: nobody typed the first code in time',
+  'It pulled too hard and swam off!': 'too slow: the code for this pull was never typed in time',
+  'Too slow! It shook the hook and swam off.': 'too slow: the code came after the time ran out',
+  'Wrong move! The line snapped.': 'a wrong code',
+  'You yanked too early and snapped the line!': 'answered too early, before the stream could show the code'
+};
+
+/** The chance of k or fewer landings out of n at land chance p, and of k or more. */
+function landOdds(n: number, k: number, p: number): { atMost: number; atLeast: number } {
+  const pmf = (i: number) => {
+    let c = 1;
+    for (let j = 0; j < i; j++) c = c * (n - j) / (j + 1);
+    return c * p ** i * (1 - p) ** (n - i);
+  };
+  let atMost = 0;
+  for (let i = 0; i <= k; i++) atMost += pmf(i);
+  return { atMost, atLeast: 1 - atMost + pmf(k) };
+}
+
+/** A record over bites that reached the land roll (reward bites always land, so they're left out). */
+function landRecord(rows: Array<{ outcome: string; land_percent: number | null }>): Record<string, unknown> {
+  const rolled = rows.filter(r => (r.outcome === 'landed' || r.outcome === 'snapped') && r.land_percent != null && r.land_percent < 100);
+  const n = rolled.length;
+  const landed = rolled.filter(r => r.outcome === 'landed').length;
+  if (!n) return { landRolls: 0 };
+  const expected = rolled.reduce((sum, r) => sum + r.land_percent! / 100, 0) / n;
+  const odds = landOdds(n, landed, expected);
+  const pct = (x: number) => Math.round(x * 100);
+  return {
+    landRolls: n, landed, snapped: n - landed,
+    landRatePercent: pct(landed / n), expectedLandRatePercent: pct(expected),
+    chanceOfThisFewOrFewerPercent: pct(odds.atMost), chanceOfThisManyOrMorePercent: pct(odds.atLeast)
+  };
+}
+
+function bigBites(ctx: StatToolContext, rawName: unknown, rawLimit: unknown): unknown {
+  const limit = Math.min(25, Math.max(1, Math.floor(Number(rawLimit) || 10)));
+  if (!readLivePointsConfig(ctx.channel).cfg.enabled) return { error: 'This channel has no fishing.' };
+  let name = rawName == null ? '' : String(rawName).trim().replace(/^@+/, '').toLowerCase();
+  if (name === 'me' || name === 'myself') name = ctx.asker.toLowerCase();
+  if (name && !/^[a-z0-9_]{1,30}$/.test(name)) return { error: 'Not a Kick username.' };
+  return withDb(ctx.channel, db => {
+    const found = name ? findUserByName(db, name) : null;
+    if (name && !found) return { error: `${name} has never been seen in this channel.` };
+    type Row = { ts: number; user_id: number; username: string; for_name: string; sniped: number; reward: number; outcome: string; pull: number; trophy: string | null; cm: number | null; land_percent: number | null; why: string | null };
+    const rows = (found
+      ? db.prepare('SELECT * FROM big_bites WHERE user_id = ? ORDER BY ts DESC LIMIT ?').all(found.user_id, limit)
+      : db.prepare('SELECT * FROM big_bites ORDER BY ts DESC LIMIT ?').all(limit)) as Row[];
+    const all = db.prepare('SELECT user_id, outcome, land_percent, sniped, for_name FROM big_bites').all() as Array<Pick<Row, 'user_id' | 'outcome' | 'land_percent' | 'sniped' | 'for_name'>>;
+    const first = db.prepare('SELECT MIN(ts) AS ts FROM big_bites').get() as { ts: number | null };
+    const mine = found ? all.filter(r => r.user_id === found.user_id) : [];
+    return {
+      ...(first.ts ? { recordedSince: day(first.ts) } : { note: 'No big bites recorded yet.' }),
+      landRollNote: 'Once every code is right, the trophy is picked at random and lands by its own land chance; the roll is the same for everyone, nothing about the viewer changes it.',
+      ...(found ? {
+        username: found.username,
+        theirRecord: {
+          bites: mine.length,
+          snipesWon: mine.filter(r => r.sniped).length,
+          sniped: all.filter(r => r.sniped && r.for_name.toLowerCase() === found.username_lc).length,
+          ...landRecord(mine)
+        },
+        everyoneElse: landRecord(all.filter(r => r.user_id !== found.user_id))
+      } : { everyone: landRecord(all) }),
+      newestFirst: rows.map(r => ({
+        ...when(r.ts),
+        had: r.username,
+        ...(r.sniped ? { snipedFrom: r.for_name } : {}),
+        ...(r.reward ? { reward: true } : {}),
+        result: BITE_OUTCOME[r.outcome] ?? r.outcome,
+        ...(r.outcome === 'got-away' && r.pull > 0 ? { atPull: r.pull, ...(r.pull > 1 ? { codesRightBefore: r.pull - 1 } : {}) } : {}),
+        ...(r.outcome === 'got-away' && r.why && GOT_AWAY_CAUSE[r.why] ? { cause: GOT_AWAY_CAUSE[r.why] } : {}),
+        ...(r.trophy ? { trophy: `${r.trophy}${r.cm ? ` ${r.cm} cm` : ''}` } : {}),
+        ...(r.land_percent != null && r.land_percent < 100 ? { landChancePercent: r.land_percent } : {}),
+        ...(r.why ? { why: r.why } : {})
+      }))
+    };
+  });
 }
 
 const hours = (seconds: number) => Math.round(seconds / 360) / 10;
@@ -122,8 +221,12 @@ function stealProtected(db: PointsDb, userId: number, graceMinutes: number): Arr
 }
 
 /** When, for a history row: the date and time in UTC, and how long ago. */
+/** A time in the server's zone (Singapore, where the channels are), with its UTC offset spelled out. */
 function when(ts: number): { at: string; daysAgo: number } {
-  return { at: new Date(ts).toISOString().slice(0, 16).replace('T', ' ') + ' UTC', daysAgo: Math.floor((Date.now() - ts) / 86_400_000) };
+  const offMin = -new Date(ts).getTimezoneOffset();
+  const local = new Date(ts + offMin * 60_000).toISOString().slice(0, 16).replace('T', ' ');
+  const off = offMin === 0 ? 'UTC' : `UTC${offMin > 0 ? '+' : '-'}${Math.floor(Math.abs(offMin) / 60)}${Math.abs(offMin) % 60 ? `:${String(Math.abs(offMin) % 60).padStart(2, '0')}` : ''}`;
+  return { at: `${local} (${off})`, daysAgo: Math.floor((Date.now() - ts) / 86_400_000) };
 }
 
 const STEAL_OUTCOME: Record<string, string> = {
@@ -339,6 +442,7 @@ function channelStats(ctx: StatToolContext): unknown {
     totalInCirculation: s.totalPoints,
     gambling: s.gamble,
     duels: s.duel,
+    newCurrency: economySummary(ctx.channel),
     ...(rarest ? { leastCaughtFish: rarest } : {})
   };
 }
@@ -380,6 +484,7 @@ function channelRules(ctx: StatToolContext, raw: unknown): unknown {
       '!cookie': 'one fortune cookie per viewer per day (subscribers get a second, golden one), which can be donated instead',
       '!slots and the fun commands': 'a few seconds between uses per viewer',
       translation: 'up to 5 translations a minute per viewer',
+      '!place and !map': 'any restaurant, shop or spot looked up on Google Maps (rating, reviews, open now, address, what it\'s known for from its reviews); 30s per viewer',
       '!chatsummary': 'the last 30 minutes of chat; once a minute for the channel',
       commandsTurnedOff: 'the streamer can turn any command off with !config exclude; the command list only shows those that are on'
     };
@@ -509,8 +614,14 @@ function channelRules(ctx: StatToolContext, raw: unknown): unknown {
       everyMinutes: b.everyMinutes, pulls: b.pulls, firstCodeSeconds: b.windowSeconds, eachPullSeconds: b.pullSeconds,
       codeShownSeconds: b.flashSeconds || 'stays shown',
       rewardBites: [b.kicksMin > 0 ? `sending ${b.kicksMin}+ Kicks at once` : '', b.onSub ? 'subscribing or resubscribing' : '', b.onGift ? 'gifting subs (the gifter)' : ''].filter(Boolean).join(', ') || 'off',
-      rewardBitesNote: 'a reward bite goes to that viewer right away (or after a bite already on a line), can\'t be sniped, always lands if every code is right (which trophy is still random) and doesn\'t move the timer; live with the overlay up only',
+      rewardBitesNote: 'a reward bite goes to that viewer right away (or after a bite already on a line), opens to snipers like any bite but a right snipe code only makes it spit the hook and end (snipers can never win one), always lands if every code is right (which trophy is still random) and doesn\'t move the timer; live with the overlay up only',
       overlaySwitch: `when the overlay isn't on stream, mods can type ${c} fish overlay off: fishing replies go to chat and big bites pause until ${c} fish overlay on or the next stream`,
+      averageLandChancePercent: (() => {
+        const t = g.catches.filter(x => x.trophy && x.weight > 0);
+        const w = t.reduce((sum, x) => sum + x.weight, 0);
+        return w > 0 ? Math.round(t.reduce((sum, x) => sum + x.weight * (ITEMS.find(i => i.name === x.name)?.landPercent ?? 100), 0) / w) : null;
+      })(),
+      landChanceNote: 'each trophy\'s own land chance is in the fish-table topic; a snap after every code was right is that roll, not a mistake, and the big_bites tool has who landed and snapped',
       sniping: b.snipeSeconds > 0 ? `in the first code's last ${b.snipeSeconds}s anyone may take the bite by typing the different code posted in chat` : 'off'
     };
   }
@@ -531,6 +642,7 @@ export function runStatTool(ctx: StatToolContext, name: string, input: unknown):
       : name === 'channel_stats' ? channelStats(ctx)
       : name === 'channel_rules' ? channelRules(ctx, args.topic)
       : name === 'fishing_history' ? fishingHistory(ctx, args.username, args.kind, args.limit)
+      : name === 'big_bites' ? bigBites(ctx, args.username, args.limit)
       : { error: `No tool named ${name}.` };
     return JSON.stringify(result).slice(0, 6000);
   } catch (err) {

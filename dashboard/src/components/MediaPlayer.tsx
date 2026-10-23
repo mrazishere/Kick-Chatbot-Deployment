@@ -24,6 +24,7 @@ interface YTPlayer {
   playVideo(): void;
   pauseVideo(): void;
   stopVideo(): void;
+  seekTo(seconds: number, allowSeekAhead: boolean): void;
   unMute(): void;
   isMuted(): boolean;
   setVolume(v: number): void;
@@ -106,6 +107,8 @@ export default function MediaPlayer({ channel, playerKey }: { channel: string; p
   const [delay, setDelay] = useState(0);
   const delayRef = useRef(0);
   const [position, setPosition] = useState(0);
+  /** Where the timeline is being dragged to (seconds into the song), until it's let go. */
+  const [scrub, setScrub] = useState<number | null>(null);
   /** The song loaded in the player, and whether its start is still being delayed. */
   const loaded = useRef<{ key: string; startsAt: number; started: boolean; endAsked: boolean; played: boolean } | null>(null);
   /** Buttons pressed, sent one per call in order. */
@@ -383,6 +386,21 @@ export default function MediaPlayer({ channel, playerKey }: { channel: string; p
   const waiting = song && loaded.current?.key === song.key && !loaded.current.started && !paused;
   const length = song ? Math.max(0, song.end - song.start) : 0;
   const into = song ? Math.max(0, Math.min(length, position - song.start)) : 0;
+  /** Only once the video is going here: a seek on a cued one would start it. */
+  const canSeek = started && !standby && !!song && loaded.current?.key === song.key && loaded.current.started;
+
+  /** Jump to this many seconds into the song; the overlay follows from the next report. */
+  const seek = (secs: number) => {
+    const p = player.current;
+    const l = loaded.current;
+    setScrub(null);
+    if (!p || !song || !l || l.key !== song.key || !l.started) return;
+    // Short of the end, or it would count as finished and move the queue on.
+    const to = song.start + Math.max(0, Math.min(length - 1, secs));
+    p.seekTo(to, true);
+    setPosition(to);
+    l.endAsked = false;
+  };
   const list = tab === "queue" ? sync?.queue ?? [] : sync?.history ?? [];
 
   return (
@@ -454,11 +472,31 @@ export default function MediaPlayer({ channel, playerKey }: { channel: string; p
           ) : null}
           {song && length > 0 ? (
             <div>
-              <div className="h-1.5 overflow-hidden rounded bg-neutral-800">
-                <div className="h-full bg-green-500" style={{ width: `${(into / length) * 100}%` }} />
-              </div>
-              <div className="mt-1 flex justify-between text-xs text-neutral-500">
-                <span>{clock(into)}</span>
+              {/* Drag (or tap) to jump; it seeks on letting go, not on every step of a drag. */}
+              <input
+                type="range"
+                min={0}
+                max={Math.floor(length)}
+                step={1}
+                value={Math.floor(scrub ?? into)}
+                disabled={!canSeek}
+                onChange={(e) => setScrub(Number(e.target.value))}
+                onPointerUp={(e) => seek(Number(e.currentTarget.value))}
+                onKeyUp={(e) => seek(Number(e.currentTarget.value))}
+                onBlur={() => setScrub(null)}
+                className="h-6 w-full accent-green-500 disabled:opacity-60"
+                aria-label="Timeline"
+              />
+              <div className="flex items-center justify-between text-xs text-neutral-500">
+                <span>{clock(scrub ?? into)}</span>
+                <span className="flex gap-2">
+                  <button onClick={() => seek(into - 10)} disabled={!canSeek} className="rounded bg-neutral-800 px-3 py-1 text-neutral-200 disabled:opacity-40">
+                    ⏪ 10s
+                  </button>
+                  <button onClick={() => seek(into + 10)} disabled={!canSeek} className="rounded bg-neutral-800 px-3 py-1 text-neutral-200 disabled:opacity-40">
+                    10s ⏩
+                  </button>
+                </span>
                 <span>{clock(length)}</span>
               </div>
             </div>

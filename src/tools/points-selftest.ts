@@ -227,7 +227,7 @@ async function main(): Promise<void> {
   // Store basics
   {
     const db = openPointsDb('basics', { create: true })!;
-    check('migrated to user_version 14', db.pragma('user_version', { simple: true }) === 14);
+    check('migrated to user_version 15', db.pragma('user_version', { simple: true }) === 15);
     runWrite(db, () => creditTx(db, { userId: 1, username: 'alice', amount: 100, reason: 'mod_add', now: 1 }));
     const over = runWrite(db, () => debitTx(db, { userId: 1, amount: 150, reason: 'mod_remove', now: 2 }));
     check('debit beyond balance refused', !over.ok && over.balance === 100);
@@ -1879,6 +1879,9 @@ async function main(): Promise<void> {
       check('the last pull can land a Mythic trophy', !!won && !!landed
         && (bdb.prepare('SELECT COUNT(*) AS n FROM catches WHERE user_id = 41 AND name = ?').get(landed) as { n: number }).n >= 1, { won, landed });
       check('or snap the line, naming what got away and adding nothing', !!snapped && /It was a ✨.+✨/.test(snapped) && beforeSnap === 0, snapped);
+      const biteRows = bdb.prepare("SELECT outcome, trophy, cm, land_percent, pull FROM big_bites WHERE user_id = 41 AND outcome IN ('landed', 'snapped')").all() as Array<{ outcome: string; trophy: string | null; cm: number | null; land_percent: number | null; pull: number }>;
+      check('big_bites keeps each landed and snapped bite with its trophy, land chance and the last pull', biteRows.some(r => r.outcome === 'landed' && r.trophy && r.cm && r.land_percent)
+        && biteRows.some(r => r.outcome === 'snapped' && r.trophy && r.cm === null && r.land_percent) && biteRows.every(r => r.pull === 3), biteRows);
 
       await fire();
       const ev4 = lastBite()!;
@@ -1930,6 +1933,19 @@ async function main(): Promise<void> {
       await run(`$don fish reel ${s2.code}`, ['other', 44], 2_500);
       check('the sniper reels on as its chatter', lastBite()?.username === 'other' && lastBite()!.pull === 3);
       takeBiteForTest(ch, 'other');
+      // A reward bite opens to snipers too, but a right snipe code only makes it spit the hook.
+      {
+        const rsaid: string[] = [];
+        const rctx = { channel: ch, db: bdb, bigBite: effectivePointsConfig({ games: { enabled: true } }).games.bigBite, command: 'don', sendMessage: async (m: string) => { rsaid.push(m); } };
+        const rb = startBite(rctx, 'biter', 41, 'the sub');
+        check('a reward bite opens to snipers too, and tells its viewer so', rb.snipeAt !== undefined && rsaid[0]?.includes('guaranteed to land') && rsaid[0]?.includes('snipers get a shot'), rsaid);
+        shift += rb.snipeAt! - Date.now() + 500;
+        openSnipes(rctx, rb);
+        await new Promise(r => setImmediate(r));
+        const spat = await run(`$don fish reel ${rb.snipeCode}`, ['other', 44], 0);
+        check('a right snipe on a reward bite ends it there: nobody else can win one', spat.includes('spat the hook') && spat.includes('@other') && spat.includes('@biter')
+          && !biteFor(ch, 'biter') && !biteFor(ch, 'other') && lastShown()?.kind === 'miss', { spat });
+      }
       // From the second pull the code alone is an answer, for the chatter reeling.
       await fire();
       const b1 = lastBite()!;
@@ -2256,8 +2272,8 @@ async function main(): Promise<void> {
     rsvc.onKicksGifted({ broadcaster: bc, sender: u(62, 'bigkick'), gift: { amount: 500 } }, m('k2'));
     await settle();
     const kickLine = sent.find(x => x.includes('@bigkick')) ?? '';
-    check('500 Kicks give the sender a big bite at once, never sniped; fewer give none, and a redelivered event only one',
-      !!biteFor(ch, 'bigkick') && !biteFor(ch, 'smallkick') && kickLine.includes('Thanks for the 500 Kicks') && kickLine.includes('Nobody can snipe') && !biteFor(ch, 'bigkick')!.snipeAt
+    check('500 Kicks give the sender a big bite at once; fewer give none, and a redelivered event only one',
+      !!biteFor(ch, 'bigkick') && !biteFor(ch, 'smallkick') && kickLine.includes('Thanks for the 500 Kicks') && kickLine.includes('guaranteed to land')
       && rewardBitesWaiting(ch) === 0, { sent, waiting: rewardBitesWaiting(ch) });
     // A resub while that bite is on its line waits its turn.
     rsvc.onSubscriptionRenewal({ broadcaster: bc, subscriber: u(63, 'resubber') }, m('r1'));
@@ -3444,25 +3460,25 @@ async function main(): Promise<void> {
     const mch = 'migrate1ch';
     const mdb = openPointsDb(mch, { create: true })!;
     runWrite(mdb, () => creditTx(mdb, { userId: 1, username: 'old', amount: 77, reason: 'mod_add', now: 1 }));
-    mdb.exec('DROP TABLE fish_trades; DROP TABLE wheel_spins; DROP TABLE video_queue; DROP TABLE fish_signals; DROP TABLE fish_duels; DROP TABLE steals; DROP TABLE overlay_feed; DROP TABLE catches; DROP TABLE fish; DROP TABLE duels; DROP TABLE raffle_entries; DROP TABLE raffles; DROP INDEX ledger_ref');
+    mdb.exec('DROP TABLE big_bites; DROP TABLE fish_trades; DROP TABLE wheel_spins; DROP TABLE video_queue; DROP TABLE fish_signals; DROP TABLE fish_duels; DROP TABLE steals; DROP TABLE overlay_feed; DROP TABLE catches; DROP TABLE fish; DROP TABLE duels; DROP TABLE raffle_entries; DROP TABLE raffles; DROP INDEX ledger_ref');
     mdb.pragma('user_version = 1');
     closePointsDb(mch);
     const reopened = openPointsDb(mch, { create: false })!;
     const hasTable = (n: string) => !!reopened.prepare('SELECT 1 FROM sqlite_master WHERE name = ?').get(n);
     check('a v1 database migrates to the latest version keeping balances',
-      reopened.pragma('user_version', { simple: true }) === 14 && balance(mch, 1) === 77 && hasTable('video_queue') && hasTable('wheel_spins') && hasTable('fish_trades')
+      reopened.pragma('user_version', { simple: true }) === 15 && balance(mch, 1) === 77 && hasTable('video_queue') && hasTable('wheel_spins') && hasTable('fish_trades') && hasTable('big_bites')
       && hasTable('duels') && hasTable('raffles') && hasTable('raffle_entries') && hasTable('fish') && hasTable('catches') && hasTable('overlay_feed') && hasTable('steals') && hasTable('fish_duels') && hasTable('fish_signals'));
 
     // v2 → v3 specifically: a database that already has duels gains the raffle tables.
     const m2 = 'migrate2ch';
     const m2db = openPointsDb(m2, { create: true })!;
     runWrite(m2db, () => creditTx(m2db, { userId: 1, username: 'old2', amount: 42, reason: 'mod_add', now: 1 }));
-    m2db.exec('DROP TABLE fish_trades; DROP TABLE wheel_spins; DROP TABLE video_queue; DROP TABLE fish_signals; DROP TABLE fish_duels; DROP TABLE steals; DROP TABLE overlay_feed; DROP TABLE catches; DROP TABLE fish; DROP TABLE raffle_entries; DROP TABLE raffles; DROP INDEX ledger_ref');
+    m2db.exec('DROP TABLE big_bites; DROP TABLE fish_trades; DROP TABLE wheel_spins; DROP TABLE video_queue; DROP TABLE fish_signals; DROP TABLE fish_duels; DROP TABLE steals; DROP TABLE overlay_feed; DROP TABLE catches; DROP TABLE fish; DROP TABLE raffle_entries; DROP TABLE raffles; DROP INDEX ledger_ref');
     m2db.pragma('user_version = 2');
     closePointsDb(m2);
     const re2 = openPointsDb(m2, { create: false })!;
     check('a v2 database gains the raffle tables and keeps its balances',
-      re2.pragma('user_version', { simple: true }) === 14 && balance(m2, 1) === 42
+      re2.pragma('user_version', { simple: true }) === 15 && balance(m2, 1) === 42
       && !!re2.prepare("SELECT 1 FROM sqlite_master WHERE name = 'raffles'").get());
     void svc;
     makeService(ch, { broadcaster: 999 });
