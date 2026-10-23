@@ -21,7 +21,7 @@ import type { BotCommandChannel } from './points/public-bot-commands';
 import { closePointsDb, openPointsDb } from './points/db';
 import { markOverlaySeen, noteOverlayHealth, overlayHealth, overlayOff, overlayReloadToken, overlayShowing, readOverlay, requestOverlayReload } from './community/fish-overlay';
 import { publicUserHistory, publicViewerSearch } from './points/store';
-import { ITEMS, rarityName, sellPrice, stealRollChance } from './community/fishing';
+import { currentReel, ITEMS, rarityName, sellPrice, stealRollChance } from './community/fishing';
 import { fighterOf } from './community/fish-duel';
 import { channelEmotes } from './community/emotes';
 import { adjustPoints, backupPoints, caughtFish, duelBoard, heistBoard, heldCatches, getPointsUserDetail, pointsLeaderboard, pointsSummary, resetAllPoints, searchPointsUsers } from './points/store';
@@ -3370,7 +3370,8 @@ function publicFishing(channel: string, cfg: ReturnType<typeof effectivePointsCo
     .sort((a, b) => Number('trophy' in b) - Number('trophy' in a) || a.chance - b.chance || a.firstAt.localeCompare(b.firstAt))
     .slice(0, 5);
   // Who holds what right now: each viewer's unsold fish, rarest first, priced as a
-  // sale would price them before any reel bonus. The most valuable haul leads.
+  // sale would price them: with their reel's bonus, which stolen fish don't get. The
+  // most valuable haul leads.
   const kinds = ITEMS.filter(i => i.type === 'fish')
     .map(item => ({ item, odds: odds.get(item.name) }))
     .sort((a, b) => Number(!!b.item.trophy) - Number(!!a.item.trophy) || (a.odds?.chance ?? 0) - (b.odds?.chance ?? 0) || b.item.price - a.item.price);
@@ -3378,31 +3379,35 @@ function publicFishing(channel: string, cfg: ReturnType<typeof effectivePointsCo
     .map(h => {
       let count = 0;
       let worth = 0;
+      const reel = currentReel({ reel: h.reel } as Parameters<typeof currentReel>[0], g);
+      const reelValue = reel?.valueMultiplier ?? 1;
       const held = kinds.flatMap(({ item, odds: o }) => {
         const n = Math.floor(h.types[item.name] ?? 0);
         if (!(n > 0)) return [];
         const sized = (h.sizes[item.name] ?? []).slice(0, n);
-        for (const one of sized) worth += sellPrice(item, g, one);
-        worth += (n - sized.length) * sellPrice(item, g);
+        const unsized = n - sized.length;
+        const hot = Math.max(0, Math.min(unsized, h.stolen[item.name] ?? 0));
         count += n;
         // Each one, as `fish show 🦈` lists them: by length, biggest first, with its duel
         // stats and price, so a viewer can see which to name. One length and price is one line.
         const each: Array<{ cm: number | null; n: number; hp: number; attack: number; worth: number; level?: number }> = [];
-        const add = (held: { cm: number; record: boolean; level?: number } | undefined, k: number) => {
+        const add = (held: { cm: number; record: boolean; level?: number } | undefined, k: number, stolen = false) => {
           const cm = held ? held.cm : null;
-          const value = sellPrice(item, g, held);
+          const value = sellPrice(item, g, held, stolen ? 1 : reelValue);
+          worth += value * k;
           const same = each.find(e => e.cm === cm && e.worth === value);
           if (same) return void (same.n += k);
           const f = fighterOf(g, item, held);
           each.push({ cm, n: k, hp: f.hp, attack: f.attack, worth: value, ...(f.level ? { level: f.level } : {}) });
         };
-        for (const one of sized) add(one, 1);
-        if (n > sized.length) add(undefined, n - sized.length);
+        for (const one of sized) add(one, 1, !!one.stolen);
+        if (unsized > hot) add(undefined, unsized - hot);
+        if (hot) add(undefined, hot, true);
         each.sort((a, b) => (b.cm ?? -1) - (a.cm ?? -1) || b.worth - a.worth);
         const f = fighterOf(g, item);
         return [{ emoji: item.name, n, rarity: o?.rarity ?? 'Never', type: f.type, each }];
       });
-      return { name: h.username, fish: held, count, worth };
+      return { name: h.username, fish: held, count, worth, ...(reel ? { reel: reel.name } : {}) };
     })
     .filter(h => h.count > 0)
     .sort((a, b) => b.worth - a.worth || b.count - a.count || a.name.localeCompare(b.name))

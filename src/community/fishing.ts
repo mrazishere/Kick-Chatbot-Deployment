@@ -689,6 +689,25 @@ export function heldFishValue(d: FishData, g: PointsGamesConfig): number {
   return total;
 }
 
+/**
+ * What every fish someone holds would fetch if they sold it now: heldFishValue with their
+ * reel's bonus, which (as in a sale) stolen fish don't get.
+ */
+export function heldSaleValue(d: FishData, g: PointsGamesConfig): number {
+  const value = currentReel(d, g)?.valueMultiplier ?? 1;
+  let total = 0;
+  for (const item of ITEMS) {
+    if (item.type !== 'fish') continue;
+    const have = d.catch.types[item.name] ?? 0;
+    if (have <= 0) continue;
+    const sized = (d.catch.sizes?.[item.name] ?? []).slice(0, have);
+    for (const held of sized) total += sellPrice(item, g, held, held.stolen ? 1 : value);
+    const hot = stolenUnsized(d, item.name);
+    total += (have - sized.length - hot) * sellPrice(item, g, undefined, value) + hot * sellPrice(item, g);
+  }
+  return total;
+}
+
 /** A steal's chance of working on this fish, in percent, by its rarity as the channel's odds name it. */
 export function stealChance(g: PointsGamesConfig, name: string): number {
   const st = g.steal;
@@ -779,7 +798,11 @@ export function duelStrength(g: PointsGamesConfig, name: string): number {
 /** Each tier's standard fish, Common to Legendary, with its share (%) of fish caught in the default table. */
 export const STEAL_ANCHOR_FISH: ReadonlyArray<readonly [string, number]> = [['🐟', 14.14], ['🐠', 5.66], ['🦑', 2.12], ['🐊', 0.71], ['🐳', 0.14]];
 
-/** The chance a steal try on this fish works: its odds raised by luckPercent. The fine is priced from stealChance. */
+/**
+ * The chance a steal try on this fish works: its odds raised by luckPercent. Fines are priced
+ * from this too (until 2026-10-24 they used stealChance, so luck outweighed the edge and
+ * steals paid thieves a little on average).
+ */
 export const stealRollChance = (g: PointsGamesConfig, name: string): number =>
   Math.min(100, stealChance(g, name) * (100 + g.steal.luckPercent) / 100);
 
@@ -804,7 +827,7 @@ export function worstStealCharges(d: FishData, g: PointsGamesConfig, pool: Array
     const sized = (d.catch.sizes?.[item.name] ?? []).slice(0, have);
     const values = sized.map(held => sellPrice(item, g, held));
     if (have > sized.length) values.push(sellPrice(item, g));
-    const chance = stealChance(g, item.name);
+    const chance = stealRollChance(g, item.name);
     for (const worth of values) {
       const { fee, fine } = stealCharges(g, worth, chance);
       max = Math.max(max, fee + fine);

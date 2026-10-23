@@ -1055,7 +1055,7 @@ export function caughtFish(channel: string, cfg: PointsConfig, broadcasterUserId
 }
 
 /** What one viewer holds unsold: how many of each catch, and the lengths of the sized ones. */
-export interface HeldCatch { username: string; types: Record<string, number>; sizes: Record<string, Array<{ cm: number; record: boolean }>> }
+export interface HeldCatch { username: string; types: Record<string, number>; sizes: Record<string, Array<{ cm: number; record: boolean; level?: number; stolen?: boolean }>>; reel: number; stolen: Record<string, number> }
 
 /**
  * Every viewer's unsold catch, straight from their fish document, for the
@@ -1064,10 +1064,11 @@ export interface HeldCatch { username: string; types: Record<string, number>; si
 export function heldCatches(channel: string, cfg: PointsConfig, broadcasterUserId?: number | null): HeldCatch[] {
   return withReadDb(channel, [] as HeldCatch[], db => {
     const clause = exclusionClause(exclusionsFor(channel, cfg, broadcasterUserId));
-    let rows: Array<{ username: string; types: string | null; sizes: string | null }>;
+    let rows: Array<{ username: string; types: string | null; sizes: string | null; reel: number | null; stolen: string | null }>;
     try {
       rows = db.prepare(
-        `SELECT u.username, json_extract(f.data, '$.catch.types') AS types, json_extract(f.data, '$.catch.sizes') AS sizes FROM fish f
+        `SELECT u.username, json_extract(f.data, '$.catch.types') AS types, json_extract(f.data, '$.catch.sizes') AS sizes,
+                json_extract(f.data, '$.reel') AS reel, json_extract(f.data, '$.catch.stolen') AS stolen FROM fish f
          JOIN (SELECT user_id, username FROM users WHERE ${clause.sql}) u ON u.user_id = f.user_id WHERE json_extract(f.data, '$.catch.fish') > 0`
       ).all(...clause.params) as typeof rows;
     } catch {
@@ -1075,7 +1076,10 @@ export function heldCatches(channel: string, cfg: PointsConfig, broadcasterUserI
     }
     return rows.flatMap(r => {
       try {
-        return [{ username: r.username, types: JSON.parse(r.types ?? '{}') as HeldCatch['types'], sizes: JSON.parse(r.sizes ?? '{}') as HeldCatch['sizes'] }];
+        return [{
+          username: r.username, types: JSON.parse(r.types ?? '{}') as HeldCatch['types'], sizes: JSON.parse(r.sizes ?? '{}') as HeldCatch['sizes'],
+          reel: Number(r.reel) || 0, stolen: JSON.parse(r.stolen ?? '{}') as HeldCatch['stolen']
+        }];
       } catch {
         return [];
       }

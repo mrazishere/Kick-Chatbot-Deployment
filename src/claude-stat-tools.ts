@@ -14,7 +14,7 @@ import * as fs from 'fs';
 import { channelConfigPath, effectiveCommand, readLivePointsConfig } from './points/config';
 import type { PointsConfig, RewardAction } from './types';
 import { economySummary, exclusionsFor, findUserByName, getUser, gambleStatsFor, gambleTop, isExcluded, pointsSummary, rankBy, topBy, caughtFish } from './points/store';
-import { loadFish, hasFishedBefore, currentReel, heldFishValue, ITEMS, levelOf, levelCost, MAX_LEVEL, BAITS, baitPrice, baitRoll, rarityName, stealRollChance } from './community/fishing';
+import { loadFish, hasFishedBefore, currentReel, heldSaleValue, ITEMS, levelOf, levelCost, MAX_LEVEL, BAITS, baitPrice, baitRoll, rarityName, stealRollChance } from './community/fishing';
 import { fighterOf } from './community/fish-duel';
 import { readWheel } from './community/wheel';
 import { feedingGuide } from './points/public-commands';
@@ -232,7 +232,7 @@ function when(ts: number): { at: string; daysAgo: number } {
 const STEAL_OUTCOME: Record<string, string> = {
   stolen: 'taken: the thief got the fish',
   caught: 'thief caught: the fish stayed, the thief paid a fine',
-  blocked: 'blocked by a guard: nothing taken',
+  guarded: 'caught by their guard: the fish stayed, the thief paid the fee and fine (before 2026-10-24 a guard only cost a hook try)',
   short: 'thief could not afford the fee and fine: nothing taken'
 };
 
@@ -370,7 +370,8 @@ function viewerStats(ctx: StatToolContext, raw: unknown): unknown {
           const cms = (d.catch.sizes?.[name] ?? []).slice(0, d.catch.types[name] ?? 0).map(h => h.cm);
           return ITEMS.find(i => i.name === name && i.type === 'fish') ? [[name, cms]] : [];
         })),
-        heldValue: heldFishValue(d, cfg.games),
+        // What they'd get selling it all now: their reel's bonus included, stolen fish excepted.
+        heldValue: heldSaleValue(d, cfg.games),
         // Fish levelled up by feeding ($ fish feed), with the XP toward their next level.
         fedFish: Object.entries(d.catch.sizes ?? {}).flatMap(([name, list]) => {
           const item = ITEMS.find(i => i.name === name);
@@ -560,7 +561,7 @@ function channelRules(ctx: StatToolContext, raw: unknown): unknown {
       bait: BAITS.map(b => ({ bait: `${b.emoji} ${b.name}`, pricePerCast: baitPrice(b, g), castOdds: `1 in ${baitRoll(b, g)} instead of 1 in ${g.catchOdds}` })),
       ...(g.steal.enabled ? {
         hook: { price: g.steal.hookPrice, tries: g.steal.hookUses, use: 'needed to steal' },
-        guard: { price: `${g.steal.guardPercent}% of the fish value you hold, at least ${g.steal.guardMinimum}`, hours: g.steal.guardHours, use: 'blocks every steal try on you' }
+        guard: { price: `${g.steal.guardPercent}% of the fish value you hold, at least ${g.steal.guardMinimum}`, hours: g.steal.guardHours, use: 'catches every steal try on you: the thief pays the fee and fine as if caught' }
       } : {})
     };
   }
@@ -589,10 +590,10 @@ function channelRules(ctx: StatToolContext, raw: unknown): unknown {
       successPercentByFishWithLuck: Object.fromEntries(g.catches.filter(x => x.type === 'fish' && x.weight > 0).map(x => [x.name, Math.round(stealRollChance(g, x.name) * 100) / 100])),
       luck: st.luckPercent > 0 ? `every success chance by rarity above is raised by ${st.luckPercent}% of itself (so ${st.oddsCommon}% becomes ${Math.round(st.oddsCommon * (1 + st.luckPercent / 100) * 100) / 100}%, ${st.oddsLegendary}% becomes ${Math.round(st.oddsLegendary * (1 + st.luckPercent / 100) * 100) / 100}%), while fines stay priced from the lower odds, so stealing pays a little on average` : 'none: the odds above are the real ones',
       fee: `every try that goes ahead costs ${st.feePercent}% of the grabbed fish's value, at least ${st.feeMinimum}`,
-      fine: `a caught thief also pays a fine, at least ${st.fineMinimum}, priced so the average try loses ${st.edgePercent}% before luck`,
+      fine: `a caught thief also pays a fine, at least ${st.fineMinimum}, priced from the chance with luck so the average try loses ${st.edgePercent}% of what it could win`,
       graceMinutes: `a fish can't be stolen until held ${st.graceMinutes} min, trap hauls included, so a thief can't snipe a haul the moment it's posted; a steal aimed at such a fish (or at a length they don't hold) gets "has no <fish> you can get your hook into right now". viewer_stats lists a viewer's still-protected fish under stealProtected`,
       protectMinutes: `after a try, the target is safe ${st.protectMinutes} min`,
-      guard: `${st.guardPercent}% of the fish value held, at least ${st.guardMinimum}, lasts ${st.guardHours}h; a try on a guarded viewer only uses a hook try`,
+      guard: `${st.guardPercent}% of the fish value held, at least ${st.guardMinimum}, lasts ${st.guardHours}h; a guard catches every try on that viewer, no roll: the thief pays the fee and the fine as if caught, and it counts as their try that day and starts the cooldown (before 2026-10-24 it only cost a hook try)`,
       cooldown: `a try costs the fishing cooldown (${g.catchCooldownMinutes} min)`
     };
   }

@@ -28,7 +28,7 @@ import { WebhookPoller } from '../channels/webhook-poller';
 import { points as pointsCommand, SUBCOMMAND_ALIASES } from '../bot-commands/points';
 import { marksFor, readStats as readWordleStats, wordle as wordleCommand } from '../bot-commands/wordle';
 import { advanceVideos, enqueueVideo, failVideo, hasVideoInLine, isoDurationSeconds, LOAD_PAD_MS, markVideoOverlaySeen, parseYouTubeLink, playingVideo } from '../community/video-share';
-import { duelStrength, moveFish, takeItems, addItem, overflow, nearCap, addXp, levelCost, takeSized, FishData, initialData, isTrophy, rarityOf, stealChance, stealCharges, stealRollChance, ITEMS, landsFish, loadFish, parseSellList, recordCatch, saveFish, sellPrice, weightedCatch } from '../community/fishing';
+import { duelStrength, moveFish, takeItems, addItem, overflow, nearCap, addXp, levelCost, takeSized, FishData, initialData, isTrophy, rarityOf, stealChance, stealCharges, stealRollChance, worstStealCharges, ITEMS, landsFish, loadFish, parseSellList, recordCatch, saveFish, sellPrice, weightedCatch } from '../community/fishing';
 import { openCommunityDb } from '../community/store';
 import { markOverlaySeen, noteOverlayHealth, overlayHealth, overlayOff, overlayReloadToken, overlayShowing, readOverlay, requestOverlayReload, watchOverlay } from '../community/fish-overlay';
 import { biteFor, drawSnipeMs, openSnipes, resetBites, rewardBitesWaiting, snipeOpen, SNIPE_PENDING, startBite, takeBite as takeBiteForTest } from '../community/big-bite';
@@ -815,7 +815,7 @@ async function main(): Promise<void> {
       && link[0].endsWith('/aliasch/commands') && (link[0].match(/[\x21-\x2f\x3a-\x40\x5b-\x60\x7b-\x7e]/g) ?? []).length <= 10, link);
     // The public Commands tab: every short form it shows is one the commands answer to.
     const full = effectivePointsConfig({ enabled: true, give: { enabled: true }, gamble: { enabled: true }, duel: { enabled: true }, raffle: { enabled: true },
-      games: { enabled: true, onlyWhileLive: false, onlyWhileOffline: true, steal: { enabled: true } } });
+      games: { enabled: true, onlyWhileLive: false, onlyWhileOffline: true, steal: { enabled: true }, duel: { enabled: true, allowKeeps: true }, trade: { enabled: true } } });
     const listed = publicCommands(full);
     const wrong = listed.sections.flatMap(s => s.rows).filter(r => {
       if (!r.short) return false;
@@ -849,7 +849,10 @@ async function main(): Promise<void> {
       unlisted.length === 0 && rows.some(r => r.usage === '!clip [45s] [title]') && rows.some(r => r.usage === '!kpp') && !rows.some(r => r.usage.startsWith('!weather'))
       && !rows.some(r => r.usage === '!earnings') && !rows.some(r => r.usage.startsWith('!blerp')) && !withBot.sections.some(s => s.title === 'Wheel')
       && rows.find(r => r.usage === '!crime')?.does === 'committed N crimes' && rows.find(r => r.usage === '!trap')?.does === 'A surprise 🤫' && rows.find(r => r.usage === '!secret')?.who === 'mods'
-      && withBot.sections.length <= 16 && withBot.sections.every(s => s.rows.length <= 60 && s.rows.every(r => r.usage.length <= 80 && r.does.length <= 200)),
+      // The page drops a row past these lengths (dashboard/src/lib/public-leaderboard.ts): 2026-10-24 the duel and
+      // trade rows ran past 200 with keeps on, and vanished from sukasblood's Commands tab.
+      && rows.some(r => r.usage.includes('fish duel @user 3v3')) && rows.some(r => r.usage.includes('fish trade'))
+      && withBot.sections.length <= 16 && withBot.sections.every(s => s.rows.length <= 60 && s.rows.every(r => r.usage.length <= 80 && r.does.length <= 400)),
       { unlisted, titles: withBot.sections.map(s => s.title) });
   }
 
@@ -1603,9 +1606,12 @@ async function main(): Promise<void> {
       check('a target is left alone for a while after a try', (await run('$don fish steal @mark')).includes('still on alert') && fishOf(31).hook === 2);
 
       const blocked = await run('$don fish steal @guarded');
-      check('a guard turns the try away for one hook use, no fee, no cooldown, no time shown',
-        blocked.includes('@guarded has a guard') && !/\d+h|\d+m/.test(blocked) && fishOf(31).hook === 1 && balance(ch, 31) === 1840
-        && fishOf(33).catch.types['🐟'] === 3 && fishOf(31).lifetime.steal.blocked === 1, blocked);
+      // Since 2026-10-24 a guard catches the thief like a failed roll: guarded's 🐟 are worth 25, so the fee and fine are their minimums, 10 and 25.
+      check('a guard catches the try: fee and fine as if caught, a hook use, the cooldown, no guard time shown',
+        blocked.includes('@guarded has a guard') && blocked.includes('25 $DON fine') && !/guard[^.]*\d+h/.test(blocked) && fishOf(31).hook === 1 && balance(ch, 31) === 1805
+        && fishOf(33).catch.types['🐟'] === 3 && fishOf(31).lifetime.steal.blocked === 1 && (fishOf(31).stealReady ?? 0) > Date.now(), blocked);
+      check('and starts the steal cooldown', (await run('$don fish steal @guarded')).includes('try another steal in'));
+      shift += 31 * 60_000;
       runWrite(sdb, () => recordCatch(sdb, 35, '🐟', 'cast', 50, Date.now()));
       check('fish landed within the grace time can\'t be stolen', (await run('$don fish steal @fresh')).includes('no fish you can get your hook into'));
       check('the streamer is off limits', (await run(`$don fish steal @${ch}`)).length > 0 && fishOf(31).hook === 1);
@@ -1619,7 +1625,7 @@ async function main(): Promise<void> {
       const caught = await run('$don fish steal @mark3');
       // At 0% the balanced fine is nothing, so the minimum: 25, with the 10 fee.
       check('caught: the fine is burned, one hook try is used, the fish stays', caught.includes('caught you red-handed') && caught.includes('25 $DON fine')
-        && fishOf(31).hook === 0 && balance(ch, 31) === 1805 && balance(ch, 34) === 10 && fishOf(34).catch.types['🐟'] === 2
+        && fishOf(31).hook === 0 && balance(ch, 31) === 1770 && balance(ch, 34) === 10 && fishOf(34).catch.types['🐟'] === 2
         && fishOf(31).lifetime.steal.caught === 1, caught);
       check('caught: the steal cooldown starts too, fishing stays free', caught.includes('next steal in') && (fishOf(31).stealReady ?? 0) > Date.now() && fishOf(31).readyTimestamp <= Date.now(), caught);
       // A 🐋 at 100 cm is worth 3,000: a 3% fee of 90 when it works.
@@ -1684,9 +1690,22 @@ async function main(): Promise<void> {
       && ds('🦭') === 1.25 && ds('🐉') === 1.8
       && fighterOf(gs, ITEMS.find(i => i.name === '🦩')!, { cm: 50, record: false }).hp > fighterOf(gs, ITEMS.find(i => i.name === '🐳')!, { cm: 50, record: false }).hp,
       Object.fromEntries(['🦞', '🐬', '🦩', '🐉'].map(n => [n, ds(n)])));
-    check('luck raises the roll\'s odds and not the fine\'s', bal.steal.luckPercent === 0 && stealRollChance(bal, common) === 40
+    check('luck raises the roll\'s odds over the rarity\'s', bal.steal.luckPercent === 0 && stealRollChance(bal, common) === 40
       && stealRollChance(lucky, common) === 50 && stealChance(lucky, common) === 40 && stealRollChance(luckier, common) === 100,
       { common, roll: stealRollChance(lucky, common), capped: stealRollChance(luckier, common) });
+    // And the fine follows the roll's odds, so luck doesn't eat the edge (2026-10-24: priced from the rarity's alone,
+    // a whale try at 25% luck paid thieves about 5% on average).
+    const whale = ITEMS.find(i => i.name === '🐳')!;
+    const holder = initialData();
+    addItem(holder, whale);
+    (holder.catch.sizes ??= {})['🐳'] = [{ cm: 92, record: false }];
+    const whaleWorth = sellPrice(whale, lucky, { cm: 92, record: false });
+    const p = stealRollChance(lucky, '🐳') / 100;
+    const worst = worstStealCharges(holder, lucky, [{ item: whale }]);
+    const charged = stealCharges(lucky, whaleWorth, p * 100);
+    const ev = p * whaleWorth - charged.fee - (1 - p) * charged.fine;
+    check('a steal\'s fine is priced on the odds the roll has, luck included, so the average try still loses the edge',
+      worst === charged.fee + charged.fine && Math.abs(ev / (p * whaleWorth) + lucky.steal.edgePercent / 100) < 0.01, { worst, charged, ev, p });
     const pub = (reason: string, actor: string | null, note: string | null) => publicLedgerText(reason, actor, note);
     check('the public history hides who adjusted a balance and private notes, and keeps chat\'s own',
       pub('dash_add', 'dashboard:alice:admin', 'refund').actor === 'staff' && pub('dash_add', 'dashboard:alice:admin', 'refund').note === null

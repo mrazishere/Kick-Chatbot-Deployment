@@ -456,6 +456,8 @@ export interface PublicHolder {
   fish: Array<{ emoji: string; n: number; rarity: PublicCatch["rarity"]; type?: "Predator" | "Swift" | "Armored"; each?: PublicHeldFish[] }>;
   count: number;
   worth: number;
+  /** The reel they fish with, by name. Absent when they have none, or from an older bot service. */
+  reel?: string;
 }
 
 /** The Fishing tab's heists. Names only, as everywhere on the public page. */

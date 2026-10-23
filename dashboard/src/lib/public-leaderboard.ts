@@ -195,7 +195,8 @@ function publicHolders(rows: unknown): PublicHolder[] {
         ? [{ emoji: f.emoji, n: n(f.n), rarity: f.rarity, ...(f.type && DUEL_TYPES.has(f.type) ? { type: f.type } : {}), ...heldEach(f.each) }]
         : [],
     );
-    return fish.length ? [{ name: r.name, fish, count: fish.reduce((sum, f) => sum + f.n, 0), worth: n(r.worth) }] : [];
+    const reel = typeof r.reel === "string" && r.reel.length > 0 && r.reel.length <= 24 ? { reel: r.reel } : {};
+    return fish.length ? [{ name: r.name, fish, count: fish.reduce((sum, f) => sum + f.n, 0), worth: n(r.worth), ...reel }] : [];
   });
 }
 
@@ -218,7 +219,8 @@ function publicCommands(raw: unknown): PublicCommands | null {
     if (!title || !Array.isArray(s.rows)) return [];
     const rows = s.rows.slice(0, 60).flatMap((r): PublicCommandRow[] => {
       const usage = text(r?.usage, 80);
-      const does = text(r?.does, 200);
+      // The bot's longest (duels with keeps, trades) run past 300; the self-test holds them to 400.
+      const does = text(r?.does, 400);
       if (!usage || !does) return [];
       const short = text(r.short, 80);
       return [{ usage, does, ...(short ? { short } : {}), ...(r.who === "subs" || r.who === "vips" || r.who === "mods" || r.who === "streamer" ? { who: r.who } : {}) }];

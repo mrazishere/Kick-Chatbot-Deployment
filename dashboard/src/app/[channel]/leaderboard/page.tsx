@@ -214,7 +214,7 @@ function StealGuide({ rules: r, currency, command, fish, emotes }: { rules: Publ
           <h3 className="pt-1 font-medium text-neutral-100">💂 Guard</h3>
           <p>
             {code(`${command} fish buy guard`)} protects all your fish for <b>{r.guardHours} hours</b>. It costs {r.guardPercent}% of what your fish are worth when you buy it (at least {n(r.guardMinimum)} {currency});
-            buying again adds more time. A thief&apos;s hook bounces off a guard and loses a try. How long your guard has left is never shown in chat, so thieves can&apos;t time it.
+            buying again adds more time. A guard catches every thief: they pay the fee and the fine as if caught, no roll. How long your guard has left is never shown in chat, so thieves can&apos;t time it.
           </p>
         </div>
       </div>
@@ -264,7 +264,7 @@ function HeldList({ fish, currency, duel, emotes }: { fish: PublicHolder["fish"]
         </div>
       ))}
       <p className="pt-1 text-xs text-neutral-600">
-        Grouped by kind, strongest first. ❤️ health and ⚔️ attack in a fish duel, 💰 what one sells for.{duel ? " Duel a certain one by its length, like 🦈 72cm." : ""}
+        Grouped by kind, strongest first. ❤️ health and ⚔️ attack in a fish duel, 💰 what one sells for, their reel's bonus included (stolen fish don't get it).{duel ? " Duel a certain one by its length, like 🦈 72cm." : ""}
       </p>
     </div>
   );
@@ -276,7 +276,7 @@ function Holders({ rows, currency, channel, duel, emotes }: { rows: PublicHolder
     <section className="overflow-hidden rounded-xl border border-neutral-800 bg-neutral-950/60">
       <h2 className="border-b border-neutral-800 px-5 py-2 text-xs text-neutral-500">
         <span className="text-neutral-300">🪣 Holding right now</span>
-        {` · ${total.toLocaleString("en-US")} unsold fish, by what they'd sell for. Tap someone to see their fish by kind, strongest first, each with its length and stats.`}
+        {` · ${total.toLocaleString("en-US")} unsold fish, by what they'd sell for with their reel. Tap someone to see their fish by kind, strongest first, each with its length and stats.`}
       </h2>
       <ol className="divide-y divide-neutral-800">
         {rows.map((r, i) => {
@@ -287,7 +287,17 @@ function Holders({ rows, currency, channel, duel, emotes }: { rows: PublicHolder
               <details className="group">
                 <summary className="flex cursor-pointer list-none items-center gap-3 px-5 py-2.5 hover:bg-neutral-900/40 [&::-webkit-details-marker]:hidden">
                   <span className="w-6 shrink-0 text-xs tabular-nums text-neutral-600">{i + 1}</span>
-                  <span className="min-w-0 flex-1 truncate text-neutral-200">{r.name}</span>
+                  <span className="flex min-w-0 flex-1 items-center gap-2">
+                    <span className="truncate text-neutral-200">{r.name}</span>
+                    {r.reel ? (
+                      <span
+                        title={`Fishes with the ${r.reel} reel`}
+                        className="shrink-0 rounded-md border border-sky-900/60 bg-sky-950/40 px-1.5 py-0.5 text-xs text-sky-300"
+                      >
+                        🎣 {r.reel}
+                      </span>
+                    ) : null}
+                  </span>
                   <span className="shrink-0 text-right tabular-nums text-neutral-300">
                     {r.worth.toLocaleString("en-US")} {currency}
                     <span className="ml-2 text-xs text-neutral-500">{`${r.count} fish`}</span>
@@ -474,7 +484,7 @@ export default async function LeaderboardPage({ params, searchParams }: Props) {
   }
 
   const data = result.kind === "ok" ? result.data : null;
-  // The $DON tab's list comes from the same source as its search, with active time and reels.
+  // The $DON tab's list comes from the same source as its search, with active time.
   const firstViewers = tab === "points" && data ? await loadPublicViewers(slug, "") : null;
   const fishing = data?.fishing ?? null;
   const commands = data?.commands ?? null;
@@ -587,14 +597,6 @@ export default async function LeaderboardPage({ params, searchParams }: Props) {
                         >
                           {row.username}
                         </a>
-                        {row.reel ? (
-                          <span
-                            title={`Fishes with the ${row.reel} reel`}
-                            className="shrink-0 rounded-md border border-sky-900/60 bg-sky-950/40 px-1.5 py-0.5 text-xs text-sky-300"
-                          >
-                            🎣 {row.reel}
-                          </span>
-                        ) : null}
                       </span>
                       <span className="shrink-0 tabular-nums text-neutral-300">
                         {tab === "watchtime" ? formatWatch(row.value) : `${row.value.toLocaleString("en-US")} ${currency}`}
