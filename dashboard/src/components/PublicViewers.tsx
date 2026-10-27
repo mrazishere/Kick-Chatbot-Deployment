@@ -6,12 +6,6 @@ import ViewerHistory from "@/components/ViewerHistory";
 
 const BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
 
-function formatWatch(seconds: number): string {
-  const total = Math.max(0, Math.floor(seconds / 60));
-  const h = Math.floor(total / 60);
-  return h > 0 ? `${h.toLocaleString("en-US")}h ${total % 60}m` : `${total % 60}m`;
-}
-
 /**
  * The public leaderboard's viewer list, like the admin dashboard's but read only:
  * search anyone by name and open their $DON history in place. The first page
@@ -161,7 +155,6 @@ export default function PublicViewers({
                     </span>
                     <span className="shrink-0 text-right tabular-nums text-neutral-300">
                       {v.balance.toLocaleString("en-US")} {currency}
-                      <span className="hidden text-neutral-600 sm:inline"> · {formatWatch(v.watchSeconds)}</span>
                     </span>
                   </button>
                   {isOpen ? panel : null}

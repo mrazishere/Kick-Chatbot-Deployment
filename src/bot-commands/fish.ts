@@ -1894,29 +1894,47 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       for (let l = levelOf(eater); l < MAX_LEVEL; l++) toFull += levelCost(head.item, g, eater, l);
       const sold = d.lifetime.sold;
       let xp = 0;
-      const eaten: string[] = [];
-      const leftOver: string[] = [];
-      const tally = (into: string[], label: string, k: number) => { if (k > 0) into.push(`${label}${k > 1 ? ` x${k}` : ''}`); };
+      // Labels with how many of each, in the order first eaten. A fed fish eaten is named with
+      // its level, so two the same length can be told apart: "🦈 72 cm Lv3".
+      const eatenN = new Map<string, number>();
+      const leftOverN = new Map<string, number>();
+      const tally = (into: Map<string, number>, label: string, k = 1) => { if (k > 0) into.set(label, (into.get(label) ?? 0) + k); };
+      const lvTag = (h?: HeldFish) => h && levelOf(h) ? ` Lv${levelOf(h)}` : '';
       for (const w of want.values()) {
         let ate = 0;
-        while (ate < w.n && xp < toFull) { xp += takeSized(d, w.item, w.cm, 1, g)!; ate++; }
-        tally(eaten, `${w.item.name} ${w.cm} cm`, ate);
-        tally(leftOver, `${w.item.name} ${w.cm} cm`, w.n - ate);
+        while (ate < w.n && xp < toFull) {
+          // The one takeSized takes: the lowest level of that length.
+          const next = (d.catch.sizes?.[w.item.name] ?? []).filter(h => h.cm === w.cm).reduce((a, h) => levelOf(h) < levelOf(a) ? h : a);
+          xp += takeSized(d, w.item, w.cm, 1, g)!;
+          ate++;
+          tally(eatenN, `${w.item.name} ${w.cm} cm${lvTag(next)}`);
+        }
+        tally(leftOverN, `${w.item.name} ${w.cm} cm`, w.n - ate);
       }
       for (const [n, k] of byKind) {
         let ate = 0;
-        while (ate < k && xp < toFull) { xp += takeItems(d, ITEMS.find(i => i.name === n)!, 1, g); ate++; }
-        tally(eaten, n, ate);
-        tally(leftOver, n, k - ate);
+        while (ate < k && xp < toFull) {
+          // The one takeItems takes: an unfed one, then an unsized one, then a fed one.
+          const list = d.catch.sizes?.[n] ?? [];
+          const next = list.find(h => !levelOf(h)) ?? ((d.catch.types[n] ?? 0) > list.length ? undefined : list[0]);
+          xp += takeItems(d, ITEMS.find(i => i.name === n)!, 1, g);
+          ate++;
+          tally(eatenN, next && levelOf(next) ? `${n} ${next.cm} cm${lvTag(next)}` : n);
+        }
+        tally(leftOverN, n, k - ate);
       }
+      const labels = (m: Map<string, number>) => [...m].map(([label, k]) => `${label}${k > 1 ? ` x${k}` : ''}`);
+      const eaten = labels(eatenN);
+      const leftOver = labels(leftOverN);
       d.lifetime.sold = sold;
       putBack();
       const full = leftOver.length ? ` It was full: ${leftOver.join(', ')} went back to your bucket.` : '';
-      const label = `${name} ${eater.cm} cm`;
+      const label = `${name} ${eater.cm} cm${lvTag(eater)}`;
       if (randomInt(1, 100) <= g.feedFailPercent) {
         saveFish(db!, uid, d, now);
         console.log(`[FISH] ${me}'s ${label} failed to eat ${eaten.join(' ')} in ${chan}`);
-        return `💥 Your ${label} choked on ${eaten.join(', ')}! The food is gone and it gained nothing.`;
+        const kept = leftOver.length ? ` ${leftOver.join(', ')} stayed in your bucket.` : '';
+        return `💥 Your ${label} choked on ${eaten.join(', ')}! The food is gone and it gained nothing.${kept}`;
       }
       const gained = addXp(head.item, g, eater, xp);
       saveFish(db!, uid, d, now);

@@ -24,7 +24,7 @@ import { publicUserHistory, publicViewerSearch } from './points/store';
 import { currentReel, ITEMS, rarityName, sellPrice, stealRollChance } from './community/fishing';
 import { fighterOf } from './community/fish-duel';
 import { channelEmotes } from './community/emotes';
-import { adjustPoints, backupPoints, caughtFish, duelBoard, heistBoard, heldCatches, getPointsUserDetail, pointsLeaderboard, pointsSummary, resetAllPoints, searchPointsUsers } from './points/store';
+import { adjustPoints, backupPoints, duelBoard, heistBoard, heldCatches, getPointsUserDetail, pointsLeaderboard, pointsSummary, resetAllPoints, searchPointsUsers } from './points/store';
 import { funnels as cheatFunnels, RULES as CHEAT_RULES, linkedAccounts, linkedGroups, suspects as cheatSuspects } from './community/cheat-signals';
 import { recentSpins } from './community/wheel-history';
 import { changeWheel, MAX_ITEMS as WHEEL_MAX_ITEMS, MAX_LABEL as WHEEL_MAX_LABEL, readWheel, SPIN_SECONDS as WHEEL_SPIN_SECONDS, validateWheel } from './community/wheel';
@@ -3335,8 +3335,8 @@ async function customFishImages(channel: string, cfg: ReturnType<typeof effectiv
 /**
  * What the public leaderboard's Fishing tab shows: every catch with its share of
  * catches, a rarity name and its sell price as the channel has them set, the big
- * bite trophies, the rarest fish anyone has landed, and the fish each viewer holds
- * unsold. Null where fishing is off.
+ * bite trophies, the ten most valuable fish anyone holds, and the fish each viewer
+ * holds unsold. Null where fishing is off.
  */
 function publicFishing(channel: string, cfg: ReturnType<typeof effectivePointsConfig>, broadcasterUserId: number | null): Record<string, unknown> | null {
   const g = cfg.games;
@@ -3359,22 +3359,15 @@ function publicFishing(channel: string, cfg: ReturnType<typeof effectivePointsCo
   };
   const fish = list(c => c.type === 'fish' && !c.trophy);
   const trophies = list(c => !!c.trophy, true);
-  // Rarest first: trophies ahead of every fish, then by today's odds. A catch since
-  // removed from the channel's list is left out.
   const odds = new Map([...fish, ...trophies].map(f => [f.emoji, f]));
-  const rarest = caughtFish(channel, cfg, broadcasterUserId)
-    .flatMap(c => {
-      const f = odds.get(c.name);
-      return f ? [{ emoji: c.name, chance: f.chance, rarity: f.rarity, times: c.times, firstBy: c.firstBy, firstAt: c.firstAt, lastBy: c.lastBy, lastAt: c.lastAt, ...('trophy' in f ? { trophy: true } : {}) }] : [];
-    })
-    .sort((a, b) => Number('trophy' in b) - Number('trophy' in a) || a.chance - b.chance || a.firstAt.localeCompare(b.firstAt))
-    .slice(0, 5);
   // Who holds what right now: each viewer's unsold fish, rarest first, priced as a
   // sale would price them: with their reel's bonus, which stolen fish don't get. The
   // most valuable haul leads.
   const kinds = ITEMS.filter(i => i.type === 'fish')
     .map(item => ({ item, odds: odds.get(item.name) }))
     .sort((a, b) => Number(!!b.item.trophy) - Number(!!a.item.trophy) || (a.odds?.chance ?? 0) - (b.odds?.chance ?? 0) || b.item.price - a.item.price);
+  // Every fish held, for the most valuable ones: each sized fish, the unsized ones of a kind together.
+  const best = new Map<string, { name: string; emoji: string; rarity: string; type: string; cm: number | null; n: number; hp: number; attack: number; worth: number; level?: number }>();
   const holders = heldCatches(channel, cfg, broadcasterUserId)
     .map(h => {
       let count = 0;
@@ -3395,9 +3388,16 @@ function publicFishing(channel: string, cfg: ReturnType<typeof effectivePointsCo
           const cm = held ? held.cm : null;
           const value = sellPrice(item, g, held, stolen ? 1 : reelValue);
           worth += value * k;
+          const f = fighterOf(g, item, held);
+          // For the most valuable fish: priced as here and in `fish show`, the owner's reel
+          // included, so the board and a viewer's own list agree. Fish just alike are one line, counted.
+          const key = `${h.username}|${item.name}|${cm}|${value}|${f.level}|${f.hp}|${f.attack}`;
+          const twin = best.get(key);
+          if (twin) twin.n += k;
+          else best.set(key, { name: h.username, emoji: item.name, rarity: o?.rarity ?? 'Never', type: f.type, cm, n: k, hp: f.hp, attack: f.attack,
+            worth: value, ...(f.level ? { level: f.level } : {}) });
           const same = each.find(e => e.cm === cm && e.worth === value);
           if (same) return void (same.n += k);
-          const f = fighterOf(g, item, held);
           each.push({ cm, n: k, hp: f.hp, attack: f.attack, worth: value, ...(f.level ? { level: f.level } : {}) });
         };
         for (const one of sized) add(one, 1, !!one.stolen);
@@ -3412,8 +3412,10 @@ function publicFishing(channel: string, cfg: ReturnType<typeof effectivePointsCo
     .filter(h => h.count > 0)
     .sort((a, b) => b.worth - a.worth || b.count - a.count || a.name.localeCompare(b.name))
     .slice(0, 100);
+  // The ten most valuable fish anyone holds (trophies too), then the strongest in a duel.
+  const topFish = [...best.values()].sort((a, b) => b.worth - a.worth || b.hp * b.attack - a.hp * a.attack || a.name.localeCompare(b.name)).slice(0, 10);
   return {
-    catchOdds: g.catchOdds, fish, junk: list(c => c.type === 'junk'), rarest, holders, steal: g.steal.enabled,
+    catchOdds: g.catchOdds, fish, junk: list(c => c.type === 'junk'), topFish, holders, steal: g.steal.enabled,
     // How hooks, guards and stealing work here, for the tab's explainer. Only where stealing is on.
     ...(g.steal.enabled ? {
       stealRules: {

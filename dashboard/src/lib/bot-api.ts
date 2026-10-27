@@ -380,17 +380,21 @@ export interface PublicCatch {
   steal?: number;
 }
 
-/** One kind of fish someone has landed, for the Fishing tab's rarest catches. */
-export interface PublicRareCatch {
+/** One of the most valuable fish anyone holds, or several just alike (unsized ones of a kind). */
+export interface PublicTopFish {
+  name: string;
   emoji: string;
-  chance: number;
   rarity: PublicCatch["rarity"];
-  times: number;
-  firstBy: string;
-  firstAt: string;
-  lastBy: string;
-  lastAt: string;
-  trophy?: boolean;
+  type?: "Predator" | "Swift" | "Armored";
+  /** Null: no size. */
+  cm: number | null;
+  n: number;
+  hp: number;
+  attack: number;
+  /** What one sells for, the owner's reel bonus included (stolen fish don't get it), as `fish show` prices it. */
+  worth: number;
+  /** Levels from feeding; absent is 0. */
+  level?: number;
 }
 
 export interface PublicDuels {
@@ -404,8 +408,8 @@ export interface PublicFishing {
   catchOdds: number;
   fish: PublicCatch[];
   junk: PublicCatch[];
-  /** The rarest fish landed, rarest first. Empty from a bot service older than it. */
-  rarest: PublicRareCatch[];
+  /** The most valuable fish held, most valuable first. Empty from a bot service older than it. */
+  topFish: PublicTopFish[];
   /** The fish each viewer holds unsold, most valuable haul first. Absent from a bot service older than it. */
   holders?: PublicHolder[];
   /** Whether viewers can steal fish here. Absent from a bot service older than stealing. */

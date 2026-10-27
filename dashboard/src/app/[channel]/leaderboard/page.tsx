@@ -7,9 +7,9 @@ import { validChannel } from "@/lib/bot-auth";
 import { getSession } from "@/lib/session";
 import { loadPublicLeaderboard, loadPublicViewers } from "@/lib/public-leaderboard";
 import PublicViewers from "@/components/PublicViewers";
-import Heists, { formatDay } from "@/components/Heists";
+import Heists from "@/components/Heists";
 import Duels from "@/components/Duels";
-import type { PublicCatch, PublicCommands, PublicFishing, PublicHolder, PublicRareCatch, PublicStealRules } from "@/lib/bot-api";
+import type { PublicCatch, PublicCommands, PublicFishing, PublicHolder, PublicStealRules, PublicTopFish } from "@/lib/bot-api";
 
 export const dynamic = "force-dynamic";
 
@@ -35,20 +35,13 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
   };
 }
 
-function formatWatch(seconds: number): string {
-  const total = Math.max(0, Math.floor(seconds / 60));
-  const h = Math.floor(total / 60);
-  const m = total % 60;
-  return h > 0 ? `${h.toLocaleString("en-US")}h ${m}m` : `${m}m`;
-}
-
 function formatUpdated(iso: string): string {
   const d = new Date(iso);
   if (Number.isNaN(d.getTime())) return "";
   return d.toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short", timeZone: process.env.TZ || "Asia/Singapore" });
 }
 
-type Tab = "points" | "watchtime" | "fishing" | "commands";
+type Tab = "points" | "fishing" | "commands";
 
 const RARITY_CLASS: Record<PublicCatch["rarity"], string> = {
   Common: "border-neutral-700 text-neutral-400",
@@ -108,30 +101,31 @@ function CatchTable({ title, rows, currency, emotes }: { title: string; rows: Pu
 }
 
 
-function RarestCatches({ rows, channel, emotes }: { rows: PublicRareCatch[]; channel: string; emotes?: Emotes }) {
-  const who = (name: string) => (
-    <a href={`${BASE_PATH}/${channel}/leaderboard?user=${encodeURIComponent(name)}`} className="text-neutral-200 hover:underline">
-      {name}
-    </a>
-  );
+/** The most valuable fish anyone holds right now, each with its owner, length, level and duel stats. */
+function TopFish({ rows, currency, channel, emotes }: { rows: PublicTopFish[]; currency: string; channel: string; emotes?: Emotes }) {
   return (
     <section className="overflow-hidden rounded-xl border border-neutral-800 bg-neutral-950/60">
-      <h2 className="border-b border-neutral-800 px-5 py-2 text-xs text-neutral-500">Rarest catches</h2>
+      <h2 className="border-b border-neutral-800 px-5 py-2 text-xs text-neutral-500">
+        <span className="text-neutral-300">🏆 Most valuable fish</span> · held right now, by what one sells for, their owner's reel included
+      </h2>
       <ol className="divide-y divide-neutral-800">
-        {rows.map((r) => (
-          <li key={r.emoji} className="flex items-center gap-4 px-5 py-3 text-sm">
+        {rows.map((r, i) => (
+          <li key={`${r.name}-${r.emoji}-${r.cm}-${r.level ?? 0}-${i}`} className="flex items-center gap-3 px-5 py-2.5 text-sm">
+            <span className="w-6 shrink-0 text-xs tabular-nums text-neutral-600">{i + 1}</span>
             <span className="w-8 shrink-0 text-xl leading-none"><FishIcon name={r.emoji} emotes={emotes} /></span>
             <span className="min-w-0 flex-1">
-              <span className="flex flex-wrap items-center gap-2">
+              <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                <span className="tabular-nums text-neutral-100">{r.cm === null ? "no size" : `${r.cm} cm`}</span>
+                {r.level ? <span className="rounded bg-amber-500/15 px-1 text-xs text-amber-300">Lv{r.level}</span> : null}
+                {r.n > 1 ? <span className="text-xs tabular-nums text-neutral-500">×{r.n}</span> : null}
                 <span className={`rounded-md border px-1.5 py-0.5 text-xs ${RARITY_CLASS[r.rarity]}`}>{r.rarity}</span>
-                <span className="text-xs tabular-nums text-neutral-500">{r.trophy ? "big bite" : formatChance(r.chance)}</span>
               </span>
               <span className="mt-1 block text-xs text-neutral-500">
-                First by {who(r.firstBy)} on {formatDay(r.firstAt)}
-                {r.times > 1 ? <> · latest by {who(r.lastBy)} on {formatDay(r.lastAt)}</> : null}
+                <a href={`${BASE_PATH}/${channel}/leaderboard?user=${encodeURIComponent(r.name)}`} className="text-neutral-200 hover:underline">{r.name}</a>
+                <span className="ml-2 tabular-nums">{r.type ? `${TYPE_EMOJI[r.type] ?? ""} ` : ""}❤️{r.hp} ⚔️{r.attack}</span>
               </span>
             </span>
-            <span className="shrink-0 tabular-nums text-neutral-300">{r.times}×</span>
+            <span className="shrink-0 tabular-nums text-neutral-300">{r.worth.toLocaleString("en-US")} {currency}</span>
           </li>
         ))}
       </ol>
@@ -355,7 +349,7 @@ function FishingTab({ fishing, currency, channel, command }: { fishing: PublicFi
         {`A cast lands a fish 1 time in ${fishing.catchOdds}; bait and reels improve that. Chance is how often a catch is that fish. `}
         {`Prices are for an average 50 cm fish: length scales it from half (1 cm) to double (100 cm), and beating your record adds 50%.`}
       </p>
-      {fishing.rarest.length ? <RarestCatches rows={fishing.rarest} channel={channel} emotes={fishing.emotes} /> : null}
+      {fishing.topFish.length ? <TopFish rows={fishing.topFish} currency={currency} channel={channel} emotes={fishing.emotes} /> : null}
       {fishing.holders?.length ? <Holders rows={fishing.holders} currency={currency} channel={channel} duel={!!fishing.duel} emotes={fishing.emotes} /> : null}
       {fishing.stealRules ? <StealGuide rules={fishing.stealRules} currency={currency} command={command} fish={[...fishing.fish, ...(fishing.trophies ?? [])]} emotes={fishing.emotes} /> : null}
       {fishing.steal || fishing.heists ? <Heists heists={fishing.heists ?? null} currency={currency} channel={channel} /> : null}
@@ -470,7 +464,8 @@ export default async function LeaderboardPage({ params, searchParams }: Props) {
   const lookup = (Array.isArray(rawUser) ? rawUser[0] : rawUser)?.trim().replace(/^@+/, "");
   const openFirst = lookup && /^[A-Za-z0-9_]{2,25}$/.test(lookup) ? lookup : null;
   const wanted = Array.isArray(rawTab) ? rawTab[0] : rawTab;
-  const tab: Tab = wanted === "watchtime" ? "watchtime" : wanted === "fishing" ? "fishing" : wanted === "commands" ? "commands" : "points";
+  // The Active time tab was taken off on 2026-10-27: ?tab=watchtime opens the first tab.
+  const tab: Tab = wanted === "fishing" ? "fishing" : wanted === "commands" ? "commands" : "points";
 
   const result = await loadPublicLeaderboard(slug);
   if (result.kind === "not-found") notFound();
@@ -484,12 +479,12 @@ export default async function LeaderboardPage({ params, searchParams }: Props) {
   }
 
   const data = result.kind === "ok" ? result.data : null;
-  // The $DON tab's list comes from the same source as its search, with active time.
+  // The $DON tab's list comes from the same source as its search.
   const firstViewers = tab === "points" && data ? await loadPublicViewers(slug, "") : null;
   const fishing = data?.fishing ?? null;
   const commands = data?.commands ?? null;
   const currency = data?.currencyName ?? "Points";
-  const rows = data ? (tab === "watchtime" ? data.watchtime : data.points) : [];
+  const rows = data ? data.points : [];
   const tabLink = (t: Tab) => `${BASE_PATH}/${slug}/leaderboard${t === "points" ? "" : `?tab=${t}`}`;
   const tabClass = (t: Tab) =>
     `rounded-lg border px-3 py-1.5 text-sm transition ${
@@ -529,9 +524,6 @@ export default async function LeaderboardPage({ params, searchParams }: Props) {
               <a href={tabLink("points")} className={tabClass("points")}>
                 {currency}
               </a>
-              <a href={tabLink("watchtime")} className={tabClass("watchtime")}>
-                Active time
-              </a>
               {fishing ? (
                 <a href={tabLink("fishing")} className={tabClass("fishing")}>
                   Fishing
@@ -547,12 +539,6 @@ export default async function LeaderboardPage({ params, searchParams }: Props) {
                 Updated {formatUpdated(data.updatedAt)}
               </span>
             </nav>
-            {tab === "watchtime" ? (
-              <p className="text-xs text-neutral-500">
-                Time spent chatting while {slug} is live, counted in 10-minute steps. Kick doesn&apos;t share who is
-                watching, so viewers who don&apos;t chat aren&apos;t counted.
-              </p>
-            ) : null}
 
             {tab === "points" && firstViewers?.kind === "ok" ? (
               <PublicViewers channel={slug} currency={currency} initial={firstViewers.viewers} openFirst={openFirst} />
@@ -576,7 +562,7 @@ export default async function LeaderboardPage({ params, searchParams }: Props) {
             <section className="overflow-hidden rounded-xl border border-neutral-800 bg-neutral-950/60">
               {rows.length === 0 ? (
                 <p className="px-5 py-8 text-center text-sm text-neutral-500">
-                  {tab === "watchtime" ? "No active time recorded yet." : `Nobody has earned ${currency} yet.`}
+                  {`Nobody has earned ${currency} yet.`}
                 </p>
               ) : (
                 <ol className="divide-y divide-neutral-800">
@@ -599,7 +585,7 @@ export default async function LeaderboardPage({ params, searchParams }: Props) {
                         </a>
                       </span>
                       <span className="shrink-0 tabular-nums text-neutral-300">
-                        {tab === "watchtime" ? formatWatch(row.value) : `${row.value.toLocaleString("en-US")} ${currency}`}
+                        {`${row.value.toLocaleString("en-US")} ${currency}`}
                       </span>
                     </li>
                   ))}

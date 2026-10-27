@@ -400,10 +400,11 @@ export function takeItems(d: FishData, item: CatchItem, n: number, g: PointsGame
     let list = [...(d.catch.sizes[item.name] ?? [])];
     // Unsized fish (traps, older catches) count toward `have` but have no entry.
     const unsized = have - list.length;
-    // Fed fish (a level) go last, so taking "the oldest" never takes one by surprise;
-    // keeping the biggest keeps the highest level, then the longest.
+    // Fed fish (a level) go last, after the unsized ones too, so taking "the oldest" never
+    // takes one by surprise; keeping the biggest keeps the highest level, then the longest.
+    const fed = keepBiggest ? [] : list.filter(h => levelOf(h));
     if (keepBiggest) list.sort((a, b) => levelOf(a) - levelOf(b) || a.cm - b.cm);
-    else list = [...list.filter(h => !levelOf(h)), ...list.filter(h => levelOf(h))];
+    else list = list.filter(h => !levelOf(h));
     // Sell unsized ones first when keeping the biggest, so the kept one is a real size.
     // Unsized ones that weren't stolen sell first, at the reel's value; stolen ones at the plain price.
     let ownUnsized = Math.max(0, unsized - stolenUnsized(d, item.name));
@@ -423,7 +424,12 @@ export function takeItems(d: FishData, item: CatchItem, n: number, g: PointsGame
       taken++;
     }
     sellUnsized(n - taken);
-    d.catch.sizes[item.name] = list;
+    while (taken < n && fed.length) {
+      const held = fed.shift()!;
+      total += sellPrice(item, g, held, held.stolen ? 1 : value);
+      taken++;
+    }
+    d.catch.sizes[item.name] = [...list, ...fed];
     setStolenUnsized(d, item.name, hotUnsized);
   } else {
     total = n * sellPrice(item, g, undefined, value);

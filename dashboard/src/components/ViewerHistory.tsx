@@ -14,12 +14,6 @@ function formatDate(iso: string | null): string {
   return d.toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short", timeZone: "Asia/Singapore" });
 }
 
-function formatWatch(seconds: number): string {
-  const total = Math.max(0, Math.floor(seconds / 60));
-  const h = Math.floor(total / 60);
-  return h > 0 ? `${h.toLocaleString("en-US")}h ${total % 60}m` : `${total % 60}m`;
-}
-
 export default function ViewerHistory({ h, onOpen }: { h: PublicHistory; /** Opens another viewer in the list. */ onOpen?: (name: string) => void }) {
   const g = h.gamble;
   return (
@@ -30,9 +24,8 @@ export default function ViewerHistory({ h, onOpen }: { h: PublicHistory; /** Ope
           {h.isSub ? "Subscriber · " : ""}first seen {formatDate(h.firstSeenAt)}
         </span>
       </div>
-      <dl className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+      <dl className="grid grid-cols-2 gap-4 sm:grid-cols-3">
         <Stat label="Balance" value={`${h.balance.toLocaleString()}${h.rank === null ? "" : ` · #${h.rank}`}`} />
-        <Stat label="Active time" value={formatWatch(h.watchSeconds)} />
         <Stat label="Lifetime earned" value={h.lifetimeEarned.toLocaleString()} />
         <Stat label="Last seen" value={formatDate(h.lastSeenAt)} />
       </dl>

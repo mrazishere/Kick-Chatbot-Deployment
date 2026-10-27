@@ -2390,6 +2390,12 @@ async function main(): Promise<void> {
     takeItems(dup, it('🐟'), 2, gf, true);
     check('taking the oldest skips fed fish; keeping the biggest keeps the fed ones', oldest.catch.sizes['🐟'].map(h => h.cm).join() === '20,90'
       && dup.catch.sizes['🐟'].map(h => `${h.cm}:${h.level ?? 0}`).join() === '10:1,20:3', [oldest.catch.sizes, dup.catch.sizes]);
+    // An unsized 🐟 (from a trap) goes before a fed one, not after it.
+    const unsized = initialData();
+    for (let i = 0; i < 2; i++) addItem(unsized, it('🐟'));
+    unsized.catch.sizes = { '🐟': [{ cm: 90, record: false, level: 2 }] };
+    takeItems(unsized, it('🐟'), 1, gf);
+    check('taking by kind takes an unsized fish before a fed one', unsized.catch.types['🐟'] === 1 && unsized.catch.sizes['🐟'][0]?.level === 2, unsized.catch);
 
     const ch = 'feedch';
     writeConfig(root, ch, { enabled: true, currencyName: '$DON', games: { enabled: true, onlyWhileLive: false, feedFailPercent: 0 } });
@@ -2438,6 +2444,17 @@ async function main(): Promise<void> {
       // "feed 🦈 🦈50cm": the highest-level 🦈 is the 50 cm one, named as food, so another 🦈 eats it.
       const other = await say(ch, '$don fish feed 🦈 🦈50cm');
       check('feed: an eater named without a length isn\'t the fish named as food', other.includes('Your 🦈 80 cm ate 🦈 50 cm') && loadFish(fdb, 36)!.catch.types['🦈'] === 1, other);
+      // Two 🐟 60 cm, one fed: by length the unfed one is eaten, and a fed one eaten is named with its level.
+      runWrite(fdb, () => {
+        const x = loadFish(fdb, 36)!;
+        for (const level of [2, 0]) { addItem(x, it('🐟')); ((x.catch.sizes ??= {})['🐟'] ??= []).push(level ? { cm: 60, record: false, level } : { cm: 60, record: false }); }
+        saveFish(fdb, 36, x, 1);
+      });
+      const twin = await say(ch, '$don fish feed 🦈 🐟 60cm');
+      const fedLeft = loadFish(fdb, 36)!.catch.sizes!['🐟'];
+      const fedTwin = await say(ch, '$don fish feed 🦈 🐟');
+      check('feed: of two the same length the unfed one is food, and a fed one eaten shows its level',
+        /ate 🐟 60 cm \(/.test(twin) && fedLeft.length === 1 && fedLeft[0].level === 2 && fedTwin.includes('ate 🐟 60 cm Lv2 ('), { twin, fedTwin, fedLeft });
       // Full at Lv10: a 🐟 100 cm needs 10 levels of 38 XP; four 🐟 90 cm (~140 each) are one too many, so one goes back.
       runWrite(fdb, () => {
         const x = loadFish(fdb, 36)!;
