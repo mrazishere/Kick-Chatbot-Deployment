@@ -3373,8 +3373,8 @@ function publicFishing(channel: string, cfg: ReturnType<typeof effectivePointsCo
         const chance = total > 0 ? (c.weight / total) * 100 : 0;
         return {
           emoji: c.name, chance: Math.round(chance * 100) / 100, rarity: trophy ? 'Mythic' : rarityName(chance), price: c.price, ...(trophy ? { trophy: true } : {}),
-          // The chance a steal try on it works, luck included: it follows the fish's rarity.
-          ...(g.steal.enabled && c.type === 'fish' ? { steal: Math.round(stealRollChance(g, c.name) * 100) / 100 } : {})
+          // The chance a steal try on it works, luck included, at its list price: it follows the fish's rarity and value.
+          ...(g.steal.enabled && c.type === 'fish' ? { steal: Math.round(stealRollChance(g, c.name, c.price) * 100) / 100 } : {})
         };
       })
       .sort((a, b) => b.chance - a.chance || a.price - b.price);

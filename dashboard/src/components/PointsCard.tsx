@@ -217,7 +217,7 @@ const DUEL_FIELDS: Array<{ key: DuelNumber; label: string; hint: string; min: nu
   { key: "cooldownSeconds", label: "Seconds between challenges", hint: "per viewer, default 60", min: 0, max: 3600 },
 ];
 
-/** `fish steal`: a hook to try, rarity odds, a burned fine when caught, and guards. Mirrors the bot's FishStealSetting. */
+/** `fish steal`: a hook to try, odds by rarity and value, a burned fine when caught, and guards. Mirrors the bot's FishStealSetting. */
 export interface FishSteal {
   enabled: boolean;
   /** Stealing only while live, whatever the fishing live/offline rule says. Absent from a bot service older than it. */
@@ -251,12 +251,12 @@ const STEAL_FIELDS: Array<{ key: StealNumber; label: string; hint: string; min: 
   { key: "feeMinimum", label: "Smallest fee", hint: "default 10", min: 0, max: 1_000_000_000 },
   { key: "edgePercent", label: "Thief's edge (%)", hint: "average loss, sets the fine, default 20", min: 0, max: 1000 },
   { key: "fineMinimum", label: "Smallest fine", hint: "default 25", min: 0, max: 1_000_000_000 },
-  { key: "oddsCommon", label: "Common (%)", hint: "chance it works, default 40", min: 0, max: 100 },
+  { key: "oddsCommon", label: "Common (%)", hint: "chance it works at the tier's list price, default 40", min: 0, max: 100 },
   { key: "oddsUncommon", label: "Uncommon (%)", hint: "default 30", min: 0, max: 100 },
   { key: "oddsRare", label: "Rare (%)", hint: "default 20", min: 0, max: 100 },
   { key: "oddsEpic", label: "Epic (%)", hint: "default 10", min: 0, max: 100 },
   { key: "oddsLegendary", label: "Legendary (%)", hint: "default 5", min: 0, max: 100 },
-  { key: "luckPercent", label: "Thief's luck (%)", hint: "raises every chance by this share, fines stay as priced: stealing pays, default 0", min: 0, max: 100 },
+  { key: "luckPercent", label: "Thief's luck (%)", hint: "raises every chance by this share; fines follow, so thieves still lose the edge, default 0", min: 0, max: 100 },
   { key: "graceMinutes", label: "Safe after landing (min)", hint: "default 30", min: 0, max: 1440 },
   { key: "protectMinutes", label: "Target left alone (min)", hint: "after a try, default 60", min: 0, max: 1440 },
   { key: "guardPercent", label: "Guard price (% of fish held)", hint: "default 5", min: 0, max: 100 },

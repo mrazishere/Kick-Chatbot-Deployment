@@ -1293,7 +1293,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       }
       saveFish(db!, uid, d, now);
       saveFish(db!, to.user_id, r, now);
-      recordSignal(db!, { userId: uid, kind: 'fish_give', now, detail: JSON.stringify({ to: to.user_id, item: item.name, n: moved, worth: each * moved }) });
+      recordSignal(db!, { userId: uid, kind: 'fish_give', now, detail: JSON.stringify({ to: to.user_id, item: item.name, n: moved, worth: each * moved, ...(cm !== undefined ? { cm } : {}) }) });
       lastGive.set(`${chan}|${meLc}`, now);
       const size = cm !== undefined ? ` (${cm} cm)` : '';
       console.log(`[FISH] ${me} gave ${moved} ${item.name}${size} to ${to.username} in ${chan}`);
@@ -1668,14 +1668,20 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     if (aim) {
       const reach = aimAt(v, victim, aim, now, true);
       if ('blocked' in reach) no.push(reach.blocked);
-      const chance = Math.round(stealRollChance(g, aim.item.name) * 10) / 10;
+      // The odds go by value too, so a kind's run from its dearest fish to its cheapest.
+      const pct = (worth: number) => Math.round(stealRollChance(g, aim.item.name, worth) * 10) / 10;
       if (!('blocked' in reach) && reach.aimed) {
-        const { fee, fine } = stealCharges(g, sellPrice(aim.item, g, reach.aimed.held), stealRollChance(g, aim.item.name));
+        const worth = sellPrice(aim.item, g, reach.aimed.held);
+        const { fee, fine } = stealCharges(g, worth, stealRollChance(g, aim.item.name, worth));
         needed = fee + fine;
-        odds = `${chance}% chance · ${groupDigits(fee)} ${cur} fee, ${groupDigits(fine)} ${cur} fine if caught`;
+        odds = `${pct(worth)}% chance · ${groupDigits(fee)} ${cur} fee, ${groupDigits(fine)} ${cur} fine if caught`;
       } else if (v && !('blocked' in reach)) {
         needed = worstStealCharges(v, g, pool.filter(p => p.item.name === aim.item.name));
-        odds = `${chance}% chance · up to ${groupDigits(needed)} ${cur} in fee and fine, by which one you grab`;
+        const have = v.catch.types[aim.item.name] ?? 0;
+        const sized = (v.catch.sizes?.[aim.item.name] ?? []).slice(0, have);
+        const worths = [...sized.map(h => sellPrice(aim.item, g, h)), ...(have > sized.length || !sized.length ? [sellPrice(aim.item, g)] : [])];
+        const lo = pct(Math.max(...worths)), hi = pct(Math.min(...worths));
+        odds = `${lo === hi ? lo : `${lo}–${hi}`}% chance · up to ${groupDigits(needed)} ${cur} in fee and fine, by which one you grab`;
       }
     } else if (!v || !pool.length) {
       no.push('they have no fish in reach');
@@ -1737,7 +1743,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       // the try costs a hook use.
       const balance = getUser(db!, uid)?.balance ?? 0;
       const needed = aimed
-        ? (({ fee, fine }) => fee + fine)(stealCharges(g, sellPrice(aim!.item, g, aimed.held), stealRollChance(g, aim!.item.name)))
+        ? (({ fee, fine }) => fee + fine)((w => stealCharges(g, w, stealRollChance(g, aim!.item.name, w)))(sellPrice(aim!.item, g, aimed.held)))
         : worstStealCharges(v, g, aim ? pool.filter(p => p.item.name === aim!.item.name) : pool);
       if (balance < needed) {
         d.hook = (d.hook ?? 1) - 1;
@@ -1756,8 +1762,8 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       const item = aim ? aim.item : pool.find(p => (r -= p.n) <= 0)!.item;
       const picked = aimed ?? pickHeld(v, item);
       const worth = sellPrice(item, g, picked.held);
-      // Luck included: the fine balances the odds the roll really has.
-      const chance = stealRollChance(g, item.name);
+      // Luck and value included: the fine balances the odds the roll really has.
+      const chance = stealRollChance(g, item.name, worth);
       const { fee, fine } = stealCharges(g, worth, chance);
       if (fee > 0) debitTx(db!, { userId: uid, amount: fee, reason: 'game:fish_steal', actor: `chat:${me}`, note: `${victim.username} ${item.name}`, now });
       const cooldown = `next steal in ${g.catchCooldownMinutes}m`;
@@ -1834,8 +1840,9 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
   /**
    * `fish feed 🦈 72cm 🐟 🐟 🦀`: the first fish named eats the rest and gains what they're
    * worth as XP, levelling up (community/fishing.ts addXp): stronger in duels and worth
-   * more. Named without a length, it's the highest-level, then longest, of its kind. Food
-   * is named as for sell, all or nothing; it can't be the fish itself. A feeding can fail
+   * more. Named without a length, it's the highest-level, then longest, of its kind, passing
+   * over a full Lv10 one while another matches. Food is named as for sell, all or nothing;
+   * it can't be the fish itself. A feeding can fail
    * (games.feedFailPercent): the food is gone and no XP is gained.
    */
   function feed(parts: string[], uid: number): void {
@@ -1857,10 +1864,14 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       const asFood = new Set(food.filter(p => p.item.name === name && p.cm !== undefined).map(p => p.cm));
       const held = list.slice(0, d?.catch.types[name] ?? 0);
       const spareOne = head.cm === undefined && held.some(h => !asFood.has(h.cm));
+      // A full one can't eat, so it's passed over while one that can is there: with a Lv10
+      // 🐟 100 cm and a fresh 🐟 100 cm, "feed 🐟 100cm" feeds the fresh one.
+      const hungry = held.some(h => (head.cm === undefined || h.cm === head.cm) && !(spareOne && asFood.has(h.cm)) && levelOf(h) < MAX_LEVEL);
       let at = -1;
       held.forEach((h, i) => {
         if (head.cm !== undefined && h.cm !== head.cm) return;
         if (spareOne && asFood.has(h.cm)) return;
+        if (hungry && levelOf(h) >= MAX_LEVEL) return;
         if (at < 0 || levelOf(h) > levelOf(list[at]) || (levelOf(h) === levelOf(list[at]) && h.cm > list[at].cm)) at = i;
       });
       if (!d || at < 0) return `You don't have a ${name}${head.cm !== undefined ? ` ${head.cm} cm` : ''}. ${cmd} fish show ${name} lists yours.`;

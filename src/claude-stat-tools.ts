@@ -69,12 +69,12 @@ export function statTools(channel: string): Array<Record<string, unknown>> {
       }
     }, {
       name: 'fishing_history',
-      description: 'A viewer\'s fishing events one by one, newest first, with dates, the fish (kind and length), who else was involved and what happened. kind: robbed = steal tries on them (who, which fish, whether it was taken, the thief was caught, or a guard blocked it); thefts = their own steal tries; catches = fish, junk and trophies they landed (cast, trap or big bite); fish-duels = their fish duels with both fish, the winner and the stake; trades = their fish trades, what each side gave and the fee. Use it when someone asks which fish, who, or when, not just how many: "what fish were stolen from me", "who stole from me", "what did I catch today", "who did I duel". Pass "me" for the person asking.',
+      description: 'A viewer\'s fishing events one by one, newest first, with dates, the fish (kind and length), who else was involved and what happened. kind: robbed = steal tries on them (who, which fish, whether it was taken, the thief was caught, or a guard blocked it); thefts = their own steal tries; catches = fish, junk and trophies they landed (cast, trap or big bite); fish-duels = their fish duels with both fish, the winner and the stake; trades = their fish trades, what each side gave and the fee; gifts = fish they gave or were given with $<currency> fish give (who, which fish, when; kept 30 days, none before 2026-10-20). Use it when someone asks which fish, who, or when, not just how many: "what fish were stolen from me", "who stole from me", "what did I catch today", "who did I duel", "where did X get that fish". catches only lists fish someone landed themselves: a fish they hold may instead have come from a gift, a steal (thefts), a duel won for keeps, a trade, or the streamer adding it. Before saying someone never got a fish, check gifts, thefts, fish-duels and trades too, and if none of them has it say it is not on record, not that it doesn\'t exist. Pass "me" for the person asking.',
       input_schema: {
         type: 'object',
         properties: {
           username: { type: 'string', description: 'Kick username without @, or "me"' },
-          kind: { type: 'string', enum: ['robbed', 'thefts', 'catches', 'fish-duels', 'trades'] },
+          kind: { type: 'string', enum: ['robbed', 'thefts', 'catches', 'fish-duels', 'trades', 'gifts'] },
           limit: { type: 'integer', description: 'How many, newest first: 1-25, default 10' }
         },
         required: ['username', 'kind']
@@ -326,7 +326,26 @@ function fishingHistory(ctx: StatToolContext, rawName: unknown, rawKind: unknown
         })
       };
     }
-    return { error: 'kind must be robbed, thefts, catches, fish-duels or trades.' };
+    if (kind === 'gifts') {
+      // From the cheat signals (community/cheat-signals.ts): plain gives only, trades are their own kind.
+      const rows = db.prepare(
+        `SELECT s.ts, s.user_id, s.detail, f.username AS from_name, t.username AS to_name
+         FROM fish_signals s JOIN users f ON f.user_id = s.user_id JOIN users t ON t.user_id = json_extract(s.detail, '$.to')
+         WHERE s.kind = 'fish_give' AND json_extract(s.detail, '$.item') != 'trade' AND (s.user_id = ? OR json_extract(s.detail, '$.to') = ?)
+         ORDER BY s.ts DESC LIMIT ?`
+      ).all(id, id, limit) as Array<{ ts: number; user_id: number; detail: string; from_name: string; to_name: string }>;
+      return {
+        username: found.username,
+        kind: 'fish gifts',
+        note: 'Gifts are kept 30 days and were not recorded before 2026-10-20. A length shows only when the giver named one.',
+        newestFirst: rows.map(r => {
+          const d = JSON.parse(r.detail) as { item: string; n: number; cm?: number };
+          const gave = r.user_id === id;
+          return { ...when(r.ts), [gave ? 'gaveTo' : 'gotFrom']: gave ? r.to_name : r.from_name, fish: `${fish(d.item, d.cm ?? null)}${d.n > 1 ? ` x${d.n}` : ''}` };
+        })
+      };
+    }
+    return { error: 'kind must be robbed, thefts, catches, fish-duels, trades or gifts.' };
   });
 }
 
@@ -586,9 +605,9 @@ function channelRules(ctx: StatToolContext, raw: unknown): unknown {
       scouting: '$<cmd> fish steal check @user [fish] tells a thief for free whether they can try now and every reason not (no hook, cooldown, tried them today, target on alert, fish too fresh or not held, not enough on hand), plus the chance, fee and fine; it never reveals a guard. $<cmd> fish steal alone shows their hook tries, cooldown and who they tried today with when each frees up',
       when: st.onlyWhileLive ? 'only while live' : g.onlyWhileOffline ? 'only while offline, like casting' : 'any time',
       successPercentByRarity: { Common: st.oddsCommon, Uncommon: st.oddsUncommon, Rare: st.oddsRare, Epic: st.oddsEpic, Legendary: st.oddsLegendary },
-      oddsFollowRarity: 'each fish\'s chance follows how rare it is to catch, with no steps: the tiers\' standard fish get the tier odds above, rarer ones less, down to a fraction of a percent for the rarest; trophies use the tier they fight as (the 🐉 half a Legendary\'s)',
-      successPercentByFishWithLuck: Object.fromEntries(g.catches.filter(x => x.type === 'fish' && x.weight > 0).map(x => [x.name, Math.round(stealRollChance(g, x.name) * 100) / 100])),
-      luck: st.luckPercent > 0 ? `every success chance by rarity above is raised by ${st.luckPercent}% of itself (so ${st.oddsCommon}% becomes ${Math.round(st.oddsCommon * (1 + st.luckPercent / 100) * 100) / 100}%, ${st.oddsLegendary}% becomes ${Math.round(st.oddsLegendary * (1 + st.luckPercent / 100) * 100) / 100}%), while fines stay priced from the lower odds, so stealing pays a little on average` : 'none: the odds above are the real ones',
+      oddsFollowRarityAndValue: 'each fish\'s chance goes by how rare it is to catch and by what that very fish is worth, counting equally (the geometric mean of the two; since 2026-10-29): by rarity, the tiers\' standard fish get the tier odds above, rarer ones less, trophies their fighting tier\'s (the 🐉 half a Legendary\'s); by value, the same odds sit at each tier\'s standard fish\'s list price (🐟 🐠 🦑 🐊 🐳), dearer fish less, ten times dearer than the 🐳 ten times harder. So a long or fed fish is harder to take than its kind and a cheap trophy easier than its tier. A steal check (fish steal check @user 🦈 72cm) gives a held fish\'s exact chance',
+      successPercentByFishWithLuckAtListPrice: Object.fromEntries(g.catches.filter(x => x.type === 'fish' && x.weight > 0).map(x => [x.name, Math.round(stealRollChance(g, x.name, x.price) * 100) / 100])),
+      luck: st.luckPercent > 0 ? `every success chance by rarity above is raised by ${st.luckPercent}% of itself (so ${st.oddsCommon}% becomes ${Math.round(st.oddsCommon * (1 + st.luckPercent / 100) * 100) / 100}%, ${st.oddsLegendary}% becomes ${Math.round(st.oddsLegendary * (1 + st.luckPercent / 100) * 100) / 100}%), and fines are priced from the raised chance, so a try still loses the edge on average` : 'none: the odds above are the real ones',
       fee: `every try that goes ahead costs ${st.feePercent}% of the grabbed fish's value, at least ${st.feeMinimum}`,
       fine: `a caught thief also pays a fine, at least ${st.fineMinimum}, priced from the chance with luck so the average try loses ${st.edgePercent}% of what it could win`,
       graceMinutes: `a fish can't be stolen until held ${st.graceMinutes} min, trap hauls included, so a thief can't snipe a haul the moment it's posted; a steal aimed at such a fish (or at a length they don't hold) gets "has no <fish> you can get your hook into right now". viewer_stats lists a viewer's still-protected fish under stealProtected`,

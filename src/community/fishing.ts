@@ -714,8 +714,26 @@ export function heldSaleValue(d: FishData, g: PointsGamesConfig): number {
   return total;
 }
 
-/** A steal's chance of working on this fish, in percent, by its rarity as the channel's odds name it. */
-export function stealChance(g: PointsGamesConfig, name: string): number {
+/**
+ * A steal's chance of working on this fish, in percent. By its rarity as the channel's odds
+ * name it; given what the fish is worth, by its value too (valueStealChance), the two
+ * counting equally: thieves steal for value, not just rarity (owner, 2026-10-29). A fish
+ * worth what its tier's standard fish lists at keeps its rarity odds; a cheap trophy is
+ * easier to take than its tier, a fed or long fish harder than its kind.
+ */
+export function stealChance(g: PointsGamesConfig, name: string, worth?: number): number {
+  const rarity = rarityStealChance(g, name);
+  if (worth === undefined) return rarity;
+  const value = valueStealChance(g, worth);
+  // At the floor either way (a tier set to 0%) it stays there: the other side mustn't lift it to rollable.
+  return rarity <= 0.01 || value <= 0.01 ? 0.01 : roundOdds(Math.sqrt(rarity * value));
+}
+
+/** Tenths above 1% (the tiers' own odds come out exact), hundredths below, never below 0.01%. */
+const roundOdds = (x: number): number => Math.max(0.01, x >= 1 ? Math.round(x * 10) / 10 : Math.round(x * 100) / 100);
+
+/** A steal's chance by rarity alone: the fish's share of catches on the tier curve, a trophy its tier's. */
+function rarityStealChance(g: PointsGamesConfig, name: string): number {
   const st = g.steal;
   const item = ITEMS.find(i => i.name === name);
   // A trophy has no share of casts: it's as hard to take as the tier it fights as, the
@@ -727,6 +745,24 @@ export function stealChance(g: PointsGamesConfig, name: string): number {
   const share = catchShare(g, name);
   if (share === null) return st.oddsLegendary;
   return stealCurve(st, share, stealAnchors(g));
+}
+
+/**
+ * A steal's chance by value alone, on the same curve as rarity: each tier's standard fish
+ * (STEAL_ANCHOR_FISH) at its list price gets the tier's odds, values between slide on a log
+ * scale, and past the 🐳's price the odds fall with the value: ten times dearer, ten times harder.
+ */
+export function valueStealChance(g: PointsGamesConfig, worth: number): number {
+  let prev = 0;
+  const prices = STEAL_ANCHOR_FISH.map(([fish]) => {
+    const item = ITEMS.find(i => i.name === fish);
+    // Each anchor dearer than the last, or the curve would fold back.
+    const at = Math.max(item ? sellPrice(item, g) : 0, prev * 1.1, 1);
+    prev = at;
+    return at;
+  });
+  // The curve runs on shares, rarer = smaller; a price's inverse runs the same way.
+  return stealCurve(g.steal, 1 / Math.max(worth, 1e-9), prices.map(p => 1 / p));
 }
 
 /**
@@ -755,19 +791,17 @@ export function stealAnchors(g: PointsGamesConfig): number[] {
 export function stealCurve(st: Pick<FishStealSetting, 'oddsCommon' | 'oddsUncommon' | 'oddsRare' | 'oddsEpic' | 'oddsLegendary'>, share: number, anchors: number[] = STEAL_ANCHOR_FISH.map(([, s]) => s)): number {
   const odds = [st.oddsCommon, st.oddsUncommon, st.oddsRare, st.oddsEpic, st.oddsLegendary];
   const points = anchors.map((a, i): [number, number] => [a, odds[i]]);
-  // Tenths above 1% (the tiers' own odds come out exact), hundredths below.
-  const round = (x: number) => Math.max(0.01, x >= 1 ? Math.round(x * 10) / 10 : Math.round(x * 100) / 100);
-  if (share >= points[0][0]) return round(points[0][1]);
+  if (share >= points[0][0]) return roundOdds(points[0][1]);
   for (let i = 1; i < points.length; i++) {
     const [hi, oddsHi] = points[i - 1];
     const [lo, oddsLo] = points[i];
     if (share >= lo) {
       const t = Math.log(hi / share) / Math.log(hi / lo);
-      return round(oddsHi + (oddsLo - oddsHi) * t);
+      return roundOdds(oddsHi + (oddsLo - oddsHi) * t);
     }
   }
   const [last, oddsLast] = points[points.length - 1];
-  return round(oddsLast * Math.max(0, share) / last);
+  return roundOdds(oddsLast * Math.max(0, share) / last);
 }
 
 /** Duel strength (hit points and attack ×) by tier, Common to Mythic. */
@@ -805,12 +839,12 @@ export function duelStrength(g: PointsGamesConfig, name: string): number {
 export const STEAL_ANCHOR_FISH: ReadonlyArray<readonly [string, number]> = [['🐟', 14.14], ['🐠', 5.66], ['🦑', 2.12], ['🐊', 0.71], ['🐳', 0.14]];
 
 /**
- * The chance a steal try on this fish works: its odds raised by luckPercent. Fines are priced
+ * The chance a steal try on this fish works: its odds (by value too, given its worth) raised by luckPercent. Fines are priced
  * from this too (until 2026-10-24 they used stealChance, so luck outweighed the edge and
  * steals paid thieves a little on average).
  */
-export const stealRollChance = (g: PointsGamesConfig, name: string): number =>
-  Math.min(100, stealChance(g, name) * (100 + g.steal.luckPercent) / 100);
+export const stealRollChance = (g: PointsGamesConfig, name: string, worth?: number): number =>
+  Math.min(100, stealChance(g, name, worth) * (100 + g.steal.luckPercent) / 100);
 
 /**
  * What a steal try on a fish costs: the fee every time, and the fine on top when
@@ -833,9 +867,8 @@ export function worstStealCharges(d: FishData, g: PointsGamesConfig, pool: Array
     const sized = (d.catch.sizes?.[item.name] ?? []).slice(0, have);
     const values = sized.map(held => sellPrice(item, g, held));
     if (have > sized.length) values.push(sellPrice(item, g));
-    const chance = stealRollChance(g, item.name);
     for (const worth of values) {
-      const { fee, fine } = stealCharges(g, worth, chance);
+      const { fee, fine } = stealCharges(g, worth, stealRollChance(g, item.name, worth));
       max = Math.max(max, fee + fine);
     }
   }

@@ -162,7 +162,8 @@ function StealGuide({ rules: r, currency, command, fish, emotes }: { rules: Publ
           {odds.length ? (
             <>
               <p className="text-xs text-neutral-400">
-                The chance it works follows how rare the fish is to catch: the rarer, the harder. Trophies go by the tier they fight as.
+                The chance it works goes by how rare the fish is to catch and by what it&apos;s worth, both counting equally: the rarer or the dearer, the harder.
+                Trophies go by the tier they fight as. Below, each fish at its list price; a long or fed one is harder to take, a small one easier.
               </p>
               <div className="grid grid-cols-3 gap-x-3 gap-y-0.5 text-xs tabular-nums sm:grid-cols-4">
                 {odds.map((f) => (
@@ -198,7 +199,7 @@ function StealGuide({ rules: r, currency, command, fish, emotes }: { rules: Publ
             Every try that goes ahead costs a fee of <b>{r.feePercent}%</b> of the grabbed fish&apos;s value (at least {n(r.feeMinimum)} {currency}), win or lose. Get caught and you
             also pay a fine (at least {n(r.fineMinimum)} {currency}).{" "}
             {r.luckPercent > 0
-              ? `Fines are priced so thieves would lose about ${r.edgePercent}% on average at the base odds, but every chance here gets a +${r.luckPercent}% boost (already in the table), so thieves come out a little ahead on average.`
+              ? `Every chance here gets a +${r.luckPercent}% boost (already in the table), and fines are priced from the boosted chance, so thieves still lose about ${r.edgePercent}% of what they'd hope to win, on average.`
               : `Fines are priced so that thieves lose about ${r.edgePercent}% of what they'd hope to win, on average.`}{" "}
             You need enough {currency} on hand to cover the fee and fine for their most valuable fish, or your hook fumbles.
           </p>

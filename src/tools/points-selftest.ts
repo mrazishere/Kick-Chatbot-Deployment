@@ -1628,8 +1628,10 @@ async function main(): Promise<void> {
         && fishOf(31).hook === 0 && balance(ch, 31) === 1770 && balance(ch, 34) === 10 && fishOf(34).catch.types['🐟'] === 2
         && fishOf(31).lifetime.steal.caught === 1, caught);
       check('caught: the steal cooldown starts too, fishing stays free', caught.includes('next steal in') && (fishOf(31).stealReady ?? 0) > Date.now() && fishOf(31).readyTimestamp <= Date.now(), caught);
-      // A 🐋 at 100 cm is worth 3,000: a 3% fee of 90 when it works.
-      cfgWith({ oddsLegendary: 100 });
+      // A 🐋 at 100 cm is worth 3,000: a 3% fee of 90 when it works. Value counts as much as rarity, so every tier is at
+      // 100% and the 🐳 lists at 3,000: a fish dearer than the 🐳's list price would be harder than its tier's odds.
+      writeConfig(root, ch, { enabled: true, currencyName: '$DON', games: { enabled: true, onlyWhileLive: false, catches: { '🐳': { price: 3000 } },
+        steal: { enabled: true, oddsCommon: 100, oddsUncommon: 100, oddsRare: 100, oddsEpic: 100, oddsLegendary: 100 } } });
       const whale = await run('$don fish steal @whale', ['rich', 38]);
       check('the fee is a share of the grabbed fish\'s value', whale.includes('made off with') && whale.includes('90 $DON fee') && balance(ch, 38) === 4910, whale);
       check('a caught thief reaches the overlay, and chat even with chat replies off', readOverlay(sdb).events.some(e => e.kind === 'caught') && caught.length > 0);
@@ -1682,6 +1684,18 @@ async function main(): Promise<void> {
       && sc('🦞') < 30 && sc('🦞') > 20 && sc('🐬') < 20 && sc('🐬') > 10 && sc('🦩') < 1 && sc('🦩') > 0
       && sc('🦭') === 20 && sc('🦕') === 10 && sc('🦄') === 5 && sc('🐉') === 2.5,
       Object.fromEntries(['🐟', '🦞', '🐬', '🐳', '🦩', '🦭', '🐉'].map(n => [n, sc(n)])));
+    // Value counts as much as rarity (2026-10-29): a fish at its tier's list price keeps its rarity's odds,
+    // a dearer one is harder, a cheap trophy easier than its tier, and past the 🐳's price ten times dearer is harder still.
+    const price = (n: string) => sellPrice(ITEMS.find(i => i.name === n)!, gs);
+    const sv = (n: string, worth: number) => stealChance(gs, n, worth);
+    check('steal odds go by value as much as rarity',
+      sv('🐟', price('🐟')) === 40 && sv('🐳', price('🐳')) === 5 && sv('🐊', price('🐊')) === 10
+      && sv('🐟', price('🐟') * 10) < 40 && sv('🐟', price('🐟') * 10) > sv('🐠', price('🐟') * 10)
+      && sv('🦄', price('🐟')) > 5 && sv('🦄', price('🐟')) < 40
+      && sv('🐳', price('🐳') * 2) < 5 && sv('🐳', price('🐳') * 2) > sv('🐳', price('🐳') * 10)
+      && Math.abs(sv('🐟', price('🐟') / 10) - 40) < 0.05
+      && stealChance(effectivePointsConfig({ games: { enabled: true, steal: { enabled: true, oddsCommon: 0 } } }).games, '🐟', price('🐟') * 20) === 0.01,
+      { fish10x: sv('🐟', price('🐟') * 10), cheapUnicorn: sv('🦄', price('🐟')), whale2x: sv('🐳', price('🐳') * 2), whale10x: sv('🐳', price('🐳') * 10) });
     // Duel strength rides the same curve: tier fish at the tier's, others between, the rarest past Legendary up to a cap.
     const ds = (n: string) => duelStrength(gs, n);
     check('duel strength follows rarity on the same curve as stealing',
@@ -1700,7 +1714,7 @@ async function main(): Promise<void> {
     addItem(holder, whale);
     (holder.catch.sizes ??= {})['🐳'] = [{ cm: 92, record: false }];
     const whaleWorth = sellPrice(whale, lucky, { cm: 92, record: false });
-    const p = stealRollChance(lucky, '🐳') / 100;
+    const p = stealRollChance(lucky, '🐳', whaleWorth) / 100;
     const worst = worstStealCharges(holder, lucky, [{ item: whale }]);
     const charged = stealCharges(lucky, whaleWorth, p * 100);
     const ev = p * whaleWorth - charged.fee - (1 - p) * charged.fine;
@@ -2465,6 +2479,18 @@ async function main(): Promise<void> {
       const afterFull = loadFish(fdb, 36)!.catch;
       check('feed: a fish stops eating at Lv10 and what it didn\'t eat stays', full.includes('grew to Lv10') && full.includes('went back to your bucket') && full.includes('🐟 90 cm')
         && afterFull.types['🐟'] === 2 && afterFull.sizes!['🐟'].filter(h => h.cm === 90).length === 1, { full, left: afterFull.sizes!['🐟'] });
+      // A Lv10 🐟 100 cm and an unfed 🐟 100 cm: the full one is passed over, by length or by kind.
+      runWrite(fdb, () => {
+        const x = loadFish(fdb, 36)!;
+        for (const cm of [100, 90]) { addItem(x, it('🐟')); x.catch.sizes!['🐟'].push({ cm, record: false }); }
+        saveFish(fdb, 36, x, 1);
+      });
+      const fresh = await say(ch, '$don fish feed 🐟 100cm 🐟 90cm');
+      const byKind = await say(ch, '$don fish feed 🐟 🐟 90cm');
+      const twins = loadFish(fdb, 36)!.catch.sizes!['🐟'].filter(h => h.cm === 100);
+      check('feed: a Lv10 fish is passed over for an unfed one of the same kind and length',
+        fresh.includes('Your 🐟 100 cm ate 🐟 90 cm') && byKind.includes('Your 🐟 100 cm Lv') && !byKind.includes('already')
+        && twins.length === 2 && twins.filter(h => h.level === 10).length === 1 && twins.some(h => (h.level ?? 0) < 10 && ((h.level ?? 0) > 0 || (h.xp ?? 0) > 0)), { fresh, byKind, twins });
     } finally {
       Date.now = realNow;
     }
