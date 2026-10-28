@@ -930,6 +930,13 @@ export function getPublicViewers(channel: string, q: string): Promise<{ currency
   });
 }
 
+/** The signed-in viewer's own fish guard, by their Kick id: when it runs out (ISO), or null. */
+export function getOwnGuard(channel: string, userId: number): Promise<{ guardUntil: string | null }> {
+  return request(`/internal/bot/${encodeURIComponent(channel)}/points/guard?userId=${userId}`, {
+    timeoutMs: 10_000,
+  });
+}
+
 export function getPublicHistory(channel: string, name: string): Promise<PublicHistory> {
   return request(`/internal/bot/${encodeURIComponent(channel)}/points/public-history?name=${encodeURIComponent(name)}`, {
     timeoutMs: 10_000,

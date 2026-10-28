@@ -24,7 +24,7 @@ import { publicUserHistory, publicViewerSearch } from './points/store';
 import { currentReel, ITEMS, rarityName, sellPrice, stealRollChance } from './community/fishing';
 import { fighterOf } from './community/fish-duel';
 import { channelEmotes } from './community/emotes';
-import { adjustPoints, backupPoints, duelBoard, heistBoard, heldCatches, getPointsUserDetail, pointsLeaderboard, pointsSummary, resetAllPoints, searchPointsUsers } from './points/store';
+import { adjustPoints, backupPoints, duelBoard, guardUntilFor, heistBoard, heldCatches, getPointsUserDetail, pointsLeaderboard, pointsSummary, resetAllPoints, searchPointsUsers } from './points/store';
 import { funnels as cheatFunnels, RULES as CHEAT_RULES, linkedAccounts, linkedGroups, suspects as cheatSuspects } from './community/cheat-signals';
 import { recentSpins } from './community/wheel-history';
 import { changeWheel, MAX_ITEMS as WHEEL_MAX_ITEMS, MAX_LABEL as WHEEL_MAX_LABEL, readWheel, SPIN_SECONDS as WHEEL_SPIN_SECONDS, validateWheel } from './community/wheel';
@@ -3309,6 +3309,28 @@ app.get('/internal/bot/:channel/points/public-history', internalGuard(false), (r
     const history = publicUserHistory(channel, cfg, name, 100, broadcasterIdOf(config));
     if (!history) return res.status(404).json({ error: 'No such viewer here' });
     return res.json({ channel, currencyName: cfg.currencyName, ...history });
+  } catch (e) {
+    return pointsUnavailable(res, channel, e);
+  }
+});
+
+/**
+ * One viewer's own fish guard: when it runs out, or null. The dashboard asks only for the
+ * signed-in viewer's Kick id, so a guard's time is never shown to anyone else.
+ */
+app.get('/internal/bot/:channel/points/guard', internalGuard(false), (req, res) => {
+  const channelRaw = req.params['channel'];
+  const channel = (typeof channelRaw === 'string' ? channelRaw : '').toLowerCase();
+  if (!validateChannelName(channel)) return res.status(400).json({ error: 'Invalid channel name' });
+  const config = readChannelConfig(channel);
+  if (!config) return res.status(404).json({ error: 'Not enrolled' });
+  const cfg = effectivePointsConfig(config['points']);
+  if (!cfg.enabled || !cfg.publicLeaderboard || !cfg.games.enabled || !cfg.games.steal.enabled) return res.json({ guardUntil: null });
+  const userId = Number(req.query['userId']);
+  if (!Number.isSafeInteger(userId) || userId <= 0) return res.status(400).json({ error: 'userId must be a Kick user id' });
+  try {
+    const until = guardUntilFor(channel, userId);
+    return res.json({ guardUntil: until === null ? null : new Date(until).toISOString() });
   } catch (e) {
     return pointsUnavailable(res, channel, e);
   }

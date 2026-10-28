@@ -1054,6 +1054,19 @@ export function caughtFish(channel: string, cfg: PointsConfig, broadcasterUserId
   });
 }
 
+/**
+ * When one viewer's fish guard runs out (ms), or null with none running. Secret: only for
+ * that viewer, signed in on the dashboard, never chat or the public pages.
+ */
+export function guardUntilFor(channel: string, userId: number, now = Date.now()): number | null {
+  // A failed read throws (and is reported), so it isn't mistaken for no guard.
+  return withReadDb(channel, null as number | null, db => {
+    const row = db.prepare("SELECT json_extract(data, '$.guardUntil') AS until FROM fish WHERE user_id = ?").get(userId) as { until: number | null } | undefined;
+    const until = Number(row?.until ?? 0);
+    return until > now ? until : null;
+  });
+}
+
 /** What one viewer holds unsold: how many of each catch, and the lengths of the sized ones. */
 export interface HeldCatch { username: string; types: Record<string, number>; sizes: Record<string, Array<{ cm: number; record: boolean; level?: number; stolen?: boolean }>>; reel: number; stolen: Record<string, number> }
 

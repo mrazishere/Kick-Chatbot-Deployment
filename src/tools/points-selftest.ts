@@ -22,7 +22,7 @@ import {
   acceptDuel, adjustPoints, backupPoints, createDuel, creditTx, debitTx, duelStats, gambleStats, getUser, grantTick, invariantViolations,
   openRaffle, raffleEntries, gamble,
   ensureUserTx, outgoingDuel, refundDuel, resetAllPoints,
-  caughtFish, heistBoard, heldCatches, pointsLeaderboard, pointsSummary, searchPointsUsers, getPointsUserDetail, transfer
+  caughtFish, guardUntilFor, heistBoard, heldCatches, pointsLeaderboard, pointsSummary, searchPointsUsers, getPointsUserDetail, transfer
 } from '../points/store';
 import { WebhookPoller } from '../channels/webhook-poller';
 import { points as pointsCommand, SUBCOMMAND_ALIASES } from '../bot-commands/points';
@@ -3735,6 +3735,13 @@ async function main(): Promise<void> {
     const whale = caught.find(c => c.name === '🐋');
     check('caught fish: count, first and latest catcher, excluded left out', caught.length === 2 && whale?.times === 2
       && whale.firstBy === 'alice' && whale.lastBy === 'bob' && whale.firstAt === new Date(1000).toISOString() && !caught.some(c => c.name === '🦈'), caught);
+    runWrite(cdbx, () => {
+      const guarded = initialData();
+      guarded.guardUntil = 10_000;
+      saveFish(cdbx, 1, guarded, 1);
+    });
+    check('a viewer\'s own guard: its end while it runs, null once it has or with none',
+      guardUntilFor(ch, 1, 5_000) === 10_000 && guardUntilFor(ch, 1, 10_000) === null && guardUntilFor(ch, 2, 5_000) === null);
     runWrite(cdbx, () => {
       const hold = (id: number, name: string, n: number, sizes?: FishData['catch']['sizes']) => {
         const d = initialData();

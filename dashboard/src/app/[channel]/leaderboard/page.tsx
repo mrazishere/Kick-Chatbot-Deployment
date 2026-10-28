@@ -541,7 +541,7 @@ export default async function LeaderboardPage({ params, searchParams }: Props) {
             </nav>
 
             {tab === "points" && firstViewers?.kind === "ok" ? (
-              <PublicViewers channel={slug} currency={currency} initial={firstViewers.viewers} openFirst={openFirst} />
+              <PublicViewers channel={slug} currency={currency} initial={firstViewers.viewers} openFirst={openFirst} me={username} />
             ) : tab === "commands" ? (
               commands ? (
                 <CommandsTab commands={commands} />
