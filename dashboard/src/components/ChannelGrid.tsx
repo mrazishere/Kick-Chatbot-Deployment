@@ -54,7 +54,7 @@ export default function ChannelGrid({ initial }: { initial: ChannelRow[] }) {
           ? "text-amber-500"
           : days !== null && days <= 2
             ? "text-red-400"
-            : days !== null && days <= 7
+            : days !== null && days <= 20
               ? "text-amber-400"
               : "text-neutral-500";
 
@@ -92,9 +92,9 @@ export default function ChannelGrid({ initial }: { initial: ChannelRow[] }) {
                   ? "No streamer authorization — no bot badge"
                   : days === null
                     ? "Authorized"
-                    : days < 1
-                      ? "Authorization expires in less than a day"
-                      : `Authorization expires in ${Math.floor(days)} days`}
+                    : days > 20
+                      ? "Authorized · renews itself"
+                      : `Not renewing: runs out in ${days < 1 ? "less than a day" : `${Math.floor(days)} days`}`}
               </div>
             </Link>
             <div className="flex gap-4 border-t border-neutral-800 px-5 py-2.5 text-xs">

@@ -14,7 +14,7 @@ import * as fs from 'fs';
 import { channelConfigPath, effectiveCommand, readLivePointsConfig } from './points/config';
 import type { PointsConfig, RewardAction } from './types';
 import { economySummary, exclusionsFor, findUserByName, getUser, gambleStatsFor, gambleTop, isExcluded, pointsSummary, rankBy, topBy, caughtFish } from './points/store';
-import { loadFish, hasFishedBefore, currentReel, heldSaleValue, ITEMS, levelOf, levelCost, MAX_LEVEL, BAITS, baitPrice, baitRoll, rarityName, stealRollChance } from './community/fishing';
+import { loadFish, hasFishedBefore, currentReel, heldSaleValue, sellPrice, LEVEL_VALUE, ITEMS, levelOf, levelCost, MAX_LEVEL, BAITS, baitPrice, baitRoll, rarityName, stealRollChance } from './community/fishing';
 import { fighterOf } from './community/fish-duel';
 import { readWheel } from './community/wheel';
 import { feedingGuide } from './points/public-commands';
@@ -379,6 +379,7 @@ function viewerStats(ctx: StatToolContext, raw: unknown): unknown {
     if (d && hasFishedBefore(d)) {
       const held = Object.fromEntries(Object.entries(d.catch.types).filter(([, n]) => n > 0));
       const L = d.lifetime;
+      const reelValue = currentReel(d, cfg.games)?.valueMultiplier ?? 1;
       out.fishing = {
         reel: currentReel(d, cfg.games)?.name ?? 'none',
         fishHeld: d.catch.fish,
@@ -395,8 +396,17 @@ function viewerStats(ctx: StatToolContext, raw: unknown): unknown {
         fedFish: Object.entries(d.catch.sizes ?? {}).flatMap(([name, list]) => {
           const item = ITEMS.find(i => i.name === name);
           return item ? list.slice(0, d.catch.types[name] ?? 0).filter(h => levelOf(h) > 0 || (h.xp ?? 0) > 0).map(h => ({
-            fish: name, cm: h.cm, level: levelOf(h),
+            fish: name, cm: h.cm, level: levelOf(h), value: sellPrice(item, cfg.games, h, h.stolen ? 1 : reelValue),
+            ...(h.record ? { sizeRecord: true } : {}), ...(h.stolen ? { stolen: true } : {}),
             ...(levelOf(h) < MAX_LEVEL ? { xp: h.xp ?? 0, xpForNextLevel: levelCost(item, cfg.games, h, levelOf(h)) } : {})
+          })) : [];
+        }),
+        // Held fish cast or landed longer than any the owner had cast or landed before: each sells for 1.5x, which nothing else shows,
+        // so two of the same kind, length and level can differ in price.
+        sizeRecordFish: Object.entries(d.catch.sizes ?? {}).flatMap(([name, list]) => {
+          const item = ITEMS.find(i => i.name === name);
+          return item ? list.slice(0, d.catch.types[name] ?? 0).filter(h => h.record).map(h => ({
+            fish: name, cm: h.cm, level: levelOf(h), value: sellPrice(item, cfg.games, h, h.stolen ? 1 : reelValue)
           })) : [];
         }),
         casts: L.attempts,
@@ -546,7 +556,7 @@ function channelRules(ctx: StatToolContext, raw: unknown): unknown {
       trapTimes: `a plain $<cmd> fish trap lays them for ${g.trapMinutes} min; a chatter can name a time from 31 min to ${g.trapMaxMinutes} min ($<cmd> fish trap 2h, 90m, 1h30m), and trap reset lays them again for as long as before or the time named. trap lift pulls them up early with a haul for the minutes they were out (as if laid that long; under about ${g.catchCooldownMinutes + 5} min it can only be junk); trap cancel pulls them up with nothing. A longer trap catches more, and a little more per minute, since each fish uses up the next rolls`,
       when: g.onlyWhileOffline ? 'casting and traps only while the stream is offline' : g.onlyWhileLive ? 'casting and traps only while live' : 'any time',
       sellPricePercent: g.sellPricePercent,
-      sizes: 'fish are 1-100 cm: 1 cm sells for half the base price, 50 cm for the base price, 100 cm for double; a size record sells for 1.5x',
+      sizes: `fish are 1-100 cm: 1 cm sells for half the base price, 50 cm for the base price, 100 cm for double; a size record sells for 1.5x for good: a fish cast or landed from a big bite longer than every fish of any kind its owner had cast or landed before, traps not counting (the reply said "This is a new record!"; their own record, not the channel's; a tie doesn't count, so once they have cast or landed a 100 cm fish no later fish can be one; a first-ever catch and trap fish never count, and a fish given, traded or stolen loses it). viewer_stats lists them under sizeRecordFish; chat and the leaderboard mark one with 🏅 after its length and level. A held fish's price = list price x size x 1.5 if a size record x (1 + ${LEVEL_VALUE} per feeding level) x the owner's reel sellValueX (a stolen fish never gets the reel bonus). So two fish of the same kind, length and level can differ: one is a size record, or one was stolen`,
       bucketCaps: { fish: g.maxFish || 'no cap', junk: g.maxJunk || 'no cap', past: 'new fish sell on the spot, new junk is binned; warned from 90%' },
       gifts: g.giveEnabled ? { cooldownSeconds: g.giveCooldownSeconds } : 'off',
       customFish: g.customFish.map(f => ({ name: f.name, price: f.price, duelType: f.type })),

@@ -395,6 +395,8 @@ export interface PublicTopFish {
   worth: number;
   /** Levels from feeding; absent is 0. */
   level?: number;
+  /** A size record: it sells for 1.5x. */
+  record?: true;
 }
 
 export interface PublicDuels {
@@ -406,6 +408,10 @@ export interface PublicDuels {
 export interface PublicFishing {
   /** 1 in this many plain casts lands a fish. */
   catchOdds: number;
+  /** Casting and traps on this page for signed-in viewers; false when bot management switched it off. */
+  webPlay?: boolean;
+  /** Fish trading is on. */
+  trade?: boolean;
   fish: PublicCatch[];
   junk: PublicCatch[];
   /** The most valuable fish held, most valuable first. Empty from a bot service older than it. */
@@ -432,7 +438,7 @@ export interface PublicFishing {
 
 /** One viewer's unsold fish: each kind with how many, rarest first, and what the lot would sell for. */
 /** One fish held, or several just alike: its length (null: none), duel stats and sell price. */
-export interface PublicHeldFish { cm: number | null; n: number; hp: number; attack: number; worth: number; /** Levels from feeding; absent is 0. */ level?: number }
+export interface PublicHeldFish { cm: number | null; n: number; hp: number; attack: number; worth: number; /** Levels from feeding; absent is 0. */ level?: number; /** A size record: it sells for 1.5x. */ record?: true }
 
 export interface PublicStealRules {
   hookPrice: number;
@@ -462,6 +468,8 @@ export interface PublicHolder {
   worth: number;
   /** The reel they fish with, by name. Absent when they have none, or from an older bot service. */
   reel?: string;
+  /** Their junk, kind by kind, with what one sells for. Absent with none, or from an older bot service. */
+  junk?: Array<{ emoji: string; n: number; worth: number }>;
 }
 
 /** The Fishing tab's heists. Names only, as everywhere on the public page. */
@@ -930,11 +938,105 @@ export function getPublicViewers(channel: string, q: string): Promise<{ currency
   });
 }
 
-/** The signed-in viewer's own fish guard, by their Kick id: when it runs out (ISO), or null. */
-export function getOwnGuard(channel: string, userId: number): Promise<{ guardUntil: string | null }> {
-  return request(`/internal/bot/${encodeURIComponent(channel)}/points/guard?userId=${userId}`, {
-    timeoutMs: 10_000,
-  });
+/** The signed-in viewer's own fishing gear and what the shop would charge them now. */
+export interface OwnShop {
+  balance: number;
+  reel: { name: string; effects: string } | null;
+  /** Null once they have the best reel. */
+  nextReel: { name: string; price: number; effects: string } | null;
+  /** Null when stealing is off: no hooks or guards. */
+  steal: {
+    hookTries: number;
+    hookPrice: number;
+    hookUses: number;
+    /** ISO, or null with no guard on. */
+    guardUntil: string | null;
+    /** Null with no fish to guard. */
+    guardPrice: number | null;
+    guardHours: number;
+    guardPercent: number;
+  } | null;
+}
+
+export type ShopItem = "hook" | "guard" | "reel";
+
+/** By the session's Kick id and name only. Null: no shop for them (fishing off, or they're excluded, like the streamer). */
+export function getOwnShop(channel: string, userId: number, username: string): Promise<{ shop: OwnShop | null }> {
+  return request(
+    `/internal/bot/${encodeURIComponent(channel)}/points/shop?userId=${userId}&username=${encodeURIComponent(username)}`,
+    { timeoutMs: 10_000 },
+  );
+}
+
+/** Buys as chat's `fish buy` does. ok false: nothing spent, text says why. */
+export function buyFromShop(
+  channel: string,
+  input: { userId: number; username: string; item: ShopItem; requestId: string },
+): Promise<{ ok: boolean; text: string; shop: OwnShop }> {
+  return request(`/internal/bot/${encodeURIComponent(channel)}/points/shop/buy`, { method: "POST", body: input, timeoutMs: 10_000 });
+}
+
+/** The signed-in viewer's fishing game on the leaderboard: what the page shows. Never a check's answer or a picture's layout. */
+export interface FishPage {
+  now: number;
+  balance: number;
+  currency: string;
+  live: boolean;
+  /** When fishing is open: offline only, live only, or any time. */
+  rule: "offline" | "live" | "any";
+  /** Epoch ms the next cast or trap move is allowed, or null when it already is. */
+  readyAt: number | null;
+  trap: { start: number; end: number } | null;
+  trapMinutes: { usual: number; min: number; max: number };
+  check: { question: string; picture: boolean; until: number; triesLeft: number; onCast: boolean } | null;
+  held: { fish: number; junk: number; maxFish: number | null; maxJunk: number | null };
+  /** What they hold, kind by kind; each sized fish with its price as a sale prices it. Absent from an older bot service. */
+  bucket?: Array<{
+    emoji: string;
+    type: "fish" | "junk";
+    n: number;
+    each: Array<{ cm: number; level: number; record: boolean; stolen: boolean; worth: number; xp?: number; xpNext?: number }>;
+    unsized: number;
+    worth: number;
+  }>;
+  selling?: boolean;
+  feeding?: boolean;
+  trading?: boolean;
+  /** Trade offers waiting on them or from them. */
+  trades?: Array<{ incoming: boolean; with: string; give: string; get: string; fee: number; expiresAt: number }>;
+  baits: Array<{ word: string; emoji: string; price: number; oneIn: number }>;
+  catchOdds: number;
+  log: FishReply[];
+}
+
+export interface FishReply { ts: number; text: string; kind: string | null; item: string | null }
+
+/** By the session's Kick id and name only. Null: not for them here (they're excluded, or no points yet). */
+export function getFishPage(channel: string, userId: number, username: string): Promise<{ fish: FishPage | null }> {
+  return request(
+    `/internal/bot/${encodeURIComponent(channel)}/points/fish?userId=${userId}&username=${encodeURIComponent(username)}`,
+    { timeoutMs: 10_000 },
+  );
+}
+
+/** A cast ([] or [bait]), a trap move (["trap", ...]) or an answer (["answer", x]), run by the bot as chat's would be. */
+export function fishMove(
+  channel: string,
+  input: { userId: number; username: string; args: string[]; requestId: string },
+): Promise<{ replies: FishReply[]; answered: boolean; fish: FishPage }> {
+  return request(`/internal/bot/${encodeURIComponent(channel)}/points/fish/move`, { method: "POST", body: input, timeoutMs: 15_000 });
+}
+
+/** The waiting picture check's layout, for the dashboard server to draw. Never send it to a browser. */
+export function getFishPicture(
+  channel: string,
+  userId: number,
+  username: string,
+): Promise<{ fish: Array<{ x: number; y: number; size: number; left: boolean; color: string; striped?: boolean }> }> {
+  return request(
+    `/internal/bot/${encodeURIComponent(channel)}/points/fish/picture?userId=${userId}&username=${encodeURIComponent(username)}`,
+    { timeoutMs: 10_000 },
+  );
 }
 
 export function getPublicHistory(channel: string, name: string): Promise<PublicHistory> {

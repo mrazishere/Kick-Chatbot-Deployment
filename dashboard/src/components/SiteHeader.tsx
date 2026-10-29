@@ -22,6 +22,8 @@ export default function SiteHeader({
   switcher,
   showEarnings = true,
   variant = "default",
+  signInHref,
+  signOutTo,
   children,
 }: {
   /**
@@ -29,6 +31,10 @@ export default function SiteHeader({
    * channel name and a sign-in link, with no nav, switcher or sign-out.
    */
   variant?: "default" | "public";
+  /** The public variant's sign-in link, when it isn't the streamer sign-in (the leaderboard's viewer one). */
+  signInHref?: string | null;
+  /** The public variant's page to come back to after signing out (its own leaderboard): set, it signs out the viewer sign-in. */
+  signOutTo?: string | null;
   /** Off for managers: the earnings page is the broadcaster's and would only bounce them. */
   showEarnings?: boolean;
   channel: string;
@@ -64,10 +70,21 @@ export default function SiteHeader({
             {status}
           </div>
           {username ? (
-            <span className="text-sm text-neutral-500">{username}</span>
+            <span className="flex items-center gap-3">
+              <span className="text-sm text-neutral-500">{username}</span>
+              <form action={`${BASE_PATH}/api/auth/${signOutTo ? "viewer/logout" : "logout"}`} method="POST">
+                {signOutTo ? <input type="hidden" name="next" value={signOutTo} /> : null}
+                <button
+                  type="submit"
+                  className="rounded-lg border border-neutral-700 px-3 py-2 text-sm text-neutral-400 transition hover:border-neutral-500 hover:text-neutral-200 active:scale-95"
+                >
+                  Sign out
+                </button>
+              </form>
+            </span>
           ) : (
             <a
-              href={`${BASE_PATH}/api/auth/login`}
+              href={signInHref ?? `${BASE_PATH}/api/auth/login`}
               className="rounded-lg border border-neutral-700 px-3 py-2 text-sm text-neutral-400 transition hover:border-neutral-500 hover:text-neutral-200"
             >
               Sign in
@@ -137,15 +154,9 @@ export default function SiteHeader({
                 Sign out
               </button>
             </form>
-          ) : (
-            // The earnings page is public, so a visitor reaches this header signed out.
-            <a
-              href={`${BASE_PATH}/api/auth/login`}
-              className="rounded-lg border border-neutral-700 px-3 py-2 text-sm text-neutral-400 transition hover:border-neutral-500 hover:text-neutral-200"
-            >
-              Sign in
-            </a>
-          )}
+          ) : null}
+          {/* Signed out (only the public earnings page): no sign-in button, so viewers don't land on
+              the streamer sign-in. Streamers sign in from their bot page; viewers on the leaderboard. */}
         </div>
       </div>
 

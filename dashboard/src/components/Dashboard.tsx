@@ -687,7 +687,6 @@ export default function Dashboard({
   channelAvatarUrl,
   isAdmin = false,
   isOwner = false,
-  isLoggedIn = false,
   switcher,
   viewAs,
 }: {
@@ -697,7 +696,6 @@ export default function Dashboard({
   channelAvatarUrl?: string | null;
   isAdmin?: boolean;
   isOwner?: boolean;      // logged-in user owns this channel (can edit payouts)
-  isLoggedIn?: boolean;
   switcher?: { channel: string; isSelf: boolean }[];
   viewAs?: string;        // admin override
 }) {
@@ -1262,11 +1260,6 @@ export default function Dashboard({
 
         {/* Payout form — owner only */}
         {isOwner && <PayoutForm channel={activeChannel} sessions={sessions} payouts={payouts} onSaved={fetchData} basePath={BASE_PATH} showKPP={showKPP} />}
-        {!isOwner && !isLoggedIn && (
-          <div className="rounded-xl border border-neutral-800 bg-neutral-900/40 px-5 py-4 text-xs text-neutral-600 text-center">
-            <a href={`${BASE_PATH}/api/auth/login`} className="text-neutral-500 hover:text-[#53FC18] transition">Sign in with Kick</a> to log actual KPP payouts for this channel.
-          </div>
-        )}
         </>}
       </main>
 

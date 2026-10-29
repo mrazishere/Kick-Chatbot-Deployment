@@ -11,9 +11,14 @@
 
 import 'dotenv/config';
 import { execFile } from 'child_process';
+import * as net from 'net';
 import * as tls from 'tls';
 import axios from 'axios';
 import { clearAlert, raiseAlert } from '../health-alerts';
+
+// Node gives each address only 250ms to connect before trying the next; healthchecks.io's servers
+// are in Germany, ~320ms away, so every attempt was cut short and the ping never landed.
+net.setDefaultAutoSelectFamilyAttemptTimeout(2_000);
 
 const ENROLLMENT = `http://127.0.0.1:${process.env.ENROLLMENT_PORT || 3006}/health`;
 const DASHBOARD = process.env.HEALTH_DASHBOARD_URL || 'https://mr-ai.dev/kick/login';

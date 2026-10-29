@@ -1,6 +1,5 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import { COUNTERPARTY_PREFIX, REASON_LABEL } from "@/lib/points-labels";
 import type { PublicHistory } from "@/lib/bot-api";
 import { Stat } from "@/components/ui";
@@ -17,36 +16,8 @@ function formatDate(iso: string | null): string {
   return d.toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short", timeZone: "Asia/Singapore" });
 }
 
-/** Time left until `iso`: "7h 12m", "45m", or null once it's past. */
-function timeLeft(iso: string, now: number): string | null {
-  const ms = new Date(iso).getTime() - now;
-  if (!Number.isFinite(ms) || ms <= 0) return null;
-  const total = Math.ceil(ms / 60_000);
-  const h = Math.floor(total / 60);
-  return h > 0 ? `${h}h ${total % 60}m` : `${total}m`;
-}
-
-export default function ViewerHistory({
-  h,
-  guardUntil,
-  onOpen,
-}: {
-  h: PublicHistory;
-  /** Only on the signed-in viewer's own panel: when their fish guard runs out, null with none. */
-  guardUntil?: string | null;
-  /** Opens another viewer in the list. */
-  onOpen?: (name: string) => void;
-}) {
+export default function ViewerHistory({ h, onOpen }: { h: PublicHistory; /** Opens another viewer in the list. */ onOpen?: (name: string) => void }) {
   const g = h.gamble;
-  // Counts down while the panel is open, and says "no guard" once it runs out.
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    if (typeof guardUntil !== "string") return;
-    setNow(Date.now());
-    const t = setInterval(() => setNow(Date.now()), 30_000);
-    return () => clearInterval(t);
-  }, [guardUntil]);
-  const guardLeft = typeof guardUntil === "string" ? timeLeft(guardUntil, now) : null;
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -60,12 +31,6 @@ export default function ViewerHistory({
         <Stat label="Lifetime earned" value={h.lifetimeEarned.toLocaleString()} />
         <Stat label="Last seen" value={formatDate(h.lastSeenAt)} />
       </dl>
-      {guardUntil !== undefined ? (
-        <p className="rounded-lg border border-neutral-800 bg-neutral-950/60 px-3 py-2 text-sm text-neutral-300">
-          {guardLeft ? <>🛡️ Guard on: <b className="tabular-nums">{guardLeft}</b> left</> : "🛡️ No guard on your fish right now."}
-          <span className="ml-2 text-xs text-neutral-500">Only you can see this.</span>
-        </p>
-      ) : null}
       {g && g.gambles > 0 ? (
         <dl className="grid grid-cols-2 gap-4 sm:grid-cols-4">
           <Stat label="Gambles" value={g.gambles.toLocaleString()} />

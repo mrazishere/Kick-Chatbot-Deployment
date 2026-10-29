@@ -305,7 +305,7 @@ export const points: CommandFn = async function points(client, message, channel,
       if (!isModUp && cooldownLeft(`${channelName}:leaderboard`, CHANNEL_COOLDOWN_MS, true)) return;
       const base = (process.env.BOT_DASHBOARD_URL || 'https://mr-ai.dev/kick').replace(/\/+$/, '');
       // No colon: the URL alone spends most of the 10-symbol allowance.
-      return void say(`${cur} leaderboard ${base}/${channelName}/leaderboard`);
+      return void say(`${cur} leaderboard ${base}/leaderboard/${channelName}`);
     }
 
     // ── commands ──

@@ -335,7 +335,7 @@ ${urgent ? '🚨' : '⏳'} <b>Kick Bot - Re-auth Needed Within ${urgent ? '24 Ho
 <b>Bot Account:</b> ${esc(process.env.KICK_USERNAME || 'Unknown')}
 <b>Grant expires in:</b> ~${esc(daysLeft.toFixed(1))} day(s)
 
-Kick OAuth grants last exactly 30 days and cannot be extended by refreshing. Re-authorize now to avoid downtime (log in as the <b>bot account</b> first):
+Every refresh renews a Kick grant for another 30 days, so this means refreshes have kept failing. Re-authorize now to avoid downtime (log in as the <b>bot account</b> first):
 https://${esc(process.env.OAUTH_DOMAIN || 'mr-ai.dev')}/kick-bot-reauth
     `.trim();
 

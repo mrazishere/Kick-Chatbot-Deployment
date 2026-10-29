@@ -32,7 +32,20 @@ export interface TrapCheck {
    * doesn't shrink it (failing takes at most what's left). Absent on older checks.
    */
   fine?: number;
+  /**
+   * Asked on the leaderboard's fishing page instead of chat: a drawn scene to tap in, not
+   * a question to type. The scene (positions included) stays on the server; the page only
+   * gets it as a picture, so a script has to look at it rather than read it.
+   */
+  tap?: TapScene;
 }
+
+/** A fish drawn in a tap check, in the scene's own units (0 to 1 across, 0 to 1 down). */
+export interface TapFish { x: number; y: number; size: number; left: boolean; color: TapColor; /** Drawn with stripes: a colour question's target, so colour isn't the only cue. */ striped?: boolean }
+export interface TapScene { fish: TapFish[]; target: number }
+
+export const TAP_COLORS = { red: '#ef4444', orange: '#f97316', yellow: '#eab308', green: '#22c55e', blue: '#3b82f6', purple: '#a855f7', pink: '#ec4899' } as const;
+export type TapColor = keyof typeof TAP_COLORS;
 
 const NUMBER_WORDS = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten', 'eleven', 'twelve',
   'thirteen', 'fourteen', 'fifteen', 'sixteen', 'seventeen', 'eighteen', 'nineteen'];
@@ -114,6 +127,54 @@ const KINDS: Array<() => Question> = [
 
 export function makeTrapCheck(reset: boolean, now: number, seconds: number, cast = false): TrapCheck {
   return { ...pick(KINDS)(), reset, askedAt: now, until: now + seconds * 1000, wrong: 0, ...(cast ? { cast: true } : {}) };
+}
+
+/**
+ * The fishing page's check: 6 to 8 fish scattered over the water, none touching, and one
+ * to tap, picked out by its colour (the only one that colour) or by the way it swims (the
+ * only one facing left). Same tries, window and fine as a typed one.
+ */
+export function makeTapCheck(reset: boolean, now: number, seconds: number, cast = false): TrapCheck {
+  const colors = Object.keys(TAP_COLORS) as TapColor[];
+  const n = randomInt(6, 9);
+  const fish: TapFish[] = [];
+  for (let tries = 0; fish.length < n && tries < 500; tries++) {
+    const size = 0.1 + randomInt(0, 60) / 1000;
+    const x = size / 2 + 0.03 + Math.random() * (1 - size - 0.06);
+    const y = size * 0.8 + 0.05 + Math.random() * (1 - size * 1.6 - 0.1);
+    // In units of the scene's height (it's 8:5, and a fish's size is a share of the width): far
+    // enough apart that no tap meant for one lands on another.
+    if (fish.some(f => Math.hypot((f.x - x) * 1.6, f.y - y) < (f.size + size) * 1.1)) continue;
+    fish.push({ x, y, size, left: false, color: pick(colors) });
+  }
+  const target = randomInt(fish.length);
+  let question: string;
+  if (randomInt(2)) {
+    // By colour and stripes: the target's colour is nobody else's, and it alone is striped.
+    const color = pick(colors);
+    const others = colors.filter(c => c !== color);
+    // Stripes too, and only on it: someone who can't tell the colours apart still has a way to find it.
+    fish.forEach((f, i) => { f.color = i === target ? color : pick(others); f.left = !!randomInt(2); if (i === target) f.striped = true; });
+    question = `Tap the striped ${color} fish.`;
+  } else {
+    // By direction: the target alone swims left.
+    fish.forEach((f, i) => { f.left = i === target; });
+    question = 'Tap the fish swimming to the left.';
+  }
+  return { question, answers: [], reset, askedAt: now, until: now + seconds * 1000, wrong: 0, ...(cast ? { cast: true } : {}), tap: { fish, target } };
+}
+
+/** A tap's answer, "tap:<x>,<y>" in the scene's units: on the target fish, with a little slack. */
+export function tapMatches(scene: TapScene, raw: string | undefined): boolean {
+  const m = /^tap:(0(?:\.\d+)?|1(?:\.0+)?),(0(?:\.\d+)?|1(?:\.0+)?)$/.exec((raw ?? '').trim());
+  const f = scene.fish[scene.target];
+  if (!m || !f) return false;
+  const x = Number(m[1]);
+  const y = Number(m[2]);
+  // An ellipse around the body, a fish being wider than it's tall, plus a margin for a finger.
+  const rx = f.size * 0.6 + 0.02;
+  const ry = f.size * 0.42 * 1.6 + 0.03;
+  return ((x - f.x) / rx) ** 2 + ((y - f.y) / ry) ** 2 <= 1;
 }
 
 /**

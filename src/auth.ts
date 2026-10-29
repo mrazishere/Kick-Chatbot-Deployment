@@ -8,6 +8,7 @@ import * as http from 'http';
 import TelegramNotifier = require('./telegram-notifier');
 import { withFileLock, writeJsonAtomic } from './file-lock';
 import { OAuthTokens } from './types';
+import { refreshExpiresAt } from './kick-grant';
 
 /**
  * Held across the refresh request, so stale must outlast its timeout by a wide
@@ -36,6 +37,7 @@ class KickAuth {
   private refreshToken: string | null = null;
   private expiresAt: number | null = null;
   private grantedAt: number | null = null;
+  private refreshExpiresAt: number | null = null;
   /** Identity of the file version last loaded, so an unchanged file isn't parsed again. */
   private loadedStamp: string | null = null;
   private codeVerifier: string | null = null;
@@ -144,6 +146,7 @@ class KickAuth {
       this.refreshToken = response.data.refresh_token;
       this.expiresAt = Date.now() + (response.data.expires_in * 1000);
       this.grantedAt = Date.now();
+      this.refreshExpiresAt = refreshExpiresAt(response.data);
 
       await KickAuth.storeTokens(this.currentTokens(), this.tokenFile);
       return this.accessToken;
@@ -243,6 +246,7 @@ class KickAuth {
       // Only replace the refresh token if the response carried one.
       this.refreshToken = typeof data.refresh_token === 'string' && data.refresh_token ? data.refresh_token : used;
       this.expiresAt = Date.now() + ((typeof data.expires_in === 'number' ? data.expires_in : 3600) * 1000);
+      this.refreshExpiresAt = refreshExpiresAt(response.data);
 
       this.saveTokens();
       // A refresh that works means any standing re-auth alert is over; the next failure should alert again.
@@ -266,10 +270,9 @@ class KickAuth {
   // Alerts via Telegram if refresh fails and manual action is needed
   startTokenMonitor(intervalMs = 30 * 60 * 1000): { timer: NodeJS.Timeout; ready: Promise<void> } {
     const ALERT_THRESHOLD_MS = 24 * 60 * 60 * 1000; // alert/refresh if < 24h left
-    // Kick grants have a hard 30-day lifetime that refreshing does NOT extend.
-    // Warn daily once the grant is within 2 days of dying so re-auth can
-    // happen on the user's schedule instead of at failure time.
-    const GRANT_LIFETIME_MS = 30 * 24 * 60 * 60 * 1000;
+    // Kick's refresh window slides forward with every refresh (src/kick-grant.ts), so it only
+    // runs low when refreshing has kept failing. Warn daily once it's within 2 days, so a
+    // re-auth can happen before the grant dies.
     const GRANT_WARN_BEFORE_MS = 2 * 24 * 60 * 60 * 1000;
     const telegram = new TelegramNotifier();
     let lastAlertedAt = 0;
@@ -279,12 +282,12 @@ class KickAuth {
       try {
         this.loadTokens();
 
-        if (this.grantedAt) {
-          const grantMsLeft = this.grantedAt + GRANT_LIFETIME_MS - Date.now();
+        if (this.refreshExpiresAt) {
+          const grantMsLeft = this.refreshExpiresAt - Date.now();
           if (grantMsLeft < GRANT_WARN_BEFORE_MS && Date.now() - lastGrantWarnAt > 24 * 60 * 60 * 1000) {
             lastGrantWarnAt = Date.now();
             const daysLeft = Math.max(0, grantMsLeft / (24 * 60 * 60 * 1000));
-            console.warn(`[AUTH MONITOR] Grant reaches Kick's 30-day lifetime in ~${daysLeft.toFixed(1)} day(s)`);
+            console.warn(`[AUTH MONITOR] Refresh token runs out in ~${daysLeft.toFixed(1)} day(s): refreshes haven't renewed it`);
             await telegram.notifyGrantExpiringSoon(daysLeft).catch(() => {});
           }
         }
@@ -360,7 +363,8 @@ class KickAuth {
       accessToken: this.accessToken as string,
       refreshToken: this.refreshToken as string,
       expiresAt: this.expiresAt as number,
-      grantedAt: this.grantedAt ?? undefined
+      grantedAt: this.grantedAt ?? undefined,
+      refreshExpiresAt: this.refreshExpiresAt ?? undefined
     };
   }
 
@@ -387,6 +391,7 @@ class KickAuth {
       this.refreshToken = data.refreshToken;
       this.expiresAt = data.expiresAt;
       this.grantedAt = data.grantedAt ?? null;
+      this.refreshExpiresAt = data.refreshExpiresAt ?? null;
       this.loadedStamp = stamp;
       return true;
     } catch (error) {

@@ -18,13 +18,17 @@ import { SYSTEM_BOTS } from './system-bots';
 import { commandWordCollides, effectiveCommand, effectivePointsConfig, readSubscriptionStatus, validatePointsPatch } from './points/config';
 import { publicCommands } from './points/public-commands';
 import type { BotCommandChannel } from './points/public-bot-commands';
-import { closePointsDb, openPointsDb } from './points/db';
+import { closePointsDb, openPointsDb, type PointsDb } from './points/db';
+import { buyGuard, buyHook, buyReel, shopView, type ShopItem } from './community/fish-shop';
+import { refreshExpiresAt } from './kick-grant';
+import { recentReplies, repliesFor, WEB_FISH_EVENT, type WebFishMove } from './community/web-fish';
 import { markOverlaySeen, noteOverlayHealth, overlayHealth, overlayOff, overlayReloadToken, overlayShowing, readOverlay, requestOverlayReload } from './community/fish-overlay';
 import { publicUserHistory, publicViewerSearch } from './points/store';
-import { currentReel, ITEMS, rarityName, sellPrice, stealRollChance } from './community/fishing';
+import { BAITS, baitPrice, baitRoll, capOf, currentReel, initialData, ITEMS, levelCost, levelOf, loadFish, MAX_LEVEL, rarityName, sellPrice, stealRollChance, TRAP_MIN_MINUTES } from './community/fishing';
+import { mirroredTrades, sideText } from './community/fish-trade';
 import { fighterOf } from './community/fish-duel';
 import { channelEmotes } from './community/emotes';
-import { adjustPoints, backupPoints, duelBoard, guardUntilFor, heistBoard, heldCatches, getPointsUserDetail, pointsLeaderboard, pointsSummary, resetAllPoints, searchPointsUsers } from './points/store';
+import { adjustPoints, applyOnce, backupPoints, exclusionsFor, isExcluded, duelBoard, heistBoard, heldCatches, getPointsUserDetail, pointsLeaderboard, pointsSummary, resetAllPoints, searchPointsUsers } from './points/store';
 import { funnels as cheatFunnels, RULES as CHEAT_RULES, linkedAccounts, linkedGroups, suspects as cheatSuspects } from './community/cheat-signals';
 import { recentSpins } from './community/wheel-history';
 import { changeWheel, MAX_ITEMS as WHEEL_MAX_ITEMS, MAX_LABEL as WHEEL_MAX_LABEL, readWheel, SPIN_SECONDS as WHEEL_SPIN_SECONDS, validateWheel } from './community/wheel';
@@ -57,6 +61,8 @@ interface PendingEnrollment {
   access_token: string;
   refresh_token: string;
   expires_in: number;
+  /** When the refresh token stops working (src/kick-grant.ts), from the token response. */
+  refreshExpiresAt: number;
   createdAt: number;
 }
 
@@ -454,8 +460,8 @@ const redirectUri = `${protocol}://${oauthDomain}/kick-bot-enroll/callback`;
 const dashboardUrl = process.env.BOT_DASHBOARD_URL || `${protocol}://${oauthDomain}/kick`;
 
 // The streamer-delegated scope set. The dashboard login requests the identical
-// string so that signing in re-authorizes silently and resets the 30-day grant
-// clock. If these ever diverge, every streamer gets an extra consent prompt.
+// string so that signing in re-authorizes silently with a fresh grant. If these
+// ever diverge, every streamer gets an extra consent prompt.
 // Keep in sync with kpp-dashboard/src/lib/kick-scopes.ts.
 const SCOPES = [
   'user:read',
@@ -497,8 +503,8 @@ function writeJsonAtomic(file: string, data: unknown): void {
  * Write a channel config without discarding what is already there.
  *
  * Enrollment used to build a fresh object and write it straight over the file.
- * Re-authorizing — which every streamer must do monthly, because Kick grants
- * die 30 days after auth — therefore wiped managers, excludedCommands,
+ * Re-authorizing — monthly for every streamer until Kick fixed its 30-day grant
+ * bug in July 2026 — therefore wiped managers, excludedCommands,
  * location, kpp/earnings settings and rewardActions. The bug was invisible
  * because a first-time enrollment has nothing to lose.
  *
@@ -1128,9 +1134,8 @@ app.get('/kick-bot-enroll/callback', async (req: express.Request, res: express.R
         accessToken: access_token,
         refreshToken: refresh_token,
         expiresAt: Date.now() + (expires_in * 1000),
-        // Kick grants die exactly 30 days after this exchange — the token
-        // monitor uses grantedAt to warn at day 28.
-        grantedAt: Date.now()
+        grantedAt: Date.now(),
+        refreshExpiresAt: refreshExpiresAt(tokenResponse.data)
       };
       // Under the refresh lock: written bare, a refresh already in flight in another
       // process could finish afterwards and put the old grant's tokens back over this one.
@@ -1253,6 +1258,7 @@ app.get('/kick-bot-enroll/callback', async (req: express.Request, res: express.R
       access_token,
       refresh_token,
       expires_in,
+      refreshExpiresAt: refreshExpiresAt(tokenResponse.data),
       createdAt: Date.now()
     });
 
@@ -1387,7 +1393,7 @@ app.get('/kick-bot-enroll/complete', async (req: express.Request, res: express.R
   // Clear the session cookie — token is single-use
   res.clearCookie('enrollSession');
 
-  const { username, userId, broadcasterUserId, access_token, refresh_token, expires_in } = enroll;
+  const { username, userId, broadcasterUserId, access_token, refresh_token, expires_in, refreshExpiresAt: refreshUntil } = enroll;
   if (!validateChannelName(username)) {
     return res.send(errorPage('Enrollment Not Available', 'This Kick username cannot be used as a bot channel.'));
   }
@@ -1428,10 +1434,10 @@ app.get('/kick-bot-enroll/complete', async (req: express.Request, res: express.R
       oauth: {
         accessToken: access_token,
         refreshToken: refresh_token,
-        expiresAt: Date.now() + (expires_in * 1000)
+        expiresAt: Date.now() + (expires_in * 1000),
+        refreshExpiresAt: refreshUntil
       },
-      // Re-authorizing restarts Kick's 30-day grant clock, so this is
-      // "last authorized at" and must move forward on every enrollment.
+      // "Last authorized at": moves forward on every enrollment.
       enrolledAt: new Date().toISOString(),
       lastUpdated: new Date().toISOString()
     }
@@ -1699,8 +1705,6 @@ app.get('/internal/vods/:username', internalGuard(false), async (req: express.Re
 // Same pattern as /internal/vods above: loopback-only, plus a shared secret on
 // mutating routes so a compromised co-tenant process can't drive pm2.
 
-const GRANT_LIFETIME_MS_API = 30 * 24 * 60 * 60 * 1000;
-
 /**
  * Fallbacks the AI command applies when a channel config omits them
  * (DEFAULT_MAX_REQUESTS_PER_WINDOW / DEFAULT_MAX_BURST_REQUESTS /
@@ -1914,9 +1918,10 @@ function deliberateStop(config: Record<string, unknown> | null, proc: Pm2Proc | 
 function summariseChannel(channel: string, procs: Pm2Proc[]): Record<string, unknown> {
   const config = readChannelConfig(channel);
   const proc = procs.find(p => p.name === `kick-${channel}`);
-  const oauth = config?.['oauth'] as { accessToken?: string; expiresAt?: number } | undefined;
-  const enrolledAt = typeof config?.['enrolledAt'] === 'string' ? Date.parse(config['enrolledAt'] as string) : null;
-  const grantExpiresAt = enrolledAt ? enrolledAt + GRANT_LIFETIME_MS_API : null;
+  const oauth = config?.['oauth'] as { accessToken?: string; expiresAt?: number; refreshExpiresAt?: number } | undefined;
+  // When the grant lapses if refreshing stops: Kick's sliding window from the last refresh
+  // (src/kick-grant.ts). Null until a token stored before 2026-10-29 next refreshes.
+  const grantExpiresAt = oauth?.accessToken && typeof oauth.refreshExpiresAt === 'number' ? oauth.refreshExpiresAt : null;
 
   return {
     channel,
@@ -3315,24 +3320,243 @@ app.get('/internal/bot/:channel/points/public-history', internalGuard(false), (r
 });
 
 /**
- * One viewer's own fish guard: when it runs out, or null. The dashboard asks only for the
- * signed-in viewer's Kick id, so a guard's time is never shown to anyone else.
+ * The fishing gear shop for the signed-in viewer's own leaderboard panel: their gear, what the
+ * next reel, a hook and a guard cost them now, and buying one. Like the guard timer before it, the
+ * dashboard passes only the session's Kick id and name, never one from the request. The
+ * purchases are chat's own (community/fish-shop), so prices, checks and replies match.
  */
-app.get('/internal/bot/:channel/points/guard', internalGuard(false), (req, res) => {
+type ShopRequest = { channel: string; cfg: ReturnType<typeof effectivePointsConfig>; userId: number; username: string; config: Record<string, unknown> };
+
+function shopRequest(req: express.Request, res: express.Response, from: Record<string, unknown>): ShopRequest | null {
   const channelRaw = req.params['channel'];
   const channel = (typeof channelRaw === 'string' ? channelRaw : '').toLowerCase();
-  if (!validateChannelName(channel)) return res.status(400).json({ error: 'Invalid channel name' });
+  if (!validateChannelName(channel)) return void res.status(400).json({ error: 'Invalid channel name' }), null;
   const config = readChannelConfig(channel);
-  if (!config) return res.status(404).json({ error: 'Not enrolled' });
+  if (!config) return void res.status(404).json({ error: 'Not enrolled' }), null;
   const cfg = effectivePointsConfig(config['points']);
-  if (!cfg.enabled || !cfg.publicLeaderboard || !cfg.games.enabled || !cfg.games.steal.enabled) return res.json({ guardUntil: null });
-  const userId = Number(req.query['userId']);
-  if (!Number.isSafeInteger(userId) || userId <= 0) return res.status(400).json({ error: 'userId must be a Kick user id' });
+  const g = cfg.games;
+  if (!cfg.enabled || !cfg.publicLeaderboard || !g.enabled || (!g.steal.enabled && g.reels.length === 0)) {
+    return void res.status(404).json({ error: 'No fishing gear shop here' }), null;
+  }
+  const userId = Number(from['userId']);
+  const username = typeof from['username'] === 'string' ? from['username'] : '';
+  if (!Number.isSafeInteger(userId) || userId <= 0) return void res.status(400).json({ error: 'userId must be a Kick user id' }), null;
+  if (!/^[A-Za-z0-9_]{1,25}$/.test(username)) return void res.status(400).json({ error: 'username must be a Kick name' }), null;
+  return { channel, cfg, userId, username, config };
+}
+
+/** The streamer, bots and ignored viewers can't buy in chat, so not here either. */
+const shopExcluded = (r: ShopRequest): boolean =>
+  isExcluded(exclusionsFor(r.channel, r.cfg, broadcasterIdOf(r.config)), r.userId, r.username.toLowerCase());
+
+app.get('/internal/bot/:channel/points/shop', internalGuard(false), (req, res) => {
+  const r = shopRequest(req, res, req.query as Record<string, unknown>);
+  if (!r) return;
+  if (shopExcluded(r)) return res.json({ shop: null });
+  const db = openPointsDb(r.channel, { create: false });
+  if (!db) return res.json({ shop: null });
   try {
-    const until = guardUntilFor(channel, userId);
-    return res.json({ guardUntil: until === null ? null : new Date(until).toISOString() });
+    return res.json({ shop: shopView(db, r.cfg.games, r.userId, Date.now()) });
   } catch (e) {
-    return pointsUnavailable(res, channel, e);
+    return pointsUnavailable(res, r.channel, e);
+  }
+});
+
+app.post('/internal/bot/:channel/points/shop/buy', internalGuard(true), (req, res) => {
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const r = shopRequest(req, res, body);
+  if (!r) return;
+  const item = body['item'];
+  if (item !== 'hook' && item !== 'guard' && item !== 'reel') return res.status(400).json({ error: 'item must be hook, guard or reel' });
+  const requestId = body['requestId'];
+  if (typeof requestId !== 'string' || !POINTS_REQUEST_ID_RE.test(requestId)) return res.status(400).json({ error: 'requestId must be a UUID' });
+  const g = r.cfg.games;
+  if (item !== 'reel' && !g.steal.enabled) return res.status(400).json({ error: "Nobody steals fish here, so there's no need for that." });
+  if (item === 'reel' && g.reels.length === 0) return res.status(400).json({ error: "There aren't any reels at the fishing gear shop." });
+  if (shopExcluded(r)) return res.status(403).json({ error: "You can't buy at the fishing gear shop here." });
+  const db = openPointsDb(r.channel, { create: false });
+  if (!db) return res.status(404).json({ error: 'No points here yet' });
+  try {
+    const now = Date.now();
+    const buyer = { db, g, userId: r.userId, username: r.username, actor: `web:${r.username}`, cur: r.cfg.currencyName, cmd: `$${effectiveCommand(r.cfg)}`, now };
+    const buy: Record<ShopItem, typeof buyHook> = { hook: buyHook, guard: buyGuard, reel: buyReel };
+    // A retry of the same request (each click sends a new requestId) runs nothing: the first
+    // try's outcome isn't kept, so the repeat says so and the gear sent back shows where it stands.
+    const run = applyOnce(db, `web-shop:${requestId}`, now, () => buy[item](buyer));
+    const result = run.applied ? run.result! : { ok: false, text: 'That request was already handled: your gear below is up to date.' };
+    console.log(`[SHOP] ${r.username} bought ${item} on the ${r.channel} leaderboard: ${result.ok ? 'ok' : result.text}`);
+    return res.json({ ...result, shop: shopView(db, g, r.userId, Date.now()) });
+  } catch (e) {
+    return pointsUnavailable(res, r.channel, e);
+  }
+});
+
+/**
+ * The fishing game on the leaderboard's Fishing tab (community/web-fish.ts): the signed-in
+ * viewer's state, a move, and the picture for a check asked there. A move is queued to the
+ * channel's bot like a webhook event and runs the chat command itself; this waits for its
+ * replies. As with the shop, the dashboard passes only the session's Kick id and name.
+ */
+type FishPageRequest = { channel: string; cfg: ReturnType<typeof effectivePointsConfig>; userId: number; username: string; config: Record<string, unknown> };
+
+function fishPageRequest(req: express.Request, res: express.Response, from: Record<string, unknown>): FishPageRequest | null {
+  const channelRaw = req.params['channel'];
+  const channel = (typeof channelRaw === 'string' ? channelRaw : '').toLowerCase();
+  if (!validateChannelName(channel)) return void res.status(400).json({ error: 'Invalid channel name' }), null;
+  const config = readChannelConfig(channel);
+  if (!config) return void res.status(404).json({ error: 'Not enrolled' }), null;
+  const cfg = effectivePointsConfig(config['points']);
+  if (!cfg.enabled || !cfg.publicLeaderboard || !cfg.games.enabled) return void res.status(404).json({ error: 'No fishing here' }), null;
+  // Switched off in bot management (games.webPlay): no game on the page, nothing queued.
+  if (!cfg.games.webPlay) return void res.status(404).json({ error: 'Fishing on the leaderboard is switched off here' }), null;
+  const userId = Number(from['userId']);
+  const username = typeof from['username'] === 'string' ? from['username'] : '';
+  if (!Number.isSafeInteger(userId) || userId <= 0) return void res.status(400).json({ error: 'userId must be a Kick user id' }), null;
+  if (!/^[A-Za-z0-9_]{1,25}$/.test(username)) return void res.status(400).json({ error: 'username must be a Kick name' }), null;
+  return { channel, cfg, userId, username, config };
+}
+
+const fishPageExcluded = (r: FishPageRequest): boolean =>
+  isExcluded(exclusionsFor(r.channel, r.cfg, broadcasterIdOf(r.config)), r.userId, r.username.toLowerCase());
+
+/** What the page shows: never a check's answers, nor where a picture's fish are. */
+function fishPageState(db: PointsDb, r: FishPageRequest, now: number): Record<string, unknown> {
+  const g = r.cfg.games;
+  const d = loadFish(db, r.userId) ?? initialData();
+  const check = d.trapCheck;
+  const liveSince = db.prepare('SELECT value FROM meta WHERE key = ?').get('live_since') as { value: string | null } | undefined;
+  return {
+    now,
+    balance: (db.prepare('SELECT balance FROM users WHERE user_id = ?').get(r.userId) as { balance: number } | undefined)?.balance ?? 0,
+    currency: r.cfg.currencyName,
+    live: !!liveSince?.value,
+    rule: g.onlyWhileOffline ? 'offline' : g.onlyWhileLive ? 'live' : 'any',
+    readyAt: d.readyTimestamp > now ? d.readyTimestamp : null,
+    trap: d.trap.active ? { start: d.trap.start, end: d.trap.end } : null,
+    trapMinutes: { usual: g.trapMinutes, min: TRAP_MIN_MINUTES, max: g.trapMaxMinutes },
+    check: check ? {
+      question: check.question,
+      picture: !!check.tap,
+      until: check.until,
+      triesLeft: Math.max(0, g.trapCheck.tries - check.wrong),
+      onCast: !!check.cast
+    } : null,
+    held: { fish: d.catch.fish, junk: d.catch.junk, maxFish: capOf(g, 'fish') || null, maxJunk: capOf(g, 'junk') || null },
+    // What they hold, kind by kind, for selling and trading: each fish's length, level and price
+    // as a sale prices it (their reel included, stolen fish without it).
+    bucket: (() => {
+      const value = currentReel(d, g)?.valueMultiplier ?? 1;
+      return ITEMS.flatMap(item => {
+        const n = Math.floor(d.catch.types[item.name] ?? 0);
+        if (n <= 0) return [];
+        const sized = item.type === 'fish' ? (d.catch.sizes?.[item.name] ?? []).slice(0, n) : [];
+        const each = sized.map(h => {
+          const level = levelOf(h);
+          return {
+            cm: h.cm, level, record: !!h.record, stolen: !!h.stolen, worth: sellPrice(item, g, h, h.stolen ? 1 : value),
+            // Toward the next level, for the page's feeding; none at the top.
+            ...(level < MAX_LEVEL ? { xp: h.xp ?? 0, xpNext: levelCost(item, g, h, level) } : {})
+          };
+        })
+          .sort((a, b) => b.level - a.level || b.cm - a.cm);
+        const unsized = n - sized.length;
+        const plain = sellPrice(item, g, undefined, item.type === 'fish' ? value : 1);
+        return [{ emoji: item.name, type: item.type, n, each, unsized, worth: each.reduce((t, e) => t + e.worth, 0) + unsized * plain }];
+      });
+    })(),
+    selling: true,
+    feeding: g.feedEnabled,
+    trading: g.trade.enabled,
+    // Offers waiting on them or from them (fish-trade.ts mirrors the bot's into meta).
+    trades: mirroredTrades(db, now).filter(o => o.toId === r.userId || o.fromId === r.userId).map(o => ({
+      incoming: o.toId === r.userId,
+      with: o.toId === r.userId ? o.from : o.to,
+      give: sideText(o.give, r.cfg.currencyName),
+      get: sideText(o.get, r.cfg.currencyName),
+      fee: o.fee,
+      expiresAt: o.expiresAt
+    })),
+    baits: BAITS.map(b => ({ word: b.name, emoji: b.emoji, price: baitPrice(b, g), oneIn: baitRoll(b, g) })),
+    catchOdds: g.catchOdds,
+    log: recentReplies(db, r.userId)
+  };
+}
+
+const FISH_MOVE_WAIT_MS = 8_000;
+
+app.get('/internal/bot/:channel/points/fish', internalGuard(false), (req, res) => {
+  const r = fishPageRequest(req, res, req.query as Record<string, unknown>);
+  if (!r) return;
+  if (fishPageExcluded(r)) return res.json({ fish: null });
+  const db = openPointsDb(r.channel, { create: false });
+  if (!db) return res.json({ fish: null });
+  try {
+    return res.json({ fish: fishPageState(db, r, Date.now()) });
+  } catch (e) {
+    return pointsUnavailable(res, r.channel, e);
+  }
+});
+
+app.post('/internal/bot/:channel/points/fish/move', internalGuard(true), async (req, res) => {
+  const body = (req.body ?? {}) as Record<string, unknown>;
+  const r = fishPageRequest(req, res, body);
+  if (!r) return;
+  const requestId = body['requestId'];
+  if (typeof requestId !== 'string' || !POINTS_REQUEST_ID_RE.test(requestId)) return res.status(400).json({ error: 'requestId must be a UUID' });
+  // Only casts (with or without bait), traps and answers: the rest of fishing stays in chat.
+  const raw = Array.isArray(body['args']) ? body['args'] : [];
+  // A typed answer can be an emoji or words ("tin can"); a sale or a trade names fish, lengths,
+  // amounts and an @name. No spaces inside a word but the answer's, and never a $ or !.
+  const isAnswer = raw[0] === 'answer';
+  const args = raw.filter((a, i): a is string => typeof a === 'string'
+    && (isAnswer && i === 1 ? /^[^\p{Cc}$!]{1,40}$/u.test(a) && a.trim() !== '' : /^[^\p{Cc}\s$!]{1,40}$/u.test(a))).slice(0, 40);
+  // 40 words: a feeding or trade naming several very fish, each by kind, length, level, 🏅 and how many.
+  if (args.length !== raw.length || raw.length > 40) return res.status(400).json({ error: 'Bad move' });
+  const first = (args[0] ?? '').toLowerCase();
+  const isBait = BAITS.some(b => b.name === first);
+  const plays = args.length === 0 || (args.length === 1 && isBait) || (first === 'answer' && args.length === 2)
+    || ['trap', 'sell', 'feed', 'trade', 'steal'].includes(first) || (['accept', 'decline'].includes(first) && args.length === 1);
+  if (!plays) return res.status(400).json({ error: 'Only casts, traps, answers, selling, feeding, trades and steals are played here' });
+  if (fishPageExcluded(r)) return res.status(403).json({ error: "You can't fish here." });
+  const db = openPointsDb(r.channel, { create: false });
+  if (!db) return res.status(404).json({ error: 'No points here yet' });
+  try {
+    const move: WebFishMove = { requestId, userId: r.userId, username: r.username, args };
+    const queueDir = path.join(KICK_BASE_PATH, 'data', 'webhook-events');
+    fs.mkdirSync(queueDir, { recursive: true });
+    fs.appendFileSync(path.join(queueDir, `${r.channel}.jsonl`), JSON.stringify({ __event: WEB_FISH_EVENT, receivedAt: Date.now(), payload: move }) + '\n', 'utf8');
+    // The bot picks the queue up every 200 ms and answers in a moment. Once a reply is in, 600 ms
+    // with nothing more catches a move that gives a second line without slowing every move.
+    const started = Date.now();
+    let replies = repliesFor(db, requestId);
+    let changedAt = Date.now();
+    while (Date.now() - started < FISH_MOVE_WAIT_MS) {
+      await new Promise(done => setTimeout(done, 150));
+      const next = repliesFor(db, requestId);
+      if (next.length !== replies.length) {
+        replies = next;
+        changedAt = Date.now();
+      } else if (replies.length && Date.now() - changedAt >= 600) break;
+    }
+    console.log(`[FISH PAGE] ${r.username} in ${r.channel}: ${args.join(' ') || 'cast'} -> ${replies.length ? replies.map(x => x.text.slice(0, 60)).join(' | ') : 'no reply'}`);
+    return res.json({ replies, answered: replies.length > 0, fish: fishPageState(db, r, Date.now()) });
+  } catch (e) {
+    return pointsUnavailable(res, r.channel, e);
+  }
+});
+
+/** The scene of a picture check waiting for this viewer, for the dashboard to draw. Never sent to a browser as data. */
+app.get('/internal/bot/:channel/points/fish/picture', internalGuard(false), (req, res) => {
+  const r = fishPageRequest(req, res, req.query as Record<string, unknown>);
+  if (!r) return;
+  const db = openPointsDb(r.channel, { create: false });
+  if (!db) return res.status(404).json({ error: 'No points here yet' });
+  try {
+    const tap = loadFish(db, r.userId)?.trapCheck?.tap;
+    if (!tap) return res.status(404).json({ error: 'No picture waiting' });
+    return res.json({ fish: tap.fish.map(f => ({ x: f.x, y: f.y, size: f.size, left: f.left, color: f.color, striped: !!f.striped })) });
+  } catch (e) {
+    return pointsUnavailable(res, r.channel, e);
   }
 });
 
@@ -3389,7 +3613,7 @@ function publicFishing(channel: string, cfg: ReturnType<typeof effectivePointsCo
     .map(item => ({ item, odds: odds.get(item.name) }))
     .sort((a, b) => Number(!!b.item.trophy) - Number(!!a.item.trophy) || (a.odds?.chance ?? 0) - (b.odds?.chance ?? 0) || b.item.price - a.item.price);
   // Every fish held, for the most valuable ones: each sized fish, the unsized ones of a kind together.
-  const best = new Map<string, { name: string; emoji: string; rarity: string; type: string; cm: number | null; n: number; hp: number; attack: number; worth: number; level?: number }>();
+  const best = new Map<string, { name: string; emoji: string; rarity: string; type: string; cm: number | null; n: number; hp: number; attack: number; worth: number; level?: number; record?: true }>();
   const holders = heldCatches(channel, cfg, broadcasterUserId)
     .map(h => {
       let count = 0;
@@ -3405,22 +3629,24 @@ function publicFishing(channel: string, cfg: ReturnType<typeof effectivePointsCo
         count += n;
         // Each one, as `fish show 🦈` lists them: by length, biggest first, with its duel
         // stats and price, so a viewer can see which to name. One length and price is one line.
-        const each: Array<{ cm: number | null; n: number; hp: number; attack: number; worth: number; level?: number }> = [];
+        const each: Array<{ cm: number | null; n: number; hp: number; attack: number; worth: number; level?: number; record?: true }> = [];
         const add = (held: { cm: number; record: boolean; level?: number } | undefined, k: number, stolen = false) => {
           const cm = held ? held.cm : null;
+          // A size record sells for 1.5x; flagged so the board can say why it's dearer than its twin.
+          const rec = held?.record ? { record: true as const } : {};
           const value = sellPrice(item, g, held, stolen ? 1 : reelValue);
           worth += value * k;
           const f = fighterOf(g, item, held);
           // For the most valuable fish: priced as here and in `fish show`, the owner's reel
           // included, so the board and a viewer's own list agree. Fish just alike are one line, counted.
-          const key = `${h.username}|${item.name}|${cm}|${value}|${f.level}|${f.hp}|${f.attack}`;
+          const key = `${h.username}|${item.name}|${cm}|${value}|${f.level}|${f.hp}|${f.attack}|${!!held?.record}`;
           const twin = best.get(key);
           if (twin) twin.n += k;
           else best.set(key, { name: h.username, emoji: item.name, rarity: o?.rarity ?? 'Never', type: f.type, cm, n: k, hp: f.hp, attack: f.attack,
-            worth: value, ...(f.level ? { level: f.level } : {}) });
-          const same = each.find(e => e.cm === cm && e.worth === value);
+            worth: value, ...(f.level ? { level: f.level } : {}), ...rec });
+          const same = each.find(e => e.cm === cm && e.worth === value && !!e.record === !!held?.record);
           if (same) return void (same.n += k);
-          each.push({ cm, n: k, hp: f.hp, attack: f.attack, worth: value, ...(f.level ? { level: f.level } : {}) });
+          each.push({ cm, n: k, hp: f.hp, attack: f.attack, worth: value, ...(f.level ? { level: f.level } : {}), ...rec });
         };
         for (const one of sized) add(one, 1, !!one.stolen);
         if (unsized > hot) add(undefined, unsized - hot);
@@ -3429,7 +3655,12 @@ function publicFishing(channel: string, cfg: ReturnType<typeof effectivePointsCo
         const f = fighterOf(g, item);
         return [{ emoji: item.name, n, rarity: o?.rarity ?? 'Never', type: f.type, each }];
       });
-      return { name: h.username, fish: held, count, worth, ...(reel ? { reel: reel.name } : {}) };
+      // Their junk too, kind by kind with what one sells for (no reel bonus on junk), apart from the fish totals.
+      const junk = ITEMS.filter(i => i.type === 'junk').flatMap(item => {
+        const n = Math.floor(h.types[item.name] ?? 0);
+        return n > 0 ? [{ emoji: item.name, n, worth: sellPrice(item, g) }] : [];
+      });
+      return { name: h.username, fish: held, count, worth, ...(junk.length ? { junk } : {}), ...(reel ? { reel: reel.name } : {}) };
     })
     .filter(h => h.count > 0)
     .sort((a, b) => b.worth - a.worth || b.count - a.count || a.name.localeCompare(b.name))
@@ -3438,6 +3669,9 @@ function publicFishing(channel: string, cfg: ReturnType<typeof effectivePointsCo
   const topFish = [...best.values()].sort((a, b) => b.worth - a.worth || b.hp * b.attack - a.hp * a.attack || a.name.localeCompare(b.name)).slice(0, 10);
   return {
     catchOdds: g.catchOdds, fish, junk: list(c => c.type === 'junk'), topFish, holders, steal: g.steal.enabled,
+    // The Fishing tab's game for signed-in viewers (games.webPlay).
+    webPlay: g.webPlay,
+    trade: g.trade.enabled,
     // How hooks, guards and stealing work here, for the tab's explainer. Only where stealing is on.
     ...(g.steal.enabled ? {
       stealRules: {
@@ -3726,10 +3960,10 @@ app.post('/internal/bot/:channel/settings', internalGuard(true), async (req, res
 /**
  * Store a freshly-issued streamer grant against an already-enrolled channel.
  *
- * This is what makes renewal automatic: the dashboard login requests the same
- * scope set as enrollment, so every sign-in yields a new token, and posting it
- * here resets the 30-day grant clock without the streamer doing anything beyond
- * logging in. Enrolling a brand-new channel still goes through the full
+ * The dashboard login requests the same scope set as enrollment, so every sign-in
+ * yields a new token, stored here as a fresh grant without the streamer doing
+ * anything beyond logging in. (Refreshing keeps a grant alive on its own now:
+ * src/kick-grant.ts.) Enrolling a brand-new channel still goes through the full
  * /kick-bot-enroll flow, which also needs the chatroom lookup and pm2 setup.
  */
 app.post('/internal/bot/:channel/oauth', internalGuard(true), async (req, res) => {
@@ -3740,7 +3974,7 @@ app.post('/internal/bot/:channel/oauth', internalGuard(true), async (req, res) =
   const config = readChannelConfig(channel);
   if (!config) return res.status(404).json({ error: 'Not enrolled' });
 
-  const body = req.body as { accessToken?: unknown; refreshToken?: unknown; expiresIn?: unknown; userId?: unknown };
+  const body = req.body as { accessToken?: unknown; refreshToken?: unknown; expiresIn?: unknown; refreshExpiresIn?: unknown; userId?: unknown };
   // Only the channel's own Kick account, by user id: someone who later takes the name can't
   // replace the grant (2026-10-16 audit).
   const owner = config['broadcasterUserId'];
@@ -3760,15 +3994,14 @@ app.post('/internal/bot/:channel/oauth', internalGuard(true), async (req, res) =
   config['oauth'] = {
     accessToken: body.accessToken,
     refreshToken: body.refreshToken,
-    expiresAt: now.getTime() + expiresIn * 1000
+    expiresAt: now.getTime() + expiresIn * 1000,
+    refreshExpiresAt: refreshExpiresAt({ refresh_expires_in: body.refreshExpiresIn }, now.getTime())
   };
-  // enrolledAt drives the 30-day grant countdown shown in the dashboard, so a
-  // new grant has to reset it — otherwise the UI keeps counting down the old one.
   config['enrolledAt'] = now.toISOString();
   config['lastUpdated'] = now.toISOString();
   writeChannelConfig(channel, config);
   touchReload(channel);
-  console.log(`[INTERNAL] ${channel} streamer grant refreshed via dashboard login — 30-day clock reset`);
+  console.log(`[INTERNAL] ${channel} streamer grant refreshed via dashboard login`);
 
   const procs = await pm2List();
   return res.json({ ok: true, ...summariseChannel(channel, procs) });

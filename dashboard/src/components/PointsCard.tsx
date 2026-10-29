@@ -143,6 +143,8 @@ export interface PointsGames {
   feedFailPercent?: number;
   /** Fishing replies go to chat. They always go to the fishing overlay; off, chat only gets them offline or with no overlay showing. Absent from an older bot service. */
   chatReplies?: boolean;
+  /** Casting and traps on the public leaderboard's Fishing tab. Absent from an older bot service. */
+  webPlay?: boolean;
   /** The fishing overlay's &demo=1 may play; off, overlays ignore it. Absent from an older bot service. */
   overlayDemo?: boolean;
   /** How big the fishing overlay draws, as a percentage (50–300). Absent from an older bot service. */
@@ -324,6 +326,7 @@ const GAMES_DEFAULTS: PointsGames = {
   baitPricePercent: 100,
   stories: true,
   chatReplies: true,
+  webPlay: true,
   overlayDemo: true,
   overlaySizePercent: 100,
 };
@@ -554,6 +557,7 @@ interface SettingsForm {
   fishFeed: boolean;
   fishFeedFail: string;
   fishChatReplies: boolean;
+  fishWebPlay: boolean;
   fishOverlayDemo: boolean;
   fishOverlaySize: string;
   fishOverlayClearW: string;
@@ -659,6 +663,7 @@ function formFromConfig(c: PointsConfig): SettingsForm {
     fishFeed: c.games?.feedEnabled !== false,
     fishFeedFail: String(c.games?.feedFailPercent ?? 10),
     fishChatReplies: (c.games ?? GAMES_DEFAULTS).chatReplies !== false,
+    fishWebPlay: (c.games ?? GAMES_DEFAULTS).webPlay !== false,
     fishOverlayDemo: (c.games ?? GAMES_DEFAULTS).overlayDemo !== false,
     fishOverlaySize: String((c.games ?? GAMES_DEFAULTS).overlaySizePercent ?? 100),
     fishOverlayClearW: String(c.games?.overlayClearWidthPercent ?? 0),
@@ -931,6 +936,7 @@ function buildPatch(f: SettingsForm): { patch: PointsSettingsPatch } | { error: 
     feedEnabled: f.fishFeed,
     feedFailPercent: whole(f.fishFeedFail, "Feeding fail chance", 0, 100),
     chatReplies: f.fishChatReplies,
+    webPlay: f.fishWebPlay,
     overlayDemo: f.fishOverlayDemo,
     overlaySizePercent: whole(f.fishOverlaySize, "Overlay size", 50, 300),
     overlayClearWidthPercent: whole(f.fishOverlayClearW, "Clear corner width", 0, 80),
@@ -2098,7 +2104,7 @@ export default function PointsCard({
   const dirty = JSON.stringify(form) !== JSON.stringify(formFromConfig(saved));
   const commandPreview =
     form.currencyCommand.trim().replace(/^[!$]+/, "").toLowerCase() || deriveCommand(form.currencyName.trim());
-  const leaderboardUrl = `${BASE_PATH}/${channel}/leaderboard`;
+  const leaderboardUrl = `${BASE_PATH}/leaderboard/${channel}`;
   const set = <K extends keyof SettingsForm>(key: K, value: SettingsForm[K]) =>
     setForm((f) => (f ? { ...f, [key]: value } : f));
   const text = (key: keyof SettingsForm, extra?: React.InputHTMLAttributes<HTMLInputElement>) => (
@@ -2795,6 +2801,17 @@ export default function PointsCard({
                       While the stream is live with a fishing overlay open, every fishing reply shows on the overlay only. Offline, or with no overlay open, replies still go to chat. A big bite&apos;s ping and result always go to chat.
                     </p>
                   ) : null}
+                  <Checkbox
+                    label="Let viewers fish on the leaderboard"
+                    checked={form.fishWebPlay}
+                    disabled={readOnly || !!busy}
+                    onChange={(v) => set("fishWebPlay", v)}
+                  />
+                  <p className="pl-6 text-xs text-neutral-500">
+                    {form.fishWebPlay
+                      ? "Signed-in viewers can cast, lay traps, sell, trade and buy gear on the leaderboard's Fishing tab, with the same rules, cooldowns and checks as chat. Their replies stay on the page; a trade offer also pings the other viewer in chat."
+                      : "The Fishing tab shows no game, and moves sent from it are turned away. Fishing in chat works as usual."}
+                  </p>
                 </div>
                 ) : null}
                 {tab("overlay") ? (<>

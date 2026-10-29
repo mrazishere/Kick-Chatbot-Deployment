@@ -48,7 +48,7 @@ function HeistList({ title, hint, rows, empty, who }: {
 
 export default function Heists({ heists, currency, channel }: { heists: PublicHeists | null; currency: string; channel: string }) {
   const who = (name: string) => (
-    <a href={`${BASE_PATH}/${channel}/leaderboard?user=${encodeURIComponent(name)}`} className="text-neutral-200 hover:underline">
+    <a href={`${BASE_PATH}/leaderboard/${channel}?user=${encodeURIComponent(name)}`} className="text-neutral-200 hover:underline">
       {name}
     </a>
   );

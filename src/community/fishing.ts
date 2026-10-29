@@ -142,6 +142,9 @@ export const BAITS: readonly Bait[] = [
   { emoji: '🦗', name: 'cricket', price: 8, roll: 12 }
 ];
 
+/** The shortest trap: each fish skips 30 rolls, so anything shorter could never catch one. */
+export const TRAP_MIN_MINUTES = 31;
+
 /** A miss waits this long, rounded to the second, plus one second. */
 export const MISS_DELAY_MS: readonly [number, number] = [30_000, 90_000];
 
@@ -445,14 +448,18 @@ export function takeItems(d: FishData, item: CatchItem, n: number, g: PointsGame
  * Remove `n` fish of this kind that are `cm` long and price them, as takeItems would
  * (a stolen one at the plain price). Returns null when fewer than `n` are that long.
  */
-export function takeSized(d: FishData, item: CatchItem, cm: number, n: number, g: PointsGamesConfig, value = 1): number | null {
+export function takeSized(d: FishData, item: CatchItem, cm: number, n: number, g: PointsGamesConfig, value = 1, only: { level?: number; record?: boolean } = {}): number | null {
   const list = d.catch.sizes?.[item.name] ?? [];
-  if (item.type !== 'fish' || list.filter(h => h.cm === cm).length < n) return null;
+  // A sale can name the very fish: its level, and 🏅 for a size record (only.record).
+  const fits = (h: HeldFish) => h.cm === cm && (only.level === undefined || levelOf(h) === only.level) && (!only.record || h.record);
+  if (item.type !== 'fish' || list.filter(fits).length < n) return null;
   let total = 0;
   for (let i = 0; i < n; i++) {
-    // Of fish that long, the lowest level goes first: a fed one is kept unless it's the only one.
+    // Of the fish that fit, the lowest level goes first: a fed one is kept unless it's the only
+    // one. At the same level a plain one goes before a 🏅 one, which is worth more.
     let at = -1;
-    list.forEach((h, j) => { if (h.cm === cm && (at < 0 || levelOf(h) < levelOf(list[at]))) at = j; });
+    const rank = (h: HeldFish) => levelOf(h) * 2 + (h.record ? 1 : 0);
+    list.forEach((h, j) => { if (fits(h) && (at < 0 || rank(h) < rank(list[at]))) at = j; });
     const [held] = list.splice(at, 1);
     total += sellPrice(item, g, held, held.stolen ? 1 : value);
   }

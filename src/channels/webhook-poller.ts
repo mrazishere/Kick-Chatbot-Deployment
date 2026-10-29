@@ -10,6 +10,7 @@ import {
   SubscriptionEvent,
   SubscriptionGiftsEvent
 } from '../types';
+import { WEB_FISH_EVENT, type WebFishMove } from '../community/web-fish';
 
 const POLL_MS = 200;
 const MAX_SEEN = 500;
@@ -26,6 +27,8 @@ const MAX_SEEN = 500;
 const MAX_CHAT_AGE_MS = 2 * 60 * 1000;
 const MAX_REDEMPTION_AGE_MS = 10 * 60 * 1000;
 const MAX_BONUS_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+/** A fishing page move waits for its answer for a few seconds; one queued longer than this has been given up on. */
+const MAX_WEB_MOVE_AGE_MS = 30 * 1000;
 
 /** What the bot does with each event type. Only `chat` is required. */
 export interface WebhookHandlers {
@@ -38,6 +41,8 @@ export interface WebhookHandlers {
   subscriptionGifts?: (event: SubscriptionGiftsEvent, meta: QueueMeta) => void;
   kicksGifted?: (event: KicksGiftedEvent, meta: QueueMeta) => void;
   livestreamStatus?: (event: LivestreamStatusEvent, meta: QueueMeta) => void;
+  /** A move from the leaderboard's fishing page (community/web-fish.ts). */
+  webFish?: (move: WebFishMove) => void;
 }
 
 // Maps Kick webhook chat.message.sent payload → handleChatMessage data format
@@ -215,6 +220,14 @@ export class WebhookPoller {
 
           case 'livestream.status.updated':
             this.handlers.livestreamStatus?.(event as unknown as LivestreamStatusEvent, meta);
+            break;
+
+          case WEB_FISH_EVENT:
+            if (age !== null && age > MAX_WEB_MOVE_AGE_MS) {
+              console.log(`[WEBHOOK] Skipping a fishing page move queued ${Math.round(age / 1000)} s ago`);
+              break;
+            }
+            this.handlers.webFish?.(event as unknown as WebFishMove);
             break;
 
           default:

@@ -67,7 +67,6 @@ export default async function ChannelPage({
       channelAvatarUrl={channelAvatarUrl}
       isAdmin={admin}
       isOwner={isOwner}
-      isLoggedIn={!!username}
       switcher={switcher}
     />
   );

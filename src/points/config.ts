@@ -92,6 +92,7 @@ export function defaultPointsConfig(): PointsConfig {
       feedEnabled: true,
       feedFailPercent: 10,
       chatReplies: true,
+      webPlay: true,
       overlayDemo: true,
       overlaySizePercent: 100,
       overlayClearWidthPercent: 0,
@@ -600,6 +601,7 @@ export function internalPointsConfig(raw: unknown): InternalPointsConfig {
     feedEnabled: bool(ga.feedEnabled, d.games.feedEnabled),
     feedFailPercent: num(ga.feedFailPercent, d.games.feedFailPercent, 0, 100, true),
     chatReplies: bool(ga.chatReplies, d.games.chatReplies),
+    webPlay: bool(ga.webPlay, d.games.webPlay),
     overlayDemo: bool(ga.overlayDemo, d.games.overlayDemo),
     overlaySizePercent: num(ga.overlaySizePercent, d.games.overlaySizePercent, 50, 300, true),
     overlayClearWidthPercent: num(ga.overlayClearWidthPercent, d.games.overlayClearWidthPercent, 0, 80, true),
@@ -1093,7 +1095,7 @@ export function validatePointsPatch(current: unknown, patch: unknown): { next?: 
         const v = checkNumber(`games.${key}`, ga[key], rule, errors);
         if (v !== undefined) (next.games as Record<string, unknown>)[key] = v;
       }
-      for (const key of ['enabled', 'onlyWhileLive', 'onlyWhileOffline', 'stories', 'chatReplies', 'overlayDemo', 'giveEnabled', 'feedEnabled'] as const) {
+      for (const key of ['enabled', 'onlyWhileLive', 'onlyWhileOffline', 'stories', 'chatReplies', 'webPlay', 'overlayDemo', 'giveEnabled', 'feedEnabled'] as const) {
         if (ga[key] === undefined) continue;
         if (typeof ga[key] !== 'boolean') errors.push(`games.${key} must be true or false`);
         else next.games![key] = ga[key] as boolean;

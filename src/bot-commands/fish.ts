@@ -60,14 +60,15 @@ import { bestEmote, broadcasterIdFor, emoteImages, withKickEmotes } from '../com
 import { OverlayKind, overlayHealth, overlayOff, overlayShowing, pushOverlay, requestOverlayReload, setOverlayOff } from '../community/fish-overlay';
 import { addChallenge, challengeBy, challengeFor, closeInValue, describe, fighterOf, describeTeam, dropChallenge, fight, findTeam, fishSpecs, fishNamed, heldFish, TYPE_EMOJI, isLength, specText, splitLengths, fishValue, keepsRange, overlayDuel, overlayTeamDuel, pickByValue, pickFighter, pickForKeeps, pickTeam, sameFish, playMs, randomFish, switchesIn, teamFight, teamSizeOf, teamValue, wantsRandom, type Challenge, type DuelStake, type OverlayDuel, type Picked } from '../community/fish-duel';
 import { parseBet } from './points';
-import { answerMatches, makeTrapCheck, type TrapCheck } from '../community/trap-check';
+import { answerMatches, makeTapCheck, makeTrapCheck, tapMatches, type TrapCheck } from '../community/trap-check';
 import { wheelBusy } from '../community/wheel-state';
 import { recordSignal } from '../community/cheat-signals';
-import { addTrade, dropTrade, sideText, tradeBy, tradeFor, type TradeItem, type TradeOffer, type TradeSide } from '../community/fish-trade';
+import { buyGuard as shopBuyGuard, buyHook as shopBuyHook, buyReel as shopBuyReel, reelEffects, type ShopBuyer } from '../community/fish-shop';
+import { addTrade, dropTrade, mirrorTrades, sideText, tradeBy, tradeFor, type TradeItem, type TradeOffer, type TradeSide } from '../community/fish-trade';
 import { BITE_TOO_FAST_MS, STREAM_GRACE_MS, biteFor, canBite, channelBite, channelHasBite, codeMatches, getAway, nextPull, pickChatter, recordBite, rewardSnipeFails, snipeBite, snipeOpen, startBite, takeBite, type BiteContext } from '../community/big-bite';
 import {
-  addItem, itemByWord, giveItems, baitPrice, baitRoll, currentReel, heldFishValue, freshCatches, landsFish, moveFish, pickHeld, stealableFish, stealCharges, stealRollChance, worstStealCharges, parseSellList, takeSized, addXp, levelCost, levelOf, MAX_LEVEL, capOf, emoteWord, isWordName, nearCap, overflow, CatchItem, CatchType, FAILURE_EMOTES, FishData, findBait, hasFishedBefore, initialData, rarityOf, recordCatch,
-  ITEMS, JUNK_MESSAGES, loadFish, MISS_DELAY_MS, pick, randomInt, rollCatch, saveFish, sellPrice, STORY_STYLES, SUCCESS_EMOTES,
+  addItem, itemByWord, giveItems, baitPrice, baitRoll, currentReel, freshCatches, landsFish, moveFish, pickHeld, stealableFish, stealCharges, stealRollChance, worstStealCharges, parseSellList, takeSized, addXp, levelCost, levelOf, MAX_LEVEL, capOf, emoteWord, isWordName, nearCap, overflow, CatchItem, CatchType, FAILURE_EMOTES, FishData, findBait, hasFishedBefore, initialData, rarityOf, recordCatch,
+  ITEMS, JUNK_MESSAGES, loadFish, MISS_DELAY_MS, TRAP_MIN_MINUTES, pick, randomInt, rollCatch, saveFish, sellPrice, STORY_STYLES, SUCCESS_EMOTES,
   takeItems, TYPE_DESCRIPTIONS, weightedCatch, type HeldFish
 } from '../community/fishing';
 
@@ -111,9 +112,21 @@ export const SUBCOMMANDS: Record<string, 'buy' | 'sell' | 'show' | 'stats' | 'to
  * 72cm 🐟 3" is a 🦕 of each length, that 🦈, and three 🐟 (oldest first). A count after a
  * length is more of that length ("🦕 42cm 2").
  */
-interface FishPick { item: CatchItem; n: number; cm?: number; counted: boolean }
+interface FishPick {
+  item: CatchItem;
+  n: number;
+  cm?: number;
+  counted: boolean;
+  /** Selling only (`exact`): a level or a 🏅 typed after the length picks out that very fish ("🐟 100cm Lv10 🏅"). */
+  level?: number;
+  record?: boolean;
+}
 
-function parsePicks(parts: string[]): { picks: FishPick[] } | { error: 'order' | 'length' | 'amount' | 'unknown' } {
+/**
+ * `exact` lets a sale name a fish by its level and 🏅 as well as its length. Off (gifts,
+ * trades, feeding), those words are unknown, as before, so nothing is quietly ignored.
+ */
+function parsePicks(parts: string[], exact = false): { picks: FishPick[] } | { error: 'order' | 'length' | 'amount' | 'unknown' } {
   const picks: FishPick[] = [];
   // A length typed first ("1cm 🦈") goes with the fish named right after it.
   let leading: number | null = null;
@@ -131,6 +144,16 @@ function parsePicks(parts: string[]): { picks: FishPick[] } | { error: 'order' |
       if (last.cm === undefined && !last.counted && last.n === 1) last.cm = cm;
       else picks.push({ item: last.item, n: 1, cm, counted: false });
       continue;
+    }
+    if (exact) {
+      const last2 = picks[picks.length - 1];
+      const lv = /^lv(\d{1,2})$/i.exec(w);
+      if (lv || /^(🏅|record)$/i.test(w)) {
+        if (!last2 || last2.cm === undefined) return { error: 'order' };
+        if (lv) last2.level = Number(lv[1]);
+        else last2.record = true;
+        continue;
+      }
     }
     const count = /^x?(\d+)x?$/i.exec(w);
     if (count) {
@@ -157,23 +180,28 @@ function parsePicks(parts: string[]): { picks: FishPick[] } | { error: 'order' |
 }
 
 /** The fish asked for by length, one entry per kind and length with how many. */
-function lengthsWanted(picks: FishPick[]): Map<string, { item: CatchItem; cm: number; n: number }> {
-  const want = new Map<string, { item: CatchItem; cm: number; n: number }>();
+type Wanted = { item: CatchItem; cm: number; n: number; level?: number; record?: boolean };
+
+function lengthsWanted(picks: FishPick[]): Map<string, Wanted> {
+  const want = new Map<string, Wanted>();
   for (const e of picks) {
     if (e.cm === undefined) continue;
-    const k = `${e.item.name}|${e.cm}`;
+    const k = `${e.item.name}|${e.cm}|${e.level ?? ''}|${e.record ?? ''}`;
     const w = want.get(k);
     if (w) w.n += e.n;
-    else want.set(k, { item: e.item, cm: e.cm, n: e.n });
+    else want.set(k, { item: e.item, cm: e.cm, n: e.n, ...(e.level !== undefined ? { level: e.level } : {}), ...(e.record ? { record: true } : {}) });
   }
   return want;
 }
 
+/** "🐟 100 cm Lv10 🏅": a wanted fish as the replies name it. */
+const wantedName = (w: Wanted): string => `${w.item.name} ${w.cm} cm${w.level !== undefined ? ` Lv${w.level}` : ''}${w.record ? ' 🏅' : ''}`;
+
 /** What's short of the lengths wanted: "no 🦕 43 cm", "only 1 🦈 40 cm". */
 function shortOf(d: FishData, want: ReturnType<typeof lengthsWanted>): string[] {
   return [...want.values()].flatMap(w => {
-    const k = (d.catch.sizes?.[w.item.name] ?? []).filter(h => h.cm === w.cm).length;
-    return k < w.n ? [k ? `only ${k} ${w.item.name} ${w.cm} cm` : `no ${w.item.name} ${w.cm} cm`] : [];
+    const k = (d.catch.sizes?.[w.item.name] ?? []).filter(h => h.cm === w.cm && (w.level === undefined || levelOf(h) === w.level) && (!w.record || h.record)).length;
+    return k < w.n ? [k ? `only ${k} ${wantedName(w)}` : `no ${wantedName(w)}`] : [];
   });
 }
 
@@ -195,8 +223,6 @@ interface Board { path: string | null; name: string; value: (d: FishData, balanc
 const TYPE_SHORT: Record<string, string> = { f: 'fish', j: 'junk' };
 const TRAP_SHORT: Record<string, string> = { c: 'cancel', r: 'reset', l: 'lift' };
 
-/** The shortest trap: each fish skips 30 rolls, so anything shorter could never catch one. */
-const TRAP_MIN_MINUTES = 31;
 
 /** A trap time as a chatter types it: 90 or 90m (minutes), 2h, 1.5h, 1h30m or 1h30. Whole minutes, or null when it isn't one. */
 export function parseTrapMinutes(raw: string): number | null {
@@ -308,7 +334,8 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
   // From a big bite's second pull the code counts by itself, for whoever is reeling: the
   // time is short and the prefix is most of the typing on a phone. Only an exact match
   // is an answer; anything else they say is chat, and loses nothing.
-  const call = gameInvocation(message, channel, 'fish') ?? bareReel(message, channel, tags.username);
+  const web = tags.web;
+  const call = gameInvocation(message, channel, 'fish') ?? (web ? null : bareReel(message, channel, tags.username));
   if (!call) return;
   const me = tags.username;
   const meLc = me.toLowerCase();
@@ -331,7 +358,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
   // after a typo should count, and the tries are limited anyway. Without a question
   // waiting, the cooldown applies as usual (case 'answer').
   const checkAnswer = SUBCOMMANDS[String(call.args.find(a => !/^skipstory:/i.test(a)) ?? '').toLowerCase()] === 'answer';
-  if (!answering && !checkAnswer && cooldown(meLc)) return;
+  if (!answering && !checkAnswer && cooldown(meLc)) return void web?.reply('Easy there: one move every few seconds.', { kind: 'info' });
 
   const svc = getPointsService(chan);
   const db = svc?.db();
@@ -352,6 +379,8 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
   // too, whatever the reply settings say: on the overlay alone they're easy to miss.
   let duelReply = false;
   const say = async (text: string, meta: { kind?: OverlayKind; item?: string; code?: string; until?: number } = {}) => {
+    // A move from the fishing page answers there only: not in chat, not on stream.
+    if (web) return void web.reply(text, { ...(meta.kind ? { kind: meta.kind } : {}), ...(meta.item ? { item: meta.item } : {}) });
     const emotes = emoteImages(chan, text);
     const rarity = meta.item ? rarityOf(g, meta.item) : null;
     pushOverlay(db, {
@@ -383,7 +412,17 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
   const tester = cfg.debugFishTesters.includes(meLc);
   const offLimits = (id: number | null, name: string) => isExcluded(svc.exclusions(), id, name);
   const excluded = offLimits(userId, meLc);
-  const ignore = (why: string) => void console.log(`[FISH] ${me} ignored in ${chan}: ${why}`);
+  // Chat stays quiet about these, so it isn't flooded; the fishing page says why, or its button would just spin.
+  const WEB_REFUSALS: Record<string, string> = {
+    live: 'Fishing here is for when the stream is offline: it is live right now.',
+    offline: 'Fishing here is only while the stream is live.',
+    'live state unknown': "Couldn't tell whether the stream is live: try again in a moment.",
+    'no account or excluded': "You can't fish here."
+  };
+  const ignore = (why: string) => {
+    console.log(`[FISH] ${me} ignored in ${chan}: ${why}`);
+    if (web) web.reply(WEB_REFUSALS[why] ?? "That can't be done right now.", { kind: 'info' });
+  };
 
   /** Run a change once per chat message, in one transaction. A replay stays silent. */
   const once = <T>(fn: (now: number) => T): T | undefined => {
@@ -632,16 +671,16 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
           saveFish(db!, uid, d, now);
           return { kind: 'reply', text };
         }
-        return { kind: 'reply', text: `Before you cast again: ${d.trapCheck.question} ${answerHowLine} (${span(d.trapCheck.until - now)} left)` };
+        return { kind: 'reply', text: `Before you cast again: ${ask(d.trapCheck)} (${span(d.trapCheck.until - now)} left)` };
       }
       if (mayAsk && randomInt(1, 100) <= tc.castChancePercent) {
-        d.trapCheck = askedCheck = { ...makeTrapCheck(false, now, tc.answerSeconds, true), fine: Math.floor((getUser(db!, uid)?.balance ?? 0) * tc.finePercent / 100) };
+        d.trapCheck = askedCheck = { ...newCheck(false, now, tc.answerSeconds, true), fine: Math.floor((getUser(db!, uid)?.balance ?? 0) * tc.finePercent / 100) };
         recordSignal(db!, { userId: uid, kind: 'check_asked', now, live: liveNow, detail: 'cast' });
         saveFish(db!, uid, d, now);
         console.log(`[FISH] ${me} got a cast check in ${chan}: ${d.trapCheck.question}`);
         const stake = tc.finePercent > 0 ? `costs ${tc.finePercent}% of your ${cur}` : 'just ends it';
         const tries = tc.tries === 1 ? 'one try' : `${tc.tries} tries`;
-        return { kind: 'reply', text: `🎣 Your line snagged! Free it before you cast: ${d.trapCheck.question} ${answerHowLine} You have ${span(tc.answerSeconds * 1000)} and ${tries}; running out ${stake}.` };
+        return { kind: 'reply', text: `🎣 Your line snagged! Free it before you cast: ${ask(d.trapCheck)} You have ${span(tc.answerSeconds * 1000)} and ${tries}; running out ${stake}.` };
       }
 
       let rollMaximum = g.catchOdds;
@@ -749,6 +788,13 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
   const TRAP_REMINDER = 'your fishing traps are ready';
   // Kick chat drops anything in angle brackets: "<x>" came out as nothing.
   const answerHowLine = `Reply "${cmd} fish answer" followed by your answer.`;
+  const fishPage = `${(process.env.BOT_DASHBOARD_URL || 'https://mr-ai.dev/kick').replace(/\/+$/, '')}/leaderboard/${chan}?tab=fishing`;
+  /** A waiting check, with how to answer it: typed in chat, or a picture tapped on the fishing page. */
+  const ask = (check: TrapCheck): string =>
+    !check.tap ? `${check.question} ${answerHowLine}` : web ? check.question : `${check.question} It's a picture on the fishing page, answer it there: ${fishPage}`;
+  /** A new check: a picture for a move made on the fishing page, a typed question in chat. */
+  const newCheck = (reset: boolean, now: number, seconds: number, onCast = false): TrapCheck =>
+    (web ? makeTapCheck : makeTrapCheck)(reset, now, seconds, onCast);
   const remindsOn = !((config as ChannelConfig).excludedCommands as string[] | undefined ?? []).some(c => String(c).toLowerCase() === 'remind');
   function syncTrapReminder(trapEnd: number | null): void {
     const cdb = openCommunityDb(channel);
@@ -785,7 +831,9 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       if (!before.trapCheck) return void say("There's no question waiting on your traps.");
       // Nothing after "answer" isn't a try: the question again, while there's time.
       const wait = before.trapCheck.until - Date.now();
-      if (!answer && wait >= 0) return void say(`Your traps are waiting on this: ${before.trapCheck.question} Reply "${cmd} fish answer" followed by your answer (${span(wait)} left).`);
+      if (!answer && wait >= 0) return void say(`Your traps are waiting on this: ${ask(before.trapCheck)} (${span(wait)} left).`);
+      // A picture can only be answered on the page: typed in chat it's no try, just a pointer there.
+      if (before.trapCheck.tap && !web && wait >= 0) return void say(`That one's a picture: ${ask(before.trapCheck)} (${span(wait)} left)`);
     }
     // Laying, collecting and lifting are fishing, so they follow the live rule (collecting
     // live also skipped the offline-only trap check, 2026-10-20); cancelling gives nothing, so it doesn't.
@@ -803,7 +851,6 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     // What the traps are after this message: laid until a time, emptied, or untouched.
     let after: { laidUntil: number | null } | null = null;
     let collected = false;
-    const answerHow = answerHowLine;
     let askedCheck: TrapCheck | null = null;
 
     const text = once(now => {
@@ -814,7 +861,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       }
       // A cast check waiting comes first, traps included.
       if (operation !== 'answer' && d.trapCheck?.cast) {
-        if (now <= d.trapCheck.until) return `Free your line first: ${d.trapCheck.question} ${answerHow} (${span(d.trapCheck.until - now)} left)`;
+        if (now <= d.trapCheck.until) return `Free your line first: ${ask(d.trapCheck)} (${span(d.trapCheck.until - now)} left)`;
         const text = failCheck(d, uid, d.trapCheck, 'time', now);
         saveFish(db!, uid, d, now);
         return text;
@@ -890,7 +937,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
         if (now > check.until) {
           reply = failCheck(d, uid, check, 'time', now);
           after = { laidUntil: null };
-        } else if (answerMatches(check, answer)) {
+        } else if (check.tap ? tapMatches(check.tap, answer) : answerMatches(check, answer)) {
           recordSignal(db!, { userId: uid, kind: 'check_passed', now, delayMs: now - check.askedAt, live: liveNow, detail: check.cast ? 'cast' : 'trap' });
           delete d.trapCheck;
           d.lifetime.trap.checksPassed++;
@@ -905,7 +952,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
             after = { laidUntil: null };
           } else {
             const left = tc.tries - check.wrong;
-            reply = `Not quite! ${left} ${left === 1 ? 'try' : 'tries'} left, ${span(check.until - now)} to go: ${check.question}`;
+            reply = `Not quite! ${left} ${left === 1 ? 'try' : 'tries'} left, ${span(check.until - now)} to go: ${check.tap ? ask(check) : check.question}`;
           }
         }
       } else if (operation === 'cancel' && d.trapCheck && !d.trapCheck.cast) {
@@ -937,14 +984,14 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
           if (minutes != null) d.trapCheck.resetMinutes = minutes;
           saveFish(db!, uid, d, now);
         }
-        return `Your traps are full, but first: ${d.trapCheck.question} ${answerHow} (${span(d.trapCheck.until - now)} left)`;
+        return `Your traps are full, but first: ${ask(d.trapCheck)} (${span(d.trapCheck.until - now)} left)`;
       } else if (mayAsk && randomInt(1, 100) <= tc.chancePercent) {
-        d.trapCheck = askedCheck = { ...makeTrapCheck(operation === 'reset', now, tc.answerSeconds), ...(operation === 'reset' && minutes != null ? { resetMinutes: minutes } : {}), fine: Math.floor((getUser(db!, uid)?.balance ?? 0) * tc.finePercent / 100) };
+        d.trapCheck = askedCheck = { ...newCheck(operation === 'reset', now, tc.answerSeconds), ...(operation === 'reset' && minutes != null ? { resetMinutes: minutes } : {}), fine: Math.floor((getUser(db!, uid)?.balance ?? 0) * tc.finePercent / 100) };
         recordSignal(db!, { userId: uid, kind: 'check_asked', now, live: liveNow, detail: 'trap' });
         console.log(`[FISH] ${me} got a trap check in ${chan}: ${d.trapCheck.question}`);
         const stake = tc.finePercent > 0 ? `costs ${tc.finePercent}% of your ${cur} and the catch` : 'loses the catch';
         const tries = tc.tries === 1 ? 'one try' : `${tc.tries} tries`;
-        reply = `Your traps are full! Before you pull them up: ${d.trapCheck.question} ${answerHow} You have ${span(tc.answerSeconds * 1000)} and ${tries}; running out ${stake}.`;
+        reply = `Your traps are full! Before you pull them up: ${ask(d.trapCheck)} You have ${span(tc.answerSeconds * 1000)} and ${tries}; running out ${stake}.`;
       } else if (operation === 'reset') {
         // Without a time, as long as the traps just collected.
         const again = minutes ?? d.trap.duration / 60_000;
@@ -1068,7 +1115,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       // 🦈, and the oldest 🐟. A count after a length is more of that length ("🦕 42cm 2").
       const words = splitLengths(parts);
       if (words.some(isLength)) {
-        const parsed = parsePicks(words);
+        const parsed = parsePicks(words, true);
         if ('error' in parsed) return pickError(parsed.error, 'sell');
         const entries = parsed.picks;
         const want = lengthsWanted(entries);
@@ -1077,8 +1124,12 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
         let gained = 0;
         const soldParts: string[] = [];
         for (const w of want.values()) {
-          gained += takeSized(d, w.item, w.cm, w.n, g, value)!;
-          soldParts.push(`${w.item.name} ${w.cm} cm${w.n > 1 ? ` x${w.n}` : ''}`);
+          // Two picks can name the same fish ("🐟 100cm 🐟 100cm Lv10 🏅"): if one finds it gone,
+          // nothing is sold. Returning before saveFish leaves the database as it was.
+          const got = takeSized(d, w.item, w.cm, w.n, g, value, { level: w.level, record: w.record });
+          if (got === null) return `Nothing sold: that names the same ${w.item.name} twice. Name each fish once.`;
+          gained += got;
+          soldParts.push(`${wantedName(w)}${w.n > 1 ? ` x${w.n}` : ''}`);
         }
         // Then the kinds named without a length, oldest first, as many as are left.
         const missing: string[] = [];
@@ -1128,14 +1179,8 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
   }
 
   // ── buy ──
-  /** What a reel does, e.g. "fish odds ×1.25, rarer fish ×2, fish value ×1.25". */
-  function reelEffects(r: FishReelSetting): string {
-    const parts: string[] = [];
-    if (r.oddsMultiplier !== 1) parts.push(`fish odds ×${r.oddsMultiplier}`);
-    if (r.rarityMultiplier !== 1) parts.push(`rarer fish ×${r.rarityMultiplier}`);
-    if (r.valueMultiplier !== 1) parts.push(`fish value ×${r.valueMultiplier}`);
-    return parts.join(', ') || 'no bonus';
-  }
+  // The purchases themselves are in community/fish-shop, shared with the leaderboard's buy buttons.
+  const buyer = (uid: number, now: number): ShopBuyer => ({ db: db!, g, userId: uid, username: me, actor: `chat:${me}`, cur, cmd, now });
 
   /**
    * Reels, bought in order. Plain "buy" only says what's next, so nobody spends a
@@ -1159,23 +1204,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       const next = g.reels[level];
       return void say(`${owned}Next up: the ${next.name} reel for ${groupDigits(next.price)} ${cur} (${reelEffects(next)}). Buy it with ${cmd} fish buy reel${thieves ? `.${thieves}` : ''}`);
     }
-    const text = once(now => {
-      ensureUserTx(db!, uid, me, now);
-      const d = loadFish(db!, uid) ?? initialData();
-      const level = Math.min(d.reel ?? 0, g.reels.length);
-      if (level >= g.reels.length) return "You already have the best reel in the shop!";
-      const next = g.reels[level];
-      const balance = getUser(db!, uid)?.balance ?? 0;
-      if (balance < next.price) {
-        return `The ${next.name} reel costs ${groupDigits(next.price)} ${cur} and you have ${groupDigits(balance)} ${cur}.`;
-      }
-      const after = next.price > 0
-        ? debitTx(db!, { userId: uid, amount: next.price, reason: 'game:fish_reel', actor: `chat:${me}`, note: next.name, now }).balance
-        : balance;
-      d.reel = level + 1;
-      saveFish(db!, uid, d, now);
-      return `You bought the ${next.name} reel for ${groupDigits(next.price)} ${cur}! ${reelEffects(next)}. You have ${groupDigits(after)} ${cur} left.`;
-    });
+    const text = once(now => shopBuyReel(buyer(uid, now)).text);
     if (text) say(text);
   }
 
@@ -1183,48 +1212,13 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
 
   /** A grappling hook: stealing needs one. One at a time, used up a try at a time. */
   function buyHook(uid: number): void {
-    const st = g.steal;
-    const text = once(now => {
-      ensureUserTx(db!, uid, me, now);
-      const d = loadFish(db!, uid) ?? initialData();
-      if ((d.hook ?? 0) > 0) return `You already have a 🪝 grappling hook with ${tries(d.hook!)} left.`;
-      const balance = getUser(db!, uid)?.balance ?? 0;
-      if (balance < st.hookPrice) return `A 🪝 grappling hook costs ${groupDigits(st.hookPrice)} ${cur} and you have ${groupDigits(balance)} ${cur}.`;
-      const after = st.hookPrice > 0
-        ? debitTx(db!, { userId: uid, amount: st.hookPrice, reason: 'game:fish_hook', actor: `chat:${me}`, now }).balance
-        : balance;
-      d.hook = st.hookUses;
-      saveFish(db!, uid, d, now);
-      return `You bought a 🪝 grappling hook for ${groupDigits(st.hookPrice)} ${cur}: ${tries(st.hookUses)} at ${cmd} fish steal @user. Every try uses one, caught or not. You have ${groupDigits(after)} ${cur} left.`;
-    });
+    const text = once(now => shopBuyHook(buyer(uid, now)).text);
     if (text) say(text);
   }
 
-  /**
-   * A guard: priced on what the fish held right now are worth, and adds its hours
-   * to any guard still running.
-   */
+  /** A guard: priced on what the fish held right now are worth, and adds its hours to any guard still running. */
   function buyGuard(uid: number): void {
-    const st = g.steal;
-    const text = once(now => {
-      ensureUserTx(db!, uid, me, now);
-      const d = loadFish(db!, uid) ?? initialData();
-      const worth = heldFishValue(d, g);
-      if (worth <= 0) return "You don't have any fish to guard!";
-      const price = Math.max(st.guardMinimum, Math.round(worth * st.guardPercent / 100));
-      const balance = getUser(db!, uid)?.balance ?? 0;
-      if (balance < price) return `Guarding your fish costs ${groupDigits(price)} ${cur} right now (${st.guardPercent}% of what they're worth) and you have ${groupDigits(balance)} ${cur}.`;
-      const after = price > 0
-        ? debitTx(db!, { userId: uid, amount: price, reason: 'game:fish_guard', actor: `chat:${me}`, now }).balance
-        : balance;
-      const extended = (d.guardUntil ?? 0) > now;
-      d.guardUntil = Math.max(now, d.guardUntil ?? 0) + st.guardHours * 3_600_000;
-      saveFish(db!, uid, d, now);
-      // No time in the reply: chat is public, and a guard's time left is the owner's secret.
-      return extended
-        ? `You paid your guard ${groupDigits(price)} ${cur} to stay on longer. You have ${groupDigits(after)} ${cur} left.`
-        : `You hired a guard for ${groupDigits(price)} ${cur}. Your fish are safe from thieves for now. You have ${groupDigits(after)} ${cur} left.`;
-    });
+    const text = once(now => shopBuyGuard(buyer(uid, now)).text);
     if (text) say(text);
   }
 
@@ -1333,7 +1327,8 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     });
     if (!Number.isSafeInteger(coins)) return { error: 'That amount is too big.' };
     if (!rest.length) return { coins, picks: [] };
-    const parsed = parsePicks(rest);
+    // A side can name the very fish by level and 🏅 too ("🐟 100cm Lv10 🏅"), as a sale can.
+    const parsed = parsePicks(rest, true);
     if ('error' in parsed) return { error: pickError(parsed.error, 'sell') };
     return { coins, picks: parsed.picks };
   }
@@ -1354,18 +1349,22 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       const sized = d?.catch.sizes?.[name] ?? [];
       const unsized = Math.max(0, (d?.catch.types[name] ?? 0) - sized.length);
       for (let k = 0; k < p.n; k++) {
-        const free = sized.map((h, i) => ({ h, i })).filter(({ h, i }) => !used(name).includes(i) && (p.cm === undefined || h.cm === p.cm));
-        // By kind: the oldest without a level, a fed one only when nothing else is left.
-        const pick = p.cm !== undefined ? free[0] : free.find(({ h }) => !levelOf(h)) ?? free[0];
+        const free = sized.map((h, i) => ({ h, i })).filter(({ h, i }) => !used(name).includes(i) && (p.cm === undefined || h.cm === p.cm)
+          && (p.level === undefined || levelOf(h) === p.level) && (!p.record || h.record));
+        // By kind: the oldest without a level, a fed one only when nothing else is left. By length:
+        // a plain one before a 🏅 one, unless the 🏅 was named.
+        // By length: as a sale takes one, the lowest level, a plain one before a 🏅, the oldest at a tie.
+        const rank = (h: HeldFish) => levelOf(h) * 2 + (h.record ? 1 : 0);
+        const pick = p.cm !== undefined ? free.reduce<typeof free[number] | undefined>((a, x) => (!a || rank(x.h) < rank(a.h) ? x : a), undefined) : free.find(({ h }) => !levelOf(h)) ?? free[0];
         if (pick) {
           used(name).push(pick.i);
-          items.push({ name, cm: pick.h.cm, ...(levelOf(pick.h) ? { level: levelOf(pick.h) } : {}) });
+          items.push({ name, cm: pick.h.cm, ...(levelOf(pick.h) ? { level: levelOf(pick.h) } : {}), ...(pick.h.record ? { record: true as const } : {}) });
         } else if (p.cm === undefined && used(name).filter(i => i === -2).length < unsized) {
           used(name).push(-2);
           items.push({ name, cm: null });
         } else {
           const total = d?.catch.types[name] ?? 0;
-          return { short: p.cm !== undefined ? `no ${name} ${p.cm} cm` : total ? `only ${total} ${name}` : `no ${name}` };
+          return { short: p.cm !== undefined ? `no ${name} ${p.cm} cm${p.level !== undefined ? ` Lv${p.level}` : ''}${p.record ? ' 🏅' : ''}` : total ? `only ${total} ${name}` : `no ${name}` };
         }
       }
     }
@@ -1373,8 +1372,9 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
   }
   const itemWorth = (d: FishData | null, i: TradeItem): number => {
     const item = ITEMS.find(x => x.name === i.name)!;
-    const held = i.cm !== null ? d?.catch.sizes?.[i.name]?.find(h => h.cm === i.cm) : undefined;
-    return sellPrice(item, g, held ?? (i.cm !== null ? { cm: i.cm, record: false } : undefined));
+    // That very fish, as moveSide picks it: its length, level and 🏅, so the fee prices what changes hands.
+    const held = i.cm !== null ? d?.catch.sizes?.[i.name]?.find(h => h.cm === i.cm && levelOf(h) === (i.level ?? 0) && !!h.record === !!i.record) : undefined;
+    return sellPrice(item, g, held ?? (i.cm !== null ? { cm: i.cm, record: !!i.record, ...(i.level ? { level: i.level } : {}) } : undefined));
   };
   const sideWorth = (d: FishData | null, side: TradeSide): number => side.items.reduce((sum, i) => sum + itemWorth(d, i), 0) + side.coins;
   /** Move a side's items from one collection to another; false (nothing moved) if any is gone. */
@@ -1389,9 +1389,9 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
         continue;
       }
       const sized = from.catch.sizes?.[i.name] ?? [];
-      // That very fish: its length, and its level as offered when there's a choice.
-      let index = sized.findIndex(h => h.cm === i.cm && levelOf(h) === (i.level ?? 0));
-      if (index < 0) index = sized.findIndex(h => h.cm === i.cm);
+      // That very fish: its length, its level and whether it's a 🏅, all as offered. Gone (sold, fed,
+      // stolen), no other fish stands in for it: a twin could be worth more or less, so the trade is off.
+      const index = sized.findIndex(h => h.cm === i.cm && levelOf(h) === (i.level ?? 0) && !!h.record === !!i.record);
       if (index < 0) return false;
       moveFish(from, to, item, { index, held: sized[index] });
     }
@@ -1426,6 +1426,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       const mine = tradeBy(chan, uid);
       if (!mine) return void say('You have no trade offer waiting.');
       dropTrade(chan, mine);
+      mirrorTrades(db!, chan);
       return void say(`You took back your trade offer to @${mine.to}.`);
     }
 
@@ -1482,7 +1483,9 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     if (getSide.coins > (getUser(db!, to.user_id)?.balance ?? 0)) return void say(`@${to.username} doesn't have ${groupDigits(getSide.coins)} ${cur}.`);
     const now = Date.now();
     const offer: TradeOffer = { fromId: uid, from: me, toId: to.user_id, to: to.username, give: giveSide, get: getSide, value, fee, at: now, expiresAt: now + t.expirySeconds * 1000 };
-    addTrade(chan, offer);
+    // Claimed by the message, so a replayed one can't post a second offer once the first is gone.
+    if (!once(() => (addTrade(chan, offer), true))) return;
+    mirrorTrades(db!, chan);
     console.log(`[FISH] ${me} offered ${to.username} a trade in ${chan}: ${sideText(giveSide, cur)} for ${sideText(getSide, cur)} (fee ${fee})`);
     await announce(`🤝 @${to.username}, ${me} offers ${sideText(giveSide, cur)} for your ${sideText(getSide, cur)}. ${cmd} fish accept or ${cmd} fish decline (${span(t.expirySeconds * 1000)}). ${me} pays a ${groupDigits(fee)} ${cur} fee.`);
   }
@@ -1491,6 +1494,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     const offer = tradeFor(chan, uid);
     if (!offer) return void say('Nobody has offered you a trade.');
     dropTrade(chan, offer);
+    mirrorTrades(db!, chan);
     void announce(`@${offer.from} ${me} turned down your trade.`);
   }
 
@@ -1536,6 +1540,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     });
     if (!text) return;
     dropTrade(chan, offer);
+    mirrorTrades(db!, chan);
     if ('off' in text) return void say(text.off);
     console.log(`[FISH] trade in ${chan}: ${offer.from} gave ${sideText(offer.give, cur)}, ${offer.to} gave ${sideText(offer.get, cur)}, fee ${offer.fee}`);
     void announce(`🤝 Trade done! @${offer.from} got ${sideText(offer.get, cur)}, @${offer.to} got ${sideText(offer.give, cur)}. ${offer.from} paid a ${groupDigits(offer.fee)} ${cur} fee.`);
@@ -1713,6 +1718,8 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     if (typeof aim === 'string') return void say(aim);
 
     let overlay: { kind: OverlayKind; item: string } | null = null;
+    // A try that went ahead: the fish taken, the thief caught, or a guard in the way.
+    let tried = false;
     const text = once(now => {
       ensureUserTx(db!, uid, me, now);
       const d = loadFish(db!, uid) ?? initialData();
@@ -1775,6 +1782,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
         d.lifetime.steal.blocked++;
         saveFish(db!, uid, d, now);
         log('guarded', item.name, picked.held?.cm ?? null, { worth, fee, fine });
+        tried = true;
         return `🛡️ @${victim.username} has a guard watching their fish! It caught you reaching for their ${sparkle(item.name)}: you paid a ${groupDigits(fine)} ${cur} fine on top of the ${groupDigits(fee)} ${cur} fee. (${hookLeft}, ${cooldown})`;
       }
 
@@ -1786,6 +1794,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
         saveFish(db!, victim.user_id, v, now);
         log('stolen', item.name, picked.held?.cm ?? null, { worth, fee, fine: 0 });
         overlay = { kind: 'steal', item: item.name };
+        tried = true;
         const size = picked.held ? ` (${picked.held.cm} cm)` : '';
         const left = d.hook > 0 ? `${tries(d.hook)} left on your hook` : 'your hook is used up';
         return `🪝 You snuck up on @${victim.username} and made off with their ${sparkle(item.name)}${size}, worth ${groupDigits(worth)} ${cur}! (${groupDigits(fee)} ${cur} fee, ${left}, ${cooldown})`;
@@ -1796,10 +1805,14 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       saveFish(db!, uid, d, now);
       log('caught', item.name, picked.held?.cm ?? null, { worth, fee, fine });
       overlay = { kind: 'caught', item: item.name };
+      tried = true;
       return `🚨 @${victim.username} caught you red-handed reaching for their ${sparkle(item.name)}! You paid a ${groupDigits(fine)} ${cur} fine on top of the ${groupDigits(fee)} ${cur} fee. (${hookLeft}, ${cooldown})`;
     });
     const out = overlay as { kind: OverlayKind; item: string } | null;
     if (text) say(text, out ?? {});
+    // From the fishing page, a try that went ahead (taken, caught or guarded) is also told in chat, as
+    // a chat steal is: the victim hears of it. Refusals (no hook, cooldown) stay on the page.
+    if (text && web && tried) void announceOnly(`@${me} ${text}`);
   }
 
   // ── duel ──
@@ -1807,7 +1820,17 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
    * A duel's own chat line. The challenge has to reach the one challenged and the
    * result both of them, so these go to chat whatever the reply settings say.
    */
+  /** A line for chat itself, page move or not: how another viewer hears of it. */
+  const announceOnly = async (text: string): Promise<void> => {
+    try {
+      await client.say(channel, text);
+    } catch (err) {
+      console.error(`[FISH] Chat line in ${chan} failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
   const announce = async (text: string): Promise<void> => {
+    // From the fishing page it shows there too; the chat line is how the other viewer hears of it.
+    web?.reply(text, { kind: 'info' });
     try {
       await client.say(channel, text);
     } catch (err) {
@@ -1848,7 +1871,8 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
   function feed(parts: string[], uid: number): void {
     if (!g.feedEnabled) return void say('Feeding fish is off here.');
     const usage = `Usage: ${cmd} fish feed 🦈 72cm 🐟 🐟 🦀 (the first fish eats the rest and levels up)`;
-    const parsed = parsePicks(parts);
+    // A level and 🏅 after a length name the very fish, the eater's or a food's ("🦈 72cm Lv3 🐟 40cm Lv1").
+    const parsed = parsePicks(parts, true);
     if ('error' in parsed) return void say(pickError(parsed.error, 'feed'));
     const [head, ...food] = parsed.picks;
     if (!head || !food.length || head.counted) return void say(usage);
@@ -1866,15 +1890,18 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       const spareOne = head.cm === undefined && held.some(h => !asFood.has(h.cm));
       // A full one can't eat, so it's passed over while one that can is there: with a Lv10
       // 🐟 100 cm and a fresh 🐟 100 cm, "feed 🐟 100cm" feeds the fresh one.
-      const hungry = held.some(h => (head.cm === undefined || h.cm === head.cm) && !(spareOne && asFood.has(h.cm)) && levelOf(h) < MAX_LEVEL);
+      const hungry = held.some(h => (head.cm === undefined || h.cm === head.cm) && (head.level === undefined || levelOf(h) === head.level)
+        && (!head.record || h.record) && !(spareOne && asFood.has(h.cm)) && levelOf(h) < MAX_LEVEL);
       let at = -1;
       held.forEach((h, i) => {
         if (head.cm !== undefined && h.cm !== head.cm) return;
+        if (head.level !== undefined && levelOf(h) !== head.level) return;
+        if (head.record && !h.record) return;
         if (spareOne && asFood.has(h.cm)) return;
         if (hungry && levelOf(h) >= MAX_LEVEL) return;
         if (at < 0 || levelOf(h) > levelOf(list[at]) || (levelOf(h) === levelOf(list[at]) && h.cm > list[at].cm)) at = i;
       });
-      if (!d || at < 0) return `You don't have a ${name}${head.cm !== undefined ? ` ${head.cm} cm` : ''}. ${cmd} fish show ${name} lists yours.`;
+      if (!d || at < 0) return `You don't have a ${name}${head.cm !== undefined ? ` ${head.cm} cm` : ''}${head.level !== undefined ? ` Lv${head.level}` : ''}${head.record ? ' 🏅' : ''}. ${cmd} fish show ${name} lists yours.`;
       if (levelOf(list[at]) >= MAX_LEVEL) return `Your ${name} ${list[at].cm} cm is already Lv${MAX_LEVEL}, the top level.`;
       // Out of the way while the food is taken, so it can't eat itself.
       const [eater] = list.splice(at, 1);
@@ -1910,13 +1937,19 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       const eatenN = new Map<string, number>();
       const leftOverN = new Map<string, number>();
       const tally = (into: Map<string, number>, label: string, k = 1) => { if (k > 0) into.set(label, (into.get(label) ?? 0) + k); };
-      const lvTag = (h?: HeldFish) => h && levelOf(h) ? ` Lv${levelOf(h)}` : '';
+      // 🏅 marks a size record, worth 1.5x, so it isn't fed away by mistake for a plain one.
+      const lvTag = (h?: HeldFish) => `${h && levelOf(h) ? ` Lv${levelOf(h)}` : ''}${h?.record ? ' 🏅' : ''}`;
       for (const w of want.values()) {
         let ate = 0;
         while (ate < w.n && xp < toFull) {
-          // The one takeSized takes: the lowest level of that length.
-          const next = (d.catch.sizes?.[w.item.name] ?? []).filter(h => h.cm === w.cm).reduce((a, h) => levelOf(h) < levelOf(a) ? h : a);
-          xp += takeSized(d, w.item, w.cm, 1, g)!;
+          // The one takeSized takes: of those that fit what was named, the lowest level, a plain one before a 🏅.
+          const fits = (d.catch.sizes?.[w.item.name] ?? []).filter(h => h.cm === w.cm && (w.level === undefined || levelOf(h) === w.level) && (!w.record || h.record));
+          const rank = (h: HeldFish) => levelOf(h) * 2 + (h.record ? 1 : 0);
+          // Two foods naming the same fish ("🐟 42cm" and "🐟 42cm Lv3 🏅"): the second finds it gone.
+          // Nothing is saved before the end, so returning leaves every fish where it was.
+          if (!fits.length) return `Nothing eaten: that names the same ${w.item.name} twice. Name each fish once.`;
+          const next = fits.reduce((a, h) => rank(h) < rank(a) ? h : a);
+          xp += takeSized(d, w.item, w.cm, 1, g, 1, { level: w.level, record: w.record })!;
           ate++;
           tally(eatenN, `${w.item.name} ${w.cm} cm${lvTag(next)}`);
         }
@@ -2473,7 +2506,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     const MAX = 10;
     const f = all[0].fighter;
     const line = groups.slice(0, MAX).map(({ p, n }) =>
-      `${p.held ? `${p.held.cm} cm${p.fighter.level ? ` Lv${p.fighter.level}` : ''}` : 'no size'}${n > 1 ? ` ×${n}` : ''} ❤️${p.fighter.hp} ⚔️${p.fighter.attack} 💰${groupDigits(fishValue(g, p))}`).join(' | ');
+      `${p.held ? `${p.held.cm} cm${p.fighter.level ? ` Lv${p.fighter.level}` : ''}${p.held.record ? ' 🏅' : ''}` : 'no size'}${n > 1 ? ` ×${n}` : ''} ❤️${p.fighter.hp} ⚔️${p.fighter.attack} 💰${groupDigits(fishValue(g, p))}`).join(' | ');
     const more = groups.length > MAX ? ` | +${groups.slice(MAX).reduce((x, y) => x + y.n, 0)} more` : '';
     const pick = g.duel.enabled && groups.some(x => x.p.held) ? ` Duel a certain one with ${cmd} fish duel @user ${item.name} ${groups.find(x => x.p.held)!.p.held!.cm}cm` : '';
     return `${have} ${item.name} (${TYPE_EMOJI[f.type]} ${f.type} · ${f.rarity}): ${line}${more}.${pick}`;
@@ -2537,6 +2570,15 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
   }
 
   try {
+    // The fishing page plays casts, traps (with their checks), selling, feeding and trades; the rest stays in chat.
+    if (web && sub !== undefined && !['trap', 'answer', 'sell', 'feed', 'trade', 'accept', 'deny', 'steal'].includes(sub)) return void say('That one is played in chat.');
+    // On the page, accept and decline are for trades only, a duel challenge waiting or not: duels are played in chat.
+    if (web && (sub === 'accept' || sub === 'deny')) {
+      if (userId === null || excluded) return ignore('no account or excluded');
+      if (!tradeFor(chan, userId)) return void say('Nobody has offered you a trade.');
+      duelReply = true;
+      return sub === 'accept' ? acceptTrade(userId) : declineTrade(userId);
+    }
     switch (sub) {
       case 'buy':
         if (g.reels.length === 0 && !g.steal.enabled) return void say("There isn't anything you can buy at the fishing gear shop... yet.");
@@ -2563,7 +2605,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       case 'answer':
         if (userId === null || excluded) return ignore('no account or excluded');
         // Only a waiting question skips the cooldown (checkAnswer, above).
-        if (!loadFish(db, userId)?.trapCheck && cooldown(meLc)) return;
+        if (!loadFish(db, userId)?.trapCheck && cooldown(meLc)) return void web?.reply('Easy there: one move every few seconds.', { kind: 'info' });
         return await trap('answer', userId, rest.join(' ').trim() || undefined);
       case 'steal':
         if (userId === null || excluded) return ignore('no account or excluded');

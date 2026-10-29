@@ -7,6 +7,9 @@
  * Exits non-zero when any check fails.
  */
 
+import { recordWebReply, repliesFor } from '../community/web-fish';
+import { makeTapCheck } from '../community/trap-check';
+import { mirroredTrades } from '../community/fish-trade';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -156,6 +159,11 @@ async function main(): Promise<void> {
     const shark = g.catches.find(c => c.name === '🦈');
     check('effective catches fill every item', g.catches.length === ITEMS.length && fish?.weight === 5 && fish.price === 999
       && shark?.weight === 0.5 && shark.price === 1200 && shark.defaultPrice === 1200, { fish, shark });
+    // Fishing on the leaderboard: on unless bot management turns it off, and only a true/false saves.
+    check('leaderboard fishing is on by default', effectivePointsConfig({}).games.webPlay === true);
+    const webOff = validatePointsPatch({}, { games: { webPlay: false } });
+    check('bot management can switch leaderboard fishing off', webOff.errors.length === 0 && effectivePointsConfig(webOff.next).games.webPlay === false, webOff);
+    check('leaderboard fishing takes only true or false', validatePointsPatch({}, { games: { webPlay: 'no' } }).errors.some(e => e.includes('games.webPlay')));
     const dec = validatePointsPatch({}, { games: { catches: { '🐋': { weight: 0.057 } } } });
     check('decimal odds kept to 2 places', dec.errors.length === 0 && dec.next?.games?.catches?.['🐋']?.weight === 0.06, dec);
     const msd = validatePointsPatch({}, { video: { mediashareDelaySeconds: 2.5 } });
@@ -227,7 +235,7 @@ async function main(): Promise<void> {
   // Store basics
   {
     const db = openPointsDb('basics', { create: true })!;
-    check('migrated to user_version 15', db.pragma('user_version', { simple: true }) === 15);
+    check('migrated to user_version 16', db.pragma('user_version', { simple: true }) === 16);
     runWrite(db, () => creditTx(db, { userId: 1, username: 'alice', amount: 100, reason: 'mod_add', now: 1 }));
     const over = runWrite(db, () => debitTx(db, { userId: 1, amount: 150, reason: 'mod_remove', now: 2 }));
     check('debit beyond balance refused', !over.ok && over.balance === 100);
@@ -1482,7 +1490,8 @@ async function main(): Promise<void> {
   // Aimed steals: a kind or one fish by length, at that fish's own odds
   {
     const ch = 'aimsteal';
-    writeConfig(root, ch, { enabled: true, currencyName: '$DON', games: { enabled: true, onlyWhileLive: false, steal: { enabled: true, oddsCommon: 100 } } });
+    // Luck 100 keeps a common fish at 100% whatever its value (an 80 cm 🐟 is 79% on value alone).
+    writeConfig(root, ch, { enabled: true, currencyName: '$DON', games: { enabled: true, onlyWhileLive: false, steal: { enabled: true, oddsCommon: 100, luckPercent: 100 } } });
     makeService(ch, { broadcaster: 999 });
     const adb = openPointsDb(ch, { create: true })!;
     const fishOf = (id: number) => loadFish(adb, id)!;
@@ -2750,6 +2759,176 @@ async function main(): Promise<void> {
       }
     }
 
+    // The leaderboard's fishing page: the same command, its replies kept for the page, a picture
+    // check instead of a typed one, and chat pointed at the page rather than answering it.
+    {
+      const chw = 'webfishch';
+      writeConfig(root, chw, { enabled: true, currencyName: '$DON', games: { enabled: true, onlyWhileLive: false, feedFailPercent: 0, trade: { enabled: true }, steal: { enabled: true }, trapCheck: { enabled: true, chancePercent: 100, castChancePercent: 100, answerSeconds: 120 } } });
+      makeService(chw, { broadcaster: 999, live: async () => ({ isLive: false, startedAt: null }) });
+      const wdb = openPointsDb(chw, { create: true })!;
+      runWrite(wdb, () => { ensureUserTx(wdb, 44, 'webber', 1); creditTx(wdb, { userId: 44, username: 'webber', amount: 1000, reason: 'test', now: 1 }); });
+      const realNowW = Date.now;
+      let shiftW = 0;
+      Date.now = () => realNowW() + shiftW;
+      try {
+        let n = 0;
+        const page = async (args: string[]) => {
+          shiftW += 6_000;
+          const requestId = `00000000-0000-4000-8000-${String(++n).padStart(12, '0')}`;
+          const chat: string[] = [];
+          const tags: KickTags = { username: 'webber', 'display-name': 'webber', badges: {}, isBroadcaster: false, isModUp: false, isVIPUp: false, rawBadges: [], senderId: 44,
+            messageId: `web:${requestId}`, web: { reply: (text, meta) => recordWebReply(wdb, { requestId, userId: 44 }, text, meta) } };
+          await fishCommand({ say: async (_c, m) => { chat.push(m); } }, `$don fish ${args.join(' ')}`.trim(), `#${chw}`, tags, { channelName: chw } as ChannelConfig);
+          return { chat, replies: repliesFor(wdb, requestId).map(r => r.text) };
+        };
+        const chatSay = async (msg: string) => {
+          shiftW += 6_000;
+          const out: string[] = [];
+          const t: KickTags = { username: 'webber', 'display-name': 'webber', badges: {}, isBroadcaster: false, isModUp: false, isVIPUp: false, rawBadges: [], senderId: 44 };
+          await fishCommand({ say: async (_c, m) => { out.push(m); } }, msg, `#${chw}`, t, { channelName: chw } as ChannelConfig);
+          return out[0] ?? '';
+        };
+        const fw = () => loadFish(wdb, 44)!;
+        const cast = await page([]);
+        const asked = fw().trapCheck;
+        check('a page cast answers on the page, never in chat', cast.chat.length === 0 && cast.replies.length === 1 && cast.replies[0].includes('Your line snagged'), cast);
+        check('a page cast asks a picture check, not a typed one', !!asked?.tap && asked.tap.fish.length >= 6 && asked.answers.length === 0 && /^Tap the /.test(asked.question), asked);
+        const pointed = await chatSay('$don fish answer 3');
+        check('a picture check typed at in chat is no try, just the page link', pointed.includes('fishing page') && pointed.includes('/leaderboard/webfishch?tab=fishing') && fw().trapCheck?.wrong === 0, pointed);
+        const off = asked!.tap!.fish.find((_, i) => i !== asked!.tap!.target)!;
+        const miss = await page(['answer', `tap:${off.x.toFixed(3)},${off.y.toFixed(3)}`]);
+        check('tapping another fish counts as a wrong try', miss.replies[0]?.includes('Not quite') === true && fw().trapCheck?.wrong === 1, miss);
+        const hit = asked!.tap!.fish[asked!.tap!.target];
+        const freed = await page(['answer', `tap:${hit.x.toFixed(3)},${hit.y.toFixed(3)}`]);
+        check('tapping the right fish frees the line', freed.replies[0]?.includes('Correct! Your line is free') === true && !fw().trapCheck && balance(chw, 44) === 1000, freed);
+        const other = await page(['duel', '@partner']);
+        check('the page plays only casts, traps, answers, selling, feeding, trades and steals', other.replies[0] === 'That one is played in chat.' && other.chat.length === 0, other);
+        const quick = await page([]);
+        shiftW -= 5_000;
+        const spam = await page([]);
+        check('the page is told about the cooldown instead of left waiting', spam.replies[0]?.includes('one move every few seconds') === true, { quick, spam });
+        const sigs = wdb.prepare("SELECT COUNT(*) AS n FROM fish_signals WHERE user_id = 44 AND kind = 'cast'").get() as { n: number };
+        check('page casts feed the cheat signals like chat casts', sigs.n >= 2, sigs);
+
+        // Selling and trading from the page.
+        runWrite(wdb, () => {
+          ensureUserTx(wdb, 45, 'partner', 1);
+          creditTx(wdb, { userId: 45, username: 'partner', amount: 1000, reason: 'test', now: 1 });
+          const mine = loadFish(wdb, 44)!;
+          for (const cm of [30, 60]) { addItem(mine, ITEMS.find(x => x.name === '🐟')!); (((mine.catch.sizes ??= {})['🐟']) ??= []).push({ cm, record: false }); }
+          saveFish(wdb, 44, mine, 1);
+          const theirs = loadFish(wdb, 45) ?? initialData();
+          addItem(theirs, ITEMS.find(x => x.name === '🐠')!);
+          (((theirs.catch.sizes ??= {})['🐠']) ??= []).push({ cm: 50, record: false });
+          saveFish(wdb, 45, theirs, 1);
+        });
+        const before = balance(chw, 44);
+        const sold = await page(['sell', '🐟', '1']);
+        check('a page sale answers on the page and pays', sold.chat.length === 0 && /^Sold your 🐟/.test(sold.replies[0] ?? '') && balance(chw, 44) > before
+          && (fw().catch.types['🐟'] ?? 0) === 1, sold);
+        shiftW += 31 * 60_000;
+        const offered = await page(['trade', '🐟', '@partner', '🐠']);
+        check('a page trade offer pings the other viewer in chat and shows on the page', offered.chat.some(l => l.includes('@partner') && l.includes('webber offers'))
+          && offered.replies.some(l => l.includes('@partner')) && mirroredTrades(wdb).some(o => o.fromId === 44 && o.toId === 45), offered);
+        const partnerMove = async (args: string[]) => {
+          shiftW += 6_000;
+          const requestId = `00000000-0000-4000-8000-${String(++n).padStart(12, '0')}`;
+          const chat: string[] = [];
+          const tags: KickTags = { username: 'partner', 'display-name': 'partner', badges: {}, isBroadcaster: false, isModUp: false, isVIPUp: false, rawBadges: [], senderId: 45,
+            messageId: `web:${requestId}`, web: { reply: (text, meta) => recordWebReply(wdb, { requestId, userId: 45 }, text, meta) } };
+          await fishCommand({ say: async (_c, m) => { chat.push(m); } }, `$don fish ${args.join(' ')}`.trim(), `#${chw}`, tags, { channelName: chw } as ChannelConfig);
+          return { chat, replies: repliesFor(wdb, requestId).map(r => r.text) };
+        };
+        const took = await partnerMove(['accept']);
+        check('the other viewer accepts on the page, and both are told', took.chat.some(l => l.includes('Trade done')) && took.replies.some(l => l.includes('Trade done'))
+          && (loadFish(wdb, 45)!.catch.types['🐟'] ?? 0) === 1 && (fw().catch.types['🐠'] ?? 0) === 1 && !mirroredTrades(wdb).length, took);
+        const none = await partnerMove(['decline']);
+        check('declining with nothing waiting says so', none.replies[0] === 'Nobody has offered you a trade.', none);
+
+        // Selling one very fish: by length, level and 🏅, a plain one going before a record.
+        runWrite(wdb, () => {
+          const mine = loadFish(wdb, 44)!;
+          for (const h of [{ cm: 100, record: true, level: 10 }, { cm: 100, record: false, level: 10 }, { cm: 100, record: false }]) {
+            addItem(mine, ITEMS.find(x => x.name === '🐡')!);
+            (((mine.catch.sizes ??= {})['🐡']) ??= []).push(h);
+          }
+          saveFish(wdb, 44, mine, 1);
+        });
+        const puffers = () => (fw().catch.sizes?.['🐡'] ?? []).map(h => `${h.level ?? 0}${h.record ? 'r' : ''}`).sort().join(',');
+        const plainTen = await page(['sell', '🐡', '100cm', 'Lv10']);
+        check('a level after a length sells that level, the plain one before the 🏅', plainTen.replies[0]?.includes('🐡 100 cm Lv10') === true && puffers() === '0,10r', { plainTen, left: puffers() });
+        const recordTen = await page(['sell', '🐡', '100cm', 'Lv10', '🏅']);
+        check('a 🏅 sells the record one', recordTen.replies[0]?.includes('🐡 100 cm Lv10 🏅') === true && puffers() === '0', { recordTen, left: puffers() });
+        const noSuch = await page(['sell', '🐡', '100cm', 'Lv3']);
+        check('a level they don\'t hold sells nothing', noSuch.replies[0]?.includes('Nothing sold: you have no 🐡 100 cm Lv3') === true && puffers() === '0', noSuch);
+        const giveLv = await chatSay('$don fish give @partner 🐡 100cm Lv0');
+        check('a level is only for selling: a gift still turns it down', !giveLv.includes('You gave') && puffers() === '0', giveLv);
+        const twice = await page(['sell', '🐡', '100cm', '🐡', '100cm', 'Lv0']);
+        check('naming the same fish twice sells nothing', twice.replies[0]?.startsWith('Nothing sold') === true && puffers() === '0', { twice, left: puffers() });
+        const striped = makeTapCheck(false, 0, 60);
+        check('a colour picture check also stripes its fish, and only that one',
+          !striped.question.includes('striped') || (striped.tap!.fish.filter(f => f.striped).length === 1 && striped.tap!.fish[striped.tap!.target].striped === true));
+        // Stealing from the page: the check and a refusal stay on the page; a try that goes ahead is told in chat too.
+        shiftW += 2 * 60 * 60_000;
+        const scout = await page(['steal', 'check', '@partner']);
+        check('a page steal check answers on the page only', scout.chat.length === 0 && scout.replies.length === 1 && scout.replies[0].includes('partner'), scout);
+        // Stealing needs a cast behind you: the test thief has only had its line snagged.
+        runWrite(wdb, () => { const mine = loadFish(wdb, 44)!; mine.lifetime.attempts = Math.max(1, mine.lifetime.attempts); mine.lifetime.fish = Math.max(1, mine.lifetime.fish); saveFish(wdb, 44, mine, 1); });
+        const noHook = await page(['steal', '@partner']);
+        check('a page steal refused (no hook) stays on the page', noHook.chat.length === 0 && /hook/i.test(noHook.replies[0] ?? ''), noHook);
+        runWrite(wdb, () => { const mine = loadFish(wdb, 44)!; mine.hook = 3; saveFish(wdb, 44, mine, 1); });
+        const tryIt = await page(['steal', '@partner']);
+        check('a page steal that goes ahead is told in chat with both names', tryIt.chat.some(l => l.startsWith('@webber') && l.includes('@partner'))
+          && /made off with|red-handed|guard/.test(tryIt.replies[0] ?? ''), tryIt);
+        // Feeding from the page, several foods at once.
+        runWrite(wdb, () => {
+          const mine = loadFish(wdb, 44)!;
+          for (const [name, cm] of [['🐟', 40], ['🦐', 20]] as const) { addItem(mine, ITEMS.find(x => x.name === name)!); (((mine.catch.sizes ??= {})[name]) ??= []).push({ cm, record: false }); }
+          saveFish(wdb, 44, mine, 1);
+        });
+        // A trade names the very fish too: the 🏅 one of two otherwise alike.
+        runWrite(wdb, () => {
+          const mine = loadFish(wdb, 44)!;
+          for (const record of [true, false]) { addItem(mine, ITEMS.find(x => x.name === '🐳')!); (((mine.catch.sizes ??= {})['🐳']) ??= []).push({ cm: 100, record }); }
+          saveFish(wdb, 44, mine, 1);
+        });
+        shiftW += 31 * 60_000;
+        const exact = await page(['trade', '🐳', '100cm', '🏅', '@partner', '200']);
+        const mirrored = mirroredTrades(wdb).find(o => o.fromId === 44);
+        check('a trade offer can name the 🏅 one', exact.replies.some(l => l.includes('🐳 100 cm 🏅')) && mirrored?.give.items[0]?.record === true, { exact, mirrored });
+        const tookExact = await partnerMove(['accept']);
+        check('accepting moves that very fish and keeps the plain one', tookExact.replies.some(l => l.includes('Trade done'))
+          && (fw().catch.sizes?.['🐳'] ?? []).map(h => h.record).join() === 'false' && (loadFish(wdb, 45)!.catch.types['🐳'] ?? 0) === 1, { tookExact, left: fw().catch.sizes?.['🐳'] });
+        // An offered fish gone by the time it's accepted calls the trade off; a twin doesn't stand in.
+        runWrite(wdb, () => {
+          const mine = loadFish(wdb, 44)!;
+          for (const record of [false, true]) { addItem(mine, ITEMS.find(x => x.name === '🦈')!); (((mine.catch.sizes ??= {})['🦈']) ??= []).push({ cm: 90, record }); }
+          saveFish(wdb, 44, mine, 1);
+        });
+        shiftW += 31 * 60_000;
+        await page(['trade', '🦈', '90cm', 'Lv0', '@partner', '200']);
+        await page(['sell', '🦈', '90cm', 'Lv0']);
+        const gone = await partnerMove(['accept']);
+        check('a trade whose plain fish was sold is off; the 🏅 twin stays', gone.replies.some(l => l.includes('no longer has everything'))
+          && (fw().catch.sizes?.['🦈'] ?? []).map(h => h.record).join() === 'true', { gone, left: fw().catch.sizes?.['🦈'] });
+        // Feeding by the very fish: the Lv0 of two same-length 🐙 eats the Lv1 one.
+        runWrite(wdb, () => {
+          const mine = loadFish(wdb, 44)!;
+          for (const level of [1, 0]) { addItem(mine, ITEMS.find(x => x.name === '🐙')!); (((mine.catch.sizes ??= {})['🐙']) ??= []).push({ cm: 70, record: false, ...(level ? { level } : {}) }); }
+          saveFish(wdb, 44, mine, 1);
+        });
+        const exactFeed = await page(['feed', '🐙', '70cm', 'Lv0', '🐙', '70cm', 'Lv1']);
+        const octo = fw().catch.sizes?.['🐙'] ?? [];
+        check('feeding names the very eater and food by level', /ate 🐙 70 cm Lv1/.test(exactFeed.replies[0] ?? '') && octo.length === 1 && (octo[0].level ?? 0) >= 1, { exactFeed, octo });
+        const had = { fish: fw().catch.types['🐟'] ?? 0, shrimp: fw().catch.types['🦐'] ?? 0 };
+        const fed = await page(['feed', '🐡', '100cm', '🐟', '1', '🦐', '1']);
+        check('the page feeds several foods to one fish', fed.chat.length === 0 && /ate/.test(fed.replies[0] ?? '') && (fw().catch.types['🐟'] ?? 0) === had.fish - 1 && (fw().catch.types['🦐'] ?? 0) === had.shrimp - 1
+          && ((fw().catch.sizes?.['🐡'] ?? [])[0]?.xp ?? 0) + ((fw().catch.sizes?.['🐡'] ?? [])[0]?.level ?? 0) > 0, fed);
+      } finally {
+        Date.now = realNowW;
+      }
+    }
+
     // Play records the signals the cheater flags read.
     {
       const kinds = (pdb.prepare('SELECT kind, COUNT(*) AS n FROM fish_signals WHERE user_id = 31 GROUP BY kind').all() as Array<{ kind: string; n: number }>)
@@ -3252,7 +3431,7 @@ async function main(): Promise<void> {
     check('bot owner can remove', (await run('$don remove bob 1000', tags('ownerx', 91)))[0] === 'Removed 95 $DON from bob, now 0');
     check('broadcaster set', (await run('$don set @bob 7', broadcasterTags))[0] === 'bob now has 7 $DON');
     check('adjust needs a user and amount', (await run('$don add bob', tags('ownerx', 91)))[0] === 'Usage: $don add user amount');
-    check('leaderboard link', (await run('$don leaderboard', tags('mod1', 90, true)))[0] === '$DON leaderboard https://example.test/kick/cmdch/leaderboard');
+    check('leaderboard link', (await run('$don leaderboard', tags('mod1', 90, true)))[0] === '$DON leaderboard https://example.test/kick/leaderboard/cmdch');
     const watch = await run('$don activetime', tags('bob', 2));
     check('no active time yet', watch[0] === '@bob has no active time yet', watch);
     check('old watchtime word is just an unknown name now', (await run('$don watchtime', tags('gina', 68))).length === 0);
@@ -3522,25 +3701,25 @@ async function main(): Promise<void> {
     const mch = 'migrate1ch';
     const mdb = openPointsDb(mch, { create: true })!;
     runWrite(mdb, () => creditTx(mdb, { userId: 1, username: 'old', amount: 77, reason: 'mod_add', now: 1 }));
-    mdb.exec('DROP TABLE big_bites; DROP TABLE fish_trades; DROP TABLE wheel_spins; DROP TABLE video_queue; DROP TABLE fish_signals; DROP TABLE fish_duels; DROP TABLE steals; DROP TABLE overlay_feed; DROP TABLE catches; DROP TABLE fish; DROP TABLE duels; DROP TABLE raffle_entries; DROP TABLE raffles; DROP INDEX ledger_ref');
+    mdb.exec('DROP TABLE web_replies; DROP TABLE big_bites; DROP TABLE fish_trades; DROP TABLE wheel_spins; DROP TABLE video_queue; DROP TABLE fish_signals; DROP TABLE fish_duels; DROP TABLE steals; DROP TABLE overlay_feed; DROP TABLE catches; DROP TABLE fish; DROP TABLE duels; DROP TABLE raffle_entries; DROP TABLE raffles; DROP INDEX ledger_ref');
     mdb.pragma('user_version = 1');
     closePointsDb(mch);
     const reopened = openPointsDb(mch, { create: false })!;
     const hasTable = (n: string) => !!reopened.prepare('SELECT 1 FROM sqlite_master WHERE name = ?').get(n);
     check('a v1 database migrates to the latest version keeping balances',
-      reopened.pragma('user_version', { simple: true }) === 15 && balance(mch, 1) === 77 && hasTable('video_queue') && hasTable('wheel_spins') && hasTable('fish_trades') && hasTable('big_bites')
+      reopened.pragma('user_version', { simple: true }) === 16 && balance(mch, 1) === 77 && hasTable('web_replies') && hasTable('video_queue') && hasTable('wheel_spins') && hasTable('fish_trades') && hasTable('big_bites')
       && hasTable('duels') && hasTable('raffles') && hasTable('raffle_entries') && hasTable('fish') && hasTable('catches') && hasTable('overlay_feed') && hasTable('steals') && hasTable('fish_duels') && hasTable('fish_signals'));
 
     // v2 → v3 specifically: a database that already has duels gains the raffle tables.
     const m2 = 'migrate2ch';
     const m2db = openPointsDb(m2, { create: true })!;
     runWrite(m2db, () => creditTx(m2db, { userId: 1, username: 'old2', amount: 42, reason: 'mod_add', now: 1 }));
-    m2db.exec('DROP TABLE big_bites; DROP TABLE fish_trades; DROP TABLE wheel_spins; DROP TABLE video_queue; DROP TABLE fish_signals; DROP TABLE fish_duels; DROP TABLE steals; DROP TABLE overlay_feed; DROP TABLE catches; DROP TABLE fish; DROP TABLE raffle_entries; DROP TABLE raffles; DROP INDEX ledger_ref');
+    m2db.exec('DROP TABLE web_replies; DROP TABLE big_bites; DROP TABLE fish_trades; DROP TABLE wheel_spins; DROP TABLE video_queue; DROP TABLE fish_signals; DROP TABLE fish_duels; DROP TABLE steals; DROP TABLE overlay_feed; DROP TABLE catches; DROP TABLE fish; DROP TABLE raffle_entries; DROP TABLE raffles; DROP INDEX ledger_ref');
     m2db.pragma('user_version = 2');
     closePointsDb(m2);
     const re2 = openPointsDb(m2, { create: false })!;
     check('a v2 database gains the raffle tables and keeps its balances',
-      re2.pragma('user_version', { simple: true }) === 15 && balance(m2, 1) === 42
+      re2.pragma('user_version', { simple: true }) === 16 && balance(m2, 1) === 42
       && !!re2.prepare("SELECT 1 FROM sqlite_master WHERE name = 'raffles'").get());
     void svc;
     makeService(ch, { broadcaster: 999 });

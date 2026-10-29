@@ -37,9 +37,11 @@ export interface OAuthTokens {
   refreshToken: string;
   expiresAt: number;
   // Epoch ms of the authorization_code exchange that created this grant.
-  // Kick grants have a hard 30-day lifetime regardless of refresh activity;
-  // this lets the token monitor warn before the grant dies.
   grantedAt?: number;
+  // When the refresh token stops working (src/kick-grant.ts): Kick's sliding window,
+  // pushed forward by every refresh. Absent on tokens stored before 2026-10-29 until
+  // their next refresh.
+  refreshExpiresAt?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -381,6 +383,12 @@ export interface PointsGamesConfig {
    * opening mention and result always go to chat.
    */
   chatReplies: boolean;
+  /**
+   * Casting and traps on the public leaderboard's Fishing tab, for signed-in viewers
+   * (community/web-fish.ts). Off, the page shows no game and the bot ignores moves from it;
+   * chat fishing is unaffected.
+   */
+  webPlay: boolean;
   /** Let the fishing overlay's &demo=1 play. Off, an overlay ignores the flag, even one already open on stream. */
   overlayDemo: boolean;
   /** How big the fishing overlay draws, as a percentage of its own size (50–300). It reaches an overlay already open on stream, on top of any &scale= on its link. */
@@ -829,6 +837,11 @@ export interface KickTags {
   senderId?: number | string;
   /** Kick's id for the chat message, the same whether it came by chat socket or webhook. */
   messageId?: string;
+  /**
+   * A move from the leaderboard's fishing page (community/web-fish.ts), not a chat message:
+   * replies go to `reply` instead of chat or the overlay.
+   */
+  web?: { reply(text: string, meta: { kind?: string; item?: string }): void };
 }
 
 // ---------------------------------------------------------------------------

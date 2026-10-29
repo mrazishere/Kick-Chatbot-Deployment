@@ -366,7 +366,26 @@ CREATE INDEX big_bites_ts ON big_bites(ts);
 CREATE INDEX big_bites_user_ts ON big_bites(user_id, ts);
 `;
 
-const SCHEMA_VERSION = 15;
+/**
+ * v16: web_replies, the fishing game's answers to moves made on the public leaderboard
+ * (community/web-fish.ts). The bot writes each reply under the move's request id; the
+ * page reads them back. Kept a day.
+ */
+const SCHEMA_V16 = `
+CREATE TABLE web_replies (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts INTEGER NOT NULL,
+  request_id TEXT NOT NULL,
+  user_id INTEGER NOT NULL,
+  text TEXT NOT NULL,
+  kind TEXT,
+  item TEXT
+);
+CREATE INDEX web_replies_request ON web_replies(request_id);
+CREATE INDEX web_replies_user_ts ON web_replies(user_id, ts);
+`;
+
+const SCHEMA_VERSION = 16;
 
 export function migrate(db: PointsDb): void {
   if ((db.pragma('user_version', { simple: true }) as number) >= SCHEMA_VERSION) return;
@@ -390,6 +409,7 @@ export function migrate(db: PointsDb): void {
     if (version < 13) db.exec(SCHEMA_V13);
     if (version < 14) db.exec(SCHEMA_V14);
     if (version < 15) db.exec(SCHEMA_V15);
+    if (version < 16) db.exec(SCHEMA_V16);
     if (version < SCHEMA_VERSION) db.pragma(`user_version = ${SCHEMA_VERSION}`);
   }).immediate();
 }

@@ -69,7 +69,7 @@ function publicTopFish(rows: unknown): PublicTopFish[] {
     return [{
       name: r.name, emoji: r.emoji, rarity: r.rarity, ...(r.type && DUEL_TYPES.has(r.type) ? { type: r.type } : {}),
       cm: cm === null ? null : Math.floor(cm), n: Math.floor(k), hp: Math.round(hp), attack, worth: Math.floor(worth),
-      ...(level ? { level: Math.floor(level) } : {}),
+      ...(level ? { level: Math.floor(level) } : {}), ...(r.record === true ? { record: true as const } : {}),
     }];
   });
 }
@@ -146,7 +146,7 @@ function heldEach(raw: unknown): { each?: PublicHeldFish[] } {
     const k = num(x.n, 1e6), hp = num(x.hp, 1e5), attack = num(x.attack, 1e5), worth = num(x.worth, 1e12);
     if ((cm === null && x.cm !== null) || !k || hp === null || attack === null || worth === null) return [];
     const level = num(x.level, 10);
-    return [{ cm: cm === null ? null : Math.floor(cm), n: Math.floor(k), hp: Math.round(hp), attack, worth: Math.floor(worth), ...(level ? { level: Math.floor(level) } : {}) }];
+    return [{ cm: cm === null ? null : Math.floor(cm), n: Math.floor(k), hp: Math.round(hp), attack, worth: Math.floor(worth), ...(level ? { level: Math.floor(level) } : {}), ...(x.record === true ? { record: true as const } : {}) }];
   });
   return each.length ? { each } : {};
 }
@@ -199,7 +199,10 @@ function publicHolders(rows: unknown): PublicHolder[] {
         : [],
     );
     const reel = typeof r.reel === "string" && r.reel.length > 0 && r.reel.length <= 24 ? { reel: r.reel } : {};
-    return fish.length ? [{ name: r.name, fish, count: fish.reduce((sum, f) => sum + f.n, 0), worth: n(r.worth), ...reel }] : [];
+    const junk = (Array.isArray(r.junk) ? r.junk : []).slice(0, 20).flatMap((j) =>
+      j && typeof j.emoji === "string" && j.emoji.length <= 25 && n(j.n) > 0 ? [{ emoji: j.emoji, n: n(j.n), worth: n(j.worth) }] : [],
+    );
+    return fish.length ? [{ name: r.name, fish, count: fish.reduce((sum, f) => sum + f.n, 0), worth: n(r.worth), ...reel, ...(junk.length ? { junk } : {}) }] : [];
   });
 }
 
@@ -207,7 +210,7 @@ function publicFishing(raw: unknown): PublicFishing | null {
   const f = raw as Partial<PublicFishing> | null | undefined;
   if (!f || typeof f.catchOdds !== "number") return null;
   const fish = publicCatches(f.fish);
-  return fish.length ? { catchOdds: f.catchOdds, fish, junk: publicCatches(f.junk), topFish: publicTopFish(f.topFish), holders: publicHolders(f.holders), steal: f.steal === true, ...stealRules(f.stealRules), ...fishEmotes(f.emotes), heists: publicHeists(f.heists), duel: f.duel === true, duels: publicDuels(f.duels),
+  return fish.length ? { catchOdds: f.catchOdds, webPlay: f.webPlay === true, trade: f.trade === true, fish, junk: publicCatches(f.junk), topFish: publicTopFish(f.topFish), holders: publicHolders(f.holders), steal: f.steal === true, ...stealRules(f.stealRules), ...fishEmotes(f.emotes), heists: publicHeists(f.heists), duel: f.duel === true, duels: publicDuels(f.duels),
     trophies: publicCatches(f.trophies),
     bigBite: f.bigBite && typeof f.bigBite.everyMinutes === "number" ? { everyMinutes: f.bigBite.everyMinutes } : null } : null;
 }

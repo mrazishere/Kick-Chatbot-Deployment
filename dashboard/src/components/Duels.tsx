@@ -8,7 +8,7 @@ const num = (n: number) => n.toLocaleString("en-US");
 
 export default function Duels({ duels, currency, channel }: { duels: PublicDuels | null; currency: string; channel: string }) {
   const who = (name: string) => (
-    <a href={`${BASE_PATH}/${channel}/leaderboard?user=${encodeURIComponent(name)}`} className="text-neutral-200 hover:underline">
+    <a href={`${BASE_PATH}/leaderboard/${channel}?user=${encodeURIComponent(name)}`} className="text-neutral-200 hover:underline">
       {name}
     </a>
   );

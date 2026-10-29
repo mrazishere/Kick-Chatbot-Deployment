@@ -1115,7 +1115,7 @@ export default function BotManager({
 
   const grantDays = bot?.token.grantDaysLeft ?? null;
   const grantTone =
-    grantDays === null ? "neutral" : grantDays <= 2 ? "danger" : grantDays <= 7 ? "warn" : "ok";
+    grantDays === null ? "neutral" : grantDays <= 2 ? "danger" : grantDays <= 20 ? "warn" : "ok";
   // Kick authorization only ever applies to whoever signs in, so its buttons belong on your own channel.
   const isOwnChannel = username.toLowerCase() === channel;
 
@@ -1293,32 +1293,22 @@ export default function BotManager({
                 </div>
 
                 {grantDays !== null ? (
-                  <div className="mt-4">
-                    <div className="mb-1.5 flex items-baseline justify-between text-xs">
-                      <span className="uppercase tracking-wider text-neutral-500">Authorization expires</span>
-                      <span
-                        className={
-                          grantTone === "danger" ? "text-red-400" : grantTone === "warn" ? "text-amber-400" : "text-neutral-300"
-                        }
-                      >
-                        {grantDays < 1 ? "less than a day" : `${Math.floor(grantDays)} days left`}
+                  // Kick's grant is a sliding 30-day window that every token refresh renews, so this
+                  // only runs low when refreshing has kept failing.
+                  <p className="mt-3 text-xs leading-relaxed text-neutral-500">
+                    {grantTone === "ok" ? (
+                      <>
+                        Renews itself: each token refresh keeps it going another 30 days, so there&apos;s nothing to
+                        do while the bot is running.
+                      </>
+                    ) : (
+                      <span className={grantTone === "danger" ? "text-red-400" : "text-amber-400"}>
+                        Token refreshes haven&apos;t been renewing it: it runs out in{" "}
+                        {grantDays < 1 ? "less than a day" : `${Math.floor(grantDays)} days`}. Re-authorize before then, or
+                        the bot loses the bot badge.
                       </span>
-                    </div>
-                    <div className="h-1.5 overflow-hidden rounded-full bg-neutral-800">
-                      <div
-                        className="h-full rounded-full transition-all"
-                        style={{
-                          width: `${Math.min(100, Math.max(2, (grantDays / 30) * 100))}%`,
-                          backgroundColor:
-                            grantTone === "danger" ? "#f87171" : grantTone === "warn" ? "#fbbf24" : KICK_GREEN,
-                        }}
-                      />
-                    </div>
-                    <p className="mt-3 text-xs leading-relaxed text-neutral-500">
-                      Kick authorizations last 30 days and cannot be extended by refreshing. When this runs out the bot
-                      keeps working but loses the bot badge, so re-authorize before then.
-                    </p>
-                  </div>
+                    )}
+                  </p>
                 ) : null}
 
                 <dl className="mt-5 grid grid-cols-2 gap-x-6 gap-y-4">
@@ -1337,7 +1327,7 @@ export default function BotManager({
                 </div>
                 <p className="mt-3 text-xs text-neutral-500">
                   {bot.enrolledAt
-                    ? `Previously authorized on ${formatDate(bot.enrolledAt)}. Kick grants expire after 30 days.`
+                    ? `Previously authorized on ${formatDate(bot.enrolledAt)}. A grant runs out once its token hasn't refreshed for 30 days, or if it's revoked on Kick.`
                     : "This channel has never completed the authorization flow."}
                 </p>
               </>

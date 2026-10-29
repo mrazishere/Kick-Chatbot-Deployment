@@ -16,15 +16,12 @@ export default function PublicViewers({
   currency,
   initial,
   openFirst,
-  me,
 }: {
   channel: string;
   currency: string;
   initial: PublicViewer[];
   /** A viewer to open straight away, from ?user=. */
   openFirst?: string | null;
-  /** The signed-in viewer's Kick name: their own panel shows their guard's time, to them only. */
-  me?: string | null;
 }) {
   const [query, setQuery] = useState("");
   const [viewers, setViewers] = useState<PublicViewer[] | null>(initial);
@@ -32,8 +29,6 @@ export default function PublicViewers({
   const [selected, setSelected] = useState<string | null>(null);
   const [detail, setDetail] = useState<PublicHistory | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
-  // Undefined: not your own panel, or not loaded. Null: no guard on.
-  const [guardUntil, setGuardUntil] = useState<string | null | undefined>(undefined);
   const searchSeq = useRef(0);
   const detailSeq = useRef(0);
 
@@ -75,18 +70,7 @@ export default function PublicViewers({
       setSelected(name);
       setDetail(null);
       setDetailError(null);
-      setGuardUntil(undefined);
       const seq = ++detailSeq.current;
-      // Your own panel: your guard's time, from the session, never by name.
-      if (me && name.toLowerCase() === me.toLowerCase()) {
-        void fetch(`${BASE_PATH}/api/public/${encodeURIComponent(channel)}/guard`, { cache: "no-store" })
-          .then(async (res) => {
-            const body = (await res.json().catch(() => null)) as { username?: string; guardUntil?: string | null } | null;
-            if (seq !== detailSeq.current || !res.ok || !body || body.username?.toLowerCase() !== name.toLowerCase()) return;
-            setGuardUntil(typeof body.guardUntil === "string" ? body.guardUntil : null);
-          })
-          .catch(() => {});
-      }
       try {
         const res = await fetch(`${BASE_PATH}/api/public/${encodeURIComponent(channel)}/history?name=${encodeURIComponent(name)}`, { cache: "no-store" });
         const body = (await res.json().catch(() => null)) as (PublicHistory & { error?: string }) | null;
@@ -97,7 +81,7 @@ export default function PublicViewers({
         if (seq === detailSeq.current) setDetailError(e instanceof Error ? e.message : "Couldn't load the history");
       }
     },
-    [channel, selected, detail, me],
+    [channel, selected, detail],
   );
 
   // Open the viewer named in the link once, on first render.
@@ -118,7 +102,7 @@ export default function PublicViewers({
           <p className="text-sm text-neutral-500">Loading {selected}&apos;s history…</p>
         ) : (
           <>
-            <ViewerHistory h={detail} guardUntil={guardUntil} onOpen={(name) => void open(name)} />
+            <ViewerHistory h={detail} onOpen={(name) => void open(name)} />
           </>
         )}
       </div>

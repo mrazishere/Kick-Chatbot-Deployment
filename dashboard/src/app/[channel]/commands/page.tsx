@@ -11,5 +11,5 @@ export default async function CommandsLink({ params }: Props) {
   const { channel } = await params;
   const slug = channel.toLowerCase();
   if (!validChannel(slug)) notFound();
-  redirect(`/${slug}/leaderboard?tab=commands`);
+  redirect(`/leaderboard/${slug}?tab=commands`);
 }

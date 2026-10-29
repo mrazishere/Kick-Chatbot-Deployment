@@ -23,6 +23,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import fetch from 'node-fetch';
 import KickAuth = require('../auth');
+import { refreshExpiresAt } from '../kick-grant';
 import TelegramNotifier = require('../telegram-notifier');
 import { ChannelConfig, CommandFn, KickTags, ClientWrapper, ChannelLocation, LocationSubfields, EarningsConfig, KPPConfig } from '../types';
 import { markBotOutput } from '../recent-bot-outputs';
@@ -34,6 +35,8 @@ import { ChannelModerator } from './moderation';
 import { EarningsTracker } from './earnings-tracker';
 import { KPPTracker } from './kpp-tracker';
 import { PointsService } from '../points/service';
+import { effectiveCommand } from '../points/config';
+import { recordWebReply, type WebFishMove } from '../community/web-fish';
 
 const CHANNEL_NAME = '$$UPDATEHERE$$';
 
@@ -171,7 +174,8 @@ class KickChatBot {
         this.points.onLivestreamStatus(event, meta);
         // Rewards the bot acts on are paused on Kick while the channel is offline.
         this.rewardHandler.setLive(event?.is_live === true);
-      }
+      },
+      webFish: (move) => this.handleWebFish(move)
     });
 
 
@@ -643,6 +647,47 @@ class KickChatBot {
     }
   }
 
+  /**
+   * A move from the leaderboard's fishing page (community/web-fish.ts): the fish command as
+   * chat runs it, with the replies kept for the page instead of said in chat. Not chat, so
+   * nothing here notes it as chatting (watch time, big bite picks).
+   */
+  handleWebFish(move: WebFishMove): void {
+    const db = this.points.db();
+    if (!db || typeof move?.requestId !== 'string' || !Number.isSafeInteger(move.userId) || typeof move.username !== 'string' || !Array.isArray(move.args)) return;
+    const reply = (text: string, meta: { kind?: string; item?: string } = {}) => recordWebReply(db, move, text, meta);
+    const fishCommand = this.commands.get('fish');
+    if (!fishCommand) return reply('Fishing is switched off here.', { kind: 'info' });
+    // Bot management can switch the page off (games.webPlay); a move queued before that is turned away.
+    if (!this.points.config().games.webPlay) return reply('Fishing on the leaderboard is switched off here.', { kind: 'info' });
+    const tags: KickTags = {
+      username: move.username,
+      'display-name': move.username,
+      badges: {},
+      isBroadcaster: false,
+      isModUp: false,
+      isVIPUp: false,
+      rawBadges: [],
+      senderId: move.userId,
+      messageId: `web:${move.requestId}`,
+      web: { reply }
+    };
+    // fish.ts answers a page move through tags.web; only its announce() (a trade's ping to the
+    // other viewer, who has to hear of it somewhere) reaches chat through this.
+    const client: ClientWrapper = {
+      say: async (_channel: string, msg: string): Promise<void> => {
+        console.log(`[COMMAND RESPONSE] ${msg}`);
+        await this.sendMessage(msg).catch(() => {});
+      }
+    };
+    const args = move.args.filter((a): a is string => typeof a === 'string').map(a => a.slice(0, 40)).slice(0, 40);
+    const message = `$${effectiveCommand(this.points.config())} fish ${args.join(' ')}`.trim();
+    Promise.resolve(fishCommand(client, message, `#${this.channelName}`, tags, this.config)).catch(err => {
+      console.error('[FISH] Fishing page move failed:', err instanceof Error ? err.message : String(err));
+      reply('Something went wrong: try again in a moment.', { kind: 'info' });
+    });
+  }
+
   handleChatMessage(data: Record<string, unknown>): void {
     const sender = data.sender as { username?: string; identity?: { badges?: Array<{ type: string; [key: string]: unknown }> }; id?: number } | undefined;
     const content = data.content as string | undefined;
@@ -899,7 +944,9 @@ class KickChatBot {
           accessToken: newAccessToken,
           // Only update refresh_token if the response provided one (some flows omit it)
           refreshToken: typeof newRefreshToken === 'string' && newRefreshToken.length > 0 ? newRefreshToken : usedRefreshToken,
-          expiresAt
+          expiresAt,
+          // Every refresh renews Kick's sliding window; the dashboard counts down from this.
+          refreshExpiresAt: refreshExpiresAt(response.data)
         };
         config.lastUpdated = new Date().toISOString();
       });
@@ -910,8 +957,8 @@ class KickChatBot {
       if (error instanceof Error) {
         console.error('[ERROR] Failed to refresh channel token:', error.message);
       }
-      // Streamer grants expire 30 days after enrollment and refreshing cannot
-      // revive them. Only definitive auth rejections count toward deletion —
+      // A grant that lapsed (refreshing stopped for Kick's whole window) or was
+      // revoked can't be revived. Only definitive auth rejections count toward deletion —
       // a network blip must not destroy a still-valid grant.
       const status = axios.isAxiosError(error) ? error.response?.status : undefined;
       if (status === 400 || status === 401 || status === 403) {

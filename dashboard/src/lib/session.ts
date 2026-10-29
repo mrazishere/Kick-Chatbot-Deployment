@@ -8,6 +8,8 @@ export interface SessionData {
   avatarUrl?: string;
   oauthState?: string;
   oauthCodeVerifier?: string;
+  /** Viewer sign-in only: the leaderboard page to go back to. */
+  oauthReturnTo?: string;
 }
 
 const SESSION_TTL_SECONDS = 60 * 60 * 24 * 7; // 7 days
@@ -113,4 +115,22 @@ export async function getSession(): Promise<IronSession<SessionData>> {
 export function isAdmin(userId: number): boolean {
   const adminId = parseInt(process.env.ADMIN_KICK_USER_ID ?? "3220408", 10);
   return userId === adminId;
+}
+
+/**
+ * The leaderboard's own sign-in cookie (the user:read viewer app, lib/viewer-login). The two
+ * sides never share one: bot management reads only getSession's cookie, so a viewer can't
+ * open it, and a streamer there always comes through the streamer sign-in, the one that
+ * renews their 30-day Kick grant. The leaderboard reads only this one.
+ */
+export async function getViewerSession(): Promise<IronSession<SessionData>> {
+  const options = sessionOptions();
+  // Its own key too, so a viewer cookie's value can't be passed off as the streamer cookie.
+  return getIronSession<SessionData>(await cookies(), { ...options, password: `${options.password}:viewer`, cookieName: "kick_viewer_session" });
+}
+
+/** Who is signed in on the leaderboard, from its own cookie only. */
+export async function leaderboardViewer(): Promise<{ userId: number; username: string } | null> {
+  const s = await getViewerSession();
+  return s.userId && s.username ? { userId: s.userId, username: s.username } : null;
 }
