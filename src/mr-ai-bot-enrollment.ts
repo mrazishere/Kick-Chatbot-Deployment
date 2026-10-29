@@ -28,7 +28,7 @@ import { BAITS, baitPrice, baitRoll, capOf, currentReel, initialData, ITEMS, lev
 import { mirroredTrades, sideText } from './community/fish-trade';
 import { fighterOf } from './community/fish-duel';
 import { channelEmotes } from './community/emotes';
-import { adjustPoints, applyOnce, backupPoints, exclusionsFor, isExcluded, duelBoard, heistBoard, heldCatches, getPointsUserDetail, pointsLeaderboard, pointsSummary, resetAllPoints, searchPointsUsers } from './points/store';
+import { adjustPoints, applyOnce, backupPoints, exclusionsFor, isExcluded, duelBoard, heistBoard, heldCatches, type HeldCatch, getPointsUserDetail, pointsLeaderboard, pointsSummary, resetAllPoints, searchPointsUsers } from './points/store';
 import { funnels as cheatFunnels, RULES as CHEAT_RULES, linkedAccounts, linkedGroups, suspects as cheatSuspects } from './community/cheat-signals';
 import { recentSpins } from './community/wheel-history';
 import { changeWheel, MAX_ITEMS as WHEEL_MAX_ITEMS, MAX_LABEL as WHEEL_MAX_LABEL, readWheel, SPIN_SECONDS as WHEEL_SPIN_SECONDS, validateWheel } from './community/wheel';
@@ -1752,7 +1752,7 @@ function internalGuard(_mutating: boolean) {
 interface Pm2Proc {
   name?: string;
   pid?: number;
-  pm2_env?: { status?: string; pm_uptime?: number; restart_time?: number; unstable_restarts?: number };
+  pm2_env?: { status?: string; pm_uptime?: number; restart_time?: number; unstable_restarts?: number; exit_code?: number };
   monit?: { memory?: number; cpu?: number };
 }
 
@@ -1787,11 +1787,11 @@ async function pm2List(): Promise<Pm2Proc[]> {
 const BOT_WATCH_MS = 60_000;
 /** Not running this long (and not stopped on purpose) and the owner hears. */
 const BOT_DOWN_ALERT_MS = 2 * 60_000;
-/** This many restarts within BOT_CRASH_WINDOW_MS is a crash loop; quiet for BOT_CRASH_QUIET_MS closes it. */
+/** This many crashes within BOT_CRASH_WINDOW_MS is a crash loop; no crash for BOT_CRASH_QUIET_MS closes it. */
 const BOT_CRASH_RESTARTS = 3;
 const BOT_CRASH_WINDOW_MS = 15 * 60_000;
 const BOT_CRASH_QUIET_MS = 30 * 60_000;
-const botWatch = new Map<string, { downSince?: number; restarts: Array<{ at: number; n: number }>; lastRestartAt?: number; crashing?: boolean }>();
+const botWatch = new Map<string, { downSince?: number; seen?: number; crashes: Array<{ at: number; k: number }>; lastRestartAt?: number; crashing?: boolean }>();
 
 async function watchBots(): Promise<void> {
   const procs = await pm2List();
@@ -1803,7 +1803,7 @@ async function watchBots(): Promise<void> {
     const config = readChannelConfig(channel);
     if (!config) continue;
     const proc = procs.find(p => p.name === `kick-${channel}`);
-    const w = botWatch.get(channel) ?? { restarts: [] };
+    const w = botWatch.get(channel) ?? { crashes: [] };
     botWatch.set(channel, w);
     const status = proc?.pm2_env?.status ?? 'missing';
     const online = status === 'online';
@@ -1816,21 +1816,23 @@ async function watchBots(): Promise<void> {
         raiseAlert(`bot-down:${channel}`, 'Bot Down', `The bot in ${channel} hasn't been running for ${Math.round((now - w.downSince) / 60_000)} min (pm2: ${status}). Nothing answers in chat: commands, points, games. Its log is on the dashboard (Overview, Recent activity); Start there, or pm2 restart kick-${channel}.`);
       }
     }
-    // Restarts: pm2's count going up means the process died and came back (or was restarted).
+    // Crashes: pm2's count going up with a non-zero last exit. A bot exits 0 only when pm2 stops it
+    // (a deploy, a settings save's reload, Restart on the dashboard), which isn't a crash: on
+    // 2026-10-29 three settings saves in 13 min raised a false crash-loop alert.
     const n = proc?.pm2_env?.restart_time ?? 0;
-    const prev = w.restarts[w.restarts.length - 1];
-    if (!prev || n !== prev.n) {
-      if (prev && n > prev.n) w.lastRestartAt = now;
-      w.restarts.push({ at: now, n });
+    if (w.seen !== undefined && n > w.seen && (proc?.pm2_env?.exit_code ?? 1) !== 0) {
+      w.crashes.push({ at: now, k: n - w.seen });
+      w.lastRestartAt = now;
     }
-    w.restarts = w.restarts.filter(r => now - r.at <= BOT_CRASH_WINDOW_MS);
-    const recent = n - (w.restarts[0]?.n ?? n);
+    w.seen = n;
+    w.crashes = w.crashes.filter(r => now - r.at <= BOT_CRASH_WINDOW_MS);
+    const recent = w.crashes.reduce((sum, r) => sum + r.k, 0);
     if (recent >= BOT_CRASH_RESTARTS) {
       w.crashing = true;
-      raiseAlert(`bot-crashing:${channel}`, 'Bot Crash-Looping', `The bot in ${channel} restarted ${recent} times in the last ${BOT_CRASH_WINDOW_MS / 60_000} min, so it keeps dropping out of chat. Its log is on the dashboard (Overview, Recent activity), and in logs/kick-${channel}-err.log.`);
+      raiseAlert(`bot-crashing:${channel}`, 'Bot Crash-Looping', `The bot in ${channel} crashed and restarted ${recent} times in the last ${BOT_CRASH_WINDOW_MS / 60_000} min, so it keeps dropping out of chat. Its log is on the dashboard (Overview, Recent activity), and in logs/kick-${channel}-err.log.`);
     } else if (w.crashing && w.lastRestartAt !== undefined && now - w.lastRestartAt >= BOT_CRASH_QUIET_MS) {
       w.crashing = false;
-      clearAlert(`bot-crashing:${channel}`, 'Bot Stable Again', `The bot in ${channel} hasn't restarted for ${BOT_CRASH_QUIET_MS / 60_000} min.`);
+      clearAlert(`bot-crashing:${channel}`, 'Bot Stable Again', `The bot in ${channel} hasn't crashed for ${BOT_CRASH_QUIET_MS / 60_000} min.`);
     }
   }
 }
@@ -3464,6 +3466,12 @@ function fishPageState(db: PointsDb, r: FishPageRequest, now: number): Record<st
         return [{ emoji: item.name, type: item.type, n, each, unsized, worth: each.reduce((t, e) => t + e.worth, 0) + unsized * plain }];
       });
     })(),
+    // Their own row as "Holding right now" shows it, for when they aren't on that list
+    // (junk only, or below its top 100): selling lives on that row.
+    own: (() => {
+      const row = holderRow(g, holderKinds(g), { username: r.username, types: d.catch.types, sizes: d.catch.sizes ?? {}, reel: d.reel ?? 0, stolen: d.catch.stolen ?? {} });
+      return row.count > 0 || row.junk ? row : null;
+    })(),
     selling: true,
     feeding: g.feedEnabled,
     trading: g.trade.enabled,
@@ -3578,6 +3586,81 @@ async function customFishImages(channel: string, cfg: ReturnType<typeof effectiv
   }
 }
 
+/** One fish on the leaderboard's lists: a viewer's, with its duel stats and what it sells for. */
+type BoardFish = { name: string; emoji: string; rarity: string; type: string; cm: number | null; n: number; hp: number; attack: number; worth: number; level?: number; record?: true };
+
+/** Each pool's catches with their share of that pool (fish of fish, junk of junk, trophies of big bites), rarity and price. */
+function catchOddsList(g: ReturnType<typeof effectivePointsConfig>['games'], pool: (c: ReturnType<typeof effectivePointsConfig>['games']['catches'][number]) => boolean, trophy = false) {
+  const items = g.catches.filter(pool);
+  const total = items.reduce((sum, c) => sum + c.weight, 0);
+  return items
+    .map(c => {
+      const chance = total > 0 ? (c.weight / total) * 100 : 0;
+      return {
+        emoji: c.name, chance: Math.round(chance * 100) / 100, rarity: trophy ? 'Mythic' : rarityName(chance), price: c.price, ...(trophy ? { trophy: true } : {}),
+        // The chance a steal try on it works, luck included, at its list price: it follows the fish's rarity and value.
+        ...(g.steal.enabled && c.type === 'fish' ? { steal: Math.round(stealRollChance(g, c.name, c.price) * 100) / 100 } : {})
+      };
+    })
+    .sort((a, b) => b.chance - a.chance || a.price - b.price);
+}
+
+/** Every fish kind with its rarity, in the order a holder's fish are listed: trophies, then rarest first. */
+function holderKinds(g: ReturnType<typeof effectivePointsConfig>['games']): Array<{ item: (typeof ITEMS)[number]; odds?: { rarity: string; chance: number } }> {
+  const odds = new Map([...catchOddsList(g, c => c.type === 'fish' && !c.trophy), ...catchOddsList(g, c => !!c.trophy, true)].map(f => [f.emoji, f]));
+  return ITEMS.filter(i => i.type === 'fish')
+    .map(item => ({ item, odds: odds.get(item.name) }))
+    .sort((a, b) => Number(!!b.item.trophy) - Number(!!a.item.trophy) || (a.odds?.chance ?? 0) - (b.odds?.chance ?? 0) || b.item.price - a.item.price);
+}
+
+/**
+ * One viewer's row under "Holding right now": their unsold fish, rarest first, priced as a
+ * sale would price them (with their reel's bonus, which stolen fish don't get), and their junk.
+ * `onFish` sees each line, for the most valuable fish board.
+ */
+function holderRow(g: ReturnType<typeof effectivePointsConfig>['games'], kinds: ReturnType<typeof holderKinds>, h: HeldCatch, onFish?: (f: BoardFish) => void) {
+  let count = 0;
+  let worth = 0;
+  const reel = currentReel({ reel: h.reel } as Parameters<typeof currentReel>[0], g);
+  const reelValue = reel?.valueMultiplier ?? 1;
+  const held = kinds.flatMap(({ item, odds: o }) => {
+    const n = Math.floor(h.types[item.name] ?? 0);
+    if (!(n > 0)) return [];
+    const sized = (h.sizes[item.name] ?? []).slice(0, n);
+    const unsized = n - sized.length;
+    const hot = Math.max(0, Math.min(unsized, h.stolen[item.name] ?? 0));
+    count += n;
+    // Each one, as `fish show 🦈` lists them: by length, biggest first, with its duel
+    // stats and price, so a viewer can see which to name. One length and price is one line.
+    const each: Array<{ cm: number | null; n: number; hp: number; attack: number; worth: number; level?: number; record?: true }> = [];
+    const add = (held: { cm: number; record: boolean; level?: number } | undefined, k: number, stolen = false) => {
+      const cm = held ? held.cm : null;
+      // A size record sells for 1.5x; flagged so the board can say why it's dearer than its twin.
+      const rec = held?.record ? { record: true as const } : {};
+      const value = sellPrice(item, g, held, stolen ? 1 : reelValue);
+      worth += value * k;
+      const f = fighterOf(g, item, held);
+      onFish?.({ name: h.username, emoji: item.name, rarity: o?.rarity ?? 'Never', type: f.type, cm, n: k, hp: f.hp, attack: f.attack,
+        worth: value, ...(f.level ? { level: f.level } : {}), ...rec });
+      const same = each.find(e => e.cm === cm && e.worth === value && !!e.record === !!held?.record);
+      if (same) return void (same.n += k);
+      each.push({ cm, n: k, hp: f.hp, attack: f.attack, worth: value, ...(f.level ? { level: f.level } : {}), ...rec });
+    };
+    for (const one of sized) add(one, 1, !!one.stolen);
+    if (unsized > hot) add(undefined, unsized - hot);
+    if (hot) add(undefined, hot, true);
+    each.sort((a, b) => (b.cm ?? -1) - (a.cm ?? -1) || b.worth - a.worth);
+    const f = fighterOf(g, item);
+    return [{ emoji: item.name, n, rarity: o?.rarity ?? 'Never', type: f.type, each }];
+  });
+  // Their junk too, kind by kind with what one sells for (no reel bonus on junk), apart from the fish totals.
+  const junk = ITEMS.filter(i => i.type === 'junk').flatMap(item => {
+    const n = Math.floor(h.types[item.name] ?? 0);
+    return n > 0 ? [{ emoji: item.name, n, worth: sellPrice(item, g) }] : [];
+  });
+  return { name: h.username, fish: held, count, worth, ...(junk.length ? { junk } : {}), ...(reel ? { reel: reel.name } : {}) };
+}
+
 /**
  * What the public leaderboard's Fishing tab shows: every catch with its share of
  * catches, a rarity name and its sell price as the channel has them set, the big
@@ -3589,79 +3672,22 @@ function publicFishing(channel: string, cfg: ReturnType<typeof effectivePointsCo
   if (!g.enabled) return null;
   // Each pool's chances are shares of that pool: fish of fish catches, junk of junk,
   // trophies of big bites.
-  const list = (pool: (c: (typeof g.catches)[number]) => boolean, trophy = false) => {
-    const items = g.catches.filter(pool);
-    const total = items.reduce((sum, c) => sum + c.weight, 0);
-    return items
-      .map(c => {
-        const chance = total > 0 ? (c.weight / total) * 100 : 0;
-        return {
-          emoji: c.name, chance: Math.round(chance * 100) / 100, rarity: trophy ? 'Mythic' : rarityName(chance), price: c.price, ...(trophy ? { trophy: true } : {}),
-          // The chance a steal try on it works, luck included, at its list price: it follows the fish's rarity and value.
-          ...(g.steal.enabled && c.type === 'fish' ? { steal: Math.round(stealRollChance(g, c.name, c.price) * 100) / 100 } : {})
-        };
-      })
-      .sort((a, b) => b.chance - a.chance || a.price - b.price);
-  };
+  const list = (pool: (c: (typeof g.catches)[number]) => boolean, trophy = false) => catchOddsList(g, pool, trophy);
   const fish = list(c => c.type === 'fish' && !c.trophy);
   const trophies = list(c => !!c.trophy, true);
-  const odds = new Map([...fish, ...trophies].map(f => [f.emoji, f]));
-  // Who holds what right now: each viewer's unsold fish, rarest first, priced as a
-  // sale would price them: with their reel's bonus, which stolen fish don't get. The
-  // most valuable haul leads.
-  const kinds = ITEMS.filter(i => i.type === 'fish')
-    .map(item => ({ item, odds: odds.get(item.name) }))
-    .sort((a, b) => Number(!!b.item.trophy) - Number(!!a.item.trophy) || (a.odds?.chance ?? 0) - (b.odds?.chance ?? 0) || b.item.price - a.item.price);
+  // Who holds what right now (holderRow): the most valuable haul leads.
+  const kinds = holderKinds(g);
   // Every fish held, for the most valuable ones: each sized fish, the unsized ones of a kind together.
-  const best = new Map<string, { name: string; emoji: string; rarity: string; type: string; cm: number | null; n: number; hp: number; attack: number; worth: number; level?: number; record?: true }>();
+  const best = new Map<string, BoardFish>();
   const holders = heldCatches(channel, cfg, broadcasterUserId)
-    .map(h => {
-      let count = 0;
-      let worth = 0;
-      const reel = currentReel({ reel: h.reel } as Parameters<typeof currentReel>[0], g);
-      const reelValue = reel?.valueMultiplier ?? 1;
-      const held = kinds.flatMap(({ item, odds: o }) => {
-        const n = Math.floor(h.types[item.name] ?? 0);
-        if (!(n > 0)) return [];
-        const sized = (h.sizes[item.name] ?? []).slice(0, n);
-        const unsized = n - sized.length;
-        const hot = Math.max(0, Math.min(unsized, h.stolen[item.name] ?? 0));
-        count += n;
-        // Each one, as `fish show 🦈` lists them: by length, biggest first, with its duel
-        // stats and price, so a viewer can see which to name. One length and price is one line.
-        const each: Array<{ cm: number | null; n: number; hp: number; attack: number; worth: number; level?: number; record?: true }> = [];
-        const add = (held: { cm: number; record: boolean; level?: number } | undefined, k: number, stolen = false) => {
-          const cm = held ? held.cm : null;
-          // A size record sells for 1.5x; flagged so the board can say why it's dearer than its twin.
-          const rec = held?.record ? { record: true as const } : {};
-          const value = sellPrice(item, g, held, stolen ? 1 : reelValue);
-          worth += value * k;
-          const f = fighterOf(g, item, held);
-          // For the most valuable fish: priced as here and in `fish show`, the owner's reel
-          // included, so the board and a viewer's own list agree. Fish just alike are one line, counted.
-          const key = `${h.username}|${item.name}|${cm}|${value}|${f.level}|${f.hp}|${f.attack}|${!!held?.record}`;
-          const twin = best.get(key);
-          if (twin) twin.n += k;
-          else best.set(key, { name: h.username, emoji: item.name, rarity: o?.rarity ?? 'Never', type: f.type, cm, n: k, hp: f.hp, attack: f.attack,
-            worth: value, ...(f.level ? { level: f.level } : {}), ...rec });
-          const same = each.find(e => e.cm === cm && e.worth === value && !!e.record === !!held?.record);
-          if (same) return void (same.n += k);
-          each.push({ cm, n: k, hp: f.hp, attack: f.attack, worth: value, ...(f.level ? { level: f.level } : {}), ...rec });
-        };
-        for (const one of sized) add(one, 1, !!one.stolen);
-        if (unsized > hot) add(undefined, unsized - hot);
-        if (hot) add(undefined, hot, true);
-        each.sort((a, b) => (b.cm ?? -1) - (a.cm ?? -1) || b.worth - a.worth);
-        const f = fighterOf(g, item);
-        return [{ emoji: item.name, n, rarity: o?.rarity ?? 'Never', type: f.type, each }];
-      });
-      // Their junk too, kind by kind with what one sells for (no reel bonus on junk), apart from the fish totals.
-      const junk = ITEMS.filter(i => i.type === 'junk').flatMap(item => {
-        const n = Math.floor(h.types[item.name] ?? 0);
-        return n > 0 ? [{ emoji: item.name, n, worth: sellPrice(item, g) }] : [];
-      });
-      return { name: h.username, fish: held, count, worth, ...(junk.length ? { junk } : {}), ...(reel ? { reel: reel.name } : {}) };
-    })
+    .map(h => holderRow(g, kinds, h, f => {
+      // For the most valuable fish: priced as here and in `fish show`, the owner's reel
+      // included, so the board and a viewer's own list agree. Fish just alike are one line, counted.
+      const key = `${f.name}|${f.emoji}|${f.cm}|${f.worth}|${f.level ?? 0}|${f.hp}|${f.attack}|${!!f.record}`;
+      const twin = best.get(key);
+      if (twin) twin.n += f.n;
+      else best.set(key, f);
+    }))
     .filter(h => h.count > 0)
     .sort((a, b) => b.worth - a.worth || b.count - a.count || a.name.localeCompare(b.name))
     .slice(0, 100);

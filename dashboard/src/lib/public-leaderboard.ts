@@ -186,24 +186,30 @@ function stealRules(raw: unknown): { stealRules?: PublicStealRules } {
   };
 }
 
-/** Who holds what, keeping only well-formed rows. */
+/** Who holds what, keeping only well-formed rows with a fish. */
 function publicHolders(rows: unknown): PublicHolder[] {
   if (!Array.isArray(rows)) return [];
-  const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v > 0 ? Math.floor(v) : 0);
   return rows.slice(0, 100).flatMap((row) => {
-    const r = row as Partial<PublicHolder> | null;
-    if (!r || typeof r.name !== "string" || !USERNAME.test(r.name) || !Array.isArray(r.fish)) return [];
-    const fish = r.fish.slice(0, 40).flatMap((f) =>
-      f && typeof f.emoji === "string" && f.emoji.length <= 25 && n(f.n) > 0 && typeof f.rarity === "string" && RARITIES.has(f.rarity)
-        ? [{ emoji: f.emoji, n: n(f.n), rarity: f.rarity, ...(f.type && DUEL_TYPES.has(f.type) ? { type: f.type } : {}), ...heldEach(f.each) }]
-        : [],
-    );
-    const reel = typeof r.reel === "string" && r.reel.length > 0 && r.reel.length <= 24 ? { reel: r.reel } : {};
-    const junk = (Array.isArray(r.junk) ? r.junk : []).slice(0, 20).flatMap((j) =>
-      j && typeof j.emoji === "string" && j.emoji.length <= 25 && n(j.n) > 0 ? [{ emoji: j.emoji, n: n(j.n), worth: n(j.worth) }] : [],
-    );
-    return fish.length ? [{ name: r.name, fish, count: fish.reduce((sum, f) => sum + f.n, 0), worth: n(r.worth), ...reel, ...(junk.length ? { junk } : {}) }] : [];
+    const r = publicHolder(row);
+    return r?.fish.length ? [r] : [];
   });
+}
+
+/** One holder's row, well-formed, with a fish or junk: also a signed-in viewer's own (FishPage.own). */
+export function publicHolder(row: unknown): PublicHolder | null {
+  const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v > 0 ? Math.floor(v) : 0);
+  const r = row as Partial<PublicHolder> | null;
+  if (!r || typeof r.name !== "string" || !USERNAME.test(r.name) || !Array.isArray(r.fish)) return null;
+  const fish = r.fish.slice(0, 40).flatMap((f) =>
+    f && typeof f.emoji === "string" && f.emoji.length <= 25 && n(f.n) > 0 && typeof f.rarity === "string" && RARITIES.has(f.rarity)
+      ? [{ emoji: f.emoji, n: n(f.n), rarity: f.rarity, ...(f.type && DUEL_TYPES.has(f.type) ? { type: f.type } : {}), ...heldEach(f.each) }]
+      : [],
+  );
+  const reel = typeof r.reel === "string" && r.reel.length > 0 && r.reel.length <= 24 ? { reel: r.reel } : {};
+  const junk = (Array.isArray(r.junk) ? r.junk : []).slice(0, 20).flatMap((j) =>
+    j && typeof j.emoji === "string" && j.emoji.length <= 25 && n(j.n) > 0 ? [{ emoji: j.emoji, n: n(j.n), worth: n(j.worth) }] : [],
+  );
+  return fish.length || junk.length ? { name: r.name, fish, count: fish.reduce((sum, f) => sum + f.n, 0), worth: n(r.worth), ...reel, ...(junk.length ? { junk } : {}) } : null;
 }
 
 function publicFishing(raw: unknown): PublicFishing | null {

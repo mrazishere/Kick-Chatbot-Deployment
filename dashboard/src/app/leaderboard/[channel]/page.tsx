@@ -6,7 +6,8 @@ import { notFound } from "next/navigation";
 import SiteHeader from "@/components/SiteHeader";
 import { validChannel } from "@/lib/bot-auth";
 import { leaderboardViewer } from "@/lib/session";
-import { loadPublicLeaderboard, loadPublicViewers } from "@/lib/public-leaderboard";
+import { loadPublicLeaderboard, loadPublicViewers, publicHolder } from "@/lib/public-leaderboard";
+import { getFishPage } from "@/lib/bot-api";
 import PublicViewers from "@/components/PublicViewers";
 import FishingGame from "@/components/FishingGame";
 import StealButton from "@/components/StealButton";
@@ -342,6 +343,7 @@ function Holders({
   stealer,
   trader,
   seller,
+  own,
 }: {
   rows: PublicHolder[];
   currency: string;
@@ -354,12 +356,14 @@ function Holders({
   trader?: string | null;
   /** The signed-in viewer, when web play is on: their own row sells. */
   seller?: string | null;
+  /** The seller's own row, shown under the list when they aren't on it (junk only, or below its top 100). */
+  own?: PublicHolder | null;
 }) {
   const total = rows.reduce((sum, r) => sum + r.count, 0);
   // Not from yourself: the bot would refuse it anyway.
   const canSteal = (name: string) => !!stealer && stealer.toLowerCase() !== name.toLowerCase();
   const canTrade = (name: string) => !!trader && trader.toLowerCase() !== name.toLowerCase();
-  // Your own row: sell from it, as the Play tab's bucket does.
+  // Your own row: sell from it. Selling lives here only, not on the Play tab.
   const isMine = (name: string) => !!seller && seller.toLowerCase() === name.toLowerCase();
   // Their fish as the trade builder picks them: exactly, by length, level and 🏅.
   // Stolen and kept twins (or two groups without a length) are one choice to the builder, at their average worth.
@@ -384,14 +388,17 @@ function Holders({
         {` · ${total.toLocaleString("en-US")} unsold fish, by what they'd sell for with their reel. Tap someone to see their fish by kind, strongest first, each with its length and stats.`}
       </h2>
       <ol className="divide-y divide-neutral-800">
-        {rows.map((r, i) => {
-          const detailed = r.fish.some((f) => f.each?.length);
+        {/* Your own row is the fresh one (the list is a cached copy), in your place or under the list if you're not on it. */}
+        {(own && isMine(own.name) ? (rows.some((r) => isMine(r.name)) ? rows.map((r) => (isMine(r.name) ? own : r)) : [...rows, own]) : rows).map((r, i) => {
+          // Your own row under the list, when you're not on it: no place, only you see it.
+          const extra = i >= rows.length;
+          const detailed = r.fish.some((f) => f.each?.length) || !!r.junk?.length;
           // Collapsed: who and what it's worth. Open: every kind they hold, strongest kind first, each kind's fish strongest first.
           return (
             <li key={r.name} className="text-sm">
               <details className="group">
                 <summary className="flex cursor-pointer list-none items-center gap-3 px-5 py-2.5 hover:bg-neutral-900/40 [&::-webkit-details-marker]:hidden">
-                  <span className="w-6 shrink-0 text-xs tabular-nums text-neutral-600">{i + 1}</span>
+                  <span className="w-6 shrink-0 text-xs tabular-nums text-neutral-600">{extra ? "you" : i + 1}</span>
                   <span className="flex min-w-0 flex-1 items-center gap-2">
                     <span className="truncate text-neutral-200">{r.name}</span>
                     {r.reel ? (
@@ -481,6 +488,7 @@ function FishingTab({
   stealer,
   trader,
   viewer,
+  own,
 }: {
   fishing: PublicFishing;
   currency: string;
@@ -495,6 +503,8 @@ function FishingTab({
   trader: string | null;
   /** The signed-in viewer on the leaderboard. */
   viewer: string | null;
+  /** Their own holdings row, loaded for Top fish with web play on. */
+  own?: PublicHolder | null;
 }) {
   const sections = fishSections(fishing, game !== null);
   const section = sections.find((x) => x.id === wanted)?.id ?? sections[0].id;
@@ -537,10 +547,10 @@ function FishingTab({
       {section === "top" ? (
         <>
           {fishing.topFish.length ? <TopFish rows={fishing.topFish} currency={currency} channel={channel} emotes={fishing.emotes} /> : null}
-          {fishing.holders?.length ? (
-            <Holders rows={fishing.holders} currency={currency} channel={channel} duel={!!fishing.duel} emotes={fishing.emotes} stealer={stealer} trader={trader} seller={game !== null ? stealer ?? trader ?? viewer : null} />
+          {fishing.holders?.length || own ? (
+            <Holders rows={fishing.holders ?? []} currency={currency} channel={channel} duel={!!fishing.duel} emotes={fishing.emotes} stealer={stealer} trader={trader} seller={game !== null ? stealer ?? trader ?? viewer : null} own={own} />
           ) : null}
-          {!fishing.topFish.length && !fishing.holders?.length ? <p className="text-sm text-neutral-500">Nobody holds any fish yet.</p> : null}
+          {!fishing.topFish.length && !fishing.holders?.length && !own ? <p className="text-sm text-neutral-500">Nobody holds any fish yet.</p> : null}
         </>
       ) : null}
 
@@ -678,12 +688,13 @@ export default async function LeaderboardPage({ params, searchParams }: Props) {
   if (result.kind === "not-found") notFound();
 
   // The session only decides what the header's corner shows, never whether the page renders.
-  let username: string | null = null;
+  let me: { userId: number; username: string } | null = null;
   try {
-    username = (await leaderboardViewer())?.username ?? null;
+    me = await leaderboardViewer();
   } catch {
-    username = null;
+    me = null;
   }
+  const username = me?.username ?? null;
 
   const data = result.kind === "ok" ? result.data : null;
   // The Fishing tab's game, played signed in (lib/viewer-login), which comes back there. Off in bot management, none.
@@ -695,6 +706,16 @@ export default async function LeaderboardPage({ params, searchParams }: Props) {
   // The $DON tab's list comes from the same source as its search.
   const firstViewers = tab === "points" && data ? await loadPublicViewers(slug, "") : null;
   const fishing = data?.fishing ?? null;
+  const fishSection = Array.isArray(rawSection) ? rawSection[0] : rawSection;
+  // Top fish, signed in with web play on: your own row, which is where you sell, even off the public list.
+  let own: PublicHolder | null = null;
+  if (tab === "fishing" && fishingOn && fishSection === "top" && me) {
+    try {
+      own = publicHolder((await getFishPage(slug, me.userId, me.username)).fish?.own);
+    } catch {
+      own = null;
+    }
+  }
   const commands = data?.commands ?? null;
   const currency = data?.currencyName ?? "Points";
   const rows = data ? data.points : [];
@@ -771,10 +792,11 @@ export default async function LeaderboardPage({ params, searchParams }: Props) {
                   channel={slug}
                   command={commands?.command ?? "$points"}
                   game={fishingOn ? <FishingGame channel={slug} me={username} viewerLogin={viewerLogin} signinFailed={signinFailed} /> : null}
-                  section={Array.isArray(rawSection) ? rawSection[0] : rawSection}
+                  section={fishSection}
                   stealer={fishingOn && fishing.steal ? username : null}
                   trader={fishingOn && fishing.trade ? username : null}
                   viewer={username}
+                  own={own}
                 />
               ) : (
                 <p className="rounded-xl border border-neutral-800 bg-neutral-950/60 px-5 py-8 text-center text-sm text-neutral-500">

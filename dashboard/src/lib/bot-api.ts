@@ -1002,6 +1002,8 @@ export interface FishPage {
   selling?: boolean;
   feeding?: boolean;
   trading?: boolean;
+  /** Their own row as "Holding right now" shows it (unchecked: publicHolder), null holding nothing. Absent from an older bot service. */
+  own?: unknown;
   /** Trade offers waiting on them or from them. */
   trades?: Array<{ incoming: boolean; with: string; give: string; get: string; fee: number; expiresAt: number }>;
   baits: Array<{ word: string; emoji: string; price: number; oneIn: number }>;

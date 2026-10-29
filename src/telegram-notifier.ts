@@ -4,7 +4,10 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { withFileLock, writeJsonAtomic } from './file-lock';
 
-const DEPLOY_PATH: string = process.env.BOT_FULL_PATH || path.resolve(__dirname, '..');
+// This repo, from the code's own place, never BOT_FULL_PATH: pm2's daemon carries the Twitch bot's
+// value and dotenv won't override it, so every Kick process looked in Twitch's missing data folder,
+// the dedupe below failed, and an alert repeated each minute (2026-10-29).
+const DEPLOY_PATH: string = path.resolve(__dirname, '..');
 
 /**
  * When each alert was last sent, shared by every Kick process. The enrollment

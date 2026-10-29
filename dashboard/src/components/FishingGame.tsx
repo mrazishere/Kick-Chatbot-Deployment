@@ -47,14 +47,6 @@ function groups(each: Held[]): Group[] {
 /** "100 cm Lv10 🏅", as chat names a fish. */
 const fishLabel = (e: Pick<Held, "cm" | "level" | "record">) => `${e.cm} cm${e.level ? ` Lv${e.level}` : ""}${e.record ? " 🏅" : ""}`;
 
-/** The sell move for a choice: one (oldest unfed), all of the kind, or that very fish by length, level and 🏅. */
-function sellArgs(kind: Bucket, which: string): string[] {
-  if (which === "one") return ["sell", kind.emoji, "1"];
-  if (which === "all") return ["sell", kind.emoji, String(kind.n)];
-  const [cm, level, record] = which.split("|");
-  return ["sell", kind.emoji, `${cm}cm`, `Lv${level}`, ...(record === "1" ? ["🏅"] : [])];
-}
-
 /** The very fish, as chat names it: kind, length, level and 🏅 ("🐟 100cm Lv10 🏅"). */
 const exactWords = (emoji: string, e: Pick<Held, "cm" | "level" | "record">) => [emoji, `${e.cm}cm`, `Lv${e.level}`, ...(e.record ? ["🏅"] : [])];
 
@@ -89,11 +81,10 @@ export default function FishingGame({
   const [latest, setLatest] = useState<FishReply[] | null>(null);
   const [answer, setAnswer] = useState("");
   const [trapFor, setTrapFor] = useState<number | null>(null);
-  // Every sale, feeding and trade answer asks once more, saying what goes and what it's worth,
-  // before it's sent: a stray click (or a small child) can't sell a fish. `where` puts the
+  // Every feeding and trade answer asks once more, saying what goes and what it's worth,
+  // before it's sent: a stray click (or a small child) can't give a fish away. `where` puts the
   // question under the row that asked it.
-  const [pending, setPending] = useState<{ where: "sell" | "feed" | "trade"; text: string; yes: string; args: string[]; after?: () => void } | null>(null);
-  const [sell, setSell] = useState({ kind: "", which: "one" });
+  const [pending, setPending] = useState<{ where: "feed" | "trade"; text: string; yes: string; args: string[]; after?: () => void } | null>(null);
   // The fish that eats (emoji|cm|level|record), the food picker, and the plate so far.
   const [feed, setFeed] = useState<{ eater: string; kind: string; count: number; foods: Food[] }>({ eater: "", kind: "", count: 1, foods: [] });
   // Server time minus this browser's, so countdowns don't drift with a wrong clock.
@@ -171,7 +162,7 @@ export default function FishingGame({
     return (
       <section className="rounded-xl border border-neutral-800 bg-neutral-950/60 px-5 py-4 text-sm text-neutral-300">
         <p className="font-medium text-neutral-100">🎣 Fish here instead of in chat</p>
-        <p className="mt-1 text-neutral-400">Cast, lay traps, sell, trade and buy gear from this page, with the same rules and cooldowns as chat.</p>
+        <p className="mt-1 text-neutral-400">Cast, lay traps, feed, trade and buy gear from this page, with the same rules and cooldowns as chat.</p>
         {viewerLogin ? (
           <p className="mt-3 flex flex-wrap items-center gap-3">
             <a href={viewerLogin} className={primary}>Sign in with Kick</a>
@@ -219,7 +210,6 @@ export default function FishingGame({
 
   const row = "flex flex-wrap items-center justify-between gap-3 px-5 py-3";
   const bucket = fish.bucket ?? [];
-  const sellKind = bucket.find((k) => k.emoji === sell.kind) ?? bucket[0];
   // Any fish below the top level can eat, named exactly (length, level, 🏅), so the one picked is the one fed.
   const eaters = bucket
     .filter((k) => k.type === "fish")
@@ -241,28 +231,11 @@ export default function FishingGame({
     });
   const foodChoice = foodChoices.find((c) => c.key === feed.kind) ?? foodChoices[0];
 
-  const money = (n: number) => `${n.toLocaleString("en-US")} ${cur}`;
-  const fishWorth = bucket.filter((k) => k.type === "fish").reduce((t, k) => t + k.worth, 0);
-  const junkWorth = bucket.filter((k) => k.type === "junk").reduce((t, k) => t + k.worth, 0);
-  // Duplicates keep the best of each kind: roughly everything but each kind's dearest one.
-  const dupes = bucket
-    .filter((k) => k.type === "fish" && k.n > 1)
-    .reduce((t, k) => ({ n: t.n + k.n - 1, worth: t.worth + k.worth - Math.max(0, ...k.each.map((e) => e.worth), k.unsized ? k.worth / k.n : 0) }), { n: 0, worth: 0 });
-  dupes.worth = Math.round(dupes.worth);
-
-  /** What a sale choice does, for its confirm. */
-  function sellText(kind: Bucket, which: string): string {
-    if (which === "one") return `Sell one ${kind.emoji}, your oldest unfed one?`;
-    if (which === "all") return `Sell all ${kind.n} ${kind.emoji} for about ${money(kind.worth)}?`;
-    const gp = groups(kind.each).find((x) => x.key === which);
-    return gp ? `Sell your ${kind.emoji} ${fishLabel(gp)} for ${money(gp.worth)}?` : `Sell that ${kind.emoji}?`;
-  }
-
-  const ask = (where: "sell" | "feed" | "trade", text: string, yes: string, args: string[], after?: () => void) =>
+  const ask = (where: "feed" | "trade", text: string, yes: string, args: string[], after?: () => void) =>
     setPending({ where, text, yes, args, after });
 
   /** The question waiting under a row: what happens, then yes or cancel. */
-  const confirmBar = (where: "sell" | "feed" | "trade") =>
+  const confirmBar = (where: "feed" | "trade") =>
     pending?.where === where ? (
       <div className="flex flex-wrap items-center justify-between gap-2 border-t border-amber-500/30 bg-amber-500/5 px-5 py-2">
         <span className="text-amber-200">{pending.text}</span>
@@ -290,6 +263,10 @@ export default function FishingGame({
           {fish.balance.toLocaleString("en-US")} {cur} · 🐟 {fish.held.fish}
           {fish.held.maxFish ? `/${fish.held.maxFish}` : ""} · junk {fish.held.junk}
           {fish.held.maxJunk ? `/${fish.held.maxJunk}` : ""}
+          {/* Selling is on your own row under Top fish, not here. */}
+          {fish.held.fish + fish.held.junk > 0 ? (
+            <a href={`${BASE_PATH}/leaderboard/${channel}?tab=fishing&section=top`} className="ml-2 text-neutral-300 underline">Sell under Top fish</a>
+          ) : null}
         </span>
       </h2>
 
@@ -416,66 +393,6 @@ export default function FishingGame({
 
       {fish.bucket?.length ? (
         <div className="divide-y divide-neutral-800 border-t border-neutral-800">
-          <div className={row}>
-            <span>
-              Sell
-              <span className="block text-xs text-neutral-500">
-                {sellKind ? `${sellKind.emoji} ×${sellKind.n}, about ${sellKind.worth.toLocaleString("en-US")} ${cur} in all.` : "Pick what to sell."}
-              </span>
-            </span>
-            <span className="flex flex-wrap items-center gap-2">
-              <select value={sellKind?.emoji ?? ""} onChange={(e) => { setSell({ kind: e.target.value, which: "one" }); setPending(null); }} aria-label="What to sell" className={select}>
-                {fish.bucket.map((k) => (
-                  <option key={k.emoji} value={k.emoji}>{k.emoji} ×{k.n}</option>
-                ))}
-              </select>
-              {sellKind ? (
-                <select value={sell.which} onChange={(e) => { setSell({ ...sell, which: e.target.value }); setPending(null); }} aria-label="Which ones" className={select}>
-                  <option value="one">One, oldest unfed first</option>
-                  {sellKind.n > 1 ? <option value="all">All {sellKind.n} · {sellKind.worth.toLocaleString("en-US")}</option> : null}
-                  {groups(sellKind.each).map((gp) => (
-                    <option key={gp.key} value={gp.key}>
-                      {fishLabel(gp)}{gp.n > 1 ? ` (×${gp.n})` : ""} · {gp.worth.toLocaleString("en-US")}
-                    </option>
-                  ))}
-                </select>
-              ) : null}
-              {sellKind ? (
-                <button type="button" disabled={busy} onClick={() => ask("sell", sellText(sellKind, sell.which), "Yes, sell", sellArgs(sellKind, sell.which))} className={primary}>
-                  Sell
-                </button>
-              ) : null}
-            </span>
-          </div>
-          <div className="flex flex-wrap gap-2 px-5 py-2">
-            {dupes.n > 0 ? (
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => ask("sell", `Sell ${dupes.n} duplicate fish, keeping your best one of each kind, for about ${money(dupes.worth)}?`, "Yes, sell", ["sell", "duplicate", "fish"])}
-                className={btn}
-              >
-                Sell duplicate fish
-              </button>
-            ) : null}
-            {fish.held.junk > 0 ? (
-              <button type="button" disabled={busy} onClick={() => ask("sell", `Sell all ${fish.held.junk} junk for about ${money(junkWorth)}?`, "Yes, sell", ["sell", "all", "junk"])} className={btn}>
-                Sell all junk
-              </button>
-            ) : null}
-            {fish.held.fish > 0 ? (
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => ask("sell", `Sell every one of your ${fish.held.fish} fish, fed and 🏅 ones too, for about ${money(fishWorth)}? This can't be undone.`, "Yes, sell them all", ["sell", "all", "fish"])}
-                className={btn}
-              >
-                Sell all fish
-              </button>
-            ) : null}
-          </div>
-          {confirmBar("sell")}
-
           {fish.feeding && eaters.length ? (
             <div className={row}>
               <span>
