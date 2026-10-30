@@ -111,9 +111,9 @@ export function defaultPointsConfig(): PointsConfig {
 }
 
 /** On by default: it only happens while live with an overlay showing, to someone chatting. */
-export const DEFAULT_BIG_BITE: Readonly<FishBigBiteSetting> = { enabled: true, everyMinutes: 30, activeMinutes: 10, windowSeconds: 30, pulls: 3, pullSeconds: 8, flashSeconds: 3, snipeSeconds: 20, kicksMin: 0, onSub: false, onGift: false };
+export const DEFAULT_BIG_BITE: Readonly<FishBigBiteSetting> = { enabled: true, everyMinutes: 30, activeMinutes: 10, windowSeconds: 30, pulls: 3, pullSeconds: 8, flashSeconds: 3, snipeSeconds: 20, kicksMin: 0, onSub: false, onGift: false, onLeaderboard: false };
 /** The on/off big bite settings. */
-const BIG_BITE_SWITCHES = ['enabled', 'onSub', 'onGift'] as const;
+const BIG_BITE_SWITCHES = ['enabled', 'onSub', 'onGift', 'onLeaderboard'] as const;
 
 const BIG_BITE_NUMBERS: Record<Exclude<keyof FishBigBiteSetting, (typeof BIG_BITE_SWITCHES)[number]>, Rule> = {
   // At least 10 minutes pass between two bites whatever the average says.

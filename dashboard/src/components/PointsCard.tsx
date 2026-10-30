@@ -312,6 +312,8 @@ export interface FishBigBite {
   kicksMin?: number;
   onSub?: boolean;
   onGift?: boolean;
+  /** Big bites also play on the public leaderboard's Fishing tab. Absent from an older bot service. */
+  onLeaderboard?: boolean;
 }
 
 /** The bot's defaults, for a bot service that doesn't report game settings yet. */
@@ -567,7 +569,7 @@ interface SettingsForm {
   /** null: a bot service older than custom fish, so none are sent. */
   fishCustom: { name: string; weight: string; price: string; type: CustomFish["type"] }[] | null;
   /** null when the bot service doesn't report big bites. */
-  fishBigBite: { enabled: boolean; everyMinutes: string; activeMinutes: string; windowSeconds: string; pulls: string; pullSeconds: string; flashSeconds: string; snipeSeconds: string; kicksMin: string; onSub: boolean; onGift: boolean } | null;
+  fishBigBite: { enabled: boolean; everyMinutes: string; activeMinutes: string; windowSeconds: string; pulls: string; pullSeconds: string; flashSeconds: string; snipeSeconds: string; kicksMin: string; onSub: boolean; onGift: boolean; onLeaderboard: boolean } | null;
   fishTrapCheck: { enabled: boolean; chancePercent: string; castChancePercent: string; finePercent: string; answerSeconds: string; tries: string } | null;
   /** null when the bot service doesn't report reels. */
   fishReels: { name: string; price: string; odds: string; rarity: string; value: string }[] | null;
@@ -684,6 +686,7 @@ function formFromConfig(c: PointsConfig): SettingsForm {
           kicksMin: String(c.games.bigBite.kicksMin ?? 0),
           onSub: c.games.bigBite.onSub ?? false,
           onGift: c.games.bigBite.onGift ?? false,
+          onLeaderboard: c.games.bigBite.onLeaderboard ?? false,
         }
       : null,
     fishTrapCheck: c.games?.trapCheck
@@ -1010,6 +1013,7 @@ function buildPatch(f: SettingsForm): { patch: PointsSettingsPatch } | { error: 
       kicksMin: whole(f.fishBigBite.kicksMin, "Big bite for Kicks", 0, 1_000_000),
       onSub: f.fishBigBite.onSub,
       onGift: f.fishBigBite.onGift,
+      onLeaderboard: f.fishBigBite.onLeaderboard,
     };
   }
   if (f.fishTrapCheck) {
@@ -1198,6 +1202,17 @@ function BigBiteSettings({ value, command, disabled, onChange }: {
             <Field label="Snipers get the last (s)" hint="of the first code, give or take 3s at random per bite, at most half of it; 0 = no sniping, default 20">
               <input value={value.snipeSeconds} inputMode="numeric" disabled={disabled} onChange={(e) => onChange({ ...value, snipeSeconds: e.target.value })} className={INPUT} />
             </Field>
+          </div>
+          <div className="mt-4 space-y-1 rounded-md border border-neutral-800/70 p-3">
+            <Checkbox
+              label="Play big bites on the public leaderboard too (Fishing tab)"
+              checked={value.onLeaderboard}
+              disabled={disabled}
+              onChange={(onLeaderboard) => onChange({ ...value, onLeaderboard })}
+            />
+            <p className="text-xs text-neutral-500">
+              Everyone on the Fishing tab sees who has the bite, the pull and its time. The holder, signed in, sees the code there with no stream delay and can answer it on the page (with leaderboard fishing on) or in chat. Snipes still go by the SNIPE OPEN line in chat. The overlay plays it as usual, and the how-to video turns into a link.
+            </p>
           </div>
           <div className="mt-4 space-y-2 rounded-md border border-neutral-800/70 p-3">
             <p className="text-xs font-medium text-neutral-300">🎁 Reward bites: a big bite for viewers who support the channel, on top of the timed ones</p>

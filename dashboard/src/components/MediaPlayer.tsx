@@ -16,7 +16,7 @@ const TICK_MS = 1_000;
 
 type Song = { key: string; videoId: string; title: string; username: string; start: number; end: number; amount: number | null; tip: boolean };
 type Sync = { build?: string; active: boolean; otherActive: boolean; now: number; playing: Song | null; queue: Song[]; history: Song[]; state: "playing" | "paused"; resume: number | null; hidden: boolean; captions: boolean; acted: boolean | null };
-type Action = { type: "next" | "skip" | "play" | "pause" | "replay" | "hide" | "show" | "captions-on" | "captions-off"; key?: string };
+type Action = { type: "next" | "skip" | "play" | "pause" | "replay" | "hide" | "show" | "captions-on" | "captions-off"; key?: string; error?: number };
 
 interface YTPlayer {
   loadVideoById(o: { videoId: string; startSeconds?: number; endSeconds?: number }): void;
@@ -158,11 +158,13 @@ export default function MediaPlayer({ channel, playerKey }: { channel: string; p
             }
           },
           // Removed, private, region-locked or not embeddable: on to the next one.
-          onError: () => {
+          // YouTube's code goes with the skip, to the page and the bot's log (100 gone, 101/150 not embeddable).
+          onError: (e: { data: number }) => {
             const l = loaded.current;
             if (l && !l.endAsked) {
               l.endAsked = true;
-              act({ type: "skip", key: l.key });
+              act({ type: "skip", key: l.key, error: e.data });
+              setNote(`YouTube wouldn't play that one here (error ${e.data}), so it skipped`);
             }
           },
         },

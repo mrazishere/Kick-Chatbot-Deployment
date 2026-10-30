@@ -57,6 +57,7 @@ import { makeCooldown, parseUsername, span } from '../community/format';
 import { gameInvocation } from '../community/stakes';
 import { addReminder, cancelSelfRemindersStartingWith, openCommunityDb } from '../community/store';
 import { bestEmote, broadcasterIdFor, emoteImages, withKickEmotes } from '../community/emotes';
+import { alertUser } from '../community/fish-alerts';
 import { OverlayKind, overlayHealth, overlayOff, overlayShowing, pushOverlay, requestOverlayReload, setOverlayOff } from '../community/fish-overlay';
 import { addChallenge, challengeBy, challengeFor, closeInValue, describe, fighterOf, describeTeam, dropChallenge, fight, findTeam, fishSpecs, fishNamed, heldFish, TYPE_EMOJI, isLength, specText, splitLengths, fishValue, keepsRange, overlayDuel, overlayTeamDuel, pickByValue, pickFighter, pickForKeeps, pickTeam, sameFish, playMs, randomFish, switchesIn, teamFight, teamSizeOf, teamValue, wantsRandom, type Challenge, type DuelStake, type OverlayDuel, type Picked } from '../community/fish-duel';
 import { parseBet } from './points';
@@ -65,7 +66,7 @@ import { wheelBusy } from '../community/wheel-state';
 import { recordSignal } from '../community/cheat-signals';
 import { buyGuard as shopBuyGuard, buyHook as shopBuyHook, buyReel as shopBuyReel, reelEffects, type ShopBuyer } from '../community/fish-shop';
 import { addTrade, dropTrade, mirrorTrades, sideText, tradeBy, tradeFor, type TradeItem, type TradeOffer, type TradeSide } from '../community/fish-trade';
-import { BITE_TOO_FAST_MS, STREAM_GRACE_MS, biteFor, canBite, channelBite, channelHasBite, codeMatches, getAway, nextPull, pickChatter, recordBite, rewardSnipeFails, snipeBite, snipeOpen, startBite, takeBite, type BiteContext } from '../community/big-bite';
+import { BITE_TOO_FAST_MS, BITE_TOO_FAST_PAGE_MS, STREAM_GRACE_MS, biteFor, canBite, channelBite, channelHasBite, codeMatches, getAway, nextPull, pickChatter, recordBite, rewardSnipeFails, snipeBite, snipeOpen, startBite, takeBite, type BiteContext } from '../community/big-bite';
 import {
   addItem, itemByWord, giveItems, guardEnd, guardPausedAt, baitPrice, baitRoll, currentReel, freshCatches, landsFish, moveFish, pickHeld, stealableFish, stealCharges, stealRollChance, worstStealCharges, parseSellList, takeSized, addXp, levelCost, levelOf, MAX_LEVEL, capOf, emoteWord, isWordName, nearCap, overflow, CatchItem, CatchType, FAILURE_EMOTES, FishData, findBait, hasFishedBefore, initialData, rarityOf, recordCatch,
   ITEMS, JUNK_MESSAGES, loadFish, MISS_DELAY_MS, TRAP_MIN_MINUTES, pick, randomInt, rollCatch, saveFish, sellPrice, STORY_STYLES, SUCCESS_EMOTES,
@@ -541,6 +542,8 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
    */
   function reelIn(codeRaw: string | undefined, uid: number): void {
     const at = Date.now();
+    // An answer from the fishing page hears how it went there; chat and the stream get their lines as usual.
+    const tell = (text: string, kind: OverlayKind) => void web?.reply(text, { kind });
     let bite = biteFor(chan, meLc);
     if (!bite) {
       const other = channelBite(chan);
@@ -562,12 +565,15 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       snipeBite(biteCtx(), other, me, uid);
       bite = other;
     } else {
-      const fail = (why: string) => { takeBite(chan, meLc); getAway(biteCtx(), bite!, why); };
+      const fail = (why: string) => { takeBite(chan, meLc); getAway(biteCtx(), bite!, why); tell(`The big one got away... ${why}`, 'miss'); };
       if (at > bite.until + STREAM_GRACE_MS) return fail('Too slow! It shook the hook and swam off.');
-      if (at - bite.startedAt < BITE_TOO_FAST_MS) return fail('You yanked too early and snapped the line!');
+      if (at - bite.startedAt < (g.bigBite.onLeaderboard ? BITE_TOO_FAST_PAGE_MS : BITE_TOO_FAST_MS)) return fail('You yanked too early and snapped the line!');
       if (!codeMatches(codeRaw, bite.code)) return fail('Wrong move! The line snapped.');
     }
-    if (bite.pull < bite.pulls) return nextPull(biteCtx(), bite);
+    if (bite.pull < bite.pulls) {
+      nextPull(biteCtx(), bite);
+      return tell(`💪 Got it! It's pulling back hard: a new code is up (pull ${bite.pull}/${bite.pulls}).`, 'info');
+    }
     takeBite(chan, meLc);
     const item = weightedCatch('trophy', g);
     // A paid (reward) bite always lands once every code is right: only the trophy is left to chance.
@@ -576,6 +582,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       recordBite(db!, bite, 'snapped', { trophy: item.name, landPercent: item.landPercent });
       const snapped = `So close! It was a ${sparkle(item.name)}! It thrashed free on the last pull and snapped the line! 😱`;
       pushOverlay(db!, { username: me, kind: 'miss', text: snapped, item: item.name, rarity: 'Mythic' });
+      tell(snapped, 'miss');
       return void client.say(channel, `@${me} ${snapped}`);
     }
     const out = once(now => {
@@ -593,6 +600,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     // The result line: to chat as well as the overlay, whatever the chat-replies setting.
     const text = `🏆 You reeled it in! A MYTHIC ${sparkle(out.item.name)}! ${out.sizeString}`;
     pushOverlay(db!, { username: me, kind: 'catch', text, item: out.item.name, rarity: 'Mythic' });
+    tell(text, 'catch');
     void client.say(channel, `@${me} ${text}`);
   }
 
@@ -625,12 +633,15 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       : '🎣 Fishing overlay back on: replies show on stream and big bites are back.');
   }
 
-  /** Testers only: a big bite on yourself now, live or not (an overlay still has to be showing). */
+  /** Somewhere for a big bite's code to show: an open overlay, or the leaderboard's Fishing tab when big bites play there. */
+  const biteStage = (): boolean => overlayShowing(db!) || g.bigBite.onLeaderboard;
+
+  /** Testers only: a big bite on yourself now, live or not (an overlay or the leaderboard has to show the code). */
   function testBite(uid: number): void {
     if (!tester) return;
     if (biteFor(chan, meLc)) return void say('You already have a big bite on your line.');
     if (wheelBusy(chan)) return void say('The wheel is spinning: try once it has landed.');
-    if (!overlayShowing(db!)) return void say(noOverlay());
+    if (!biteStage()) return void say(noOverlay());
     startBite(biteCtx(), me, uid);
   }
 
@@ -761,7 +772,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     if (!g.bigBite.enabled) return void say('Big bites are off here.');
     if (channelHasBite(chan)) return void say('Someone already has a big bite on their line.');
     if (wheelBusy(chan)) return void say('The wheel is spinning: start a big bite once it has landed.');
-    if (!overlayShowing(db!)) return void say(noOverlay());
+    if (!biteStage()) return void say(noOverlay());
     const who = { channel: chan, db: db!, bigBite: g.bigBite, excluded: (id: number, name: string) => offLimits(id, name) };
     const nameLc = (target ?? '').replace(/^@+/, '').toLowerCase();
     if (!nameLc) {
@@ -1291,6 +1302,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       lastGive.set(`${chan}|${meLc}`, now);
       const size = cm !== undefined ? ` (${cm} cm)` : '';
       console.log(`[FISH] ${me} gave ${moved} ${item.name}${size} to ${to.username} in ${chan}`);
+      alertUser(db!, to.user_id, 'gift', `🎁 ${me} gave you ${moved > 1 ? `${moved} ` : ''}${item.name}${size}!`, now);
       return `🎁 You gave @${to.username} ${moved > 1 ? `${moved} ` : ''}${item.name}${size}! You have ${have - moved} left.`;
     });
     if (text) say(text);
@@ -1487,6 +1499,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     if (!once(() => (addTrade(chan, offer), true))) return;
     mirrorTrades(db!, chan);
     console.log(`[FISH] ${me} offered ${to.username} a trade in ${chan}: ${sideText(giveSide, cur)} for ${sideText(getSide, cur)} (fee ${fee})`);
+    alertUser(db!, to.user_id, 'trade', `🤝 ${me} offers ${sideText(giveSide, cur)} for your ${sideText(getSide, cur)}. Accept or decline within ${span(t.expirySeconds * 1000)}.`, now);
     await announce(`🤝 @${to.username}, ${me} offers ${sideText(giveSide, cur)} for your ${sideText(getSide, cur)}. ${cmd} fish accept or ${cmd} fish decline (${span(t.expirySeconds * 1000)}). ${me} pays a ${groupDigits(fee)} ${cur} fee.`);
   }
 
@@ -1495,6 +1508,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     if (!offer) return void say('Nobody has offered you a trade.');
     dropTrade(chan, offer);
     mirrorTrades(db!, chan);
+    alertUser(db!, offer.fromId, 'trade', `🤝 ${me} turned down your trade.`);
     void announce(`@${offer.from} ${me} turned down your trade.`);
   }
 
@@ -1542,6 +1556,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     dropTrade(chan, offer);
     mirrorTrades(db!, chan);
     if ('off' in text) return void say(text.off);
+    alertUser(db!, offer.fromId, 'trade', `🤝 ${me} took your trade: you got ${sideText(offer.get, cur)} for ${sideText(offer.give, cur)}.`);
     console.log(`[FISH] trade in ${chan}: ${offer.from} gave ${sideText(offer.give, cur)}, ${offer.to} gave ${sideText(offer.get, cur)}, fee ${offer.fee}`);
     void announce(`🤝 Trade done! @${offer.from} got ${sideText(offer.get, cur)}, @${offer.to} got ${sideText(offer.give, cur)}. ${offer.from} paid a ${groupDigits(offer.fee)} ${cur} fee.`);
   }
@@ -1782,6 +1797,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
         d.lifetime.steal.blocked++;
         saveFish(db!, uid, d, now);
         log('guarded', item.name, picked.held?.cm ?? null, { worth, fee, fine });
+        alertUser(db!, victim.user_id, 'steal', `🛡️ Your guard caught ${me} reaching for your ${item.name}${picked.held ? ` (${picked.held.cm} cm)` : ''}: they paid a ${groupDigits(fine)} ${cur} fine.`, now);
         tried = true;
         return `🛡️ @${victim.username} has a guard watching their fish! It caught you reaching for their ${sparkle(item.name)}: you paid a ${groupDigits(fine)} ${cur} fine on top of the ${groupDigits(fee)} ${cur} fee. (${hookLeft}, ${cooldown})`;
       }
@@ -1793,6 +1809,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
         saveFish(db!, uid, d, now);
         saveFish(db!, victim.user_id, v, now);
         log('stolen', item.name, picked.held?.cm ?? null, { worth, fee, fine: 0 });
+        alertUser(db!, victim.user_id, 'steal', `🪝 ${me} stole your ${item.name}${picked.held ? ` (${picked.held.cm} cm)` : ''}, worth ${groupDigits(worth)} ${cur}!`, now);
         overlay = { kind: 'steal', item: item.name };
         tried = true;
         const size = picked.held ? ` (${picked.held.cm} cm)` : '';
@@ -1804,6 +1821,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       d.lifetime.steal.caught++;
       saveFish(db!, uid, d, now);
       log('caught', item.name, picked.held?.cm ?? null, { worth, fee, fine });
+      alertUser(db!, victim.user_id, 'steal', `🚨 You caught ${me} trying to steal your ${item.name}${picked.held ? ` (${picked.held.cm} cm)` : ''}: they paid a ${groupDigits(fine)} ${cur} fine.`, now);
       overlay = { kind: 'caught', item: item.name };
       tried = true;
       return `🚨 @${victim.username} caught you red-handed reaching for their ${sparkle(item.name)}! You paid a ${groupDigits(fine)} ${cur} fine on top of the ${groupDigits(fee)} ${cur} fee. (${hookLeft}, ${cooldown})`;
@@ -2100,6 +2118,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       d.lifetime.junk = lifetime.junk;
       saveFish(db!, target.user_id, d, now);
       console.log(`[FISH] ${me} added ${added.join(' ')} to ${target.username} in ${chan}`);
+      alertUser(db!, target.user_id, 'gift', `🎁 ${me} added ${added.join(', ')} to your collection!`, now);
       return `🎁 Added ${added.join(', ')} to @${target.username}. They have ${d.catch.fish} fish and ${d.catch.junk} junk now.`;
     });
     if (text) say(text);
@@ -2180,6 +2199,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
         : '';
       const text = `⚔️ ${me} challenges you to a ${size}v${size} fish battle with ${lineup}. ${stakeLine(stake)}${keepsNote} Answer within ${span(du.expirySeconds * 1000)}: ${cmd} fish accept [fish…] or ${cmd} fish deny.`;
       pushOverlay(db!, { username: me, kind: 'info', text: `⚔️ challenges ${rival.username} to a ${size}v${size} fish battle with ${lineup}. ${stakeLine(stake)}` });
+      alertUser(db!, rival.user_id, 'duel', text);
       return void (await announce(`@${rival.username} ${text}`));
     }
     const theirsD = loadFish(db!, rival.user_id);
@@ -2217,6 +2237,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       : '';
     const text = `⚔️ ${me} challenges you to a fish duel with their ${describe(fighter.fighter)}. ${stakeLine(stake)}${keepsNote} Answer within ${span(du.expirySeconds * 1000)}: ${cmd} fish accept [fish] or ${cmd} fish deny.`;
     pushOverlay(db!, { username: me, kind: 'info', text: `⚔️ challenges ${rival.username} to a fish duel with their ${describe(fighter.fighter)}. ${stakeLine(stake)}` });
+    alertUser(db!, rival.user_id, 'duel', text);
     await announce(`@${rival.username} ${text}`);
   }
 
@@ -2301,17 +2322,25 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     if (!fought) return;
     if ('retry' in fought) return void say(fought.retry);
     dropChallenge(chan, c);
-    if ('off' in fought) return void announce(`@${me} @${c.challenger} ${fought.off}`);
+    if ('off' in fought) {
+      alertUser(db!, c.challengerId, 'duel', `⚔️ ${me} accepted your fish duel: ${fought.off}`);
+      return void announce(`@${me} @${c.challenger} ${fought.off}`);
+    }
+    // The challenger hears how it went when chat does: as it ends on stream, if it plays there.
+    const told = (): void => alertUser(db!, c.challengerId, 'duel', fought.text.replace(/@/g, ''));
     // With an overlay showing the fight, chat hears who won as it ends there, not before it starts.
     const playing = overlayShowing(db!);
     // Fish named after emotes (custom fish) show as the emote on the stage.
     const d0 = fought.duel;
     const duelEmotes = emoteImages(chan, [d0.a.fish, d0.b.fish, ...(d0.teams ?? []).flat().map(f => f.fish)].join(' '));
     pushOverlay(db!, { username: fought.winner, kind: 'duel', text: fought.text.replace(/@/g, ''), duel: d0, ...(Object.keys(duelEmotes).length ? { emotes: duelEmotes } : {}) });
-    if (!playing) return void announce(fought.text);
+    if (!playing) {
+      told();
+      return void announce(fought.text);
+    }
     await announce(`⚔️ ${c.challenger} vs ${me}: the fish ${c.team ? `battle (${c.team.length}v${c.team.length})` : 'duel'} is on! Watch the stream.`);
     // The stream shows the fight streamDelaySeconds behind chat.
-    setTimeout(() => void announce(fought.text), playMs(fought.turns, fought.switches ?? 0) + g.streamDelaySeconds * 1000).unref();
+    setTimeout(() => (told(), void announce(fought.text)), playMs(fought.turns, fought.switches ?? 0) + g.streamDelaySeconds * 1000).unref();
   }
 
   /**
@@ -2397,6 +2426,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     const incoming = challengeFor(chan, uid);
     if (incoming) {
       dropChallenge(chan, incoming);
+      alertUser(db!, incoming.challengerId, 'duel', `⚔️ ${me} turned down your fish duel.`);
       return void announce(`@${incoming.challenger} ${me} turned down your fish duel.`);
     }
     const own = challengeBy(chan, uid);
@@ -2570,8 +2600,10 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
   }
 
   try {
-    // The fishing page plays casts, traps (with their checks), selling, feeding and trades; the rest stays in chat.
-    if (web && sub !== undefined && !['trap', 'answer', 'sell', 'feed', 'trade', 'accept', 'deny', 'steal'].includes(sub)) return void say('That one is played in chat.');
+    // The fishing page plays casts, traps (with their checks), selling, feeding, trades and steals, and big bite
+    // codes where they're on the leaderboard (games.bigBite.onLeaderboard); the rest stays in chat.
+    const pageMoves = ['trap', 'answer', 'sell', 'feed', 'trade', 'accept', 'deny', 'steal', ...(g.bigBite.onLeaderboard ? ['reel'] : [])];
+    if (web && sub !== undefined && !pageMoves.includes(sub)) return void say('That one is played in chat.');
     // On the page, accept and decline are for trades only, a duel challenge waiting or not: duels are played in chat.
     if (web && (sub === 'accept' || sub === 'deny')) {
       if (userId === null || excluded) return ignore('no account or excluded');

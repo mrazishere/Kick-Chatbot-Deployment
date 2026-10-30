@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { validChannel } from "@/lib/bot-auth";
 import { BotApiError, fishMove, getFishPage } from "@/lib/bot-api";
 import { leaderboardViewer } from "@/lib/session";
+import { MOVE_MAX_CHARS, moveLength } from "@/lib/fish-move";
 import { emoteImages } from "@/lib/public-leaderboard";
 
 // The signed-in viewer's fishing game on the leaderboard: casts, traps, check answers, selling and trades,
@@ -50,7 +51,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ channel
   // A typed answer can be an emoji or words ("tin can"); every other part is a plain word.
   const ok = (a: unknown, i: number): a is string =>
     typeof a === "string" && (args?.[0] === "answer" && i === 1 ? /^[^\p{Cc}$!]{1,40}$/u.test(a) && a.trim() !== "" : WORD.test(a));
-  if (!args || args.length > 40 || !args.every(ok)) {
+  if (!args || !args.every(ok) || moveLength(args) > MOVE_MAX_CHARS) {
     return NextResponse.json({ error: "Bad move" }, { status: 400, headers });
   }
   if (typeof body?.requestId !== "string" || !UUID.test(body.requestId)) return NextResponse.json({ error: "Bad request" }, { status: 400, headers });

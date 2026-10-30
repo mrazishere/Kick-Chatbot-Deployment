@@ -20,7 +20,7 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ cha
     : undefined;
   const a = raw?.action;
   const action = a && typeof a.type === "string" && ACTIONS.has(a.type)
-    ? { type: a.type as "next" | "skip" | "play" | "pause" | "replay" | "hide" | "show" | "captions-on" | "captions-off", ...(typeof a.key === "string" ? { key: a.key.slice(0, 64) } : {}) }
+    ? { type: a.type as "next" | "skip" | "play" | "pause" | "replay" | "hide" | "show" | "captions-on" | "captions-off", ...(typeof a.key === "string" ? { key: a.key.slice(0, 64) } : {}), ...(Number.isInteger(a.error) ? { error: a.error as number } : {}) }
     : undefined;
   try {
     // build: the dashboard build answering, so a page on an older one offers to reload.

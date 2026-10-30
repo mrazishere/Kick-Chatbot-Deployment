@@ -224,7 +224,7 @@ function publicFishing(raw: unknown): PublicFishing | null {
   const fish = publicCatches(f.fish);
   return fish.length ? { catchOdds: f.catchOdds, webPlay: f.webPlay === true, trade: f.trade === true, fish, junk: publicCatches(f.junk), topFish: publicTopFish(f.topFish), holders: publicHolders(f.holders), steal: f.steal === true, ...stealRules(f.stealRules), ...fishEmotes(f.emotes), heists: publicHeists(f.heists), duel: f.duel === true, duels: publicDuels(f.duels),
     trophies: publicCatches(f.trophies),
-    bigBite: f.bigBite && typeof f.bigBite.everyMinutes === "number" ? { everyMinutes: f.bigBite.everyMinutes } : null } : null;
+    bigBite: f.bigBite && typeof f.bigBite.everyMinutes === "number" ? { everyMinutes: f.bigBite.everyMinutes, ...(f.bigBite.onLeaderboard === true ? { onLeaderboard: true } : {}) } : null } : null;
 }
 
 /** The command list, keeping only well-formed rows of plain, short text. */

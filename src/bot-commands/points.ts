@@ -27,6 +27,7 @@
  *          $don add|remove|set @user 500
  *          $don fish ...              - the fishing game, answered by fish.ts
  *          $don wordle ...            - Wordle for the chat, answered by wordle.ts
+ *          $don ask <question>        - Mr Ali on the currency and games, answered by ask.ts
  *
  * Gambling and duels stay silent when off, on cooldown, or the stream is offline
  * (the user's choice, to keep chat clean); the log says why each was ignored. A
@@ -55,9 +56,9 @@ import {
   cancelRaffle, createRaffle, incomingDuels, isApplied, isExcluded, joinRaffle, openRaffle, outgoingDuel, rankBy, refundDuel, setTx, topBy, transfer
 } from '../points/store';
 
-const SUBCOMMANDS = new Set(['activetime', 'top', 'leaderboard', 'give', 'video', 'wordle', 'gamble', 'duel', 'accept', 'deny', 'cancel', 'raffle', 'sraffle', 'join', 'add', 'remove', 'set', 'fish', 'commands']);
+const SUBCOMMANDS = new Set(['activetime', 'top', 'leaderboard', 'give', 'video', 'wordle', 'gamble', 'duel', 'accept', 'deny', 'cancel', 'raffle', 'sraffle', 'join', 'add', 'remove', 'set', 'fish', 'commands', 'ask']);
 /** Played through the currency command but answered by their own modules (see community/stakes.ts). */
-const GAME_SUBCOMMANDS = new Set(['fish', 'wordle']);
+const GAME_SUBCOMMANDS = new Set(['fish', 'wordle', 'ask']);
 /**
  * Short forms: `$<cmd> g 100` is `$<cmd> gamble 100`. One letter where it's free, two
  * where a letter is shared. A two-letter one hides a viewer of that exact name

@@ -680,7 +680,10 @@ class KickChatBot {
         await this.sendMessage(msg).catch(() => {});
       }
     };
-    const args = move.args.filter((a): a is string => typeof a === 'string').map(a => a.slice(0, 40)).slice(0, 40);
+    // As long as a chat message, the same as the bot's fishing-page check: a move that's longer is
+    // refused whole, never cut short (a cut feeding used to eat only the first foods on the plate).
+    const args = move.args.filter((a): a is string => typeof a === 'string').map(a => a.slice(0, 40));
+    if (args.join(' ').length > 500) return reply('That move is longer than a chat message: split it in two.', { kind: 'info' });
     const message = `$${effectiveCommand(this.points.config())} fish ${args.join(' ')}`.trim();
     Promise.resolve(fishCommand(client, message, `#${this.channelName}`, tags, this.config)).catch(err => {
       console.error('[FISH] Fishing page move failed:', err instanceof Error ? err.message : String(err));

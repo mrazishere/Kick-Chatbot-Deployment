@@ -99,6 +99,7 @@ export function publicCommands(cfg: PointsConfig, opts: { channel?: BotCommandCh
       ...(cfg.gamble.enabled ? [{ usage: `${c} top gamble`, short: `${c} t g`, does: 'Top 5 gamblers by net winnings' }] : []),
       { usage: `${c} activetime [@user]`, short: `${c} at`, does: 'Active time and rank' },
       { usage: `${c} leaderboard`, short: `${c} lb`, does: 'A link to this page' },
+      { usage: `${c} ask <question>`, does: `Ask Mr Ali about your ${cur}, ${g.enabled ? 'fishing, ' : ''}prices, odds or how a game or command works, answered from the real numbers` },
       ...(cfg.give.enabled ? [{ usage: `${c} give @user 100`, short: `${c} gv @user 100`, does: `Send ${cur} to someone` }] : []),
       ...(cfg.video.enabled ? [
         { usage: `${c} video <youtube link>`, short: `${c} v <link>`, does: `Play a YouTube video on stream, with sound, for ${cfg.video.pricePerSecond.toLocaleString('en-US')} ${cur} a second (up to ${cfg.video.maxSeconds}s; a ?t= start time works). One in line each, up to ${cfg.video.queueMax} waiting${cfg.video.onlyWhileLive ? ', while live' : ''}` },

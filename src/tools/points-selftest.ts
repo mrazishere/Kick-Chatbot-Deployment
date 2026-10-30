@@ -36,7 +36,7 @@ import { buyGuard, shopView, syncGuardPause } from '../community/fish-shop';
 import { guardEnd, guardPausedAt, guardsPauseWhileLive } from '../community/fishing';
 import { openCommunityDb } from '../community/store';
 import { markOverlaySeen, noteOverlayHealth, overlayHealth, overlayOff, overlayReloadToken, overlayShowing, readOverlay, requestOverlayReload, watchOverlay } from '../community/fish-overlay';
-import { biteFor, drawSnipeMs, openSnipes, resetBites, rewardBitesWaiting, snipeOpen, SNIPE_PENDING, startBite, takeBite as takeBiteForTest } from '../community/big-bite';
+import { biteFor, drawSnipeMs, LIVE_BITE_KEY, openSnipes, resetBites, rewardBitesWaiting, snipeOpen, SNIPE_PENDING, startBite, takeBite as takeBiteForTest } from '../community/big-bite';
 import { fish as fishCommand, parseTrapMinutes, SUBCOMMANDS as FISH_SUBCOMMANDS, BOARDS as FISH_BOARD_MAP, BOARD_SHORT as FISH_BOARD_SHORT } from '../bot-commands/fish';
 import { publicCommands, FISH_BOARDS, feedingGuide } from '../points/public-commands';
 import { duelBoard, publicLedgerText, setMetaTx } from '../points/store';
@@ -46,6 +46,7 @@ import { changeWheel, readWheel, validateWheel } from '../community/wheel';
 import { funnels, linkedAccounts, linkedGroups, recordSignal, suspects } from '../community/cheat-signals';
 import { resetWheelBusy, wheelBusy } from '../community/wheel-state';
 import { recentSpins } from '../community/wheel-history';
+import { alertsFor } from '../community/fish-alerts';
 import { wheel as wheelCommand } from '../bot-commands/wheel';
 import { streamstatus } from '../bot-commands/streamstatus';
 import { LISTED_FILES, NOT_LISTED } from '../points/public-bot-commands';
@@ -237,7 +238,7 @@ async function main(): Promise<void> {
   // Store basics
   {
     const db = openPointsDb('basics', { create: true })!;
-    check('migrated to user_version 16', db.pragma('user_version', { simple: true }) === 16);
+    check('migrated to user_version 17', db.pragma('user_version', { simple: true }) === 17);
     runWrite(db, () => creditTx(db, { userId: 1, username: 'alice', amount: 100, reason: 'mod_add', now: 1 }));
     const over = runWrite(db, () => debitTx(db, { userId: 1, amount: 150, reason: 'mod_remove', now: 2 }));
     check('debit beyond balance refused', !over.ok && over.balance === 100);
@@ -1398,6 +1399,7 @@ async function main(): Promise<void> {
       check('even someone who has never fished can take one', toNew.includes("don't have any 🦐") && fishOf(51).catch.types['🐟'] === 3, toNew);
       check('not more than you hold, nor to yourself', (await run('$don fish give @friend 🐟 4')).includes('only have 3') && (await run('$don fish give @giver 🐟')).includes('yourself'));
       const gave = await run('$don f gv @friend 🐟 2');
+      check('the one given to is alerted', alertsFor(gdb, 52).some(a => a.kind === 'gift' && a.text === '🎁 giver gave you 2 🐟!'), alertsFor(gdb, 52));
       check('a give moves that many, oldest sized first, lengths kept and the record bonus left behind', gave.includes('You gave @friend 2 🐟') && gave.includes('1 left')
         && fishOf(51).catch.types['🐟'] === 1 && fishOf(51).catch.fish === 1 && fishOf(52).catch.types['🐟'] === 2 && fishOf(52).catch.fish === 2
         && JSON.stringify(fishOf(52).catch.sizes?.['🐟']) === JSON.stringify([{ cm: 20, record: false }, { cm: 70, record: false }]), { gave, from: fishOf(51).catch, to: fishOf(52).catch });
@@ -1664,6 +1666,7 @@ async function main(): Promise<void> {
         && fishOf(32).catch.sizes?.['🐟']?.length === 2 && fishOf(31).hook === 2 && balance(ch, 31) === 1840
         && fishOf(31).lifetime.steal.stolen === 1 && fishOf(32).lifetime.steal.lost === 1 && fishOf(31).lifetime.fish === 0, got);
       check('a stolen fish reaches the overlay', readOverlay(sdb).events.some(e => e.kind === 'steal' && e.item === '🐟'));
+      check('the victim gets an alert for the leaderboard: who stole which fish', alertsFor(sdb, 32).some(a => a.kind === 'steal' && a.text.includes('thief stole your 🐟 (50 cm)')), alertsFor(sdb, 32));
       const again = await run('$don fish steal @mark3');
       check('a steal starts the steal cooldown and leaves fishing alone', again.includes('try another steal in') && (fishOf(31).stealReady ?? 0) > Date.now() && fishOf(31).readyTimestamp <= Date.now(), again);
       shift += 31 * 60_000;
@@ -1675,6 +1678,7 @@ async function main(): Promise<void> {
         blocked.includes('@guarded has a guard') && blocked.includes('25 $DON fine') && !/guard[^.]*\d+h/.test(blocked) && fishOf(31).hook === 1 && balance(ch, 31) === 1805
         && fishOf(33).catch.types['🐟'] === 3 && fishOf(31).lifetime.steal.blocked === 1 && (fishOf(31).stealReady ?? 0) > Date.now(), blocked);
       check('and starts the steal cooldown', (await run('$don fish steal @guarded')).includes('try another steal in'));
+      check('the guarded viewer is alerted that their guard caught the thief', alertsFor(sdb, 33).some(a => a.text.includes('Your guard caught thief')), alertsFor(sdb, 33));
       shift += 31 * 60_000;
       runWrite(sdb, () => recordCatch(sdb, 35, '🐟', 'cast', 50, Date.now()));
       check('fish landed within the grace time can\'t be stolen', (await run('$don fish steal @fresh')).includes('no fish you can get your hook into'));
@@ -1691,6 +1695,8 @@ async function main(): Promise<void> {
       check('caught: the fine is burned, one hook try is used, the fish stays', caught.includes('caught you red-handed') && caught.includes('25 $DON fine')
         && fishOf(31).hook === 0 && balance(ch, 31) === 1770 && balance(ch, 34) === 10 && fishOf(34).catch.types['🐟'] === 2
         && fishOf(31).lifetime.steal.caught === 1, caught);
+      check('caught: the victim is alerted with the fine', alertsFor(sdb, 34).some(a => a.text.includes('You caught thief trying to steal your 🐟') && a.text.includes('25 $DON fine')), alertsFor(sdb, 34));
+      check('a refused steal (short of the fee) alerts nobody', !alertsFor(sdb, 34).some(a => a.text.includes('poor')));
       check('caught: the steal cooldown starts too, fishing stays free', caught.includes('next steal in') && (fishOf(31).stealReady ?? 0) > Date.now() && fishOf(31).readyTimestamp <= Date.now(), caught);
       // A 🐋 at 100 cm is worth 3,000: a 3% fee of 90 when it works. Value counts as much as rarity, so every tier is at
       // 100% and the 🐳 lists at 3,000: a fish dearer than the 🐳's list price would be harder than its tier's odds.
@@ -2029,7 +2035,37 @@ async function main(): Promise<void> {
         && lastBite()?.username === 'other' && lastBite()!.pull === 2);
       await run(`$don fish reel ${s2.code}`, ['other', 44], 2_500);
       check('the sniper reels on as its chatter', lastBite()?.username === 'other' && lastBite()!.pull === 3);
+      check('the holder was alerted to the bite, and to losing it to the sniper', alertsFor(bdb, 41).some(a => a.kind === 'bite' && a.text.includes('Something BIG'))
+        && alertsFor(bdb, 41).some(a => a.text === '🪝 other sniped your big bite!'), alertsFor(bdb, 41));
+      const mirrored = () => {
+        const row = bdb.prepare('SELECT value FROM meta WHERE key = ?').get(LIVE_BITE_KEY) as { value: string } | undefined;
+        return row ? JSON.parse(row.value) as { username: string; code: string; pull: number; until: number; flashMs?: number } : null;
+      };
+      check('the bite on a line is mirrored for the leaderboard, its code and pull as the overlay has them',
+        mirrored()?.username === 'other' && mirrored()?.pull === 3 && mirrored()?.code === lastBite()?.code && mirrored()?.until === lastBite()?.until && mirrored()?.flashMs === lastBite()?.flashMs, mirrored());
       takeBiteForTest(ch, 'other');
+      check('and cleared once it ends', mirrored() === null);
+      // The holder answers from the leaderboard's fishing page: the page hears how it went.
+      {
+        let wn = 0;
+        const fromPage = async (code: string, step = 3_000) => {
+          shift += step;
+          const requestId = `00000000-0000-4000-8000-${String(++wn).padStart(12, '0')}`;
+          const tags: KickTags = { username: 'biter', 'display-name': 'biter', badges: {}, isBroadcaster: false, isModUp: false, isVIPUp: false, rawBadges: [], senderId: 41,
+            messageId: `web:${requestId}`, web: { reply: (text, meta) => recordWebReply(bdb, { requestId, userId: 41 }, text, meta) } };
+          await fishCommand({ say: async () => {} }, `$don fish reel ${code}`, `#${ch}`, tags, { channelName: ch } as ChannelConfig);
+          return repliesFor(bdb, requestId).map(r => r.text).join(' ');
+        };
+        const refused = await fromPage('42', 6_000);
+        check('without the leaderboard switch, a code from the page is turned away', refused.includes('played in chat'), refused);
+        writeConfig(root, ch, { enabled: true, currencyName: '$DON', debugFishTesters: ['tester'], games: { enabled: true, onlyWhileLive: false, stories: false, bigBite: { onLeaderboard: true } } });
+        const wctx = { channel: ch, db: bdb, bigBite: effectivePointsConfig({ games: { enabled: true } }).games.bigBite, command: 'don', sendMessage: async () => {} };
+        const wb = startBite(wctx, 'biter', 41);
+        const first = await fromPage(wb.code);
+        check('a right code from the page brings the next pull, and the page says so', first.includes('Got it') && mirrored()?.pull === 2 && mirrored()?.flashMs !== undefined, { first, m: mirrored() });
+        const wrong = await fromPage(mirrored()?.code === 'AAA' ? 'CCC' : 'AAA');
+        check('a wrong code from the page tells the page it got away', wrong.includes('got away') && mirrored() === null, wrong);
+      }
       // A reward bite opens to snipers too, but a right snipe code only makes it spit the hook.
       {
         const rsaid: string[] = [];
@@ -3756,25 +3792,25 @@ async function main(): Promise<void> {
     const mch = 'migrate1ch';
     const mdb = openPointsDb(mch, { create: true })!;
     runWrite(mdb, () => creditTx(mdb, { userId: 1, username: 'old', amount: 77, reason: 'mod_add', now: 1 }));
-    mdb.exec('DROP TABLE web_replies; DROP TABLE big_bites; DROP TABLE fish_trades; DROP TABLE wheel_spins; DROP TABLE video_queue; DROP TABLE fish_signals; DROP TABLE fish_duels; DROP TABLE steals; DROP TABLE overlay_feed; DROP TABLE catches; DROP TABLE fish; DROP TABLE duels; DROP TABLE raffle_entries; DROP TABLE raffles; DROP INDEX ledger_ref');
+    mdb.exec('DROP TABLE fish_alerts; DROP TABLE web_replies; DROP TABLE big_bites; DROP TABLE fish_trades; DROP TABLE wheel_spins; DROP TABLE video_queue; DROP TABLE fish_signals; DROP TABLE fish_duels; DROP TABLE steals; DROP TABLE overlay_feed; DROP TABLE catches; DROP TABLE fish; DROP TABLE duels; DROP TABLE raffle_entries; DROP TABLE raffles; DROP INDEX ledger_ref');
     mdb.pragma('user_version = 1');
     closePointsDb(mch);
     const reopened = openPointsDb(mch, { create: false })!;
     const hasTable = (n: string) => !!reopened.prepare('SELECT 1 FROM sqlite_master WHERE name = ?').get(n);
     check('a v1 database migrates to the latest version keeping balances',
-      reopened.pragma('user_version', { simple: true }) === 16 && balance(mch, 1) === 77 && hasTable('web_replies') && hasTable('video_queue') && hasTable('wheel_spins') && hasTable('fish_trades') && hasTable('big_bites')
+      reopened.pragma('user_version', { simple: true }) === 17 && balance(mch, 1) === 77 && hasTable('fish_alerts') && hasTable('web_replies') && hasTable('video_queue') && hasTable('wheel_spins') && hasTable('fish_trades') && hasTable('big_bites')
       && hasTable('duels') && hasTable('raffles') && hasTable('raffle_entries') && hasTable('fish') && hasTable('catches') && hasTable('overlay_feed') && hasTable('steals') && hasTable('fish_duels') && hasTable('fish_signals'));
 
     // v2 → v3 specifically: a database that already has duels gains the raffle tables.
     const m2 = 'migrate2ch';
     const m2db = openPointsDb(m2, { create: true })!;
     runWrite(m2db, () => creditTx(m2db, { userId: 1, username: 'old2', amount: 42, reason: 'mod_add', now: 1 }));
-    m2db.exec('DROP TABLE web_replies; DROP TABLE big_bites; DROP TABLE fish_trades; DROP TABLE wheel_spins; DROP TABLE video_queue; DROP TABLE fish_signals; DROP TABLE fish_duels; DROP TABLE steals; DROP TABLE overlay_feed; DROP TABLE catches; DROP TABLE fish; DROP TABLE raffle_entries; DROP TABLE raffles; DROP INDEX ledger_ref');
+    m2db.exec('DROP TABLE fish_alerts; DROP TABLE web_replies; DROP TABLE big_bites; DROP TABLE fish_trades; DROP TABLE wheel_spins; DROP TABLE video_queue; DROP TABLE fish_signals; DROP TABLE fish_duels; DROP TABLE steals; DROP TABLE overlay_feed; DROP TABLE catches; DROP TABLE fish; DROP TABLE raffle_entries; DROP TABLE raffles; DROP INDEX ledger_ref');
     m2db.pragma('user_version = 2');
     closePointsDb(m2);
     const re2 = openPointsDb(m2, { create: false })!;
     check('a v2 database gains the raffle tables and keeps its balances',
-      re2.pragma('user_version', { simple: true }) === 16 && balance(m2, 1) === 42
+      re2.pragma('user_version', { simple: true }) === 17 && balance(m2, 1) === 42
       && !!re2.prepare("SELECT 1 FROM sqlite_master WHERE name = 'raffles'").get());
     void svc;
     makeService(ch, { broadcaster: 999 });

@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getViewerSession } from "@/lib/session";
+import { channelOf, logWebFishing } from "@/lib/web-fishing-log";
 import { VIEWER_CLIENT_ID, VIEWER_CLIENT_SECRET, viewerLoginEnabled } from "@/lib/viewer-login";
 
 const BASE_URL = process.env.NEXT_PUBLIC_BASE_URL ?? "http://localhost:3008";
@@ -23,7 +24,11 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   const state = searchParams.get("state");
   const session = await getViewerSession();
   const back = `${BASE_URL}${session.oauthReturnTo ?? "/login"}`;
-  const fail = (why: string) => NextResponse.redirect(`${back}${back.includes("?") ? "&" : "?"}signin=${encodeURIComponent(why)}`);
+  const channel = channelOf(session.oauthReturnTo);
+  const fail = (why: string, who = "?") => {
+    logWebFishing(channel, who, "sign-in", `FAILED (${why})`);
+    return NextResponse.redirect(`${back}${back.includes("?") ? "&" : "?"}signin=${encodeURIComponent(why)}`);
+  };
 
   if (!viewerLoginEnabled()) return fail("unavailable");
   if (searchParams.get("error")) return fail("cancelled");
@@ -81,5 +86,6 @@ export async function GET(req: NextRequest): Promise<NextResponse> {
   session.avatarUrl = user.profile_picture;
   await session.save();
   console.log(`[KPP Auth] Viewer ${username} signed in from the leaderboard`);
+  logWebFishing(channel, username, "sign-in", "signed in");
   return NextResponse.redirect(back);
 }

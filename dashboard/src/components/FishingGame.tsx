@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { FishPage, FishReply, OwnShop as Shop } from "@/lib/bot-api";
 import OwnShop from "@/components/OwnShop";
+import { MOVE_MAX_CHARS, moveLength } from "@/lib/fish-move";
 
 const BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
 
@@ -248,6 +249,13 @@ export default function FishingGame({
       return [any, ...exact].filter((c) => c.max > 0);
     });
   const foodChoice = foodChoices.find((c) => c.key === feed.kind) ?? foodChoices[0];
+  // The plate with the chosen food added (in place of the same food already there), and whether it still
+  // fits one move: as long as a chat message, the only limit feeding in chat has.
+  const withChoice = foodChoice
+    ? [...feed.foods.filter((f) => f.key !== foodChoice.key), { key: foodChoice.key, label: foodChoice.label.replace(/ ×\d+$/, ""), n: Math.min(feed.count, foodChoice.max), words: foodChoice.words(Math.min(feed.count, foodChoice.max)) }]
+    : feed.foods;
+  const plateFits = !eater || moveLength(feedArgs(eater, withChoice)) <= MOVE_MAX_CHARS;
+  const plateOver = !!eater && moveLength(feedArgs(eater, feed.foods)) > MOVE_MAX_CHARS;
 
   const ask = (where: "feed" | "trade", text: string, yes: string, args: string[], after?: () => void) =>
     setPending({ where, text, yes, args, after });
@@ -444,20 +452,17 @@ export default function FishingGame({
                 />
                 <button
                   type="button"
-                  disabled={!foodChoice || feed.foods.length >= 6}
-                  onClick={() => {
-                    if (!foodChoice) return;
-                    const n = Math.min(feed.count, foodChoice.max);
-                    const label = foodChoice.label.replace(/ ×\d+$/, "");
-                    setFeed({ ...feed, foods: [...feed.foods.filter((f) => f.key !== foodChoice.key), { key: foodChoice.key, label, n, words: foodChoice.words(n) }] });
-                  }}
+                  disabled={!foodChoice || !plateFits}
+                  onClick={() => foodChoice && setFeed({ ...feed, foods: withChoice })}
+                  title={plateFits ? undefined : "That's as much as one chat message can name: feed these first, then add more"}
                   className={btn}
                 >
                   Add
                 </button>
                 <button
                   type="button"
-                  disabled={busy || !eater || !feed.foods.length}
+                  disabled={busy || !eater || !feed.foods.length || plateOver}
+                  title={plateOver ? "More than one chat message can name: take something off the plate" : undefined}
                   onClick={() =>
                     eater &&
                     ask(

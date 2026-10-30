@@ -385,7 +385,23 @@ CREATE INDEX web_replies_request ON web_replies(request_id);
 CREATE INDEX web_replies_user_ts ON web_replies(user_id, ts);
 `;
 
-const SCHEMA_VERSION = 16;
+/**
+ * v17: fish_alerts, what happened to a viewer in the fishing game (a steal on their fish, a
+ * gift, a trade or duel for them, a big bite on their line), for the leaderboard's alerts when
+ * they're signed in (community/fish-alerts.ts). Kept a week.
+ */
+const SCHEMA_V17 = `
+CREATE TABLE fish_alerts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts INTEGER NOT NULL,
+  user_id INTEGER NOT NULL,
+  kind TEXT NOT NULL,
+  text TEXT NOT NULL
+);
+CREATE INDEX fish_alerts_user_id ON fish_alerts(user_id, id);
+`;
+
+const SCHEMA_VERSION = 17;
 
 export function migrate(db: PointsDb): void {
   if ((db.pragma('user_version', { simple: true }) as number) >= SCHEMA_VERSION) return;
@@ -410,6 +426,7 @@ export function migrate(db: PointsDb): void {
     if (version < 14) db.exec(SCHEMA_V14);
     if (version < 15) db.exec(SCHEMA_V15);
     if (version < 16) db.exec(SCHEMA_V16);
+    if (version < 17) db.exec(SCHEMA_V17);
     if (version < SCHEMA_VERSION) db.pragma(`user_version = ${SCHEMA_VERSION}`);
   }).immediate();
 }

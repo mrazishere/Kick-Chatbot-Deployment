@@ -10,6 +10,8 @@ import { loadPublicLeaderboard, loadPublicViewers, publicHolder } from "@/lib/pu
 import { getFishPage } from "@/lib/bot-api";
 import PublicViewers from "@/components/PublicViewers";
 import FishingGame from "@/components/FishingGame";
+import BigBitePanel from "@/components/BigBitePanel";
+import FishAlerts from "@/components/FishAlerts";
 import StealButton from "@/components/StealButton";
 import SellButton from "@/components/SellButton";
 import TradeBuilder, { type TradeFish } from "@/components/TradeBuilder";
@@ -550,8 +552,11 @@ function FishingTab({
 }) {
   const sections = fishSections(fishing, game !== null);
   const section = sections.find((x) => x.id === wanted)?.id ?? sections[0].id;
-  // The big bite how-to is for everyone in chat: on Play when there is one, else at the top of Top fish.
-  const video = fishing.bigBite && hasBigBiteVideo(channel) ? (
+  // With big bites on the leaderboard, they play at the top of every section, and the how-to is a link there.
+  const howTo = fishing.bigBite && hasBigBiteVideo(channel) ? `${BASE_PATH}/videos/big-bite-${channel}.mp4` : null;
+  const bitePanel = fishing.bigBite?.onLeaderboard ? <BigBitePanel channel={channel} me={viewer} everyMinutes={fishing.bigBite.everyMinutes} howTo={howTo} /> : null;
+  // Otherwise the how-to is for everyone in chat: on Play when there is one, else at the top of Top fish.
+  const video = howTo && !bitePanel ? (
     <figure className="overflow-hidden rounded-xl border border-neutral-800 bg-neutral-950/60">
       <video
         className="block aspect-video w-full bg-black"
@@ -580,6 +585,8 @@ function FishingTab({
           </a>
         ))}
       </nav>
+
+      {bitePanel}
 
       {section === "play" ? (
         <>
@@ -817,6 +824,8 @@ export default async function LeaderboardPage({ params, searchParams }: Props) {
                 {result.kind === "ok" && result.stale ? "Showing an earlier copy · " : ""}
                 Updated {formatUpdated(data.updatedAt)}
               </span>
+              {/* Signed in to the fishing game: what happened to their fish while they weren't watching chat. */}
+              {fishingOn && username ? <FishAlerts channel={slug} viewer={username} /> : null}
             </nav>
 
             {tab === "points" && firstViewers?.kind === "ok" ? (

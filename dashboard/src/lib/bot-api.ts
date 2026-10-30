@@ -433,7 +433,8 @@ export interface PublicFishing {
   /** Big bite trophies, chances as shares of big bites. Absent from a bot service older than them. */
   trophies?: PublicCatch[];
   /** About one big bite every this many live minutes; null where they're off. */
-  bigBite?: { everyMinutes: number } | null;
+  /** onLeaderboard: big bites also play on the Fishing tab (games.bigBite.onLeaderboard). */
+  bigBite?: { everyMinutes: number; onLeaderboard?: boolean } | null;
 }
 
 /** One viewer's unsold fish: each kind with how many, rarest first, and what the lot would sell for. */
@@ -1045,6 +1046,55 @@ export function getFishPicture(
   );
 }
 
+/** A big bite on the leaderboard's Fishing tab (games.bigBite.onLeaderboard). `mine` and the rest are for the signed-in holder only. */
+export interface BigBiteView {
+  holder: string;
+  pull: number;
+  pulls: number;
+  startedAt: number;
+  until: number;
+  graceMs: number;
+  reward?: boolean;
+  snipedFrom?: string;
+  mine?: boolean;
+  codeShowing?: boolean;
+  flashMs?: number;
+  canAnswer?: boolean;
+}
+export type BigBiteFeed =
+  | { on: false }
+  | {
+      on: true;
+      now: number;
+      command: string;
+      bite: BigBiteView | null;
+      /** The last bite's ending, for a few seconds after it. */
+      last: { ts: number; username: string; outcome: "landed" | "snapped" | "got-away" | "spat"; trophy: string | null; cm: number | null } | null;
+    };
+
+/** The channel's big bite as the leaderboard shows it; with a signed-in viewer, whether it's theirs. */
+export function getBigBite(channel: string, userId?: number): Promise<BigBiteFeed> {
+  return request(`/internal/bot/${encodeURIComponent(channel)}/points/fish/bite${userId ? `?userId=${userId}` : ""}`, { timeoutMs: 5_000 });
+}
+
+/** Something that happened to a viewer in the fishing game, for their alerts on the leaderboard. */
+export interface FishAlert {
+  id: number;
+  ts: number;
+  kind: "steal" | "gift" | "trade" | "duel" | "bite";
+  text: string;
+}
+
+/** A signed-in viewer's fishing alerts after `after` (0: the latest), oldest first. */
+export function getFishAlerts(channel: string, userId: number, after = 0): Promise<{ alerts: FishAlert[] }> {
+  return request(`/internal/bot/${encodeURIComponent(channel)}/points/fish/alerts?userId=${userId}${after ? `&after=${after}` : ""}`, { timeoutMs: 5_000 });
+}
+
+/** The code of the viewer's own big bite while it shows, to draw as a picture: never sent to a browser as text. */
+export function getBigBiteCode(channel: string, userId: number): Promise<{ code: string; pull: number }> {
+  return request(`/internal/bot/${encodeURIComponent(channel)}/points/fish/bite/code?userId=${userId}`, { timeoutMs: 5_000 });
+}
+
 export function getPublicHistory(channel: string, name: string): Promise<PublicHistory> {
   return request(`/internal/bot/${encodeURIComponent(channel)}/points/public-history?name=${encodeURIComponent(name)}`, {
     timeoutMs: 10_000,
@@ -1193,7 +1243,7 @@ export interface PlayerSync {
 /** The phone player's once-a-second call: where it is in the song up, and any button pressed. */
 export function syncMediaPlayer(
   channel: string,
-  body: { session?: string; claim?: boolean; takeover?: boolean; report?: { key: string; position: number; paused: boolean; hidden: boolean; latencyMs: number }; action?: { type: "next" | "skip" | "play" | "pause" | "replay" | "hide" | "show" | "captions-on" | "captions-off"; key?: string } },
+  body: { session?: string; claim?: boolean; takeover?: boolean; report?: { key: string; position: number; paused: boolean; hidden: boolean; latencyMs: number }; action?: { type: "next" | "skip" | "play" | "pause" | "replay" | "hide" | "show" | "captions-on" | "captions-off"; key?: string; error?: number } },
 ): Promise<PlayerSync> {
   return request(`/internal/bot/${encodeURIComponent(channel)}/mediashare/player`, { method: "POST", body, timeoutMs: 10_000 });
 }

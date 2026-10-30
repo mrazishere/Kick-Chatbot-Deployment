@@ -27,6 +27,7 @@ import { isBotSender } from '../bot-identity';
 import { SYSTEM_BOTS } from '../system-bots';
 import type { PointsDb } from '../points/db';
 import type { FishBigBiteSetting } from '../types';
+import { alertUser } from './fish-alerts';
 import { overlayHealth, overlayShowing, pushOverlay, requestOverlayReload } from './fish-overlay';
 import { wheelBusy } from './wheel-state';
 
@@ -63,6 +64,8 @@ export interface Bite {
   reward?: boolean;
   /** Who it was for, once sniped. */
   snipedFrom?: string;
+  /** This pull's code hides this long after it's shown (from the second pull); absent, it stays. */
+  flashMs?: number;
 }
 
 /**
@@ -96,11 +99,65 @@ function storeDue(db: PointsDb, due: { at: number; every: number } | null): void
     console.error(`[FISH] Saving the next big bite's time failed: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
+/**
+ * The bite on a line, mirrored into the channel's points db for the leaderboard's Fishing tab
+ * (games.bigBite.onLeaderboard), which the enrollment service serves: it can't see this
+ * process's memory. Written whenever a bite starts, moves to a new pull or changes hands, and
+ * cleared when it ends. A restart leaves the last one behind, so readers also check `until`.
+ */
+export const LIVE_BITE_KEY = 'big_bite_live';
+export interface LiveBite {
+  username: string;
+  userId: number;
+  code: string;
+  /** When this pull's code was shown, and when it runs out (the stream's delay included). */
+  startedAt: number;
+  until: number;
+  pull: number;
+  pulls: number;
+  /** From the second pull the code hides this long after it's shown; absent, it stays. */
+  flashMs?: number;
+  reward?: boolean;
+  snipedFrom?: string;
+}
+/** Each channel's points db, kept from the bites started there, for mirroring the bite. */
+const biteDbs = new Map<string, PointsDb>();
+function mirrorBite(channel: string): void {
+  const db = biteDbs.get(channel);
+  if (!db) return;
+  const bite = channelBite(channel);
+  try {
+    if (bite && bite.code) {
+      const live: LiveBite = {
+        username: bite.username, userId: bite.userId, code: bite.code, startedAt: bite.startedAt, until: bite.until, pull: bite.pull, pulls: bite.pulls,
+        ...(bite.flashMs ? { flashMs: bite.flashMs } : {}), ...(bite.reward ? { reward: true } : {}), ...(bite.snipedFrom ? { snipedFrom: bite.snipedFrom } : {})
+      };
+      db.prepare('INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run(LIVE_BITE_KEY, JSON.stringify(live));
+    } else db.prepare('DELETE FROM meta WHERE key = ?').run(LIVE_BITE_KEY);
+  } catch (err) {
+    console.error(`[FISH] Mirroring the big bite for the leaderboard failed: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+/** Clear a mirrored bite this process doesn't have. Never throws. */
+function clearStaleBite(db: PointsDb): void {
+  try {
+    db.prepare('DELETE FROM meta WHERE key = ?').run(LIVE_BITE_KEY);
+  } catch {
+    // A database from before meta: nothing mirrored.
+  }
+}
+
 /** Who got the last one per channel, so the same chatter doesn't get two in a row. */
 const lastChatter = new Map<string, string>();
 
 /** The stream runs a few seconds behind chat: an answer this soon can't have come from watching it. */
 export const BITE_TOO_FAST_MS = 2_000;
+/**
+ * With big bites on the leaderboard (games.bigBite.onLeaderboard) the holder sees the code
+ * there with no stream delay, a poll after it's shown: only quicker than that is too fast.
+ */
+export const BITE_TOO_FAST_PAGE_MS = 800;
 /**
  * The same delay the other way: a viewer sees the overlay's countdown a few seconds
  * late, so an answer still counts this long after a code's time runs out.
@@ -125,6 +182,7 @@ export function takeBite(channel: string, name: string): Bite | undefined {
   if (!bite) return undefined;
   bites.delete(k);
   clearTimeout(bite.timer);
+  mirrorBite(channel);
   return bite;
 }
 
@@ -170,6 +228,7 @@ export const snipeOpen = (bite: Bite, now: number): boolean => bite.pull === 1 &
  */
 export function snipeBite(ctx: BiteContext, bite: Bite, name: string, userId: number): void {
   const from = bite.username;
+  const fromId = bite.userId;
   bites.delete(key(ctx.channel, from));
   clearTimeout(bite.timer);
   bite.snipedFrom ??= from;
@@ -178,7 +237,9 @@ export function snipeBite(ctx: BiteContext, bite: Bite, name: string, userId: nu
   delete bite.snipeAt;
   delete bite.snipeCode;
   bites.set(key(ctx.channel, name), bite);
+  mirrorBite(ctx.channel);
   console.log(`[FISH] ${name} sniped ${from}'s big bite in ${ctx.channel}`);
+  alertUser(ctx.db, fromId, 'bite', `🪝 ${name} sniped your big bite!`);
   pushOverlay(ctx.db, { username: from, kind: 'miss', text: `🪝 ${name} sniped your big bite!` });
   void ctx.sendMessage(`@${from} too slow! 🪝 @${name} sniped your big bite and is reeling it in!`).catch(() => {});
 }
@@ -191,6 +252,7 @@ export function rewardSnipeFails(ctx: BiteContext, bite: Bite, name: string): vo
   const from = bite.username;
   bites.delete(key(ctx.channel, from));
   clearTimeout(bite.timer);
+  mirrorBite(ctx.channel);
   console.log(`[FISH] ${name} sniped ${from}'s reward bite in ${ctx.channel}: it spat the hook`);
   recordBite(ctx.db, bite, 'spat', { why: `sniped by ${name}` });
   const text = `🪝 ${name} hooked it... and it spat the hook! This big one only bites for ${from}. It's gone!`;
@@ -300,12 +362,17 @@ function arm(ctx: BiteContext, bite: Bite, windowMs: number, text: string, now: 
   bite.timer = setTimeout(() => {
     if (bites.get(k) !== bite || bite.code !== code) return;
     bites.delete(k);
+    mirrorBite(ctx.channel);
     getAway(ctx, bite, bite.pull > 1 ? 'It pulled too hard and swam off!' : 'It was too strong and swam off!');
   }, delayMs + windowMs + STREAM_GRACE_MS + 500);
   bite.timer.unref?.();
   // From the second pull the code flashes: the overlay hides it flashSeconds after it first
   // draws it (not after now: the overlay only sees it on its next poll), the clock keeps running.
   const flash = bite.pull > 1 && ctx.bigBite.flashSeconds > 0 ? { flashMs: ctx.bigBite.flashSeconds * 1000 } : {};
+  if (flash.flashMs) bite.flashMs = flash.flashMs;
+  else delete bite.flashMs;
+  biteDbs.set(ctx.channel, ctx.db);
+  mirrorBite(ctx.channel);
   // The overlay gets no snipe time: its "Anyone can snipe!" would reach viewers with a short
   // stream delay before the chat line, and chat is the signal.
   const snipe = {};
@@ -342,6 +409,7 @@ export function startBite(ctx: BiteContext, name: string, userId: number, reward
     lastChatter.set(ctx.channel, name.toLowerCase());
   }
   console.log(`[FISH] big bite for ${name} in ${ctx.channel}${reward ? ` (${reward})` : ''}`);
+  alertUser(ctx.db, userId, 'bite', `🎣 Something BIG is on your line! Reel it in with $${ctx.command} fish reel and the code within ${ctx.bigBite.windowSeconds}s.`, now);
   const pulls = bite.pulls > 1 ? ` (${bite.pulls} pulls)` : '';
   arm(ctx, bite, ctx.bigBite.windowSeconds * 1000,
     `🎣 Something BIG is tugging at your line! Reel it in with $${ctx.command} fish reel <code> within ${ctx.bigBite.windowSeconds}s!${pulls}`, now);
@@ -422,6 +490,8 @@ export const rewardBitesWaiting = (channel: string): number => rewardQueue.get(c
 export function tick(ctx: TickContext): string | null {
   const now = ctx.now ?? Date.now();
   const b = ctx.bigBite;
+  // A bite mirrored before a restart, which took the bite itself with it.
+  if (!channelHasBite(ctx.channel)) clearStaleBite(ctx.db);
   if (!b.enabled || !ctx.live) {
     if (dueAt.delete(ctx.channel) || storedDue(ctx.db)) storeDue(ctx.db, null);
     rewardQueue.delete(ctx.channel);

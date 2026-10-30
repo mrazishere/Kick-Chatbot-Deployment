@@ -483,6 +483,12 @@ export interface FishBigBiteSetting {
   kicksMin: number;
   onSub: boolean;
   onGift: boolean;
+  /**
+   * Big bites play on the public leaderboard's Fishing tab too: everyone there sees the bite,
+   * and its holder, signed in, sees the code with no stream delay and can answer it there.
+   * The overlay still shows it, and chat answers still count.
+   */
+  onLeaderboard: boolean;
 }
 
 /**

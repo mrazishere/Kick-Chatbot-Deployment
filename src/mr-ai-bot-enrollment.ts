@@ -21,7 +21,7 @@ import type { BotCommandChannel } from './points/public-bot-commands';
 import { closePointsDb, openPointsDb, type PointsDb } from './points/db';
 import { buyGuard, buyHook, buyReel, shopView, type ShopItem } from './community/fish-shop';
 import { refreshExpiresAt } from './kick-grant';
-import { recentReplies, repliesFor, WEB_FISH_EVENT, type WebFishMove } from './community/web-fish';
+import { logWebFishing, recentReplies, repliesFor, WEB_FISH_EVENT, type WebFishMove } from './community/web-fish';
 import { markOverlaySeen, noteOverlayHealth, overlayHealth, overlayOff, overlayReloadToken, overlayShowing, readOverlay, requestOverlayReload } from './community/fish-overlay';
 import { publicUserHistory, publicViewerSearch } from './points/store';
 import { BAITS, baitPrice, baitRoll, capOf, currentReel, FAILURE_EMOTES, initialData, ITEMS, levelCost, levelOf, loadFish, MAX_LEVEL, rarityName, sellPrice, stealRollChance, SUCCESS_EMOTES, TRAP_MIN_MINUTES } from './community/fishing';
@@ -34,7 +34,8 @@ import { recentSpins } from './community/wheel-history';
 import { changeWheel, MAX_ITEMS as WHEEL_MAX_ITEMS, MAX_LABEL as WHEEL_MAX_LABEL, readWheel, SPIN_SECONDS as WHEEL_SPIN_SECONDS, validateWheel } from './community/wheel';
 import { noteSocketClose, PUSHER_BAD_KEY_CODES, pusherUrl, refreshPusherKey, watchChatSocket } from './channels/pusher-key';
 import { toHandleChatFormat } from './channels/webhook-poller';
-import { STREAM_GRACE_MS } from './community/big-bite';
+import { LIVE_BITE_KEY, STREAM_GRACE_MS, type LiveBite } from './community/big-bite';
+import { alertsFor } from './community/fish-alerts';
 import { clearAlert, raiseAlert } from './health-alerts';
 import { advanceVideos, failVideo, markVideoOverlaySeen, waitingVideos } from './community/video-share';
 import { PlayerView, mediaShareCaptions, mediaShareHeld, mediaShareHiddenKey, mediaShareNow, setMediaShareCaptions, setMediaShareHiddenKey, mediaShareStatus, playerAction, playerView, removeMediaShareToken, reportPlayer, saveMediaShareToken } from './community/mediashare';
@@ -3212,14 +3213,16 @@ app.post('/internal/bot/:channel/mediashare/player', internalGuard(true), async 
   if (!config) return res.status(404).json({ error: 'Not enrolled' });
   const cfg = effectivePointsConfig(config['points']);
   if (!cfg.enabled || !cfg.video.mediashare) return res.status(404).json({ error: 'Media share is off in this channel' });
-  const body = (req.body ?? {}) as { session?: unknown; claim?: unknown; takeover?: unknown; report?: { key?: unknown; position?: unknown; paused?: unknown; hidden?: unknown; latencyMs?: unknown }; action?: { type?: unknown; key?: unknown } };
+  const body = (req.body ?? {}) as { session?: unknown; claim?: unknown; takeover?: unknown; report?: { key?: unknown; position?: unknown; paused?: unknown; hidden?: unknown; latencyMs?: unknown }; action?: { type?: unknown; key?: unknown; error?: unknown } };
   try {
     const type = body.action?.type;
     let acted: boolean | null = null;
     if (type === 'next' || type === 'skip' || type === 'play' || type === 'pause' || type === 'replay') {
       acted = await playerAction(channel, type, typeof body.action?.key === 'string' ? body.action.key : undefined);
       playerViews.delete(channel);
-      if (acted) console.log(`[MEDIASHARE] ${channel} player: ${type}`);
+      // A skip the page's YouTube player asked for, with YouTube's error code (101/150: not embeddable).
+      const ytError = Number.isInteger(body.action?.error) ? ` (YouTube error ${String(body.action?.error)})` : '';
+      if (acted || ytError) console.log(`[MEDIASHARE] ${channel} player: ${type}${acted ? '' : ' (not acted)'}${ytError}`);
     }
     const now = Date.now();
     let cached = playerViews.get(channel);
@@ -3351,6 +3354,23 @@ function shopRequest(req: express.Request, res: express.Response, from: Record<s
 const shopExcluded = (r: ShopRequest): boolean =>
   isExcluded(exclusionsFor(r.channel, r.cfg, broadcasterIdOf(r.config)), r.userId, r.username.toLowerCase());
 
+// A move or a buy from the fishing page that's refused before it runs (bad input, web play off, an
+// excluded account, no points here) goes to logs/web-fishing.log with the reason, like the ones that run.
+app.post(['/internal/bot/:channel/points/fish/move', '/internal/bot/:channel/points/shop/buy'], (req, res, next) => {
+  const json = res.json.bind(res);
+  res.json = (payload: unknown) => {
+    if (res.statusCode >= 400) {
+      const body = (req.body ?? {}) as Record<string, unknown>;
+      const who = typeof body['username'] === 'string' ? body['username'].slice(0, 25) : '?';
+      const what = req.path.endsWith('/buy') ? `shop ${String(body['item'] ?? '?').slice(0, 10)}` : `move "${Array.isArray(body['args']) ? body['args'].join(' ').slice(0, 120) : ''}"`;
+      const error = (payload as { error?: unknown } | null)?.error;
+      logWebFishing(String(req.params['channel'] ?? '?').slice(0, 25), who, what, `REFUSED ${res.statusCode}: ${typeof error === 'string' ? error : 'no reason given'}`);
+    }
+    return json(payload);
+  };
+  next();
+});
+
 app.get('/internal/bot/:channel/points/shop', internalGuard(false), (req, res) => {
   const r = shopRequest(req, res, req.query as Record<string, unknown>);
   if (!r) return;
@@ -3387,6 +3407,7 @@ app.post('/internal/bot/:channel/points/shop/buy', internalGuard(true), (req, re
     const run = applyOnce(db, `web-shop:${requestId}`, now, () => buy[item](buyer));
     const result = run.applied ? run.result! : { ok: false, text: 'That request was already handled: your gear below is up to date.' };
     console.log(`[SHOP] ${r.username} bought ${item} on the ${r.channel} leaderboard: ${result.ok ? 'ok' : result.text}`);
+    logWebFishing(r.channel, r.username, `shop ${item}`, `${result.ok ? 'bought' : 'not bought'}: ${result.text}`);
     return res.json({ ...result, shop: shopView(db, g, r.userId, Date.now()) });
   } catch (e) {
     return pointsUnavailable(res, r.channel, e);
@@ -3508,6 +3529,9 @@ app.get('/internal/bot/:channel/points/fish', internalGuard(false), async (req, 
   }
 });
 
+/** A fishing-page move, words joined by spaces, can be as long as a Kick chat message. */
+const WEB_MOVE_MAX_CHARS = 500;
+
 app.post('/internal/bot/:channel/points/fish/move', internalGuard(true), async (req, res) => {
   const body = (req.body ?? {}) as Record<string, unknown>;
   const r = fishPageRequest(req, res, body);
@@ -3520,14 +3544,14 @@ app.post('/internal/bot/:channel/points/fish/move', internalGuard(true), async (
   // amounts and an @name. No spaces inside a word but the answer's, and never a $ or !.
   const isAnswer = raw[0] === 'answer';
   const args = raw.filter((a, i): a is string => typeof a === 'string'
-    && (isAnswer && i === 1 ? /^[^\p{Cc}$!]{1,40}$/u.test(a) && a.trim() !== '' : /^[^\p{Cc}\s$!]{1,40}$/u.test(a))).slice(0, 40);
-  // 40 words: a feeding or trade naming several very fish, each by kind, length, level, 🏅 and how many.
-  if (args.length !== raw.length || raw.length > 40) return res.status(400).json({ error: 'Bad move' });
+    && (isAnswer && i === 1 ? /^[^\p{Cc}$!]{1,40}$/u.test(a) && a.trim() !== '' : /^[^\p{Cc}\s$!]{1,40}$/u.test(a)));
+  // As long as a chat message (Kick's 500 characters), so a feeding or trade can name as many fish as chat can.
+  if (args.length !== raw.length || args.join(' ').length > WEB_MOVE_MAX_CHARS) return res.status(400).json({ error: 'Bad move' });
   const first = (args[0] ?? '').toLowerCase();
   const isBait = BAITS.some(b => b.name === first);
   const plays = args.length === 0 || (args.length === 1 && isBait) || (first === 'answer' && args.length === 2)
-    || ['trap', 'sell', 'feed', 'trade', 'steal'].includes(first) || (['accept', 'decline'].includes(first) && args.length === 1);
-  if (!plays) return res.status(400).json({ error: 'Only casts, traps, answers, selling, feeding, trades and steals are played here' });
+    || ['trap', 'sell', 'feed', 'trade', 'steal'].includes(first) || (first === 'reel' && args.length === 2) || (['accept', 'decline'].includes(first) && args.length === 1);
+  if (!plays) return res.status(400).json({ error: 'Only casts, traps, answers, selling, feeding, trades, steals and big bite codes are played here' });
   if (fishPageExcluded(r)) return res.status(403).json({ error: "You can't fish here." });
   const db = openPointsDb(r.channel, { create: false });
   if (!db) return res.status(404).json({ error: 'No points here yet' });
@@ -3550,6 +3574,8 @@ app.post('/internal/bot/:channel/points/fish/move', internalGuard(true), async (
       } else if (replies.length && Date.now() - changedAt >= 600) break;
     }
     console.log(`[FISH PAGE] ${r.username} in ${r.channel}: ${args.join(' ') || 'cast'} -> ${replies.length ? replies.map(x => x.text.slice(0, 60)).join(' | ') : 'no reply'}`);
+    logWebFishing(r.channel, r.username, `move "${args.join(' ') || 'cast'}"`,
+      `${replies.length ? replies.map(x => `${x.kind ? `(${x.kind}) ` : ''}${x.text}`).join(' | ') : `NO REPLY within ${FISH_MOVE_WAIT_MS / 1000}s`} [${Date.now() - started}ms]`);
     return res.json({ replies, answered: replies.length > 0, fish: fishPageState(db, r, Date.now()) });
   } catch (e) {
     return pointsUnavailable(res, r.channel, e);
@@ -3568,6 +3594,111 @@ app.get('/internal/bot/:channel/points/fish/picture', internalGuard(false), (req
     return res.json({ fish: tap.fish.map(f => ({ x: f.x, y: f.y, size: f.size, left: f.left, color: f.color, striped: !!f.striped })) });
   } catch (e) {
     return pointsUnavailable(res, r.channel, e);
+  }
+});
+
+/** A pull's code stays on the page this long past its flash (a poll and a picture load), so a flashing code still shows its full time. */
+const BITE_CODE_SLACK_MS = 1_500;
+
+/**
+ * The big bite on a line, as the leaderboard's Fishing tab shows it (games.bigBite.onLeaderboard):
+ * mirrored by the channel's bot (community/big-bite.ts LIVE_BITE_KEY). Null when off, or none is
+ * on a line (one left behind by a restart is over once its time and grace are).
+ */
+function liveBiteFor(channel: string, cfg: ReturnType<typeof effectivePointsConfig>, db: PointsDb, now: number): LiveBite | null {
+  if (!cfg.enabled || !cfg.publicLeaderboard || !cfg.games.enabled || !cfg.games.bigBite.enabled || !cfg.games.bigBite.onLeaderboard) return null;
+  try {
+    const row = db.prepare('SELECT value FROM meta WHERE key = ?').get(LIVE_BITE_KEY) as { value: string | null } | undefined;
+    const bite = row?.value ? JSON.parse(row.value) as LiveBite : null;
+    return bite && typeof bite.until === 'number' && now <= bite.until + STREAM_GRACE_MS ? bite : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Whether a bite's code is still to be shown: until its flash is over (from the second pull), and never past its time. */
+const biteCodeShowing = (bite: LiveBite, now: number): boolean =>
+  now <= bite.until + STREAM_GRACE_MS && (!bite.flashMs || now <= bite.startedAt + bite.flashMs + BITE_CODE_SLACK_MS);
+
+/**
+ * The big bite for the leaderboard's Fishing tab, to anyone looking: who has it, the pull and
+ * its time. With a signed-in viewer (userId, username) who holds it, whether their code is
+ * showing; never the code itself, which only comes drawn as a picture (bite/code). The last
+ * bite's ending stays a few seconds, so the page can say how it went.
+ */
+app.get('/internal/bot/:channel/points/fish/bite', internalGuard(false), (req, res) => {
+  const channel = String(req.params['channel'] ?? '').toLowerCase();
+  if (!validateChannelName(channel)) return res.status(400).json({ error: 'Invalid channel name' });
+  const config = readChannelConfig(channel);
+  if (!config) return res.status(404).json({ error: 'Not enrolled' });
+  const cfg = effectivePointsConfig(config['points']);
+  if (!cfg.enabled || !cfg.publicLeaderboard || !cfg.games.enabled || !cfg.games.bigBite.enabled || !cfg.games.bigBite.onLeaderboard) return res.json({ on: false });
+  const db = openPointsDb(channel, { create: false });
+  if (!db) return res.json({ on: false });
+  const userId = Number(req.query['userId']);
+  try {
+    const now = Date.now();
+    const bite = liveBiteFor(channel, cfg, db, now);
+    const mine = !!bite && Number.isSafeInteger(userId) && userId > 0 && bite.userId === userId;
+    const last = db.prepare('SELECT ts, username, outcome, trophy, cm FROM big_bites WHERE ts > ? ORDER BY ts DESC LIMIT 1')
+      .get(now - 20_000) as { ts: number; username: string; outcome: string; trophy: string | null; cm: number | null } | undefined;
+    return res.json({
+      on: true,
+      now,
+      command: effectiveCommand(cfg),
+      bite: bite ? {
+        holder: bite.username, pull: bite.pull, pulls: bite.pulls, startedAt: bite.startedAt, until: bite.until, graceMs: STREAM_GRACE_MS,
+        ...(bite.reward ? { reward: true } : {}), ...(bite.snipedFrom ? { snipedFrom: bite.snipedFrom } : {}),
+        ...(mine ? { mine: true, codeShowing: biteCodeShowing(bite, now), ...(bite.flashMs ? { flashMs: bite.flashMs } : {}), canAnswer: cfg.games.webPlay } : {})
+      } : null,
+      last: last && !bite ? { ts: last.ts, username: last.username, outcome: last.outcome, trophy: last.trophy, cm: last.cm } : null
+    });
+  } catch (e) {
+    return pointsUnavailable(res, channel, e);
+  }
+});
+
+/**
+ * A signed-in viewer's fishing alerts (community/fish-alerts.ts): a steal on their fish, a gift,
+ * a trade or duel for them, a big bite on their line. `after` is the last id the page has.
+ */
+app.get('/internal/bot/:channel/points/fish/alerts', internalGuard(false), (req, res) => {
+  const channel = String(req.params['channel'] ?? '').toLowerCase();
+  if (!validateChannelName(channel)) return res.status(400).json({ error: 'Invalid channel name' });
+  const config = readChannelConfig(channel);
+  if (!config) return res.status(404).json({ error: 'Not enrolled' });
+  const cfg = effectivePointsConfig(config['points']);
+  const userId = Number(req.query['userId']);
+  if (!Number.isSafeInteger(userId) || userId <= 0) return res.status(400).json({ error: 'userId must be a Kick user id' });
+  const after = Number(req.query['after'] ?? 0);
+  if (!cfg.enabled || !cfg.publicLeaderboard || !cfg.games.enabled) return res.json({ alerts: [] });
+  const db = openPointsDb(channel, { create: false });
+  if (!db) return res.json({ alerts: [] });
+  try {
+    return res.json({ alerts: alertsFor(db, userId, Number.isSafeInteger(after) && after > 0 ? after : 0) });
+  } catch (e) {
+    return pointsUnavailable(res, channel, e);
+  }
+});
+
+/** The code of the viewer's own big bite while it's showing, for the dashboard to draw as a picture. Never sent to a browser as data. */
+app.get('/internal/bot/:channel/points/fish/bite/code', internalGuard(false), (req, res) => {
+  const channel = String(req.params['channel'] ?? '').toLowerCase();
+  if (!validateChannelName(channel)) return res.status(400).json({ error: 'Invalid channel name' });
+  const config = readChannelConfig(channel);
+  if (!config) return res.status(404).json({ error: 'Not enrolled' });
+  const cfg = effectivePointsConfig(config['points']);
+  const userId = Number(req.query['userId']);
+  if (!Number.isSafeInteger(userId) || userId <= 0) return res.status(400).json({ error: 'userId must be a Kick user id' });
+  const db = openPointsDb(channel, { create: false });
+  if (!db) return res.status(404).json({ error: 'No code showing' });
+  try {
+    const now = Date.now();
+    const bite = liveBiteFor(channel, cfg, db, now);
+    if (!bite || bite.userId !== userId || !biteCodeShowing(bite, now)) return res.status(404).json({ error: 'No code showing' });
+    return res.json({ code: bite.code, pull: bite.pull });
+  } catch (e) {
+    return pointsUnavailable(res, channel, e);
   }
 });
 
@@ -3716,7 +3847,7 @@ function publicFishing(channel: string, cfg: ReturnType<typeof effectivePointsCo
         onlyWhileLive: g.steal.onlyWhileLive, offlineOnly: g.onlyWhileOffline, cooldownMinutes: g.catchCooldownMinutes
       }
     } : {}), heists: heistBoard(channel, cfg, broadcasterUserId), duel: g.duel.enabled, duels: duelBoard(channel, cfg, broadcasterUserId),
-    trophies, bigBite: g.bigBite.enabled ? { everyMinutes: g.bigBite.everyMinutes } : null
+    trophies, bigBite: g.bigBite.enabled ? { everyMinutes: g.bigBite.everyMinutes, ...(g.bigBite.onLeaderboard ? { onLeaderboard: true } : {}) } : null
   };
 }
 

@@ -20,6 +20,7 @@ export const NOT_LISTED: Record<string, string> = {
   points: 'the currency commands, listed by public-commands.ts',
   fish: 'the currency commands, listed by public-commands.ts',
   wordle: 'the currency commands, listed by public-commands.ts',
+  ask: 'the currency commands, listed by public-commands.ts',
   wheel: 'listed by public-commands.ts with the currency games',
   customC: 'listed below from the channel\'s custom commands',
   numfacts: 'switched off in its file: numbersapi.com, its only source, is gone'
