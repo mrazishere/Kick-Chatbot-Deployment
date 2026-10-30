@@ -1220,7 +1220,7 @@ export function removeMediaShareToken(channel: string): Promise<MediaShareStatus
 
 /** The overlay couldn't play this video: the bot ends it and refunds the viewer. */
 /** A song as the media share phone player gets it. */
-export interface PlayerSong { key: string; videoId: string; title: string; username: string; start: number; end: number; amount: number | null; tip: boolean }
+export interface PlayerSong { key: string; videoId: string; title: string; username: string; start: number; end: number; amount: number | null; tip: boolean; duration: number; songKey?: string }
 
 /** What the phone player plays: the song up, the queue, the last few, and StreamElements' play/pause. */
 export interface PlayerSync {
@@ -1238,12 +1238,25 @@ export interface PlayerSync {
   active: boolean;
   otherActive: boolean;
   acted: boolean | null;
+  /** Videos the player couldn't play lately, newest last, and why (blocked in a country, removed...). */
+  failures: PlayerFailure[];
+  /** Queued videos YouTube will refuse anywhere, by key, and why. */
+  warnings: Record<string, string>;
+}
+
+export interface PlayerFailure { key: string; videoId: string; title: string; username: string; seconds: number; code: number; reason: string; at: number }
+
+export interface AltVideo { videoId: string; title: string; channel: string; durationS: number }
+
+/** YouTube for the phone player: other uploads of a video that won't play, or a search; or queue one just offered. */
+export function mediaShareAlternatives(channel: string, body: { find: { videoId: string; title: string; seconds: number } } | { search: string } | { add: string }): Promise<{ results?: AltVideo[]; problem?: string; ok?: boolean }> {
+  return request(`/internal/bot/${encodeURIComponent(channel)}/mediashare/alternatives`, { method: "POST", body, timeoutMs: 20_000 });
 }
 
 /** The phone player's once-a-second call: where it is in the song up, and any button pressed. */
 export function syncMediaPlayer(
   channel: string,
-  body: { session?: string; claim?: boolean; takeover?: boolean; report?: { key: string; position: number; paused: boolean; hidden: boolean; latencyMs: number }; action?: { type: "next" | "skip" | "play" | "pause" | "replay" | "hide" | "show" | "captions-on" | "captions-off"; key?: string; error?: number } },
+  body: { session?: string; claim?: boolean; takeover?: boolean; report?: { key: string; position: number; paused: boolean; hidden: boolean; latencyMs: number }; action?: { type: "next" | "skip" | "play" | "pause" | "replay" | "hide" | "show" | "captions-on" | "captions-off" | "front" | "remove"; key?: string; error?: number } },
 ): Promise<PlayerSync> {
   return request(`/internal/bot/${encodeURIComponent(channel)}/mediashare/player`, { method: "POST", body, timeoutMs: 10_000 });
 }

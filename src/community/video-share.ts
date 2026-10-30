@@ -85,6 +85,10 @@ export interface VideoInfo {
   ageRestricted: boolean;
   /** A livestream, live now or still to come. */
   live: boolean;
+  /** Countries YouTube blocks it in (ISO codes); empty when none. */
+  blockedIn: string[];
+  /** The only countries it plays in, when its owner set such a list. */
+  onlyIn: string[] | null;
 }
 
 /** "PT1H2M3S" or "P1DT2H" as seconds. */
@@ -105,7 +109,7 @@ export async function lookupVideo(id: string, apiKey: string, fetchFn: FetchLike
   const url = `https://www.googleapis.com/youtube/v3/videos?part=contentDetails,status,snippet&id=${encodeURIComponent(id)}&key=${encodeURIComponent(apiKey)}`;
   const res = await fetchFn(url, { signal: AbortSignal.timeout(8_000) });
   if (!res.ok) throw new Error(`YouTube API answered ${res.status}`);
-  const body = await res.json() as { items?: Array<{ snippet?: { title?: string; liveBroadcastContent?: string }; contentDetails?: { duration?: string; contentRating?: { ytRating?: string } }; status?: { embeddable?: boolean; privacyStatus?: string } }> };
+  const body = await res.json() as { items?: Array<{ snippet?: { title?: string; liveBroadcastContent?: string }; contentDetails?: { duration?: string; contentRating?: { ytRating?: string }; regionRestriction?: { allowed?: string[]; blocked?: string[] } }; status?: { embeddable?: boolean; privacyStatus?: string } }> };
   const v = body.items?.[0];
   if (!v || v.status?.privacyStatus === 'private') return null;
   return {
@@ -113,8 +117,100 @@ export async function lookupVideo(id: string, apiKey: string, fetchFn: FetchLike
     durationS: isoDurationSeconds(v.contentDetails?.duration ?? ''),
     embeddable: v.status?.embeddable !== false,
     ageRestricted: v.contentDetails?.contentRating?.ytRating === 'ytAgeRestricted',
-    live: (v.snippet?.liveBroadcastContent ?? 'none') !== 'none'
+    live: (v.snippet?.liveBroadcastContent ?? 'none') !== 'none',
+    blockedIn: v.contentDetails?.regionRestriction?.blocked ?? [],
+    onlyIn: v.contentDetails?.regionRestriction?.allowed ?? null
   };
+}
+
+export interface AltVideo { videoId: string; title: string; channel: string; durationS: number }
+
+/** Search-noise in titles ("(Official Music Video)", "[Lyrics]"): dropped from an alternative search. */
+const altQuery = (title: string): string => title.replace(/[([][^)\]]*[)\]]/g, ' ').replace(/\s+/g, ' ').trim() || title;
+
+/**
+ * YouTube videos for the media share player to queue: up to `max` that YouTube lets play outside
+ * its site, not age-restricted, not live, no longer than `maxS`, and without "only in these
+ * countries" lists (the phone's country isn't known). Unlocked ones first, then nearest to `wantS`
+ * in length when given. One search (100 quota units) plus one lookup (1 unit).
+ */
+export async function searchPlayable(query: string, apiKey: string, opts: { max: number; maxS: number; excludeId?: string; wantS?: number }, fetchFn: FetchLike = fetch as unknown as FetchLike): Promise<AltVideo[]> {
+  const q = encodeURIComponent(query.slice(0, 100));
+  const found = await fetchFn(`https://www.googleapis.com/youtube/v3/search?part=id&type=video&maxResults=15&videoEmbeddable=true&videoSyndicated=true&q=${q}&key=${encodeURIComponent(apiKey)}`, { signal: AbortSignal.timeout(8_000) });
+  if (!found.ok) throw new Error(`YouTube search answered ${found.status}`);
+  const ids = ((await found.json() as { items?: Array<{ id?: { videoId?: string } }> }).items ?? [])
+    .map(i => i.id?.videoId).filter((id): id is string => !!id && id !== opts.excludeId);
+  if (!ids.length) return [];
+  const res = await fetchFn(`https://www.googleapis.com/youtube/v3/videos?part=contentDetails,status,snippet&id=${ids.map(encodeURIComponent).join(',')}&key=${encodeURIComponent(apiKey)}`, { signal: AbortSignal.timeout(8_000) });
+  if (!res.ok) throw new Error(`YouTube API answered ${res.status}`);
+  const body = await res.json() as { items?: Array<{ id?: string; snippet?: { title?: string; channelTitle?: string; liveBroadcastContent?: string }; contentDetails?: { duration?: string; contentRating?: { ytRating?: string }; regionRestriction?: { allowed?: string[]; blocked?: string[] } }; status?: { embeddable?: boolean; privacyStatus?: string } }> };
+  const clean = (t: string | undefined, max: number) => (t ?? '').replace(/[@<>]/g, '').replace(/\s+/g, ' ').trim().slice(0, max);
+  const order = new Map(ids.map((id, i) => [id, i]));
+  return (body.items ?? [])
+    .filter(v => v.id && v.status?.embeddable !== false && v.status?.privacyStatus !== 'private'
+      && v.contentDetails?.contentRating?.ytRating !== 'ytAgeRestricted' && (v.snippet?.liveBroadcastContent ?? 'none') === 'none'
+      && !v.contentDetails?.regionRestriction?.allowed)
+    .map(v => ({
+      alt: { videoId: v.id as string, title: clean(v.snippet?.title, 100) || 'a video', channel: clean(v.snippet?.channelTitle, 60), durationS: isoDurationSeconds(v.contentDetails?.duration ?? '') },
+      locked: (v.contentDetails?.regionRestriction?.blocked ?? []).length ? 1 : 0
+    }))
+    .filter(x => x.alt.durationS > 0 && x.alt.durationS <= opts.maxS)
+    // Unlocked first; then nearest the wanted length, or YouTube's own order for a plain search.
+    .sort((a, b) => a.locked - b.locked || (opts.wantS
+      ? Math.abs(a.alt.durationS - opts.wantS) - Math.abs(b.alt.durationS - opts.wantS)
+      : (order.get(a.alt.videoId) ?? 0) - (order.get(b.alt.videoId) ?? 0)))
+    .slice(0, opts.max)
+    .map(x => x.alt);
+}
+
+/**
+ * Other uploads of a video that wouldn't play: up to 3, close to its length (never a 10-hour
+ * loop for a 3-minute song), noise like "(Official Music Video)" dropped from the search.
+ */
+export function findAlternatives(title: string, excludeId: string, wantS: number, apiKey: string, fetchFn: FetchLike = fetch as unknown as FetchLike): Promise<AltVideo[]> {
+  const maxS = wantS > 0 ? Math.max(wantS * 1.5, wantS + 120) : 20 * 60;
+  return searchPlayable(altQuery(title), apiKey, { max: 3, maxS, excludeId, wantS }, fetchFn);
+}
+
+/** Country codes as a short list: all of them when few, else a count. */
+const countries = (codes: string[]): string => codes.length <= 6 ? codes.join(', ') : `${codes.length} countries`;
+
+/** Why YouTube's embedded player refused a video, from its error code alone. */
+export function youTubeErrorReason(code: number): string {
+  if (code === 2) return 'the link is broken';
+  if (code === 5) return "this phone's browser can't play it";
+  if (code === 100) return 'it was removed or made private';
+  if (code === 101 || code === 150) return 'YouTube blocks it here: it may be blocked in your country, age-restricted, or its owner turned off playing it outside YouTube';
+  if (code === 153) return 'YouTube rejected this player page';
+  return `YouTube refused it (error ${code})`;
+}
+
+/**
+ * Why a video won't play outside YouTube in any country (removed, embedding off, age-restricted,
+ * blocked everywhere), or null. Region locks that depend on where the player is aren't counted.
+ */
+export function neverPlaysReason(info: VideoInfo | null): string | null {
+  if (!info) return 'it was removed or made private';
+  if (!info.embeddable) return 'its owner turned off playing it outside YouTube';
+  if (info.ageRestricted) return 'it is age-restricted, and YouTube only plays those on its own site';
+  if (info.onlyIn && !info.onlyIn.length) return 'it is blocked in every country';
+  return null;
+}
+
+/** Why a looked-up video won't play outside YouTube, or null when YouTube shows no reason. */
+export function unplayableReason(info: VideoInfo | null): string | null {
+  if (!info) return 'it was removed or made private';
+  // Every reason that applies: a region lock doesn't hide embedding being off, or the other way round.
+  const reasons: string[] = [];
+  if (!info.embeddable) reasons.push('its owner turned off playing it outside YouTube');
+  if (info.ageRestricted) reasons.push('it is age-restricted, and YouTube only plays those on its own site');
+  if (info.onlyIn) {
+    reasons.push(!info.onlyIn.length ? 'it is blocked in every country'
+      : info.onlyIn.length <= 6 ? `it only plays in ${info.onlyIn.join(', ')}`
+        : `it is only licensed in some countries (${info.onlyIn.length}), probably not where this phone is`);
+  }
+  else if (info.blockedIn.length) reasons.push(`it is blocked in ${countries(info.blockedIn)}`);
+  return reasons.length ? reasons.join('; and ') : null;
 }
 
 // ─── The queue ──────────────────────────────────────────────────────────────

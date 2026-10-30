@@ -14,9 +14,11 @@ const BUILD_ID = process.env.DASH_BUILD_ID ?? "";
 /** How often it reports and asks what's up. */
 const TICK_MS = 1_000;
 
-type Song = { key: string; videoId: string; title: string; username: string; start: number; end: number; amount: number | null; tip: boolean };
-type Sync = { build?: string; active: boolean; otherActive: boolean; now: number; playing: Song | null; queue: Song[]; history: Song[]; state: "playing" | "paused"; resume: number | null; hidden: boolean; captions: boolean; acted: boolean | null };
-type Action = { type: "next" | "skip" | "play" | "pause" | "replay" | "hide" | "show" | "captions-on" | "captions-off"; key?: string; error?: number };
+type Song = { key: string; videoId: string; title: string; username: string; start: number; end: number; amount: number | null; tip: boolean; duration?: number; songKey?: string };
+type Sync = { build?: string; active: boolean; otherActive: boolean; now: number; playing: Song | null; queue: Song[]; history: Song[]; state: "playing" | "paused"; resume: number | null; hidden: boolean; captions: boolean; acted: boolean | null; failures?: Failure[]; warnings?: Record<string, string> };
+type Failure = { key: string; videoId: string; title: string; username: string; seconds: number; code: number; reason: string; at: number };
+type Alt = { videoId: string; title: string; channel: string; durationS: number };
+type Action = { type: "next" | "skip" | "play" | "pause" | "replay" | "hide" | "show" | "captions-on" | "captions-off" | "front" | "remove"; key?: string; error?: number };
 
 interface YTPlayer {
   loadVideoById(o: { videoId: string; startSeconds?: number; endSeconds?: number }): void;
@@ -77,6 +79,7 @@ const clock = (s: number) => {
 
 export default function MediaPlayer({ channel, playerKey }: { channel: string; playerKey: string }) {
   const url = `${BASE_PATH}/api/player/${encodeURIComponent(channel)}?key=${encodeURIComponent(playerKey)}`;
+  const altUrl = `${BASE_PATH}/api/player/${encodeURIComponent(channel)}/alternatives?key=${encodeURIComponent(playerKey)}`;
   const holder = useRef<HTMLDivElement>(null);
   const player = useRef<YTPlayer | null>(null);
   const [ready, setReady] = useState(false);
@@ -99,6 +102,26 @@ export default function MediaPlayer({ channel, playerKey }: { channel: string; p
     const t = setTimeout(() => setNote(null), 4000);
     return () => clearTimeout(t);
   }, [note]);
+  /** Failed videos already dismissed here (by key), kept across reloads. */
+  const dismissedKey = `mediashare-dismissed:${channel}`;
+  const [dismissed, setDismissed] = useState<string[]>([]);
+  useEffect(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem(dismissedKey) ?? "[]") as unknown;
+      if (Array.isArray(saved)) setDismissed(saved.filter((k): k is string => typeof k === "string"));
+    } catch {
+      // Nothing saved, or unreadable: show them all.
+    }
+  }, [dismissedKey]);
+  const dismiss = (keys: string[]) => {
+    const next = [...dismissed, ...keys].slice(-50);
+    setDismissed(next);
+    try {
+      localStorage.setItem(dismissedKey, JSON.stringify(next));
+    } catch {
+      // Private browsing: dismissed for this visit only.
+    }
+  };
   const [tab, setTab] = useState<"queue" | "history">("queue");
   /** Show the video here too; off (always, on opening), only its sound plays (the stream has the overlay). */
   const [showVideo, setShowVideo] = useState(false);
@@ -164,7 +187,6 @@ export default function MediaPlayer({ channel, playerKey }: { channel: string; p
             if (l && !l.endAsked) {
               l.endAsked = true;
               act({ type: "skip", key: l.key, error: e.data });
-              setNote(`YouTube wouldn't play that one here (error ${e.data}), so it skipped`);
             }
           },
         },
@@ -307,6 +329,7 @@ export default function MediaPlayer({ channel, playerKey }: { channel: string; p
       activeRef.current = data.active;
       setUpdate(!!BUILD_ID && !!data.build && data.build !== BUILD_ID);
       if (action?.type === "replay" && data.acted === false) setNote("Couldn't replay that one: it may have left the history");
+      if ((action?.type === "front" || action?.type === "remove") && data.acted === false) setNote("That one isn't in the queue any more");
       syncRef.current = data;
       setSync(data);
       reconcile(data);
@@ -384,6 +407,7 @@ export default function MediaPlayer({ channel, playerKey }: { channel: string; p
   };
 
   const song = sync?.playing ?? null;
+  const failures = (sync?.failures ?? []).filter((f) => !dismissed.includes(f.key)).reverse();
   const paused = sync?.state === "paused";
   const waiting = song && loaded.current?.key === song.key && !loaded.current.started && !paused;
   const length = song ? Math.max(0, song.end - song.start) : 0;
@@ -404,6 +428,9 @@ export default function MediaPlayer({ channel, playerKey }: { channel: string; p
     l.endAsked = false;
   };
   const list = tab === "queue" ? sync?.queue ?? [] : sync?.history ?? [];
+  /** Why a row won't play (queue, checked ahead) or didn't (history, what the player hit), dismissed or not. */
+  const rowProblem = (s: Song): string | undefined =>
+    tab === "queue" ? sync?.warnings?.[s.key] : sync?.failures?.find((f) => f.key === (s.songKey ?? s.key))?.reason;
 
   return (
     <main className="min-h-screen bg-neutral-950 px-4 py-4 text-neutral-100">
@@ -542,6 +569,27 @@ export default function MediaPlayer({ channel, playerKey }: { channel: string; p
           {sync?.hidden ? "🙈 Overlay hidden for this one · tap to show" : "👁 Overlay showing · tap to hide (audio only)"}
         </button>
         {error ? <p className="text-sm text-amber-400">{error}</p> : null}
+        {failures.length ? (
+          <section className="space-y-2 rounded-xl border border-red-700 bg-red-950 p-3" role="alert">
+            <div className="flex items-start justify-between gap-2">
+              <p className="font-bold text-red-200">⚠ Skipped: YouTube wouldn&apos;t play {failures.length === 1 ? "this" : "these"} here</p>
+              <button onClick={() => dismiss(failures.map((f) => f.key))} className="shrink-0 rounded-lg bg-red-900 px-3 py-1 text-sm" aria-label="Dismiss skipped videos">
+                ✕
+              </button>
+            </div>
+            <ul className="space-y-2">
+              {failures.map((f) => (
+                <li key={f.key} className="text-sm">
+                  <p className="truncate font-semibold text-white">{f.title}</p>
+                  <p className="text-red-200">
+                    from {f.username || "someone"} · {f.reason}
+                  </p>
+                  <FindAlternative url={altUrl} video={{ videoId: f.videoId, title: f.title, seconds: f.seconds }} onAdded={(t) => setNote(`Added "${t}" to the queue`)} />
+                </li>
+              ))}
+            </ul>
+          </section>
+        ) : null}
         {note && !error ? <p className="text-sm text-green-400">{note}</p> : null}
 
         <section className="space-y-3 rounded-xl bg-neutral-900 p-3">
@@ -612,6 +660,8 @@ export default function MediaPlayer({ channel, playerKey }: { channel: string; p
           </p>
         </section>
 
+        <SearchYouTube url={altUrl} onAdded={(t) => setNote(`Added "${t}" to the queue`)} />
+
         <section>
           <div className="mb-2 flex gap-2 text-sm">
             {(["queue", "history"] as const).map((t) => (
@@ -622,11 +672,49 @@ export default function MediaPlayer({ channel, playerKey }: { channel: string; p
           </div>
           <ul className="space-y-1">
             {list.length === 0 ? <li className="text-sm text-neutral-500">{tab === "queue" ? "Nothing waiting." : "Nothing yet."}</li> : null}
-            {list.map((s, i) => (
-              <li key={`${s.key}-${i}`} className="flex gap-2 rounded bg-neutral-900 px-3 py-2 text-sm">
+            {list.map((s) => {
+              const problem = rowProblem(s);
+              return (
+              <li key={s.key} className={`flex items-start gap-2 rounded px-3 py-2 text-sm ${problem ? "border border-red-800 bg-red-950" : "bg-neutral-900"}`}>
                 <span className="w-4 shrink-0 text-green-400">{s.tip ? "$" : ""}</span>
-                <span className="min-w-0 flex-1 truncate">{s.title}</span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate">{s.title}</span>
+                  {problem ? (
+                    <span className="block text-xs text-red-300">
+                      ⚠ {tab === "queue" ? "Won't play" : "Didn't play"}: {problem}
+                    </span>
+                  ) : null}
+                  {problem ? (
+                    <FindAlternative url={altUrl} video={{ videoId: s.videoId, title: s.title, seconds: s.duration ?? s.end }} onAdded={(t) => setNote(`Added "${t}" to the queue`)} />
+                  ) : null}
+                </span>
                 <span className="shrink-0 text-neutral-500">{s.username}</span>
+                {tab === "queue" ? (
+                  <span className="flex shrink-0 gap-1">
+                    {/* StreamElements' replay plays a song at once (the one cut off goes back first in line): there is no "play next". */}
+                    <button
+                      onClick={() => {
+                        act({ type: "front", key: s.key });
+                        setNote(`Playing "${s.title}" now; the song it cut off goes back to the front of the queue`);
+                      }}
+                      className="rounded bg-neutral-700 px-2 text-xs"
+                      aria-label={`Play ${s.title} now`}
+                    >
+                      ▶ Now
+                    </button>
+                    <button
+                      onClick={() => {
+                        if (!window.confirm(`Take "${s.title}" from ${s.username || "someone"} out of the queue?`)) return;
+                        act({ type: "remove", key: s.key });
+                        setNote(`Removed "${s.title}"`);
+                      }}
+                      className="rounded bg-neutral-700 px-2 text-xs"
+                      aria-label={`Remove ${s.title}`}
+                    >
+                      ✕
+                    </button>
+                  </span>
+                ) : null}
                 {tab === "history" ? (
                   <button
                     onClick={() => {
@@ -641,10 +729,126 @@ export default function MediaPlayer({ channel, playerKey }: { channel: string; p
                   </button>
                 ) : null}
               </li>
-            ))}
+              );
+            })}
           </ul>
         </section>
       </div>
     </main>
+  );
+}
+
+/** Ask the player's YouTube search route; throws its error message. */
+async function searchCall(url: string, body: unknown): Promise<{ results?: Alt[]; problem?: string; ok?: boolean }> {
+  const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), cache: "no-store" });
+  const data = (await res.json().catch(() => null)) as { results?: Alt[]; problem?: string; ok?: boolean; error?: string } | null;
+  if (!res.ok || !data) throw new Error(data?.error ?? `The bot answered ${res.status}`);
+  return data;
+}
+
+/** Search results with a one-tap "Add" each; shared by "find another version" and the search box. */
+function useResults(url: string, onAdded: (title: string) => void) {
+  const [busy, setBusy] = useState<"searching" | "adding" | null>(null);
+  const [results, setResults] = useState<Alt[] | null>(null);
+  const [msg, setMsg] = useState<string | null>(null);
+  const run = async (body: unknown, none: string) => {
+    setBusy("searching");
+    setMsg(null);
+    try {
+      const data = await searchCall(url, body);
+      const list = data.results ?? [];
+      setResults(list);
+      setMsg(data.problem ? `That one won't play here: ${data.problem}` : list.length ? null : none);
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : "Search failed");
+    }
+    setBusy(null);
+  };
+  const add = async (a: Alt) => {
+    setBusy("adding");
+    try {
+      await searchCall(url, { add: a.videoId });
+      setResults((l) => (l ?? []).filter((x) => x.videoId !== a.videoId));
+      setMsg(`Added "${a.title}" to the end of the queue (shows as requested by the channel)`);
+      onAdded(a.title);
+    } catch (e) {
+      setMsg(e instanceof Error ? e.message : "Couldn't add it");
+    }
+    setBusy(null);
+  };
+  const view = (
+    <span className="mt-1 block space-y-1">
+      {busy === "searching" ? <span className="block text-xs text-neutral-400">Searching YouTube…</span> : null}
+      {(results ?? []).map((a) => (
+        <span key={a.videoId} className="flex items-center gap-2 rounded bg-neutral-900 px-2 py-1 text-xs">
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-white">{a.title}</span>
+            <span className="block truncate text-neutral-400">
+              {a.channel ? `${a.channel} · ` : ""}
+              {clock(a.durationS)}
+            </span>
+          </span>
+          <button onClick={() => void add(a)} disabled={busy !== null} className="shrink-0 rounded bg-green-700 px-2 py-1 font-semibold text-white disabled:opacity-50">
+            + Add
+          </button>
+        </span>
+      ))}
+      {msg ? <span className="block text-xs text-neutral-300">{msg}</span> : null}
+    </span>
+  );
+  // An error leaves no results: the button comes back (with the message) to try again.
+  const clear = () => {
+    setResults(null);
+    setMsg(null);
+  };
+  return { run, clear, busy, started: (results !== null && results.length > 0) || busy !== null, msg, view };
+}
+
+/** "Find another version" for a video YouTube won't play: up to 3 other uploads, one tap to queue. */
+function FindAlternative({ url, video, onAdded }: { url: string; video: { videoId: string; title: string; seconds: number }; onAdded: (title: string) => void }) {
+  const r = useResults(url, onAdded);
+  if (!r.started) {
+    return (
+      <span className="mt-1 block">
+        <button onClick={() => void r.run({ find: video }, "No other version YouTube will play here")} className="rounded bg-neutral-800 px-2 py-1 text-xs text-white">
+          🔎 Find another version
+        </button>
+        {r.msg ? <span className="mt-1 block text-xs text-neutral-300">{r.msg}</span> : null}
+      </span>
+    );
+  }
+  return r.view;
+}
+
+/** The streamer's own search: words or a YouTube link, up to 5 results that will play here. */
+function SearchYouTube({ url, onAdded }: { url: string; onAdded: (title: string) => void }) {
+  const [q, setQ] = useState("");
+  const r = useResults(url, onAdded);
+  return (
+    <section className="space-y-2 rounded-xl bg-neutral-900 p-3">
+      <form
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (q.trim()) void r.run({ search: q.trim() }, "Nothing YouTube will play here");
+        }}
+        className="flex gap-2"
+      >
+        <input
+          value={q}
+          onChange={(e) => {
+            setQ(e.target.value);
+            // Emptied out: the old results go with it.
+            if (!e.target.value.trim()) r.clear();
+          }}
+          placeholder="Search YouTube or paste a link"
+          enterKeyHint="search"
+          className="min-w-0 flex-1 rounded bg-neutral-800 px-3 py-2 text-sm"
+        />
+        <button type="submit" disabled={!q.trim() || r.busy !== null} className="shrink-0 rounded bg-neutral-700 px-3 py-2 text-sm font-semibold disabled:opacity-50">
+          🔎 Search
+        </button>
+      </form>
+      {r.view}
+    </section>
   );
 }

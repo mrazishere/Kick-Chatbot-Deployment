@@ -30,7 +30,7 @@ import {
 import { WebhookPoller } from '../channels/webhook-poller';
 import { points as pointsCommand, SUBCOMMAND_ALIASES } from '../bot-commands/points';
 import { marksFor, readStats as readWordleStats, wordle as wordleCommand } from '../bot-commands/wordle';
-import { advanceVideos, enqueueVideo, failVideo, hasVideoInLine, isoDurationSeconds, LOAD_PAD_MS, markVideoOverlaySeen, parseYouTubeLink, playingVideo } from '../community/video-share';
+import { advanceVideos, enqueueVideo, failVideo, findAlternatives, hasVideoInLine, searchPlayable, isoDurationSeconds, LOAD_PAD_MS, lookupVideo, markVideoOverlaySeen, parseYouTubeLink, neverPlaysReason, playingVideo, unplayableReason, youTubeErrorReason } from '../community/video-share';
 import { duelStrength, moveFish, takeItems, addItem, overflow, nearCap, addXp, levelCost, takeSized, FishData, initialData, isTrophy, rarityOf, stealChance, stealCharges, stealRollChance, worstStealCharges, ITEMS, landsFish, loadFish, parseSellList, recordCatch, saveFish, sellPrice, weightedCatch } from '../community/fishing';
 import { buyGuard, shopView, syncGuardPause } from '../community/fish-shop';
 import { guardEnd, guardPausedAt, guardsPauseWhileLive } from '../community/fishing';
@@ -1241,6 +1241,52 @@ async function main(): Promise<void> {
       parseYouTubeLink('https://www.youtube.com/embed/dQw4w9WgXcQ?start=5'), parseYouTubeLink('https://vimeo.com/123'), parseYouTubeLink('nonsense')
     ]) === JSON.stringify([{ id: 'dQw4w9WgXcQ', start: 0 }, { id: 'dQw4w9WgXcQ', start: 90 }, { id: 'dQw4w9WgXcQ', start: 0 }, { id: 'dQw4w9WgXcQ', start: 90 }, { id: 'dQw4w9WgXcQ', start: 5 }, null, null])
       && isoDurationSeconds('PT3M33S') === 213 && isoDurationSeconds('PT1H') === 3600 && isoDurationSeconds('P0D') === 0);
+
+    // Media share's skipped-video card: why YouTube wouldn't play it, region locks first.
+    {
+      const answer = (contentDetails: Record<string, unknown>, status = { embeddable: true, privacyStatus: 'public' }) => (async () => ({ ok: true, status: 200, json: async () => ({ items: [{ snippet: { title: 'x' }, contentDetails: { duration: 'PT1M', ...contentDetails }, status }] }) }));
+      const blocked = await lookupVideo('EEEEEEEEEEE', 'k', answer({ regionRestriction: { blocked: ['MY', 'SG'] } }));
+      const onlyUs = await lookupVideo('EEEEEEEEEEE', 'k', answer({ regionRestriction: { allowed: ['US'] } }));
+      const many = await lookupVideo('EEEEEEEEEEE', 'k', answer({ regionRestriction: { blocked: ['A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'A7'] } }));
+      const noEmbed = await lookupVideo('EEEEEEEEEEE', 'k', answer({}, { embeddable: false, privacyStatus: 'public' }));
+      const fine = await lookupVideo('EEEEEEEEEEE', 'k', answer({}));
+      const licensed = await lookupVideo('EEEEEEEEEEE', 'k', answer({ regionRestriction: { allowed: ['A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'A7'] } }));
+      const both = await lookupVideo('EEEEEEEEEEE', 'k', answer({ regionRestriction: { blocked: ['MY'] } }, { embeddable: false, privacyStatus: 'public' }));
+      check('media share skip reasons: blocked countries, only-in list, embedding off, both, removed, none', unplayableReason(blocked) === 'it is blocked in MY, SG'
+        && unplayableReason(onlyUs) === 'it only plays in US'
+        && unplayableReason(many) === 'it is blocked in 7 countries'
+        && unplayableReason(noEmbed) === 'its owner turned off playing it outside YouTube'
+        && unplayableReason(null) === 'it was removed or made private'
+        && unplayableReason(fine) === null
+        && unplayableReason(licensed) === 'it is only licensed in some countries (7), probably not where this phone is'
+        && unplayableReason(both) === 'its owner turned off playing it outside YouTube; and it is blocked in MY', [blocked, onlyUs, unplayableReason(many), noEmbed, fine, unplayableReason(both)]);
+      check('media share queue flags only what never plays: embedding off, removed; not region locks or fine ones',
+        neverPlaysReason(noEmbed) === 'its owner turned off playing it outside YouTube' && neverPlaysReason(null) === 'it was removed or made private'
+        && neverPlaysReason(blocked) === null && neverPlaysReason(licensed) === null && neverPlaysReason(fine) === null);
+      // "Find another version": only uploads that play outside YouTube, unlocked first, nearest length.
+      let searched = '';
+      const ytFake = (async (url: string) => {
+        const u = new URL(url);
+        if (u.pathname.endsWith('/search')) {
+          searched = u.searchParams.get('q') ?? '';
+          return { ok: true, status: 200, json: async () => ({ items: ['ORIGINAL000', 'AGERESTRICT', 'ONLYINSOME0', 'LOCKEDRU000', 'FARLENGTH00', 'NEARLENGTH0', 'LIVESTREAM0'].map(videoId => ({ id: { videoId } })) }) };
+        }
+        const v = (id: string, d: string, extra: Record<string, unknown> = {}, live = 'none') => ({ id, snippet: { title: `T ${id}`, channelTitle: 'C', liveBroadcastContent: live }, contentDetails: { duration: d, ...extra }, status: { embeddable: true, privacyStatus: 'public' } });
+        return { ok: true, status: 200, json: async () => ({ items: [
+          v('AGERESTRICT', 'PT3M', { contentRating: { ytRating: 'ytAgeRestricted' } }), v('ONLYINSOME0', 'PT3M', { regionRestriction: { allowed: ['US'] } }),
+          v('LOCKEDRU000', 'PT3M', { regionRestriction: { blocked: ['RU'] } }), v('FARLENGTH00', 'PT10M'), v('NEARLENGTH0', 'PT3M5S'), v('LIVESTREAM0', 'P0D', {}, 'live')
+        ] }) };
+      });
+      const alts = await findAlternatives('Song Name (Official Music Video) [Lyrics]', 'ORIGINAL000', 180, 'k', ytFake);
+      check('media share alternatives: playable outside YouTube only, close in length, unlocked first, noise dropped from the search',
+        JSON.stringify(alts.map(a => a.videoId)) === JSON.stringify(['NEARLENGTH0', 'LOCKEDRU000']) && searched === 'Song Name', [alts.map(a => a.videoId), searched]);
+      const plain = await searchPlayable('song', 'k', { max: 5, maxS: 20 * 60 }, ytFake);
+      check('media share search: YouTube\'s order, unlocked first, nothing age-restricted, country-only, live or too long',
+        JSON.stringify(plain.map(a => a.videoId)) === JSON.stringify(['FARLENGTH00', 'NEARLENGTH0', 'LOCKEDRU000'])
+        && (await searchPlayable('song', 'k', { max: 5, maxS: 120 }, ytFake)).length === 0, plain.map(a => a.videoId));
+      check('media share skip reasons from the player error code alone', youTubeErrorReason(100) === 'it was removed or made private'
+        && youTubeErrorReason(150).includes('blocked in your country') && youTubeErrorReason(999) === 'YouTube refused it (error 999)');
+    }
 
     const ch = 'videoch';
     writeConfig(root, ch, { enabled: true, currencyName: '$DON', video: { enabled: true, pricePerSecond: 10, maxSeconds: 60, queueMax: 3, onlyWhileLive: false } });

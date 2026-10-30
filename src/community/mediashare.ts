@@ -286,7 +286,13 @@ export function mediaShareNow(channel: string, held = false): MediaShareNow | nu
 // /player/play|pause, so chat's !pause and !play reach it through the player state.
 
 /** A song as the player page gets it. */
-export interface PlayerSong { key: string; videoId: string; title: string; username: string; start: number; end: number; amount: number | null; tip: boolean }
+export interface PlayerSong {
+  key: string; videoId: string; title: string; username: string; start: number; end: number; amount: number | null; tip: boolean;
+  /** The whole video's length in seconds (end may be a cap, start an offset). */
+  duration: number;
+  /** History rows only: the song's own id (key is the history entry's), which failures are recorded under. */
+  songKey?: string;
+}
 
 /** The player stops counting as playing this long after its last report. */
 const REPORT_FRESH_MS = 5_000;
@@ -301,7 +307,7 @@ const toSong = (s: Song | null | undefined): PlayerSong | null => {
   const end = Number(s.end) > start ? Number(s.end) : Number(s.duration) || 0;
   return {
     key: s._id, videoId: s.videoId, title: String(s.title ?? 'a video').slice(0, 100), username: String(s.user?.username ?? '').slice(0, 40),
-    start, end, amount: typeof s.amount === 'number' ? s.amount : null, tip: s.source === 'tip'
+    start, end, duration: Number(s.duration) || end, amount: typeof s.amount === 'number' ? s.amount : null, tip: s.source === 'tip'
   };
 };
 
@@ -354,7 +360,7 @@ export async function playerView(channel: string): Promise<PlayerView | null> {
     playing,
     queue: list.slice(0, 10).map(toSong).filter((x): x is PlayerSong => x !== null),
     // Keyed by the history entry, which a replay names.
-    history: (history?.history ?? []).map(h => { const s = toSong(h.song); return s && h._id ? { ...s, key: h._id } : null; }).filter((x): x is PlayerSong => x !== null),
+    history: (history?.history ?? []).map(h => { const s = toSong(h.song); return s && h._id ? { ...s, key: h._id, songKey: s.key } as PlayerSong : null; }).filter((x): x is PlayerSong => x !== null),
     state: player?.state === 'playing' ? 'playing' : 'paused',
     resume: playing ? resumeAt(channel, playing.key) : null
   };
@@ -408,6 +414,51 @@ export async function playerAction(channel: string, action: 'next' | 'skip' | 'p
   if (key && up.key !== key) return false;
   await post(`/${action}`);
   reports.delete(channel);
+  return true;
+}
+
+/**
+ * Take one song out of the queue, or play it now keeping its requester. StreamElements has no
+ * reorder, so this is: delete it, then replay its own record. Replay plays a song at once (the
+ * one it cuts off goes back to the front of the queue) and ignores one that's still queued. If the replay is refused it's tried again, then the
+ * video is added back at the end as the channel, so a move never loses a song. Tested on the
+ * test channel 2026-10-31. Answers what happened, or null when the song isn't queued any more.
+ */
+export async function queueEdit(channel: string, action: 'front' | 'remove', key: string): Promise<'moved' | 'removed' | 'readded' | null> {
+  const creds = mediaShareCredentials(channel);
+  if (!creds) return null;
+  const q = await getJson<Song[] | { list?: Song[] }>(`${API}/${creds.channelId}/queue`, creds.jwt);
+  const list = Array.isArray(q) ? q : q?.list ?? [];
+  const song = list.find(x => x._id === key);
+  if (!song?._id || !song.videoId) return null;
+  const headers = { Authorization: `Bearer ${creds.jwt}`, 'Content-Type': 'application/json' };
+  const del = await fetch(`${API}/${creds.channelId}/queue/${encodeURIComponent(song._id)}`, { method: 'DELETE', headers, signal: AbortSignal.timeout(5_000) });
+  if (!del.ok) throw new Error(`StreamElements answered ${del.status}`);
+  if (action === 'remove') return 'removed';
+  // As in replays from the history: Kick tips' empty providerId is refused, so blanks go.
+  const record: Record<string, unknown> = { ...song };
+  if (song.user) record.user = Object.fromEntries(Object.entries(song.user).filter(([, v]) => v !== ''));
+  for (let i = 0; i < 2; i++) {
+    const res = await fetch(`${API}/${creds.channelId}/replay`, { method: 'POST', headers, body: JSON.stringify(record), signal: AbortSignal.timeout(5_000) }).catch(() => null);
+    if (res?.ok) return 'moved';
+    console.log(`[MEDIASHARE] ${channel} move to front: replay refused (${res?.status ?? 'no answer'})`);
+  }
+  await addToQueue(channel, song.videoId);
+  return 'readded';
+}
+
+/** Add a YouTube video to the end of the media share queue, as the channel. False without a token. */
+export async function addToQueue(channel: string, videoId: string): Promise<boolean> {
+  const creds = mediaShareCredentials(channel);
+  if (!creds) return false;
+  const res = await fetch(`${API}/${creds.channelId}/queue`, {
+    method: 'POST', headers: { Authorization: `Bearer ${creds.jwt}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ video: videoId }), signal: AbortSignal.timeout(8_000)
+  });
+  if (!res.ok) {
+    console.log(`[MEDIASHARE] ${channel} add ${videoId} refused: ${res.status} ${(await res.text().catch(() => '')).slice(0, 200)}`);
+    return false;
+  }
   return true;
 }
 

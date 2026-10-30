@@ -37,8 +37,8 @@ import { toHandleChatFormat } from './channels/webhook-poller';
 import { LIVE_BITE_KEY, STREAM_GRACE_MS, type LiveBite } from './community/big-bite';
 import { alertsFor } from './community/fish-alerts';
 import { clearAlert, raiseAlert } from './health-alerts';
-import { advanceVideos, failVideo, markVideoOverlaySeen, waitingVideos } from './community/video-share';
-import { PlayerView, mediaShareCaptions, mediaShareHeld, mediaShareHiddenKey, mediaShareNow, setMediaShareCaptions, setMediaShareHiddenKey, mediaShareStatus, playerAction, playerView, removeMediaShareToken, reportPlayer, saveMediaShareToken } from './community/mediashare';
+import { AltVideo, advanceVideos, failVideo, findAlternatives, lookupVideo, markVideoOverlaySeen, neverPlaysReason, parseYouTubeLink, searchPlayable, unplayableReason, waitingVideos, youTubeErrorReason } from './community/video-share';
+import { PlayerSong, PlayerView, addToQueue, queueEdit, mediaShareCaptions, mediaShareCredentials, mediaShareHeld, mediaShareHiddenKey, mediaShareNow, setMediaShareCaptions, setMediaShareHiddenKey, mediaShareStatus, playerAction, playerView, removeMediaShareToken, reportPlayer, saveMediaShareToken } from './community/mediashare';
 
 /* eslint-disable @typescript-eslint/no-var-requires, @typescript-eslint/no-explicit-any */
 const puppeteer = require('puppeteer-extra');
@@ -3206,6 +3206,57 @@ const playerViews = new Map<string, { at: number; view: PlayerView }>();
 // someone took over meanwhile.
 const playerOwners = new Map<string, { session: string; seenAt: number }>();
 const PLAYER_OWNER_MS = 6_000;
+// Videos the phone player couldn't play, newest last, and why: the page shows them until
+// dismissed. The reason starts from YouTube's error code and is replaced by the Data API's
+// (blocked countries and the like) when that lookup answers.
+interface PlayerFailure { key: string; videoId: string; title: string; username: string; seconds: number; code: number; reason: string; at: number }
+const playerFailures = new Map<string, PlayerFailure[]>();
+// Enough to mark every failed row in the page's history list (the last 10).
+const PLAYER_FAILURES_KEPT = 20;
+const PLAYER_FAILURE_MS = 2 * 3600_000;
+// Queued videos looked up on YouTube ahead of their turn, by video id: why it can't play
+// anywhere, or null. Flags the queue rows that will be skipped; region locks aren't known ahead.
+const queueChecks = new Map<string, { reason: string | null; at: number }>();
+const queueChecking = new Set<string>();
+const QUEUE_CHECK_MS = 3600_000;
+const QUEUE_RETRY_MS = 10 * 60_000;
+function queueWarnings(channel: string, songs: PlayerSong[]): Record<string, string> {
+  const apiKey = process.env.YOUTUBE_API_KEY;
+  const out: Record<string, string> = {};
+  const now = Date.now();
+  for (const s of songs) {
+    const known = queueChecks.get(s.videoId);
+    if (known && now - known.at < QUEUE_CHECK_MS) {
+      if (known.reason) out[s.key] = known.reason;
+    } else if (apiKey && !queueChecking.has(s.videoId)) {
+      queueChecking.add(s.videoId);
+      lookupVideo(s.videoId, apiKey).then((info) => {
+        const reason = neverPlaysReason(info);
+        queueChecks.set(s.videoId, { reason, at: Date.now() });
+        if (reason) console.log(`[MEDIASHARE] ${channel} queue: ${s.videoId} won't play: ${reason}`);
+      }, () => {
+        // Unchecked (YouTube erroring, or out of quota): no flag, and no retry for a while, so
+        // the once-a-second poll doesn't spend the daily quota on retries.
+        queueChecks.set(s.videoId, { reason: null, at: Date.now() - QUEUE_CHECK_MS + QUEUE_RETRY_MS });
+      }).finally(() => queueChecking.delete(s.videoId));
+    }
+  }
+  if (queueChecks.size > 500) for (const [id, c] of queueChecks) if (now - c.at >= QUEUE_CHECK_MS) queueChecks.delete(id);
+  return out;
+}
+function notePlayerFailure(channel: string, song: PlayerSong, code: number): void {
+  const failure: PlayerFailure = { key: song.key, videoId: song.videoId, title: song.title, username: song.username, seconds: song.duration, code, reason: youTubeErrorReason(code), at: Date.now() };
+  const list = (playerFailures.get(channel) ?? []).filter((f) => f.key !== song.key);
+  playerFailures.set(channel, [...list, failure].slice(-PLAYER_FAILURES_KEPT));
+  const apiKey = process.env.YOUTUBE_API_KEY;
+  if (!apiKey) return;
+  lookupVideo(song.videoId, apiKey).then((info) => {
+    const reason = unplayableReason(info);
+    // No restriction at all: YouTube refused this device or connection, not the video.
+    failure.reason = reason ?? "YouTube refused it on this device, though the video has no restrictions: try ↻ Replay";
+    console.log(`[MEDIASHARE] ${channel} player: couldn't play ${song.videoId}: ${reason ?? 'YouTube shows no reason'}`);
+  }, (e: unknown) => console.warn(`[MEDIASHARE] ${channel} player: lookup of ${song.videoId} failed: ${e instanceof Error ? e.message : String(e)}`));
+}
 app.post('/internal/bot/:channel/mediashare/player', internalGuard(true), async (req, res) => {
   const channel = String(req.params['channel'] ?? '').toLowerCase();
   if (!validateChannelName(channel)) return res.status(400).json({ error: 'Invalid channel name' });
@@ -3218,11 +3269,24 @@ app.post('/internal/bot/:channel/mediashare/player', internalGuard(true), async 
     const type = body.action?.type;
     let acted: boolean | null = null;
     if (type === 'next' || type === 'skip' || type === 'play' || type === 'pause' || type === 'replay') {
+      const ytCode = type === 'skip' && Number.isInteger(body.action?.error) ? body.action?.error as number : null;
+      const key = typeof body.action?.key === 'string' ? body.action.key : undefined;
+      // The cache may be gone (another button just cleared it): fetch the queue fresh then.
+      const known = ytCode === null ? undefined : playerViews.get(channel)?.view ?? await playerView(channel).catch(() => null) ?? undefined;
+      const failed = ytCode === null || !known ? undefined : [known.playing, ...known.queue, ...known.history].find((x) => x?.key === key);
+      if (ytCode !== null && failed) notePlayerFailure(channel, failed, ytCode);
       acted = await playerAction(channel, type, typeof body.action?.key === 'string' ? body.action.key : undefined);
       playerViews.delete(channel);
       // A skip the page's YouTube player asked for, with YouTube's error code (101/150: not embeddable).
       const ytError = Number.isInteger(body.action?.error) ? ` (YouTube error ${String(body.action?.error)})` : '';
       if (acted || ytError) console.log(`[MEDIASHARE] ${channel} player: ${type}${acted ? '' : ' (not acted)'}${ytError}`);
+    }
+    // The queue list's own buttons: play next (to the front, same requester) or take out.
+    if ((type === 'front' || type === 'remove') && typeof body.action?.key === 'string') {
+      const done = await queueEdit(channel, type, body.action.key);
+      acted = done !== null;
+      playerViews.delete(channel);
+      if (done) console.log(`[MEDIASHARE] ${channel} player: ${type} ${body.action.key} (${done})`);
     }
     const now = Date.now();
     let cached = playerViews.get(channel);
@@ -3258,11 +3322,124 @@ app.post('/internal/bot/:channel/mediashare/player', internalGuard(true), async 
     const otherActive = !active && ownerLive;
     const r = active ? body.report : undefined;
     if (r && view.playing && r.key === view.playing.key && typeof r.position === 'number') reportPlayer(channel, view.playing, r.position, r.paused === true, r.hidden === true, now, typeof r.latencyMs === 'number' ? r.latencyMs : 0);
-    return res.json({ now, ...view, hidden: !!view.playing && hiddenKey === view.playing.key, captions: db ? mediaShareCaptions(db) : false, active, otherActive, acted });
+    const failures = (playerFailures.get(channel) ?? []).filter((f) => now - f.at < PLAYER_FAILURE_MS);
+    const warnings = queueWarnings(channel, view.queue);
+    return res.json({ now, ...view, hidden: !!view.playing && hiddenKey === view.playing.key, captions: db ? mediaShareCaptions(db) : false, active, otherActive, acted, failures, warnings });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error(`[MEDIASHARE] ${channel} player: ${msg}`);
     return res.status(502).json({ error: 'StreamElements is not answering just now' });
+  }
+});
+
+// YouTube for the phone player to queue from: other uploads of a video that won't play, or
+// the streamer's own search (words or a link). Body: { find: { videoId, title, seconds } } or
+// { search: text } answers { results }; { add: videoId } queues one of those just offered (only
+// those: the page can't queue anything else this way). Searches cost 100 of the shared YouTube
+// key's daily units, so answers are cached an hour and each channel is capped.
+const offeredVideos = new Map<string, Map<string, number>>();
+const OFFER_MS = 30 * 60_000;
+const searchCache = new Map<string, { results: AltVideo[]; at: number }>();
+const SEARCH_CACHE_MS = 3600_000;
+const searchLog = new Map<string, number[]>();
+const SEARCH_GAP_MS = 5_000;
+// About 100 units each: 10 an hour and 25 a day per channel, 50 a day for all channels together
+// (5,000 of the key's 10,000 units), so $don videos and the queue checks keep working.
+const SEARCHES_PER_HOUR = 10;
+const SEARCHES_PER_DAY = 25;
+const SEARCHES_PER_DAY_ALL = 50;
+const allSearches: number[] = [];
+const linkCache = new Map<string, { info: Awaited<ReturnType<typeof lookupVideo>>; at: number }>();
+const lastLookup = new Map<string, number>();
+const MAX_SEARCH_S = 20 * 60;
+app.post('/internal/bot/:channel/mediashare/alternatives', internalGuard(true), async (req, res) => {
+  const channel = String(req.params['channel'] ?? '').toLowerCase();
+  if (!validateChannelName(channel)) return res.status(400).json({ error: 'Invalid channel name' });
+  const config = readChannelConfig(channel);
+  if (!config) return res.status(404).json({ error: 'Not enrolled' });
+  const cfg = effectivePointsConfig(config['points']);
+  if (!cfg.enabled || !cfg.video.mediashare) return res.status(404).json({ error: 'Media share is off in this channel' });
+  const body = (req.body ?? {}) as { find?: { videoId?: unknown; title?: unknown; seconds?: unknown }; search?: unknown; add?: unknown };
+  const now = Date.now();
+  const offered = offeredVideos.get(channel) ?? new Map<string, number>();
+  for (const [id, at] of offered) if (now - at > OFFER_MS) offered.delete(id);
+  offeredVideos.set(channel, offered);
+
+  if (typeof body.add === 'string') {
+    const id = body.add;
+    const at = offered.get(id);
+    if (at === undefined) return res.status(400).json({ error: 'Search again: that one is no longer on offer' });
+    if (!mediaShareCredentials(channel)) return res.status(409).json({ error: "Media share isn't connected to StreamElements" });
+    // Claimed before the wait, so a second tap (or a second phone) can't queue it twice.
+    offered.delete(id);
+    try {
+      if (await addToQueue(channel, id)) {
+        playerViews.delete(channel);
+        console.log(`[MEDIASHARE] ${channel} player: added ${id} from a search`);
+        return res.json({ ok: true });
+      }
+      offered.set(id, at);
+      return res.status(502).json({ error: 'StreamElements refused it' });
+    } catch (e) {
+      offered.set(id, at);
+      console.warn(`[MEDIASHARE] ${channel} add ${id}: ${e instanceof Error ? e.message : String(e)}`);
+      return res.status(502).json({ error: "StreamElements didn't answer; try again" });
+    }
+  }
+
+  const apiKey = process.env.YOUTUBE_API_KEY;
+  if (!apiKey) return res.status(503).json({ error: 'YouTube search is not set up' });
+  const f = body.find;
+  const findId = typeof f?.videoId === 'string' && /^[\w-]{11}$/.test(f.videoId) ? f.videoId : '';
+  const findTitle = typeof f?.title === 'string' ? f.title.slice(0, 200) : '';
+  const text = typeof body.search === 'string' ? body.search.replace(/\s+/g, ' ').trim().slice(0, 200) : '';
+  if (!(findId && findTitle) && !text) return res.status(400).json({ error: 'Search for what?' });
+  const offer = (results: AltVideo[]) => { for (const r of results) offered.set(r.videoId, now); };
+  try {
+    // A pasted link: just that video (1 unit), offered only if it will play here.
+    const link = !findId ? parseYouTubeLink(text) : null;
+    if (link) {
+      let hit = linkCache.get(link.id);
+      if (!hit || now - hit.at > SEARCH_CACHE_MS) {
+        if (now - (lastLookup.get(channel) ?? 0) < 1_000) return res.status(429).json({ error: 'One link a second: try again' });
+        lastLookup.set(channel, now);
+        hit = { info: await lookupVideo(link.id, apiKey), at: now };
+        linkCache.set(link.id, hit);
+        if (linkCache.size > 500) for (const [k, c] of linkCache) if (now - c.at >= SEARCH_CACHE_MS) linkCache.delete(k);
+      }
+      const info = hit.info;
+      // The streamer picked this one: only what can't play anywhere stops it (a country lock might not be theirs).
+      const problem = neverPlaysReason(info) ?? (info?.live ? 'it is a livestream' : null)
+        ?? (info && (info.durationS <= 0 || info.durationS > MAX_SEARCH_S) ? 'it is longer than 20 minutes' : null);
+      if (!info || problem) return res.json({ results: [], problem: problem ?? 'it was removed or made private' });
+      const result: AltVideo = { videoId: link.id, title: info.title, channel: '', durationS: info.durationS };
+      offer([result]);
+      return res.json({ results: [result] });
+    }
+    const cacheKey = findId ? `alt:${findId}` : `q:${text.toLowerCase()}`;
+    const cached = searchCache.get(cacheKey);
+    if (cached && now - cached.at < SEARCH_CACHE_MS) {
+      offer(cached.results);
+      return res.json({ results: cached.results });
+    }
+    const log = (searchLog.get(channel) ?? []).filter((t) => now - t < 3600_000);
+    if (log.length && now - log[log.length - 1] < SEARCH_GAP_MS) return res.status(429).json({ error: 'One search every few seconds: try again in a moment' });
+    const today = (searchLog.get(channel) ?? []).filter((t) => now - t < 86_400_000);
+    while (allSearches.length && now - allSearches[0] >= 86_400_000) allSearches.shift();
+    if (log.length >= SEARCHES_PER_HOUR) return res.status(429).json({ error: `That's ${SEARCHES_PER_HOUR} searches this hour: try again later` });
+    if (today.length >= SEARCHES_PER_DAY || allSearches.length >= SEARCHES_PER_DAY_ALL) return res.status(429).json({ error: 'YouTube search is used up for today: try again tomorrow, or paste a link' });
+    searchLog.set(channel, [...today, now]);
+    allSearches.push(now);
+    const seconds = typeof f?.seconds === 'number' && Number.isFinite(f.seconds) ? Math.max(0, f.seconds) : 0;
+    const results = findId ? await findAlternatives(findTitle, findId, seconds, apiKey) : await searchPlayable(text, apiKey, { max: 5, maxS: MAX_SEARCH_S });
+    searchCache.set(cacheKey, { results, at: now });
+    if (searchCache.size > 300) for (const [k, c] of searchCache) if (now - c.at >= SEARCH_CACHE_MS) searchCache.delete(k);
+    offer(results);
+    console.log(`[MEDIASHARE] ${channel} player: ${results.length} result(s) for ${findId ? `another version of ${findId}` : 'a search'}`);
+    return res.json({ results });
+  } catch (e) {
+    console.warn(`[MEDIASHARE] ${channel} search: ${e instanceof Error ? e.message : String(e)}`);
+    return res.status(502).json({ error: 'YouTube search failed just now' });
   }
 });
 
