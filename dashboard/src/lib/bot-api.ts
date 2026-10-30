@@ -1002,6 +1002,8 @@ export interface FishPage {
   selling?: boolean;
   feeding?: boolean;
   trading?: boolean;
+  /** Images for the replies' emote words and custom fish (checked: emoteImages). Absent from an older bot service. */
+  emotes?: Record<string, string>;
   /** Their own row as "Holding right now" shows it (unchecked: publicHolder), null holding nothing. Absent from an older bot service. */
   own?: unknown;
   /** Trade offers waiting on them or from them. */

@@ -153,12 +153,18 @@ function heldEach(raw: unknown): { each?: PublicHeldFish[] } {
 
 /** Custom fish emote images: names as the bot sends them, and only Kick's or 7TV's image hosts. */
 function fishEmotes(raw: unknown): { emotes?: Record<string, string> } {
+  const out = emoteImages(raw, 40);
+  return Object.keys(out).length ? { emotes: out } : {};
+}
+
+/** Emote images by name, kept to Kick's and 7TV's image hosts: the leaderboard's and the fishing game's (FishPage.emotes). */
+export function emoteImages(raw: unknown, max = 100): Record<string, string> {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
   const out: Record<string, string> = {};
-  for (const [name, url] of Object.entries(raw as Record<string, unknown>).slice(0, 40)) {
+  for (const [name, url] of Object.entries(raw as Record<string, unknown>).slice(0, max)) {
     if (/^\w{2,25}$/.test(name) && typeof url === "string" && /^https:\/\/(files\.kick\.com|cdn\.7tv\.app)\/[\w./-]+$/.test(url)) out[name] = url;
   }
-  return Object.keys(out).length ? { emotes: out } : {};
+  return out;
 }
 
 /** The steal explainer's numbers, every one checked; {} when any is missing. */

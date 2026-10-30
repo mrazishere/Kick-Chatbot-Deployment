@@ -289,6 +289,7 @@ function HeldList({
                       label={`${f.emoji}${e.cm === null ? "" : ` ${e.cm} cm`}${e.level ? ` Lv${e.level}` : ""}${e.record ? " 🏅" : ""}`}
                       worth={e.worth}
                       currency={currency}
+                      count={e.n}
                     />
                   </span>
                 ) : null}
@@ -319,7 +320,7 @@ function HeldList({
                 <span className="ml-1.5 text-neutral-500">💰{j.worth.toLocaleString("en-US")}</span>
                 {sell ? (
                   <span className="ml-1.5 inline-flex">
-                    <SellButton channel={sell.channel} words={[j.emoji, "1"]} label={`${j.emoji}`} worth={j.worth} currency={currency} />
+                    <SellButton channel={sell.channel} words={[j.emoji, "1"]} label={`${j.emoji}`} worth={j.worth} currency={currency} count={j.n} />
                   </span>
                 ) : null}
               </span>
@@ -332,6 +333,31 @@ function HeldList({
       </p>
     </div>
   );
+}
+
+/**
+ * Chat's bulk sales for your own row, each with about what it brings: all junk, all fish, and
+ * duplicate fish (as chat sells them: every fed fish is kept, and of a kind with none fed, its biggest).
+ */
+function bulkSales(r: PublicHolder): Array<{ words: string[]; button: string; n: number; worth: number; what: string }> {
+  const junkN = (r.junk ?? []).reduce((t, j) => t + j.n, 0);
+  const junkWorth = (r.junk ?? []).reduce((t, j) => t + j.n * j.worth, 0);
+  let dupN = 0;
+  let dupWorth = 0;
+  for (const f of r.fish) {
+    const each = f.each ?? [];
+    const fed = each.filter((e) => e.level).reduce((t, e) => t + e.n, 0);
+    // Every unfed one goes, but with none fed the biggest stays.
+    const unfed = each.filter((e) => !e.level);
+    const kept = fed || !unfed.length ? null : unfed.reduce((a, b) => ((b.cm ?? -1) > (a.cm ?? -1) ? b : a));
+    dupN += unfed.reduce((t, e) => t + e.n, 0) - (kept ? 1 : 0);
+    dupWorth += unfed.reduce((t, e) => t + e.n * e.worth, 0) - (kept?.worth ?? 0);
+  }
+  return [
+    ...(junkN ? [{ words: ["all", "junk"], button: "Sell all junk", n: junkN, worth: junkWorth, what: `all ${junkN} junk` }] : []),
+    ...(dupN ? [{ words: ["duplicate", "fish"], button: "Sell duplicates", n: dupN, worth: dupWorth, what: `${dupN} duplicate fish (fed fish stay, and the biggest of a kind with none fed)` }] : []),
+    ...(r.count ? [{ words: ["all", "fish"], button: "Sell all fish", n: r.count, worth: r.worth, what: `every one of your ${r.count} fish, fed and 🏅 ones too,` }] : []),
+  ];
 }
 
 function Holders({
@@ -432,6 +458,22 @@ function Holders({
                     {canSteal(r.name) ? <StealButton channel={channel} target={r.name} label="Steal a random fish" /> : null}
                     {canTrade(r.name) ? <TradeBuilder channel={channel} target={r.name} theirs={tradeFish(r)} currency={currency} /> : null}
                   </span>
+                  {isMine(r.name) ? (
+                    <span className="mt-2 flex flex-wrap items-center gap-2">
+                      {bulkSales(r).map((b) => (
+                        <SellButton
+                          key={b.button}
+                          channel={channel}
+                          words={b.words}
+                          label={b.what}
+                          worth={b.worth}
+                          currency={currency}
+                          button={b.button}
+                          question={`Sell ${b.what} for about ${b.worth.toLocaleString("en-US")} ${currency}?${b.words[1] === "fish" && b.words[0] === "all" ? " This can't be undone." : ""}`}
+                        />
+                      ))}
+                    </span>
+                  ) : null}
                 </div>
                 {detailed ? (
                   <HeldList
@@ -508,6 +550,20 @@ function FishingTab({
 }) {
   const sections = fishSections(fishing, game !== null);
   const section = sections.find((x) => x.id === wanted)?.id ?? sections[0].id;
+  // The big bite how-to is for everyone in chat: on Play when there is one, else at the top of Top fish.
+  const video = fishing.bigBite && hasBigBiteVideo(channel) ? (
+    <figure className="overflow-hidden rounded-xl border border-neutral-800 bg-neutral-950/60">
+      <video
+        className="block aspect-video w-full bg-black"
+        src={`${BASE_PATH}/videos/big-bite-${channel}.mp4`}
+        poster={`${BASE_PATH}/videos/big-bite-${channel}.jpg`}
+        controls
+        playsInline
+        preload="none"
+      />
+      <figcaption className="px-5 py-2 text-xs text-neutral-500">🎣 How to play big bites: how one plays out on stream, from the code to a snipe.</figcaption>
+    </figure>
+  ) : null;
   const link = (id: FishSection) => `${BASE_PATH}/leaderboard/${channel}?tab=fishing${id === sections[0].id ? "" : `&section=${id}`}`;
   return (
     <div className="space-y-4">
@@ -527,25 +583,14 @@ function FishingTab({
 
       {section === "play" ? (
         <>
-          {fishing.bigBite && hasBigBiteVideo(channel) ? (
-            <figure className="overflow-hidden rounded-xl border border-neutral-800 bg-neutral-950/60">
-              <video
-                className="block aspect-video w-full bg-black"
-                src={`${BASE_PATH}/videos/big-bite-${channel}.mp4`}
-                poster={`${BASE_PATH}/videos/big-bite-${channel}.jpg`}
-                controls
-                playsInline
-                preload="none"
-              />
-              <figcaption className="px-5 py-2 text-xs text-neutral-500">🎣 How to play big bites: how one plays out on stream, from the code to a snipe.</figcaption>
-            </figure>
-          ) : null}
+          {video}
           {game}
         </>
       ) : null}
 
       {section === "top" ? (
         <>
+          {game === null ? video : null}
           {fishing.topFish.length ? <TopFish rows={fishing.topFish} currency={currency} channel={channel} emotes={fishing.emotes} /> : null}
           {fishing.holders?.length || own ? (
             <Holders rows={fishing.holders ?? []} currency={currency} channel={channel} duel={!!fishing.duel} emotes={fishing.emotes} stealer={stealer} trader={trader} seller={game !== null ? stealer ?? trader ?? viewer : null} own={own} />
@@ -791,7 +836,9 @@ export default async function LeaderboardPage({ params, searchParams }: Props) {
                   currency={currency}
                   channel={slug}
                   command={commands?.command ?? "$points"}
-                  game={fishingOn ? <FishingGame channel={slug} me={username} viewerLogin={viewerLogin} signinFailed={signinFailed} /> : null}
+                  // Signed in only (or just back from a failed sign-in, to say so): signed out, Play stays hidden
+                  // and Top fish opens first, so the game isn't the first thing every visitor sees.
+                  game={fishingOn && (username || signinFailed) ? <FishingGame channel={slug} me={username} viewerLogin={viewerLogin} signinFailed={signinFailed} /> : null}
                   section={fishSection}
                   stealer={fishingOn && fishing.steal ? username : null}
                   trader={fishingOn && fishing.trade ? username : null}

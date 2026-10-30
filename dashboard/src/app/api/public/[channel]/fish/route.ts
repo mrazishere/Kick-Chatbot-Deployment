@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { validChannel } from "@/lib/bot-auth";
 import { BotApiError, fishMove, getFishPage } from "@/lib/bot-api";
 import { leaderboardViewer } from "@/lib/session";
+import { emoteImages } from "@/lib/public-leaderboard";
 
 // The signed-in viewer's fishing game on the leaderboard: casts, traps, check answers, selling and trades,
 // played by the channel's bot exactly as in chat. Who it is comes from the viewer sign-in.
@@ -31,7 +32,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ channel
   if (!me) return NextResponse.json({ error: "Sign in to fish" }, { status: 401, headers });
   try {
     const { fish } = await getFishPage(slug, me.userId, me.username);
-    return NextResponse.json({ username: me.username, fish }, { headers });
+    return NextResponse.json({ username: me.username, fish: fish && { ...fish, emotes: emoteImages(fish.emotes) } }, { headers });
   } catch (e) {
     if (e instanceof BotApiError && e.status === 404) return NextResponse.json({ username: me.username, fish: null }, { headers });
     return unavailable(e);

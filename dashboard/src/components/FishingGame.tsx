@@ -44,6 +44,23 @@ function groups(each: Held[]): Group[] {
   return [...out.values()];
 }
 
+/** A reply with its emote words ("Sadge", a custom fish) drawn as the channel's emotes, as chat shows them. */
+function WithEmotes({ text, emotes }: { text: string; emotes?: Record<string, string> }) {
+  if (!emotes || !Object.keys(emotes).length) return <>{text}</>;
+  return (
+    <>
+      {text.split(/(\s+)/).map((w, i) =>
+        emotes[w] ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img key={i} src={emotes[w]} alt={w} title={w} className="inline-block h-[1.5em] w-auto align-middle" loading="lazy" />
+        ) : (
+          w
+        ),
+      )}
+    </>
+  );
+}
+
 /** "100 cm Lv10 🏅", as chat names a fish. */
 const fishLabel = (e: Pick<Held, "cm" | "level" | "record">) => `${e.cm} cm${e.level ? ` Lv${e.level}` : ""}${e.record ? " 🏅" : ""}`;
 
@@ -95,7 +112,8 @@ export default function FishingGame({
 
   const adopt = useCallback((next: FishPage | null) => {
     if (next) skew.current = next.now - Date.now();
-    setFish(next);
+    // A move's answer comes without the emote images: keep the ones loaded.
+    setFish((prev) => (next && !next.emotes && prev?.emotes ? { ...next, emotes: prev.emotes } : next));
   }, []);
 
   const load = useCallback(async () => {
@@ -386,7 +404,7 @@ export default function FishingGame({
       {latest?.length ? (
         <ul className="space-y-1 border-t border-neutral-800 bg-neutral-900/40 px-5 py-3">
           {latest.map((r, i) => (
-            <li key={i} className={r.kind === "catch" || r.kind === "trap" ? "text-[#53FC18]" : "text-neutral-200"}>{r.text}</li>
+            <li key={i} className={r.kind === "catch" || r.kind === "trap" ? "text-[#53FC18]" : "text-neutral-200"}><WithEmotes text={r.text} emotes={fish.emotes} /></li>
           ))}
         </ul>
       ) : null}
@@ -523,7 +541,7 @@ export default function FishingGame({
                 <span className="mr-2 tabular-nums text-neutral-600">
                   {new Date(r.ts).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", timeZone: "Asia/Singapore" })}
                 </span>
-                {r.text}
+                <WithEmotes text={r.text} emotes={fish.emotes} />
               </li>
             ))}
           </ul>

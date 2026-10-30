@@ -620,7 +620,12 @@ function toolsParam(tools: StatToolContext | undefined): { tools?: Array<Record<
  * When the model asked for stats, run the tools and continue the conversation
  * (as a plain call, which can ask again) until it answers, up to MAX_TOOL_ROUNDS.
  */
-async function followTools(data: AnthropicResponse, sent: ApiMessage[], systemPromptText: string, tools: StatToolContext | undefined, round = 0): Promise<AnthropicResponse> {
+async function followTools(data: AnthropicResponse, sent: ApiMessage[], systemPromptText: string, tools: StatToolContext | undefined, round = 0, maxTokens = REPLY_MAX_TOKENS): Promise<AnthropicResponse> {
+  // Cut off while asking for lookups (2026-10-30: four fishing_history calls at once ate all 300, so the
+  // reply was empty). A truncated turn can't be run as it is: ask it again, once, with room for them all.
+  if (tools && data.stop_reason === 'max_tokens' && maxTokens < TOOL_TURN_MAX_TOKENS && data.content.some(b => b.type === 'tool_use')) {
+    return callClaudeAPI(sent, systemPromptText, tools, round, TOOL_TURN_MAX_TOKENS);
+  }
   if (!tools || data.stop_reason !== 'tool_use') return data;
   const calls = data.content.filter(b => b.type === 'tool_use' && b.id && b.name);
   if (!calls.length) return data;
@@ -645,7 +650,11 @@ async function followTools(data: AnthropicResponse, sent: ApiMessage[], systemPr
   }
 }
 
-async function callClaudeAPI(messages: ApiMessage[], systemPromptText: string, tools?: StatToolContext, round = 0): Promise<AnthropicResponse> {
+/** A chat reply's budget; a turn that asks for lookups and runs out gets TOOL_TURN_MAX_TOKENS once (followTools). */
+const REPLY_MAX_TOKENS = 300;
+const TOOL_TURN_MAX_TOKENS = 1024;
+
+async function callClaudeAPI(messages: ApiMessage[], systemPromptText: string, tools?: StatToolContext, round = 0, maxTokens = REPLY_MAX_TOKENS): Promise<AnthropicResponse> {
   let retries = 0;
   const maxRetries = 5;
 
@@ -660,7 +669,7 @@ async function callClaudeAPI(messages: ApiMessage[], systemPromptText: string, t
         },
         body: JSON.stringify({
           model: "claude-sonnet-5",
-          max_tokens: 300,
+          max_tokens: maxTokens,
           // Sonnet 5 thinks by default when `thinking` is omitted, out of the same
           // max_tokens budget as the reply — 283 of 300 on one live question, which left
           // four words of answer. Chat needs the whole budget for text, and the reasoning
@@ -686,7 +695,7 @@ async function callClaudeAPI(messages: ApiMessage[], systemPromptText: string, t
         throwForStatus(response.status, JSON.stringify(data));
       }
 
-      return await followTools(data, messages, systemPromptText, tools, round);
+      return await followTools(data, messages, systemPromptText, tools, round, maxTokens);
     } catch (error) {
       const isLastRetry = retries === maxRetries - 1;
 
@@ -2044,6 +2053,8 @@ export const claude: CommandFn = async function claude(client, message, channel,
         const statCtx: StatToolContext = { channel: channelKey(channel).toLowerCase(), asker: tags.username };
 
         let data: AnthropicResponse;
+        // Searched for this reply (asked for, or the uncertainty fallback): a retry searches too.
+        let searched = needsSearch;
         if (visionContext) {
           const cleanChannel = channel.startsWith('#') ? channel.slice(1) : channel;
           data = await callClaudeAPIWithVision(messagesForCall, channelSystemPrompt, visionContext, cleanChannel, statCtx);
@@ -2063,15 +2074,18 @@ export const claude: CommandFn = async function claude(client, message, channel,
 
             if (detectUncertainty(responseText)) {
               console.log(`[DEBUG] Claude uncertain about "${userPrompt}" - attempting web search fallback`);
+              searched = true;
               data = await callClaudeAPIWithSearch(messagesForCall, systemPromptForCall, formattedPrompt, statCtx);
             }
           }
         }
 
-        if (data && data.content && data.content.length > 0) {
+        // The reply's text, cleaned of search preambles, stray emotes and leading @mentions;
+        // `raw` is the model's own text before that, for the log.
+        const cleanReply = (d: AnthropicResponse): { raw: string; text: string } => {
           // Combine all text blocks from the response
           let responseText = '';
-          for (const content of data.content) {
+          for (const content of d.content ?? []) {
             if (content.type === 'text') {
               responseText += content.text ?? '';
             }
@@ -2092,11 +2106,30 @@ export const claude: CommandFn = async function claude(client, message, channel,
               responseText = sentences.slice(1).join('.').trim();
             }
           }
+          const raw = (d.content ?? []).filter(c => c.type === 'text').map(c => c.text ?? '').join('').trim();
+          return { raw, text: responseText };
+        };
 
-          // Everything can be stripped away above. An empty assistant turn in the history
-          // makes the API reject every later request, breaking !claude for the channel.
+        if (data && data.content && data.content.length > 0) {
+          let { raw, text: responseText } = cleanReply(data);
+
+          // Nothing left (2026-10-30: "how did i got my 🐳?" went unanswered): say why in the log
+          // and ask once more, the same way.
           if (!responseText) {
-            console.warn(`[CLAUDE] Empty reply for ${tags.username} in ${channel} — not sent`);
+            console.warn(`[CLAUDE] Empty reply for ${tags.username} in ${channel} (stop: ${data.stop_reason}, blocks: ${data.content.map(c => c.type).join(',')}, raw: ${JSON.stringify(raw.slice(0, 160))}) — asking again`);
+            if (!visionContext) {
+              data = searched
+                ? await callClaudeAPIWithSearch(messagesForCall, systemPromptForCall, formattedPrompt, statCtx)
+                : await callClaudeAPI(messagesForCall, systemPromptForCall, statCtx);
+              ({ raw, text: responseText } = cleanReply(data));
+            }
+          }
+
+          // Still nothing: say so rather than leave them waiting. Kept out of the history, where an
+          // empty assistant turn makes the API reject every later request, breaking !claude for the channel.
+          if (!responseText) {
+            console.warn(`[CLAUDE] Empty reply again for ${tags.username} in ${channel} (stop: ${data.stop_reason}, raw: ${JSON.stringify(raw.slice(0, 160))})`);
+            await sayLines(client, channel, sanitizeForKick(`@${tags.username}, I came up blank on that one. Try asking again?`));
             return;
           }
 

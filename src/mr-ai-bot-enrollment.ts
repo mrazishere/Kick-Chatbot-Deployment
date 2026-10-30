@@ -24,7 +24,7 @@ import { refreshExpiresAt } from './kick-grant';
 import { recentReplies, repliesFor, WEB_FISH_EVENT, type WebFishMove } from './community/web-fish';
 import { markOverlaySeen, noteOverlayHealth, overlayHealth, overlayOff, overlayReloadToken, overlayShowing, readOverlay, requestOverlayReload } from './community/fish-overlay';
 import { publicUserHistory, publicViewerSearch } from './points/store';
-import { BAITS, baitPrice, baitRoll, capOf, currentReel, initialData, ITEMS, levelCost, levelOf, loadFish, MAX_LEVEL, rarityName, sellPrice, stealRollChance, TRAP_MIN_MINUTES } from './community/fishing';
+import { BAITS, baitPrice, baitRoll, capOf, currentReel, FAILURE_EMOTES, initialData, ITEMS, levelCost, levelOf, loadFish, MAX_LEVEL, rarityName, sellPrice, stealRollChance, SUCCESS_EMOTES, TRAP_MIN_MINUTES } from './community/fishing';
 import { mirroredTrades, sideText } from './community/fish-trade';
 import { fighterOf } from './community/fish-duel';
 import { channelEmotes } from './community/emotes';
@@ -3492,14 +3492,17 @@ function fishPageState(db: PointsDb, r: FishPageRequest, now: number): Record<st
 
 const FISH_MOVE_WAIT_MS = 8_000;
 
-app.get('/internal/bot/:channel/points/fish', internalGuard(false), (req, res) => {
+app.get('/internal/bot/:channel/points/fish', internalGuard(false), async (req, res) => {
   const r = fishPageRequest(req, res, req.query as Record<string, unknown>);
   if (!r) return;
   if (fishPageExcluded(r)) return res.json({ fish: null });
   const db = openPointsDb(r.channel, { create: false });
   if (!db) return res.json({ fish: null });
   try {
-    return res.json({ fish: fishPageState(db, r, Date.now()) });
+    const fish = fishPageState(db, r, Date.now());
+    // The replies' emotes (a miss's "Sadge", a catch's "PogU") and custom fish, as chat would show them.
+    const emotes = await emoteImages(r.channel, broadcasterIdOf(r.config), new Set([...FAILURE_EMOTES, ...SUCCESS_EMOTES, ...r.cfg.games.customFish.map(f => f.name)]));
+    return res.json({ fish: { ...fish, emotes } });
   } catch (e) {
     return pointsUnavailable(res, r.channel, e);
   }
@@ -3574,7 +3577,11 @@ app.get('/internal/bot/:channel/points/fish/picture', internalGuard(false), (req
  * start gets 3s, and past that the page just shows the names this once.
  */
 async function customFishImages(channel: string, cfg: ReturnType<typeof effectivePointsConfig>, broadcasterUserId: number | null): Promise<Record<string, string>> {
-  const names = new Set(cfg.games.customFish.map(f => f.name));
+  return emoteImages(channel, broadcasterUserId, new Set(cfg.games.customFish.map(f => f.name)));
+}
+
+/** Images for whichever of `names` are the channel's emotes (Kick or 7TV), on the same terms as customFishImages. */
+async function emoteImages(channel: string, broadcasterUserId: number | null, names: Set<string>): Promise<Record<string, string>> {
   if (!names.size) return {};
   try {
     const emotes = await Promise.race([channelEmotes(channel, broadcasterUserId), new Promise<[]>(r => setTimeout(() => r([]), 3000).unref())]);
