@@ -424,7 +424,7 @@ export async function playerAction(channel: string, action: 'next' | 'skip' | 'p
  * video is added back at the end as the channel, so a move never loses a song. Tested on the
  * test channel 2026-10-31. Answers what happened, or null when the song isn't queued any more.
  */
-export async function queueEdit(channel: string, action: 'front' | 'remove', key: string): Promise<'moved' | 'removed' | 'readded' | null> {
+export async function queueEdit(channel: string, action: 'front' | 'remove', key: string): Promise<'moved' | 'removed' | 'readded' | 'lost' | null> {
   const creds = mediaShareCredentials(channel);
   if (!creds) return null;
   const q = await getJson<Song[] | { list?: Song[] }>(`${API}/${creds.channelId}/queue`, creds.jwt);
@@ -432,19 +432,41 @@ export async function queueEdit(channel: string, action: 'front' | 'remove', key
   const song = list.find(x => x._id === key);
   if (!song?._id || !song.videoId) return null;
   const headers = { Authorization: `Bearer ${creds.jwt}`, 'Content-Type': 'application/json' };
-  const del = await fetch(`${API}/${creds.channelId}/queue/${encodeURIComponent(song._id)}`, { method: 'DELETE', headers, signal: AbortSignal.timeout(5_000) });
+  // What was up before, so "it's up now" can't be fooled by another copy of the same video.
+  const before = action === 'front' ? await getJson<Song>(`${API}/${creds.channelId}/playing`, creds.jwt).catch(() => null) : null;
+  const del = await fetch(`${API}/${creds.channelId}/queue/${encodeURIComponent(song._id)}`, { method: 'DELETE', headers, signal: AbortSignal.timeout(8_000) });
+  // Gone meanwhile (it started playing, or another page took it out): nothing to do.
+  if (del.status === 404) return null;
   if (!del.ok) throw new Error(`StreamElements answered ${del.status}`);
   if (action === 'remove') return 'removed';
+  // Up now: the replay took. Checked rather than trusted, since a replay StreamElements ignores
+  // still answers 2xx.
+  const isUp = async () => {
+    const up = await getJson<Song>(`${API}/${creds.channelId}/playing`, creds.jwt).catch(() => null);
+    // Its own id, or (StreamElements may give a replay a new id) the same video now up where
+    // something else was before.
+    return !!up && (up._id === song._id || (up.videoId === song.videoId && up._id !== before?._id));
+  };
   // As in replays from the history: Kick tips' empty providerId is refused, so blanks go.
   const record: Record<string, unknown> = { ...song };
   if (song.user) record.user = Object.fromEntries(Object.entries(song.user).filter(([, v]) => v !== ''));
   for (let i = 0; i < 2; i++) {
-    const res = await fetch(`${API}/${creds.channelId}/replay`, { method: 'POST', headers, body: JSON.stringify(record), signal: AbortSignal.timeout(5_000) }).catch(() => null);
-    if (res?.ok) return 'moved';
-    console.log(`[MEDIASHARE] ${channel} move to front: replay refused (${res?.status ?? 'no answer'})`);
+    const res = await fetch(`${API}/${creds.channelId}/replay`, { method: 'POST', headers, body: JSON.stringify(record), signal: AbortSignal.timeout(10_000) })
+      .catch(() => null);
+    // A timeout may still have landed: retrying then would play it twice.
+    if (res?.ok || !res) {
+      await new Promise(r => setTimeout(r, 800));
+      if (await isUp()) return 'moved';
+      if (!res) break;
+    }
+    console.log(`[MEDIASHARE] ${channel} play now: replay ${res ? `answered ${res.status}` : 'timed out'} and it isn't up`);
   }
-  await addToQueue(channel, song.videoId);
-  return 'readded';
+  // Never lose it: back at the end as the channel (its requester and tip are only kept in the log).
+  const back = await addToQueue(channel, song.videoId).catch(() => false);
+  if (!back) {
+    console.error(`[MEDIASHARE] ${channel} play now LOST a song, re-add by hand: ${JSON.stringify({ videoId: song.videoId, title: song.title, user: song.user?.username, amount: song.amount, source: song.source })}`);
+  }
+  return back ? 'readded' : 'lost';
 }
 
 /** Add a YouTube video to the end of the media share queue, as the channel. False without a token. */

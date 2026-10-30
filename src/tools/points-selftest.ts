@@ -39,7 +39,7 @@ import { markOverlaySeen, noteOverlayHealth, overlayHealth, overlayOff, overlayR
 import { biteFor, drawSnipeMs, LIVE_BITE_KEY, openSnipes, resetBites, rewardBitesWaiting, snipeOpen, SNIPE_PENDING, startBite, takeBite as takeBiteForTest } from '../community/big-bite';
 import { fish as fishCommand, parseTrapMinutes, SUBCOMMANDS as FISH_SUBCOMMANDS, BOARDS as FISH_BOARD_MAP, BOARD_SHORT as FISH_BOARD_SHORT } from '../bot-commands/fish';
 import { publicCommands, FISH_BOARDS, feedingGuide } from '../points/public-commands';
-import { duelBoard, publicLedgerText, setMetaTx } from '../points/store';
+import { duelBoard, publicLedgerText, publicUserHistory, setMetaTx } from '../points/store';
 import { mediaShareHeld, setMediaShareHeld } from '../community/mediashare';
 import { answerMatches, makeTrapCheck, normalizeAnswer } from '../community/trap-check';
 import { changeWheel, readWheel, validateWheel } from '../community/wheel';
@@ -1738,10 +1738,11 @@ async function main(): Promise<void> {
       writeConfig(root, ch, { enabled: true, currencyName: '$DON', games: { enabled: true, onlyWhileLive: false, chatReplies: false, steal: { enabled: true, oddsCommon: 0 } } });
       const caught = await run('$don fish steal @mark3');
       // At 0% the balanced fine is nothing, so the minimum: 25, with the 10 fee.
-      check('caught: the fine is burned, one hook try is used, the fish stays', caught.includes('caught you red-handed') && caught.includes('25 $DON fine')
-        && fishOf(31).hook === 0 && balance(ch, 31) === 1770 && balance(ch, 34) === 10 && fishOf(34).catch.types['🐟'] === 2
+      check('caught: half the fine (rounded down) goes to the victim, the rest is burned; one hook try is used, the fish stays',
+        caught.includes('caught you red-handed') && caught.includes('25 $DON fine (12 $DON of it goes to @mark3)')
+        && fishOf(31).hook === 0 && balance(ch, 31) === 1770 && balance(ch, 34) === 22 && fishOf(34).catch.types['🐟'] === 2
         && fishOf(31).lifetime.steal.caught === 1, caught);
-      check('caught: the victim is alerted with the fine', alertsFor(sdb, 34).some(a => a.text.includes('You caught thief trying to steal your 🐟') && a.text.includes('25 $DON fine')), alertsFor(sdb, 34));
+      check('caught: the victim is alerted with the fine', alertsFor(sdb, 34).some(a => a.text.includes('You caught thief trying to steal your 🐟') && a.text.includes('25 $DON fine, and 12 $DON of it is yours')), alertsFor(sdb, 34));
       check('a refused steal (short of the fee) alerts nobody', !alertsFor(sdb, 34).some(a => a.text.includes('poor')));
       check('caught: the steal cooldown starts too, fishing stays free', caught.includes('next steal in') && (fishOf(31).stealReady ?? 0) > Date.now() && fishOf(31).readyTimestamp <= Date.now(), caught);
       // A 🐋 at 100 cm is worth 3,000: a 3% fee of 90 when it works. Value counts as much as rarity, so every tier is at
@@ -1769,8 +1770,8 @@ async function main(): Promise<void> {
       check('the hall of shame ranks the caught', (await run('$don fish top caught')).includes('hall of shame') && (await run('$don fish top robbed')).includes('easy pickings'));
       const hb = heistBoard(ch, effectivePointsConfig({ enabled: true, games: { enabled: true } }), 999)!;
       check('the heist board: totals, thieves, shame, biggest, robbed, fort knox, blotter',
-        // Burned: thief's 10 fee, 10 + 25 when caught, and rich's 90 fee on the whale.
-        hb.totals.stolen === 2 && hb.totals.caught === 1 && hb.totals.guarded === 1 && hb.totals.burned === 10 + 35 + 90
+        // Burned: thief's 10 fee, 10 + 25 when caught less the 12 paid to the victim, and rich's 90 fee on the whale.
+        hb.totals.stolen === 2 && hb.totals.caught === 1 && hb.totals.guarded === 1 && hb.totals.burned === 10 + (35 - 12) + 90
         // Tied on fish stolen, the bigger loot ranks first.
         && hb.thieves[0]?.name === 'rich' && hb.thieves[0]?.loot === 3000 && hb.thieves[1]?.name === 'thief' && hb.thieves[1]?.attempts === 2
         && hb.shame[0]?.name === 'thief' && hb.shame[0]?.fines === 35
@@ -1842,6 +1843,21 @@ async function main(): Promise<void> {
       && pub('manual', 'MrAZisHere (via Claude)', 'x').actor === 'staff' && pub('spam_penalty', 'system', 'kekw').note === null
       && pub('game:fish_trap_check', 'chat:bob', 'Q').note === null && pub('channel_points', 'chat:bob', 'Pardon').note === 'Pardon'
       && pub('game:fish_steal', 'chat:bob', 'carol 🐟').actor === 'chat:bob');
+    {
+      // A guard tells a thief whom to skip: hired guards stay out of the public history.
+      const hch = 'guardhide';
+      writeConfig(root, hch, { enabled: true, currencyName: '$DON' });
+      const hdb = openPointsDb(hch, { create: true })!;
+      runWrite(hdb, () => {
+        creditTx(hdb, { userId: 71, username: 'gina', amount: 1000, reason: 'mod_add', now: 1 });
+        debitTx(hdb, { userId: 71, amount: 200, reason: 'game:fish_guard', now: 2 });
+        debitTx(hdb, { userId: 71, amount: 50, reason: 'game:fish_bait', now: 3 });
+      });
+      const hist = publicUserHistory(hch, effectivePointsConfig({ enabled: true }), 'gina', 50);
+      check('the public history leaves out hired fish guards (rows and totals) and keeps the rest',
+        !!hist && hist.balance === 750 && hist.ledger.length === 2 && !hist.ledger.some((l) => l.reason === 'game:fish_guard')
+        && !hist.totals.some((t) => t.reason === 'game:fish_guard') && hist.ledgerCount === 2, hist && { ledger: hist.ledger.map((l) => l.reason), totals: hist.totals });
+    }
     check('effective config strips debugFishTesters', !('debugFishTesters' in effectivePointsConfig({ debugFishTesters: ['x'] })));
     check('debugFishTesters survives a dashboard save', validatePointsPatch({ debugFishTesters: ['x'] }, { enabled: true }).next?.debugFishTesters?.[0] === 'x');
     const bad = validatePointsPatch({}, { games: { steal: { oddsCommon: 101, hookUses: 0, enabled: 'yes' } } });

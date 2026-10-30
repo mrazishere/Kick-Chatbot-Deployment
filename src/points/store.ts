@@ -653,13 +653,13 @@ export function topBy(db: PointsDb, column: RankColumn, limit: number, ex: Exclu
  * (both rows are the viewer's own), and for a duel nobody has answered yet, which
  * has no second side to name.
  */
-export function ledgerFor(db: PointsDb, userId: number, limit: number): Array<{ id: number; ts: number; delta: number; balance_after: number; reason: string; actor: string | null; note: string | null; counterparty: string | null }> {
+export function ledgerFor(db: PointsDb, userId: number, limit: number, hide: readonly string[] = []): Array<{ id: number; ts: number; delta: number; balance_after: number; reason: string; actor: string | null; note: string | null; counterparty: string | null }> {
   return db.prepare(
     `SELECT l.id, l.ts, l.delta, l.balance_after, l.reason, l.actor, l.note,
        (SELECT u.username FROM ledger o JOIN users u ON u.user_id = o.user_id
           WHERE o.ref = l.ref AND o.user_id <> l.user_id LIMIT 1) AS counterparty
-     FROM ledger l WHERE l.user_id = ? ORDER BY l.ts DESC, l.id DESC LIMIT ?`)
-    .all(userId, limit) as Array<{ id: number; ts: number; delta: number; balance_after: number; reason: string; actor: string | null; note: string | null; counterparty: string | null }>;
+     FROM ledger l WHERE l.user_id = ?${hide.length ? ` AND l.reason NOT IN (${hide.map(() => '?').join(',')})` : ''} ORDER BY l.ts DESC, l.id DESC LIMIT ?`)
+    .all(userId, ...hide, limit) as Array<{ id: number; ts: number; delta: number; balance_after: number; reason: string; actor: string | null; note: string | null; counterparty: string | null }>;
 }
 
 /** Balances that don't equal their ledger deltas plus their watch points. Should always be empty. */
@@ -868,6 +868,12 @@ export interface PublicUserHistory {
   gamble: GambleStats;
 }
 
+/**
+ * Reasons left out of the public history altogether: who hired a fish guard would tell a thief
+ * whom to skip (owner, 2026-10-31). The history then no longer adds up to the balance by that much.
+ */
+export const PUBLIC_HIDDEN_REASONS: readonly string[] = ['game:fish_guard'];
+
 /** Reasons whose notes stay private: an adjuster's typed reason, the spam keyword that fired, a check's question. */
 const PRIVATE_NOTES = /^(dash_|spam_penalty$|game:fish_trap_check$)/;
 
@@ -887,8 +893,9 @@ export function publicUserHistory(channel: string, cfg: PointsConfig, name: stri
     if (!u) return null;
     const ex = exclusionsFor(channel, cfg, broadcasterUserId);
     const active = db.prepare('SELECT COALESCE(SUM(points), 0) AS p FROM watch_ledger WHERE user_id = ?').get(u.user_id) as { p: number };
-    const totals = db.prepare('SELECT reason, SUM(delta) AS total, COUNT(*) AS count FROM ledger WHERE user_id = ? GROUP BY reason ORDER BY ABS(SUM(delta)) DESC')
-      .all(u.user_id) as Array<{ reason: string; total: number; count: number }>;
+    const hidden = PUBLIC_HIDDEN_REASONS.map(() => '?').join(',');
+    const totals = db.prepare(`SELECT reason, SUM(delta) AS total, COUNT(*) AS count FROM ledger WHERE user_id = ? AND reason NOT IN (${hidden}) GROUP BY reason ORDER BY ABS(SUM(delta)) DESC`)
+      .all(u.user_id, ...PUBLIC_HIDDEN_REASONS) as Array<{ reason: string; total: number; count: number }>;
     return {
       username: u.username,
       balance: u.balance,
@@ -897,7 +904,7 @@ export function publicUserHistory(channel: string, cfg: PointsConfig, name: stri
       activeTimeEarned: active.p,
       totals,
       ledgerCount: totals.reduce((n, t) => n + t.count, 0),
-      ledger: ledgerFor(db, u.user_id, Math.min(200, Math.max(1, limit))).map(l => ({
+      ledger: ledgerFor(db, u.user_id, Math.min(200, Math.max(1, limit)), PUBLIC_HIDDEN_REASONS).map(l => ({
         id: l.id, ts: iso(l.ts)!, delta: l.delta, balanceAfter: l.balance_after, reason: l.reason,
         ...publicLedgerText(l.reason, l.actor, l.note), counterparty: l.counterparty
       })),
@@ -1201,7 +1208,10 @@ export function heistBoard(channel: string, cfg: PointsConfig, broadcasterUserId
       stolen: went.filter(r => r.outcome === 'stolen').length,
       caught: went.filter(r => r.outcome === 'caught').length,
       guarded: rows.length - went.length,
+      // Fees and fines, less the half of a caught thief's fine that goes to the one robbed (since 2026-10-31).
       burned: went.reduce((s, r) => s + (r.fee ?? 0) + (r.fine ?? 0), 0)
+        - (db.prepare(`SELECT COALESCE(SUM(l.delta), 0) AS n FROM ledger l JOIN ${users} v ON v.user_id = l.user_id WHERE l.reason = 'game:fish_steal_comp'`)
+          .get(...clause.params) as { n: number }).n
     };
     const thieves = tally(r => r.outcome === 'guarded' ? null : r.thief, name => ({ name, stolen: 0, attempts: 0, loot: 0 }), (t, r) => {
       t.attempts++;

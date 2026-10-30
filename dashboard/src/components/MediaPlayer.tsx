@@ -15,7 +15,7 @@ const BUILD_ID = process.env.DASH_BUILD_ID ?? "";
 const TICK_MS = 1_000;
 
 type Song = { key: string; videoId: string; title: string; username: string; start: number; end: number; amount: number | null; tip: boolean; duration?: number; songKey?: string };
-type Sync = { build?: string; active: boolean; otherActive: boolean; now: number; playing: Song | null; queue: Song[]; history: Song[]; state: "playing" | "paused"; resume: number | null; hidden: boolean; captions: boolean; acted: boolean | null; failures?: Failure[]; warnings?: Record<string, string> };
+type Sync = { build?: string; active: boolean; otherActive: boolean; now: number; playing: Song | null; queue: Song[]; history: Song[]; state: "playing" | "paused"; resume: number | null; hidden: boolean; captions: boolean; acted: boolean | null; edit?: string | null; failures?: Failure[]; warnings?: Record<string, string> };
 type Failure = { key: string; videoId: string; title: string; username: string; seconds: number; code: number; reason: string; at: number };
 type Alt = { videoId: string; title: string; channel: string; durationS: number };
 type Action = { type: "next" | "skip" | "play" | "pause" | "replay" | "hide" | "show" | "captions-on" | "captions-off" | "front" | "remove"; key?: string; error?: number };
@@ -329,7 +329,14 @@ export default function MediaPlayer({ channel, playerKey }: { channel: string; p
       activeRef.current = data.active;
       setUpdate(!!BUILD_ID && !!data.build && data.build !== BUILD_ID);
       if (action?.type === "replay" && data.acted === false) setNote("Couldn't replay that one: it may have left the history");
-      if ((action?.type === "front" || action?.type === "remove") && data.acted === false) setNote("That one isn't in the queue any more");
+      if ((action?.type === "front" || action?.type === "remove") && data.acted === false) {
+        setNote(
+          data.edit === "readded" ? "StreamElements wouldn't play it now, so it's back at the end of the queue (as the channel)"
+            : data.edit === "lost" ? "StreamElements lost that song: add it again (its details are in the bot's log)"
+              : data.edit === "failed" ? "StreamElements didn't answer; try again"
+                : "That one isn't in the queue any more",
+        );
+      }
       syncRef.current = data;
       setSync(data);
       reconcile(data);
@@ -751,15 +758,20 @@ function useResults(url: string, onAdded: (title: string) => void) {
   const [busy, setBusy] = useState<"searching" | "adding" | null>(null);
   const [results, setResults] = useState<Alt[] | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
+  /** Bumped by each search and by clear(): a slower, older answer is dropped. */
+  const ask = useRef(0);
   const run = async (body: unknown, none: string) => {
+    const mine = ++ask.current;
     setBusy("searching");
     setMsg(null);
     try {
       const data = await searchCall(url, body);
+      if (mine !== ask.current) return;
       const list = data.results ?? [];
       setResults(list);
       setMsg(data.problem ? `That one won't play here: ${data.problem}` : list.length ? null : none);
     } catch (e) {
+      if (mine !== ask.current) return;
       setMsg(e instanceof Error ? e.message : "Search failed");
     }
     setBusy(null);
@@ -798,6 +810,8 @@ function useResults(url: string, onAdded: (title: string) => void) {
   );
   // An error leaves no results: the button comes back (with the message) to try again.
   const clear = () => {
+    ask.current++;
+    setBusy(null);
     setResults(null);
     setMsg(null);
   };

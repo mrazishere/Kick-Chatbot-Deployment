@@ -209,6 +209,8 @@ function shortOf(d: FishData, want: ReturnType<typeof lengthsWanted>): string[] 
 const STORY_MODEL = 'claude-haiku-4-5-20251001';
 /** supibot asks for 150 characters; allow some overrun before trimming. */
 const STORY_MAX = 220;
+/** Share of a caught thief's fine paid to the one they tried to rob; the rest is burned. */
+const STEAL_FINE_TO_VICTIM = 0.5;
 /** "✨🐟✨", or "✨ KEKLEO ✨" for an emote's name, which needs spaces to show as the emote. */
 const sparkle = (name: string): string => isWordName(name) ? `✨ ${name} ✨` : `✨${name}✨`;
 /** Names run together, as emoji read fine ("🐟🦐"); an emote's name gets spaces. */
@@ -1817,14 +1819,22 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
         return `🪝 You snuck up on @${victim.username} and made off with their ${sparkle(item.name)}${size}, worth ${groupDigits(worth)} ${cur}! (${groupDigits(fee)} ${cur} fee, ${left}, ${cooldown})`;
       }
 
-      if (fine > 0) debitTx(db!, { userId: uid, amount: fine, reason: 'game:fish_steal_fine', actor: `chat:${me}`, note: victim.username, now });
+      // Caught: half the fine goes to the one robbed (owner, 2026-10-31), the rest is burned. Only
+      // what was actually paid is split; a guard's catch (above) still burns it all. One ref ties
+      // the two rows, so each side's history names the other.
+      const ref = `steal:${uid}:${victim.user_id}:${now}`;
+      const paid = fine > 0 && debitTx(db!, { userId: uid, amount: fine, reason: 'game:fish_steal_fine', ref, actor: `chat:${me}`, note: victim.username, now }).ok;
+      const share = paid ? Math.floor(fine * STEAL_FINE_TO_VICTIM) : 0;
+      if (share > 0) creditTx(db!, { userId: victim.user_id, username: victim.username, amount: share, reason: 'game:fish_steal_comp', ref, actor: `chat:${me}`, note: me, now });
       d.lifetime.steal.caught++;
       saveFish(db!, uid, d, now);
       log('caught', item.name, picked.held?.cm ?? null, { worth, fee, fine });
-      alertUser(db!, victim.user_id, 'steal', `🚨 You caught ${me} trying to steal your ${item.name}${picked.held ? ` (${picked.held.cm} cm)` : ''}: they paid a ${groupDigits(fine)} ${cur} fine.`, now);
+      const yours = share > 0 ? `, and ${groupDigits(share)} ${cur} of it is yours` : '';
+      alertUser(db!, victim.user_id, 'steal', `🚨 You caught ${me} trying to steal your ${item.name}${picked.held ? ` (${picked.held.cm} cm)` : ''}: they paid a ${groupDigits(fine)} ${cur} fine${yours}.`, now);
       overlay = { kind: 'caught', item: item.name };
       tried = true;
-      return `🚨 @${victim.username} caught you red-handed reaching for their ${sparkle(item.name)}! You paid a ${groupDigits(fine)} ${cur} fine on top of the ${groupDigits(fee)} ${cur} fee. (${hookLeft}, ${cooldown})`;
+      const theirs = share > 0 ? ` (${groupDigits(share)} ${cur} of it goes to @${victim.username})` : '';
+      return `🚨 @${victim.username} caught you red-handed reaching for their ${sparkle(item.name)}! You paid a ${groupDigits(fine)} ${cur} fine${theirs} on top of the ${groupDigits(fee)} ${cur} fee. (${hookLeft}, ${cooldown})`;
     });
     const out = overlay as { kind: OverlayKind; item: string } | null;
     if (text) say(text, out ?? {});

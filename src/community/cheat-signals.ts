@@ -238,6 +238,13 @@ export function funnels(db: PointsDb, now: number, days = 7): Funnel[] {
       if (gives.some(x => x.user_id === g.to_id && x.to_id === g.user_id && Math.abs(g.ts - x.ts) <= 24 * 3600_000 && x.amount >= g.amount * 0.9)) continue;
       at(g.user_id, g.to_id).don += g.amount;
     }
+    // Half a caught thief's fine goes to the one robbed: a pair "stealing" from each other on
+    // purpose would move $DON that way, so it counts as sent, like a give.
+    const fines = db.prepare(
+      `SELECT o.user_id, i.delta AS amount, i.user_id AS to_id FROM ledger o JOIN ledger i ON i.ref = o.ref AND i.reason = 'game:fish_steal_comp'
+       WHERE o.reason = 'game:fish_steal_fine' AND o.ts >= ?`
+    ).all(since) as Array<{ user_id: number; amount: number; to_id: number }>;
+    for (const f of fines) at(f.user_id, f.to_id).don += f.amount;
     for (const r of db.prepare("SELECT user_id, detail FROM fish_signals WHERE kind = 'fish_give' AND ts >= ?").all(since) as Array<{ user_id: number; detail: string | null }>) {
       try {
         const d = JSON.parse(r.detail ?? '{}') as { to?: number; n?: number; worth?: number };

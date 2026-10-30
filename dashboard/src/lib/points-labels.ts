@@ -54,6 +54,7 @@ export const REASON_LABEL: Record<string, string> = {
   "game:fish_guard": "Hired a fish guard",
   "game:fish_steal": "Steal attempt fee",
   "game:fish_steal_fine": "Caught stealing, fined",
+  "game:fish_steal_comp": "Caught a thief: half their fine",
   channel_points: "Bought with channel points",
   channel_points_reversal: "Channel points refunded, taken back",
   "game:slots": "Slots bet",

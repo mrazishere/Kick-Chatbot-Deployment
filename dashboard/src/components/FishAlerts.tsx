@@ -35,6 +35,7 @@ export default function FishAlerts({ channel, viewer }: { channel: string; viewe
   const [toasts, setToasts] = useState<FishAlert[]>([]);
   // The newest id fetched, so each poll asks only for newer ones; null before the first load.
   const lastId = useRef<number | null>(null);
+  const loading = useRef(false);
 
   const toast = useCallback((list: FishAlert[]) => {
     if (!list.length) return;
@@ -44,6 +45,10 @@ export default function FishAlerts({ channel, viewer }: { channel: string; viewe
   }, []);
 
   const load = useCallback(async () => {
+    // One check at a time: a slow one overlapping the next would fetch the same alerts twice
+    // (and could move the cursor back).
+    if (loading.current) return;
+    loading.current = true;
     try {
       const first = lastId.current === null;
       const res = await fetch(`${api}${first ? "" : `?after=${lastId.current}`}`, { cache: "no-store" });
@@ -58,6 +63,8 @@ export default function FishAlerts({ channel, viewer }: { channel: string; viewe
       toast(first ? got.filter((a) => a.id > read).slice(-AWAY_TOASTS) : got);
     } catch {
       // The next poll tries again.
+    } finally {
+      loading.current = false;
     }
   }, [api, readKey, toast]);
 

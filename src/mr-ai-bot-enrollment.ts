@@ -3253,7 +3253,8 @@ function notePlayerFailure(channel: string, song: PlayerSong, code: number): voi
   lookupVideo(song.videoId, apiKey).then((info) => {
     const reason = unplayableReason(info);
     // No restriction at all: YouTube refused this device or connection, not the video.
-    failure.reason = reason ?? "YouTube refused it on this device, though the video has no restrictions: try ↻ Replay";
+    if (reason) failure.reason = reason;
+    else if (code === 100 || code === 101 || code === 150) failure.reason = "YouTube refused it on this device, though the video has no restrictions: try ↻ Replay";
     console.log(`[MEDIASHARE] ${channel} player: couldn't play ${song.videoId}: ${reason ?? 'YouTube shows no reason'}`);
   }, (e: unknown) => console.warn(`[MEDIASHARE] ${channel} player: lookup of ${song.videoId} failed: ${e instanceof Error ? e.message : String(e)}`));
 }
@@ -3282,11 +3283,16 @@ app.post('/internal/bot/:channel/mediashare/player', internalGuard(true), async 
       if (acted || ytError) console.log(`[MEDIASHARE] ${channel} player: ${type}${acted ? '' : ' (not acted)'}${ytError}`);
     }
     // The queue list's own buttons: play next (to the front, same requester) or take out.
+    let edit: string | null = null;
     if ((type === 'front' || type === 'remove') && typeof body.action?.key === 'string') {
-      const done = await queueEdit(channel, type, body.action.key);
-      acted = done !== null;
+      // A StreamElements hiccup here is told as this button failing, not as the whole sync.
+      edit = await queueEdit(channel, type, body.action.key).catch((e: unknown) => {
+        console.warn(`[MEDIASHARE] ${channel} player: ${type} failed: ${e instanceof Error ? e.message : String(e)}`);
+        return 'failed';
+      });
+      acted = edit === 'moved' || edit === 'removed';
       playerViews.delete(channel);
-      if (done) console.log(`[MEDIASHARE] ${channel} player: ${type} ${body.action.key} (${done})`);
+      if (edit) console.log(`[MEDIASHARE] ${channel} player: ${type} ${body.action.key} (${edit})`);
     }
     const now = Date.now();
     let cached = playerViews.get(channel);
@@ -3324,7 +3330,7 @@ app.post('/internal/bot/:channel/mediashare/player', internalGuard(true), async 
     if (r && view.playing && r.key === view.playing.key && typeof r.position === 'number') reportPlayer(channel, view.playing, r.position, r.paused === true, r.hidden === true, now, typeof r.latencyMs === 'number' ? r.latencyMs : 0);
     const failures = (playerFailures.get(channel) ?? []).filter((f) => now - f.at < PLAYER_FAILURE_MS);
     const warnings = queueWarnings(channel, view.queue);
-    return res.json({ now, ...view, hidden: !!view.playing && hiddenKey === view.playing.key, captions: db ? mediaShareCaptions(db) : false, active, otherActive, acted, failures, warnings });
+    return res.json({ now, ...view, hidden: !!view.playing && hiddenKey === view.playing.key, captions: db ? mediaShareCaptions(db) : false, active, otherActive, acted, edit, failures, warnings });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     console.error(`[MEDIASHARE] ${channel} player: ${msg}`);
@@ -3351,6 +3357,13 @@ const SEARCHES_PER_DAY_ALL = 50;
 const allSearches: number[] = [];
 const linkCache = new Map<string, { info: Awaited<ReturnType<typeof lookupVideo>>; at: number }>();
 const lastLookup = new Map<string, number>();
+// Pasted links cost 1 unit each: 200 a day per channel, 1,000 for all channels together.
+const linkLog = new Map<string, number[]>();
+const allLinks: number[] = [];
+const LINKS_PER_DAY = 200;
+const LINKS_PER_DAY_ALL = 1_000;
+// Ids already added from a search: not offered again (a cached search would bring them back).
+const addedFromSearch = new Map<string, Map<string, number>>();
 const MAX_SEARCH_S = 20 * 60;
 app.post('/internal/bot/:channel/mediashare/alternatives', internalGuard(true), async (req, res) => {
   const channel = String(req.params['channel'] ?? '').toLowerCase();
@@ -3375,6 +3388,9 @@ app.post('/internal/bot/:channel/mediashare/alternatives', internalGuard(true), 
     try {
       if (await addToQueue(channel, id)) {
         playerViews.delete(channel);
+        const a = addedFromSearch.get(channel) ?? new Map<string, number>();
+        a.set(id, Date.now());
+        addedFromSearch.set(channel, a);
         console.log(`[MEDIASHARE] ${channel} player: added ${id} from a search`);
         return res.json({ ok: true });
       }
@@ -3387,6 +3403,7 @@ app.post('/internal/bot/:channel/mediashare/alternatives', internalGuard(true), 
     }
   }
 
+  if (!mediaShareCredentials(channel)) return res.status(409).json({ error: "Media share isn't connected to StreamElements" });
   const apiKey = process.env.YOUTUBE_API_KEY;
   if (!apiKey) return res.status(503).json({ error: 'YouTube search is not set up' });
   const f = body.find;
@@ -3394,6 +3411,10 @@ app.post('/internal/bot/:channel/mediashare/alternatives', internalGuard(true), 
   const findTitle = typeof f?.title === 'string' ? f.title.slice(0, 200) : '';
   const text = typeof body.search === 'string' ? body.search.replace(/\s+/g, ' ').trim().slice(0, 200) : '';
   if (!(findId && findTitle) && !text) return res.status(400).json({ error: 'Search for what?' });
+  const added = addedFromSearch.get(channel) ?? new Map<string, number>();
+  for (const [id, at] of added) if (now - at > SEARCH_CACHE_MS) added.delete(id);
+  addedFromSearch.set(channel, added);
+  const fresh = (results: AltVideo[]) => results.filter((r) => !added.has(r.videoId));
   const offer = (results: AltVideo[]) => { for (const r of results) offered.set(r.videoId, now); };
   try {
     // A pasted link: just that video (1 unit), offered only if it will play here.
@@ -3402,6 +3423,11 @@ app.post('/internal/bot/:channel/mediashare/alternatives', internalGuard(true), 
       let hit = linkCache.get(link.id);
       if (!hit || now - hit.at > SEARCH_CACHE_MS) {
         if (now - (lastLookup.get(channel) ?? 0) < 1_000) return res.status(429).json({ error: 'One link a second: try again' });
+        const links = (linkLog.get(channel) ?? []).filter((t) => now - t < 86_400_000);
+        while (allLinks.length && now - allLinks[0] >= 86_400_000) allLinks.shift();
+        if (links.length >= LINKS_PER_DAY || allLinks.length >= LINKS_PER_DAY_ALL) return res.status(429).json({ error: 'Link lookups are used up for today: try again tomorrow' });
+        linkLog.set(channel, [...links, now]);
+        allLinks.push(now);
         lastLookup.set(channel, now);
         hit = { info: await lookupVideo(link.id, apiKey), at: now };
         linkCache.set(link.id, hit);
@@ -3410,7 +3436,8 @@ app.post('/internal/bot/:channel/mediashare/alternatives', internalGuard(true), 
       const info = hit.info;
       // The streamer picked this one: only what can't play anywhere stops it (a country lock might not be theirs).
       const problem = neverPlaysReason(info) ?? (info?.live ? 'it is a livestream' : null)
-        ?? (info && (info.durationS <= 0 || info.durationS > MAX_SEARCH_S) ? 'it is longer than 20 minutes' : null);
+        ?? (info && info.durationS <= 0 ? "its length isn't known yet (a premiere?)" : null)
+        ?? (info && info.durationS > MAX_SEARCH_S ? 'it is longer than 20 minutes' : null);
       if (!info || problem) return res.json({ results: [], problem: problem ?? 'it was removed or made private' });
       const result: AltVideo = { videoId: link.id, title: info.title, channel: '', durationS: info.durationS };
       offer([result]);
@@ -3419,8 +3446,8 @@ app.post('/internal/bot/:channel/mediashare/alternatives', internalGuard(true), 
     const cacheKey = findId ? `alt:${findId}` : `q:${text.toLowerCase()}`;
     const cached = searchCache.get(cacheKey);
     if (cached && now - cached.at < SEARCH_CACHE_MS) {
-      offer(cached.results);
-      return res.json({ results: cached.results });
+      offer(fresh(cached.results));
+      return res.json({ results: fresh(cached.results) });
     }
     const log = (searchLog.get(channel) ?? []).filter((t) => now - t < 3600_000);
     if (log.length && now - log[log.length - 1] < SEARCH_GAP_MS) return res.status(429).json({ error: 'One search every few seconds: try again in a moment' });

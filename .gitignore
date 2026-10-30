@@ -41,3 +41,6 @@ ws-test.js
 
 # Internal planning notes, kept out of the public repo
 .planning/
+
+# Local Claude Code settings (per machine)
+.claude/
