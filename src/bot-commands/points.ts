@@ -315,7 +315,7 @@ export const points: CommandFn = async function points(client, message, channel,
       const base = (process.env.BOT_DASHBOARD_URL || 'https://mr-ai.dev/kick').replace(/\/+$/, '');
       // The short address of the leaderboard's Commands tab: its real one has a ? and an =,
       // which would take the message past the 10-symbol allowance and get the link cut.
-      return void say(`${cur} commands ${base}/${channelName}/commands`);
+      return void say(`${cur} commands ${base}/leaderboard/${channelName}/commands`);
     }
 
     // ── give ──

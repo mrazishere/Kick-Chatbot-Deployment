@@ -28,13 +28,15 @@ export default function OwnShop({ channel, initial, currency }: { channel: strin
   const [reply, setReply] = useState<{ ok: boolean; text: string } | null>(null);
   const [now, setNow] = useState(() => Date.now());
   const guardUntil = shop.steal?.guardUntil ?? null;
-  // Counts down while the panel is open, and says "no guard" once it runs out.
+  const guardPaused = shop.steal?.guardPaused === true;
+  // Counts down while the panel is open, and says "no guard" once it runs out. Paused (live), it stands still.
   useEffect(() => {
     if (!guardUntil) return;
     setNow(Date.now());
+    if (guardPaused) return;
     const t = setInterval(() => setNow(Date.now()), 30_000);
     return () => clearInterval(t);
-  }, [guardUntil]);
+  }, [guardUntil, guardPaused]);
   const guardLeft = guardUntil ? timeLeft(guardUntil, now) : null;
 
   async function buy(item: ShopItem) {
@@ -99,11 +101,11 @@ export default function OwnShop({ channel, initial, currency }: { channel: strin
         {st ? (
           <div className={row}>
             <span>
-              🛡️ {guardLeft ? <>Guard on: <b className="tabular-nums">{guardLeft}</b> left</> : "No guard on your fish right now."}
+              🛡️ {guardLeft ? <>Guard on: <b className="tabular-nums">{guardLeft}</b> left{guardPaused ? " · ⏸ paused while the stream is live" : ""}</> : "No guard on your fish right now."}
               <span className="block text-xs text-neutral-500">
                 {st.guardPrice === null
                   ? "No fish to guard yet."
-                  : `${st.guardHours}h more for ${st.guardPercent}% of what your fish are worth now${guardLeft ? ", added to the time left" : ""}.`}
+                  : `${st.guardHours}h more for ${st.guardPercent}% of what your fish are worth now${guardLeft ? ", added to the time left" : ""}.${guardPaused ? " Bought now, its hours start when the stream ends." : ""}`}
               </span>
             </span>
             {st.guardPrice !== null ? button("guard", guardLeft ? "Extend" : "Hire guard", st.guardPrice) : null}

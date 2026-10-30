@@ -14,7 +14,7 @@ import * as fs from 'fs';
 import { channelConfigPath, effectiveCommand, readLivePointsConfig } from './points/config';
 import type { PointsConfig, RewardAction } from './types';
 import { economySummary, exclusionsFor, findUserByName, getUser, gambleStatsFor, gambleTop, isExcluded, pointsSummary, rankBy, topBy, caughtFish } from './points/store';
-import { loadFish, hasFishedBefore, currentReel, heldSaleValue, sellPrice, LEVEL_VALUE, ITEMS, levelOf, levelCost, MAX_LEVEL, BAITS, baitPrice, baitRoll, rarityName, stealRollChance } from './community/fishing';
+import { loadFish, hasFishedBefore, currentReel, heldSaleValue, sellPrice, LEVEL_VALUE, ITEMS, levelOf, levelCost, MAX_LEVEL, BAITS, baitPrice, baitRoll, rarityName, stealRollChance, guardsPauseWhileLive } from './community/fishing';
 import { fighterOf } from './community/fish-duel';
 import { readWheel } from './community/wheel';
 import { feedingGuide } from './points/public-commands';
@@ -590,7 +590,7 @@ function channelRules(ctx: StatToolContext, raw: unknown): unknown {
       bait: BAITS.map(b => ({ bait: `${b.emoji} ${b.name}`, pricePerCast: baitPrice(b, g), castOdds: `1 in ${baitRoll(b, g)} instead of 1 in ${g.catchOdds}` })),
       ...(g.steal.enabled ? {
         hook: { price: g.steal.hookPrice, tries: g.steal.hookUses, use: 'needed to steal' },
-        guard: { price: `${g.steal.guardPercent}% of the fish value you hold, at least ${g.steal.guardMinimum}`, hours: g.steal.guardHours, use: 'catches every steal try on you: the thief pays the fee and fine as if caught' }
+        guard: { price: `${g.steal.guardPercent}% of the fish value you hold, at least ${g.steal.guardMinimum}`, hours: g.steal.guardHours, ...(guardsPauseWhileLive(g) ? { paused: 'its clock stops while the stream is live (stealing is offline only), so the hours are only spent offline; one bought live starts when the stream ends' } : {}), use: 'catches every steal try on you: the thief pays the fee and fine as if caught' }
       } : {})
     };
   }
@@ -622,7 +622,7 @@ function channelRules(ctx: StatToolContext, raw: unknown): unknown {
       fine: `a caught thief also pays a fine, at least ${st.fineMinimum}, priced from the chance with luck so the average try loses ${st.edgePercent}% of what it could win`,
       graceMinutes: `a fish can't be stolen until held ${st.graceMinutes} min, trap hauls included, so a thief can't snipe a haul the moment it's posted; a steal aimed at such a fish (or at a length they don't hold) gets "has no <fish> you can get your hook into right now". viewer_stats lists a viewer's still-protected fish under stealProtected`,
       protectMinutes: `after a try, the target is safe ${st.protectMinutes} min`,
-      guard: `${st.guardPercent}% of the fish value held, at least ${st.guardMinimum}, lasts ${st.guardHours}h; a guard catches every try on that viewer, no roll: the thief pays the fee and the fine as if caught, and it counts as their try that day and starts the cooldown (before 2026-10-24 it only cost a hook try)`,
+      guard: `${st.guardPercent}% of the fish value held, at least ${st.guardMinimum}, lasts ${st.guardHours}h${guardsPauseWhileLive(g) ? ' of offline time (its clock stops while the stream is live, since stealing is offline only; one bought live starts when the stream ends)' : ''}; a guard catches every try on that viewer, no roll: the thief pays the fee and the fine as if caught, and it counts as their try that day and starts the cooldown (before 2026-10-24 it only cost a hook try)`,
       cooldown: `a try costs the fishing cooldown (${g.catchCooldownMinutes} min)`
     };
   }

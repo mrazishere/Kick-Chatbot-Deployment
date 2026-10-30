@@ -14,6 +14,7 @@ import { PointsDb, reportDbError, runWrite } from './db';
 import { LiveState } from './live';
 import { Exclusions, getMeta, grantTick, isExcluded, setMetaTx, tickExists } from './store';
 import { clearAlert, raiseAlert } from '../health-alerts';
+import { syncGuardPause } from '../community/fish-shop';
 
 /** Run this long after the boundary, so presence noted right before it is written. */
 const TICK_DELAY_MS = 5_000;
@@ -171,6 +172,14 @@ export class Earner {
 
     db = this.ctx.db();
     if (!db) return this.skip('database unavailable', boundaryMs);
+    // Guards stand still while live with stealing closed (fish-shop.ts); Kick's own state, never in the payout's way.
+    if (!cfg.debugForceLive) {
+      try {
+        syncGuardPause(db, cfg.games, live.isLive, this.ctx.now(), live.startedAt);
+      } catch (err) {
+        console.error(`[POINTS] guard pause sync failed for ${this.ctx.channel}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
     if (!live.isLive) {
       if (getMeta(db, 'live_since') !== null) runWrite(db, () => setMetaTx(db!, 'live_since', null));
       return this.skip('offline', boundaryMs);

@@ -20,6 +20,7 @@ import { SYSTEM_BOTS } from '../system-bots';
 import { getBotIdentity } from '../bot-identity';
 import { readLivePointsConfig } from './config';
 import { PointsDb, driverAvailable, openPointsDb, pointsDir, reportDbError, runWrite } from './db';
+import { guardEnd, guardPausedAt } from '../community/fishing';
 
 export interface UserRecord {
   user_id: number;
@@ -1062,7 +1063,8 @@ export function guardUntilFor(channel: string, userId: number, now = Date.now())
   // A failed read throws (and is reported), so it isn't mistaken for no guard.
   return withReadDb(channel, null as number | null, db => {
     const row = db.prepare("SELECT json_extract(data, '$.guardUntil') AS until FROM fish WHERE user_id = ?").get(userId) as { until: number | null } | undefined;
-    const until = Number(row?.until ?? 0);
+    // Live with stealing closed, guards stand still (fishing.ts guardEnd).
+    const until = guardEnd(Number(row?.until ?? 0), guardPausedAt(db), now);
     return until > now ? until : null;
   });
 }

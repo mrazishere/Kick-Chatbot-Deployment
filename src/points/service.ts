@@ -21,6 +21,7 @@ import * as antispam from './antispam';
 import { LiveState, checkLive } from './live';
 import * as bigBite from '../community/big-bite';
 import { watchOverlay, watchOverlayOpen, type OverlayWatchAlerts } from '../community/fish-overlay';
+import { syncGuardPause } from '../community/fish-shop';
 import { PresenceTracker } from './presence';
 import { LastMessages, presenceVerdict } from './presence-rules';
 import { Exclusions, applyOnce, creditTx, isApplied, drawRaffle, dueRaffles, exclusionsFor, expiredDuels, findUserByName, getMeta, getUser, isExcluded, openRaffle, pruneApplied, raffleEntries, RaffleRow, refundDuel, setMetaTx } from './store';
@@ -604,6 +605,8 @@ export class PointsService {
       if (!db) return;
       const started = e?.started_at ? Date.parse(e.started_at) : NaN;
       runWrite(db, () => setMetaTx(db, 'live_since', this.lastLive ? String(Number.isFinite(started) ? started : this.now()) : null));
+      // Guards stand still while live with stealing closed; the webhook starts or ends that straight away.
+      syncGuardPause(db, this.config().games, this.lastLive === true, this.now(), Number.isFinite(started) ? started : null);
     });
   }
 

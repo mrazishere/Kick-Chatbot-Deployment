@@ -67,7 +67,7 @@ import { buyGuard as shopBuyGuard, buyHook as shopBuyHook, buyReel as shopBuyRee
 import { addTrade, dropTrade, mirrorTrades, sideText, tradeBy, tradeFor, type TradeItem, type TradeOffer, type TradeSide } from '../community/fish-trade';
 import { BITE_TOO_FAST_MS, STREAM_GRACE_MS, biteFor, canBite, channelBite, channelHasBite, codeMatches, getAway, nextPull, pickChatter, recordBite, rewardSnipeFails, snipeBite, snipeOpen, startBite, takeBite, type BiteContext } from '../community/big-bite';
 import {
-  addItem, itemByWord, giveItems, baitPrice, baitRoll, currentReel, freshCatches, landsFish, moveFish, pickHeld, stealableFish, stealCharges, stealRollChance, worstStealCharges, parseSellList, takeSized, addXp, levelCost, levelOf, MAX_LEVEL, capOf, emoteWord, isWordName, nearCap, overflow, CatchItem, CatchType, FAILURE_EMOTES, FishData, findBait, hasFishedBefore, initialData, rarityOf, recordCatch,
+  addItem, itemByWord, giveItems, guardEnd, guardPausedAt, baitPrice, baitRoll, currentReel, freshCatches, landsFish, moveFish, pickHeld, stealableFish, stealCharges, stealRollChance, worstStealCharges, parseSellList, takeSized, addXp, levelCost, levelOf, MAX_LEVEL, capOf, emoteWord, isWordName, nearCap, overflow, CatchItem, CatchType, FAILURE_EMOTES, FishData, findBait, hasFishedBefore, initialData, rarityOf, recordCatch,
   ITEMS, JUNK_MESSAGES, loadFish, MISS_DELAY_MS, TRAP_MIN_MINUTES, pick, randomInt, rollCatch, saveFish, sellPrice, STORY_STYLES, SUCCESS_EMOTES,
   takeItems, TYPE_DESCRIPTIONS, weightedCatch, type HeldFish
 } from '../community/fishing';
@@ -1777,7 +1777,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       const hookLeft = d.hook > 0 ? `${tries(d.hook)} left on your 🪝 hook` : 'your 🪝 hook is used up';
 
       // A guard catches every try, with no roll: the fine as if caught. A guard's time stays secret.
-      if ((v.guardUntil ?? 0) > now) {
+      if (guardEnd(v.guardUntil, guardPausedAt(db!), now) > now) {
         if (fine > 0) debitTx(db!, { userId: uid, amount: fine, reason: 'game:fish_steal_fine', actor: `chat:${me}`, note: `${victim.username} (guard)`, now });
         d.lifetime.steal.blocked++;
         saveFish(db!, uid, d, now);

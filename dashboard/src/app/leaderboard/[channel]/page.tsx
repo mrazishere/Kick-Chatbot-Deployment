@@ -217,7 +217,7 @@ function StealGuide({ rules: r, currency, command, fish, emotes }: { rules: Publ
           <h3 className="pt-1 font-medium text-neutral-100">💂 Guard</h3>
           <p>
             {code(`${command} fish buy guard`)} protects all your fish for <b>{r.guardHours} hours</b>. It costs {r.guardPercent}% of what your fish are worth when you buy it (at least {n(r.guardMinimum)} {currency});
-            buying again adds more time. A guard catches every thief: they pay the fee and the fine as if caught, no roll. How long your guard has left is never shown in chat, so thieves can&apos;t time it.
+            buying again adds more time.{r.offlineOnly && !r.onlyWhileLive ? " Its clock stops while the stream is live, when nobody can steal, so its hours are only spent offline." : ""} A guard catches every thief: they pay the fee and the fine as if caught, no roll. How long your guard has left is never shown in chat, so thieves can&apos;t time it.
           </p>
         </div>
       </div>

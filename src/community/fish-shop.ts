@@ -3,10 +3,10 @@
 // these, so a price, a check and a reply are the same wherever someone buys. Each one is a
 // write: run it inside the caller's transaction (chat's once, the dashboard's applyOnce).
 
-import type { PointsDb } from '../points/db';
-import { debitTx, ensureUserTx, getUser } from '../points/store';
+import { runWrite, type PointsDb } from '../points/db';
+import { debitTx, ensureUserTx, getUser, setMetaTx } from '../points/store';
 import type { FishReelSetting, PointsGamesConfig } from '../types';
-import { currentReel, heldFishValue, initialData, loadFish, saveFish } from './fishing';
+import { currentReel, GUARD_PAUSE_KEY, guardEnd, guardPausedAt, guardsPauseWhileLive, heldFishValue, initialData, loadFish, saveFish } from './fishing';
 
 export type ShopItem = 'hook' | 'guard' | 'reel';
 
@@ -61,6 +61,35 @@ export function buyHook(b: ShopBuyer): ShopResult {
   return { ok: true, text: `You bought a 🪝 grappling hook for ${groupDigits(st.hookPrice)} ${cur}: ${tries(st.hookUses)} at ${cmd} fish steal @user. Every try uses one, caught or not. You have ${groupDigits(after)} ${cur} left.` };
 }
 
+/**
+ * Guards stand still while the stream is live and stealing is closed (guardsPauseWhileLive): called with
+ * Kick's live state (the earner's tick, the livestream webhook). Going live records when guards stopped:
+ * the stream's start (`since`) if it's within GUARD_PAUSE_LAG_MS, which covers noticing late without
+ * crediting hours from before the rule (turned on mid-stream, say); going offline moves every guard still running then on
+ * by the time stood still, in one transaction. Safe to call again with the same state.
+ */
+const GUARD_PAUSE_LAG_MS = 15 * 60_000;
+
+export function syncGuardPause(db: PointsDb, g: PointsGamesConfig, live: boolean, now: number, since?: number | null): void {
+  const at = guardPausedAt(db);
+  const pause = live && guardsPauseWhileLive(g);
+  if (pause && at === null) {
+    const from = since && Number.isFinite(since) && since <= now && now - since <= GUARD_PAUSE_LAG_MS ? since : now;
+    runWrite(db, () => setMetaTx(db, GUARD_PAUSE_KEY, String(from)));
+    console.log(`[FISH] guards paused from ${new Date(from).toISOString()} (live, stealing closed)`);
+  } else if (!pause && at !== null) {
+    const stood = Math.max(0, now - at);
+    const moved = runWrite(db, () => {
+      const r = db.prepare(
+        "UPDATE fish SET data = json_set(data, '$.guardUntil', json_extract(data, '$.guardUntil') + ?) WHERE json_extract(data, '$.guardUntil') > ?"
+      ).run(stood, at);
+      setMetaTx(db, GUARD_PAUSE_KEY, null);
+      return r.changes;
+    });
+    console.log(`[FISH] guards running again: ${moved} moved on by ${Math.round(stood / 60_000)}m`);
+  }
+}
+
 /** A guard: priced on what the fish held right now are worth, and adds its hours to any guard still running. */
 export function buyGuard(b: ShopBuyer): ShopResult {
   const { db, g, userId, cur, now } = b;
@@ -75,8 +104,12 @@ export function buyGuard(b: ShopBuyer): ShopResult {
   const after = price > 0
     ? debitTx(db, { userId, amount: price, reason: 'game:fish_guard', actor: b.actor, now }).balance
     : balance;
-  const extended = (d.guardUntil ?? 0) > now;
-  d.guardUntil = Math.max(now, d.guardUntil ?? 0) + st.guardHours * 3_600_000;
+  // While guards stand still (live), the hours start when they run again: stored as an end the pause moves on.
+  const pausedAt = guardPausedAt(db);
+  const end = guardEnd(d.guardUntil, pausedAt, now);
+  const extended = end > now;
+  const newEnd = Math.max(now, end) + st.guardHours * 3_600_000;
+  d.guardUntil = pausedAt !== null ? newEnd - (now - pausedAt) : newEnd;
   saveFish(db, userId, d, now);
   // No time in the reply: chat is public, and a guard's time left is the owner's secret.
   return {
@@ -115,8 +148,10 @@ export interface ShopView {
     hookTries: number;
     hookPrice: number;
     hookUses: number;
-    /** ISO, or null with no guard on. */
+    /** ISO, or null with no guard on. While paused, when it would end if the stream ended now. */
     guardUntil: string | null;
+    /** Guards stand still: the stream is live and stealing is closed (syncGuardPause). */
+    guardPaused: boolean;
     /** Null with no fish to guard. */
     guardPrice: number | null;
     guardHours: number;
@@ -130,6 +165,8 @@ export function shopView(db: PointsDb, g: PointsGamesConfig, userId: number, now
   const level = Math.min(d.reel ?? 0, g.reels.length);
   const next = level < g.reels.length ? g.reels[level] : null;
   const st = g.steal;
+  const pausedAt = guardPausedAt(db);
+  const end = guardEnd(d.guardUntil, pausedAt, now);
   return {
     balance: getUser(db, userId)?.balance ?? 0,
     reel: have ? { name: have.name, effects: reelEffects(have) } : null,
@@ -138,7 +175,8 @@ export function shopView(db: PointsDb, g: PointsGamesConfig, userId: number, now
       hookTries: d.hook ?? 0,
       hookPrice: st.hookPrice,
       hookUses: st.hookUses,
-      guardUntil: (d.guardUntil ?? 0) > now ? new Date(d.guardUntil!).toISOString() : null,
+      guardUntil: end > now ? new Date(end).toISOString() : null,
+      guardPaused: pausedAt !== null,
       guardPrice: guardPrice(heldFishValue(d, g), g),
       guardHours: st.guardHours,
       guardPercent: st.guardPercent

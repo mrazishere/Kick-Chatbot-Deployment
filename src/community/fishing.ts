@@ -668,6 +668,31 @@ function withDefaults(raw: Partial<FishData>): FishData {
   };
 }
 
+/** Meta key: when guards stopped running (ms), while the stream is live and stealing is closed (see fish-shop.ts syncGuardPause). */
+export const GUARD_PAUSE_KEY = 'guards_paused_at';
+
+/**
+ * Guards stand still while live: stealing only opens offline (games.onlyWhileOffline, no live-only
+ * steal rule of its own), so a guard's hours aren't spent on a stream nobody can steal in.
+ */
+export const guardsPauseWhileLive = (g: PointsGamesConfig): boolean => g.steal.enabled && g.onlyWhileOffline && !g.onlyWhileLive && !g.steal.onlyWhileLive;
+
+/** When guards stopped running, or null while they run. */
+export function guardPausedAt(db: PointsDb): number | null {
+  const row = db.prepare('SELECT value FROM meta WHERE key = ?').get(GUARD_PAUSE_KEY) as { value: string | null } | undefined;
+  const at = Number(row?.value);
+  return row?.value && Number.isFinite(at) && at > 0 ? at : null;
+}
+
+/**
+ * When a guard really ends (ms, 0 with none): one still running when the pause began is moved on
+ * by the pause so far. Stored ends move for good when the pause ends (syncGuardPause).
+ */
+export function guardEnd(guardUntil: number | undefined, pausedAt: number | null, now: number): number {
+  const until = guardUntil ?? 0;
+  return pausedAt !== null && until > pausedAt ? until + Math.max(0, now - pausedAt) : until;
+}
+
 export function loadFish(db: PointsDb, userId: number): FishData | null {
   const row = db.prepare('SELECT data FROM fish WHERE user_id = ?').get(userId) as { data: string } | undefined;
   if (!row) return null;

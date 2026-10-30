@@ -949,8 +949,10 @@ export interface OwnShop {
     hookTries: number;
     hookPrice: number;
     hookUses: number;
-    /** ISO, or null with no guard on. */
+    /** ISO, or null with no guard on. While paused, when it would end if the stream ended now. */
     guardUntil: string | null;
+    /** The guard's clock stands still: the stream is live and stealing is closed. Absent from an older bot service. */
+    guardPaused?: boolean;
     /** Null with no fish to guard. */
     guardPrice: number | null;
     guardHours: number;

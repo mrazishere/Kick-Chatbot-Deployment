@@ -32,6 +32,8 @@ import { points as pointsCommand, SUBCOMMAND_ALIASES } from '../bot-commands/poi
 import { marksFor, readStats as readWordleStats, wordle as wordleCommand } from '../bot-commands/wordle';
 import { advanceVideos, enqueueVideo, failVideo, hasVideoInLine, isoDurationSeconds, LOAD_PAD_MS, markVideoOverlaySeen, parseYouTubeLink, playingVideo } from '../community/video-share';
 import { duelStrength, moveFish, takeItems, addItem, overflow, nearCap, addXp, levelCost, takeSized, FishData, initialData, isTrophy, rarityOf, stealChance, stealCharges, stealRollChance, worstStealCharges, ITEMS, landsFish, loadFish, parseSellList, recordCatch, saveFish, sellPrice, weightedCatch } from '../community/fishing';
+import { buyGuard, shopView, syncGuardPause } from '../community/fish-shop';
+import { guardEnd, guardPausedAt, guardsPauseWhileLive } from '../community/fishing';
 import { openCommunityDb } from '../community/store';
 import { markOverlaySeen, noteOverlayHealth, overlayHealth, overlayOff, overlayReloadToken, overlayShowing, readOverlay, requestOverlayReload, watchOverlay } from '../community/fish-overlay';
 import { biteFor, drawSnipeMs, openSnipes, resetBites, rewardBitesWaiting, snipeOpen, SNIPE_PENDING, startBite, takeBite as takeBiteForTest } from '../community/big-bite';
@@ -1485,6 +1487,59 @@ async function main(): Promise<void> {
     } finally {
       Date.now = realNow;
     }
+  }
+
+  // Guards stand still while live when stealing is offline only (fish-shop.ts syncGuardPause)
+  {
+    const ch = 'guardpause';
+    writeConfig(root, ch, { enabled: true, currencyName: '$DON', games: { enabled: true, onlyWhileLive: false, onlyWhileOffline: true, steal: { enabled: true, guardHours: 12, guardMinimum: 10 } } });
+    const g = effectivePointsConfig({ enabled: true, games: { enabled: true, onlyWhileLive: false, onlyWhileOffline: true, steal: { enabled: true, guardHours: 12, guardMinimum: 10 } } }).games;
+    const pdb = openPointsDb(ch, { create: true })!;
+    const H = 3_600_000;
+    const t0 = 1_000 * H;
+    const guardOf = (id: number) => loadFish(pdb, id)!.guardUntil ?? 0;
+    runWrite(pdb, () => {
+      for (const [id, until] of [[1, t0 + 5 * H], [2, t0 - H]] as const) {
+        ensureUserTx(pdb, id, `gp${id}`, 1);
+        const d = initialData();
+        d.guardUntil = until;
+        saveFish(pdb, id, d, 1);
+      }
+      ensureUserTx(pdb, 3, 'gp3', 1);
+      creditTx(pdb, { userId: 3, username: 'gp3', amount: 10_000, reason: 'mod_add', now: 1 });
+      const d3 = initialData();
+      addItem(d3, ITEMS.find(x => x.name === '🐟')!);
+      saveFish(pdb, 3, d3, 1);
+    });
+    check('no pause without the offline rule', (() => { syncGuardPause(pdb, effectivePointsConfig({ enabled: true, games: { enabled: true, steal: { enabled: true } } }).games, true, t0); return guardPausedAt(pdb) === null; })());
+    check('no pause when the live rule wins (both rules on, hand-edited)',
+      !guardsPauseWhileLive({ ...g, onlyWhileLive: true }) && !guardsPauseWhileLive({ ...g, steal: { ...g.steal, onlyWhileLive: true } }));
+    // A stream start an hour back (the rule turned on mid-stream, say) isn't credited: from now.
+    syncGuardPause(pdb, g, true, t0, t0 - H);
+    const pausedFrom = guardPausedAt(pdb);
+    syncGuardPause(pdb, g, false, t0);
+    // Noticed 10 minutes late: guards stood still from the stream's start.
+    syncGuardPause(pdb, g, true, t0 + 10 * 60_000, t0);
+    check('going live pauses guards from the stream\'s start when it was just now, else from now',
+      pausedFrom === t0 && guardPausedAt(pdb) === t0);
+    syncGuardPause(pdb, g, false, t0);
+    syncGuardPause(pdb, g, true, t0, t0 - H);
+    syncGuardPause(pdb, g, true, t0 + H, t0 - H);
+    check('a second live sync changes nothing', guardPausedAt(pdb) === t0);
+    const mid = t0 + 2 * H;
+    check('while paused a running guard\'s end moves on with the stream; one that ended before it doesn\'t',
+      guardEnd(guardOf(1), guardPausedAt(pdb), mid) === t0 + 5 * H + 2 * H && guardEnd(guardOf(2), guardPausedAt(pdb), mid) === t0 - H);
+    check('a guard\'s time left stands still while paused', guardEnd(guardOf(1), guardPausedAt(pdb), mid) - mid === guardEnd(guardOf(1), guardPausedAt(pdb), t0) - t0);
+    const bought = runWrite(pdb, () => buyGuard({ db: pdb, g, userId: 3, username: 'gp3', actor: 'chat:gp3', cur: '$DON', cmd: '$don', now: mid }));
+    check('a guard can be bought while paused', bought.ok, bought);
+    const view = shopView(pdb, g, 3, mid).steal;
+    check('the shop says paused and the full hours are left', view?.guardPaused === true && Date.parse(view.guardUntil ?? '') - mid === 12 * H, view);
+    const end = t0 + 4 * H;
+    syncGuardPause(pdb, g, false, end);
+    check('going offline: running guards move on by the stream, a bought one starts its hours now, an old one stays',
+      guardPausedAt(pdb) === null && guardOf(1) === t0 + 5 * H + 4 * H && guardOf(3) === end + 12 * H && guardOf(2) === t0 - H,
+      { g1: guardOf(1) - t0, g3: guardOf(3) - end, g2: guardOf(2) - t0 });
+    check('the shop runs again after', shopView(pdb, g, 3, end).steal?.guardPaused === false);
   }
 
   // Aimed steals: a kind or one fish by length, at that fish's own odds
