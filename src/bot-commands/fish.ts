@@ -1794,16 +1794,28 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       if (fee > 0) debitTx(db!, { userId: uid, amount: fee, reason: 'game:fish_steal', actor: `chat:${me}`, note: `${victim.username} ${item.name}`, now });
       const cooldown = `next steal in ${g.catchCooldownMinutes}m`;
       const hookLeft = d.hook > 0 ? `${tries(d.hook)} left on your 🪝 hook` : 'your 🪝 hook is used up';
+      // Caught, by the owner or their guard: half the fine goes to the one robbed (owner, 2026-10-31;
+      // a guard's catch too, so hiring one never pays less than having none), the rest is burned.
+      // Only what was actually paid is split. One ref ties the two rows, so each side's history names the other.
+      const payFine = (note: string): number => {
+        const ref = `steal:${uid}:${victim.user_id}:${now}`;
+        const paid = fine > 0 && debitTx(db!, { userId: uid, amount: fine, reason: 'game:fish_steal_fine', ref, actor: `chat:${me}`, note, now }).ok;
+        const share = paid ? Math.floor(fine * STEAL_FINE_TO_VICTIM) : 0;
+        if (share > 0) creditTx(db!, { userId: victim.user_id, username: victim.username, amount: share, reason: 'game:fish_steal_comp', ref, actor: `chat:${me}`, note: me, now });
+        return share;
+      };
+      const yours = (share: number) => (share > 0 ? `, and ${groupDigits(share)} ${cur} of it is yours` : '');
+      const theirs = (share: number) => (share > 0 ? ` (${groupDigits(share)} ${cur} of it goes to @${victim.username})` : '');
 
       // A guard catches every try, with no roll: the fine as if caught. A guard's time stays secret.
       if (guardEnd(v.guardUntil, guardPausedAt(db!), now) > now) {
-        if (fine > 0) debitTx(db!, { userId: uid, amount: fine, reason: 'game:fish_steal_fine', actor: `chat:${me}`, note: `${victim.username} (guard)`, now });
+        const share = payFine(`${victim.username} (guard)`);
         d.lifetime.steal.blocked++;
         saveFish(db!, uid, d, now);
         log('guarded', item.name, picked.held?.cm ?? null, { worth, fee, fine });
-        alertUser(db!, victim.user_id, 'steal', `🛡️ Your guard caught ${me} reaching for your ${item.name}${picked.held ? ` (${picked.held.cm} cm)` : ''}: they paid a ${groupDigits(fine)} ${cur} fine.`, now);
+        alertUser(db!, victim.user_id, 'steal', `🛡️ Your guard caught ${me} reaching for your ${item.name}${picked.held ? ` (${picked.held.cm} cm)` : ''}: they paid a ${groupDigits(fine)} ${cur} fine${yours(share)}.`, now);
         tried = true;
-        return `🛡️ @${victim.username} has a guard watching their fish! It caught you reaching for their ${sparkle(item.name)}: you paid a ${groupDigits(fine)} ${cur} fine on top of the ${groupDigits(fee)} ${cur} fee. (${hookLeft}, ${cooldown})`;
+        return `🛡️ @${victim.username} has a guard watching their fish! It caught you reaching for their ${sparkle(item.name)}: you paid a ${groupDigits(fine)} ${cur} fine${theirs(share)} on top of the ${groupDigits(fee)} ${cur} fee. (${hookLeft}, ${cooldown})`;
       }
 
       if (randomInt(1, 1000) <= Math.round(chance * 10)) {
@@ -1821,22 +1833,14 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
         return `🪝 You snuck up on @${victim.username} and made off with their ${sparkle(item.name)}${size}, worth ${groupDigits(worth)} ${cur}! (${groupDigits(fee)} ${cur} fee, ${left}, ${cooldown})`;
       }
 
-      // Caught: half the fine goes to the one robbed (owner, 2026-10-31), the rest is burned. Only
-      // what was actually paid is split; a guard's catch (above) still burns it all. One ref ties
-      // the two rows, so each side's history names the other.
-      const ref = `steal:${uid}:${victim.user_id}:${now}`;
-      const paid = fine > 0 && debitTx(db!, { userId: uid, amount: fine, reason: 'game:fish_steal_fine', ref, actor: `chat:${me}`, note: victim.username, now }).ok;
-      const share = paid ? Math.floor(fine * STEAL_FINE_TO_VICTIM) : 0;
-      if (share > 0) creditTx(db!, { userId: victim.user_id, username: victim.username, amount: share, reason: 'game:fish_steal_comp', ref, actor: `chat:${me}`, note: me, now });
+      const share = payFine(victim.username);
       d.lifetime.steal.caught++;
       saveFish(db!, uid, d, now);
       log('caught', item.name, picked.held?.cm ?? null, { worth, fee, fine });
-      const yours = share > 0 ? `, and ${groupDigits(share)} ${cur} of it is yours` : '';
-      alertUser(db!, victim.user_id, 'steal', `🚨 You caught ${me} trying to steal your ${item.name}${picked.held ? ` (${picked.held.cm} cm)` : ''}: they paid a ${groupDigits(fine)} ${cur} fine${yours}.`, now);
+      alertUser(db!, victim.user_id, 'steal', `🚨 You caught ${me} trying to steal your ${item.name}${picked.held ? ` (${picked.held.cm} cm)` : ''}: they paid a ${groupDigits(fine)} ${cur} fine${yours(share)}.`, now);
       overlay = { kind: 'caught', item: item.name };
       tried = true;
-      const theirs = share > 0 ? ` (${groupDigits(share)} ${cur} of it goes to @${victim.username})` : '';
-      return `🚨 @${victim.username} caught you red-handed reaching for their ${sparkle(item.name)}! You paid a ${groupDigits(fine)} ${cur} fine${theirs} on top of the ${groupDigits(fee)} ${cur} fee. (${hookLeft}, ${cooldown})`;
+      return `🚨 @${victim.username} caught you red-handed reaching for their ${sparkle(item.name)}! You paid a ${groupDigits(fine)} ${cur} fine${theirs(share)} on top of the ${groupDigits(fee)} ${cur} fee. (${hookLeft}, ${cooldown})`;
     });
     const out = overlay as { kind: OverlayKind; item: string } | null;
     if (text) say(text, out ?? {});

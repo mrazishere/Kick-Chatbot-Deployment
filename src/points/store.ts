@@ -1209,8 +1209,11 @@ export function heistBoard(channel: string, cfg: PointsConfig, broadcasterUserId
       caught: went.filter(r => r.outcome === 'caught').length,
       guarded: rows.length - went.length,
       // Fees and fines, less the half of a caught thief's fine that goes to the one robbed (since 2026-10-31).
+      // Guard catches aren't counted here, so neither is their half (its fine's note ends "(guard)").
       burned: went.reduce((s, r) => s + (r.fee ?? 0) + (r.fine ?? 0), 0)
-        - (db.prepare(`SELECT COALESCE(SUM(l.delta), 0) AS n FROM ledger l JOIN ${users} v ON v.user_id = l.user_id WHERE l.reason = 'game:fish_steal_comp'`)
+        - (db.prepare(`SELECT COALESCE(SUM(l.delta), 0) AS n FROM ledger l JOIN ${users} v ON v.user_id = l.user_id
+             JOIN ledger f ON f.ref = l.ref AND f.reason = 'game:fish_steal_fine' AND COALESCE(f.note, '') NOT LIKE '% (guard)'
+             WHERE l.reason = 'game:fish_steal_comp'`)
           .get(...clause.params) as { n: number }).n
     };
     const thieves = tally(r => r.outcome === 'guarded' ? null : r.thief, name => ({ name, stolen: 0, attempts: 0, loot: 0 }), (t, r) => {

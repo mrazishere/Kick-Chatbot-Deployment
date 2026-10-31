@@ -1724,7 +1724,9 @@ async function main(): Promise<void> {
         blocked.includes('@guarded has a guard') && blocked.includes('25 $DON fine') && !/guard[^.]*\d+h/.test(blocked) && fishOf(31).hook === 1 && balance(ch, 31) === 1805
         && fishOf(33).catch.types['🐟'] === 3 && fishOf(31).lifetime.steal.blocked === 1 && (fishOf(31).stealReady ?? 0) > Date.now(), blocked);
       check('and starts the steal cooldown', (await run('$don fish steal @guarded')).includes('try another steal in'));
-      check('the guarded viewer is alerted that their guard caught the thief', alertsFor(sdb, 33).some(a => a.text.includes('Your guard caught thief')), alertsFor(sdb, 33));
+      check('the guarded viewer is alerted that their guard caught the thief, with their half of the fine', alertsFor(sdb, 33).some(a => a.text.includes('Your guard caught thief') && a.text.includes('25 $DON fine, and 12 $DON of it is yours')), alertsFor(sdb, 33));
+      check('a guard\'s catch pays the guarded half the fine, as a catch without one does', blocked.includes('25 $DON fine (12 $DON of it goes to @guarded)')
+        && (sdb.prepare("SELECT SUM(delta) AS s FROM ledger WHERE user_id = 33 AND reason = 'game:fish_steal_comp'").get() as { s: number }).s === 12, blocked);
       shift += 31 * 60_000;
       runWrite(sdb, () => recordCatch(sdb, 35, '🐟', 'cast', 50, Date.now()));
       check('fish landed within the grace time can\'t be stolen', (await run('$don fish steal @fresh')).includes('no fish you can get your hook into'));
