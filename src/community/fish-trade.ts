@@ -28,6 +28,9 @@ import type { PointsDb } from '../points/db';
 import { runWrite } from '../points/db';
 
 const offers = new Map<string, TradeOffer[]>();
+/** Offers answered or taken back (dropped), unlike ones whose time ran out. */
+const settled = new WeakSet<TradeOffer>();
+export const tradeSettled = (o: TradeOffer): boolean => settled.has(o);
 
 function live(channel: string, now: number): TradeOffer[] {
   const list = (offers.get(channel) ?? []).filter(o => o.expiresAt > now);
@@ -50,6 +53,7 @@ export function addTrade(channel: string, offer: TradeOffer): void {
 }
 
 export function dropTrade(channel: string, offer: TradeOffer): void {
+  settled.add(offer);
   offers.set(channel, (offers.get(channel) ?? []).filter(o => o !== offer));
 }
 

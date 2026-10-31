@@ -59,13 +59,13 @@ import { addReminder, cancelSelfRemindersStartingWith, openCommunityDb } from '.
 import { bestEmote, broadcasterIdFor, emoteImages, withKickEmotes } from '../community/emotes';
 import { alertUser, scheduleTrapAlert } from '../community/fish-alerts';
 import { OverlayKind, overlayHealth, overlayOff, overlayShowing, pushOverlay, requestOverlayReload, setOverlayOff } from '../community/fish-overlay';
-import { addChallenge, challengeBy, challengeFor, closeInValue, describe, fighterOf, describeTeam, dropChallenge, fight, findTeam, fishSpecs, fishNamed, heldFish, TYPE_EMOJI, isLength, specText, splitLengths, fishValue, keepsRange, overlayDuel, overlayTeamDuel, pickByValue, pickFighter, pickForKeeps, pickTeam, sameFish, playMs, randomFish, switchesIn, teamFight, teamSizeOf, teamValue, wantsRandom, type Challenge, type DuelStake, type OverlayDuel, type Picked } from '../community/fish-duel';
+import { addChallenge, challengeBy, challengeFor, challengeSettled, closeInValue, describe, fighterOf, describeTeam, dropChallenge, fight, findTeam, fishSpecs, fishNamed, heldFish, TYPE_EMOJI, isLength, specText, splitLengths, fishValue, keepsRange, overlayDuel, overlayTeamDuel, pickByValue, pickFighter, pickForKeeps, pickTeam, sameFish, playMs, randomFish, switchesIn, teamFight, teamSizeOf, teamValue, wantsRandom, type Challenge, type DuelStake, type OverlayDuel, type Picked } from '../community/fish-duel';
 import { parseBet } from './points';
 import { answerMatches, makeTapCheck, makeTrapCheck, tapMatches, type TrapCheck } from '../community/trap-check';
 import { wheelBusy } from '../community/wheel-state';
 import { recordSignal } from '../community/cheat-signals';
 import { buyGuard as shopBuyGuard, buyHook as shopBuyHook, buyReel as shopBuyReel, reelEffects, type ShopBuyer } from '../community/fish-shop';
-import { addTrade, dropTrade, mirrorTrades, sideText, tradeBy, tradeFor, type TradeItem, type TradeOffer, type TradeSide } from '../community/fish-trade';
+import { addTrade, dropTrade, mirrorTrades, sideText, tradeBy, tradeFor, tradeSettled, type TradeItem, type TradeOffer, type TradeSide } from '../community/fish-trade';
 import { BITE_TOO_FAST_MS, BITE_TOO_FAST_PAGE_MS, STREAM_GRACE_MS, biteFor, canBite, channelBite, channelHasBite, codeMatches, getAway, nextPull, pickChatter, recordBite, rewardSnipeFails, snipeBite, snipeOpen, startBite, takeBite, type BiteContext } from '../community/big-bite';
 import {
   addItem, itemByWord, giveItems, guardEnd, guardPausedAt, baitPrice, baitRoll, currentReel, freshCatches, landsFish, moveFish, pickHeld, stealableFish, stealCharges, stealRollChance, worstStealCharges, parseSellList, takeSized, addXp, levelCost, levelOf, MAX_LEVEL, capOf, emoteWord, isWordName, nearCap, overflow, CatchItem, CatchType, FAILURE_EMOTES, FishData, findBait, hasFishedBefore, initialData, rarityOf, recordCatch,
@@ -1504,7 +1504,8 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     mirrorTrades(db!, chan);
     console.log(`[FISH] ${me} offered ${to.username} a trade in ${chan}: ${sideText(giveSide, cur)} for ${sideText(getSide, cur)} (fee ${fee})`);
     alertUser(db!, to.user_id, 'trade', `🤝 ${me} offers ${sideText(giveSide, cur)} for your ${sideText(getSide, cur)}. Accept or decline within ${span(t.expirySeconds * 1000)}.`, now);
-    await announce(`🤝 @${to.username}, ${me} offers ${sideText(giveSide, cur)} for your ${sideText(getSide, cur)}. ${cmd} fish accept or ${cmd} fish decline (${span(t.expirySeconds * 1000)}). ${me} pays a ${groupDigits(fee)} ${cur} fee.`);
+    await announceInvite(`🤝 @${to.username}, ${me} offers ${sideText(giveSide, cur)} for your ${sideText(getSide, cur)}. ${cmd} fish accept or ${cmd} fish decline (${span(t.expirySeconds * 1000)}). ${me} pays a ${groupDigits(fee)} ${cur} fee.`,
+      offer.expiresAt, () => tradeSettled(offer));
   }
 
   function declineTrade(uid: number): void {
@@ -1871,6 +1872,34 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       console.error(`[FISH] Duel line in ${chan} failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   };
+  /**
+   * An invite's chat line (a duel challenge, a trade offer): sent like announce(), then deleted
+   * from chat if its time runs out unanswered (owner, 2026-10-31), so a stale one doesn't sit
+   * there to be answered. The timer is in memory: an invite from before a restart just stays.
+   * Deleting needs a token with moderation:chat_message:manage; without one it stays too.
+   */
+  const announceInvite = async (text: string, expiresAt: number, settled: () => boolean): Promise<void> => {
+    web?.reply(text, { kind: 'info' });
+    let id: string | null = null;
+    try {
+      if (client.sayForId) id = await client.sayForId(channel, text);
+      else await client.say(channel, text);
+    } catch (err) {
+      console.error(`[FISH] Invite line in ${chan} failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    const del = client.deleteMessage;
+    if (!del) return;
+    if (!id) return void console.log(`[FISH] Invite in ${chan} sent without a message id back: it can't be deleted when it runs out`);
+    const sent = id;
+    const timer = setTimeout(() => {
+      if (settled()) return;
+      del(sent).then(
+        ok => console.log(ok ? `[FISH] Deleted an expired invite in ${chan}` : `[FISH] Expired invite in ${chan} left up: nothing here can delete messages`),
+        err => console.error(`[FISH] Deleting an expired invite in ${chan} failed: ${err instanceof Error ? err.message : String(err)}`)
+      );
+    }, Math.max(0, expiresAt - Date.now()) + 1000);
+    timer.unref?.();
+  };
   /** Whether duels are open here and now; says so, or stays silent like a cast at the wrong time. */
   const duelsOpen = async (): Promise<boolean> => {
     if (tester) return true;
@@ -2202,11 +2231,12 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       }
       const stake = stakeOf();
       if (typeof stake === 'string') return void say(stake);
-      addChallenge(chan, {
+      const challenge: Challenge = {
         challengerId: uid, challenger: me, targetId: rival.user_id, target: rival.username,
         fish: mine.team[0].item.name, team: mine.team.map(p => ({ fish: p.item.name, ...(p.held ? { cm: p.held.cm } : {}) })),
         stake, expiresAt: now + du.expirySeconds * 1000
-      }, now);
+      };
+      addChallenge(chan, challenge, now);
       lastChallenge.set(cdKey, now);
       const lineup = describeTeam(mine.team.map(p => p.fighter));
       console.log(`[FISH] ${me} challenged ${rival.username} to a ${size}v${size} battle in ${chan} with ${lineup} (${stake.kind}${stake.kind === 'wager' ? ` ${stake.amount}` : ''})`);
@@ -2216,7 +2246,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       const text = `⚔️ ${me} challenges you to a ${size}v${size} fish battle with ${lineup}. ${stakeLine(stake)}${keepsNote} Answer within ${span(du.expirySeconds * 1000)}: ${cmd} fish accept [fish…] or ${cmd} fish deny.`;
       pushOverlay(db!, { username: me, kind: 'info', text: `⚔️ challenges ${rival.username} to a ${size}v${size} fish battle with ${lineup}. ${stakeLine(stake)}` });
       alertUser(db!, rival.user_id, 'duel', text);
-      return void (await announce(`@${rival.username} ${text}`));
+      return void (await announceInvite(`@${rival.username} ${text}`, challenge.expiresAt, () => challengeSettled(challenge)));
     }
     const theirsD = loadFish(db!, rival.user_id);
     // `random` sends any fish held; the pick is made now and named in the challenge, like a fish asked for.
@@ -2242,10 +2272,11 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     const stake = stakeOf();
     if (typeof stake === 'string') return void say(stake);
 
-    addChallenge(chan, {
+    const challenge: Challenge = {
       challengerId: uid, challenger: me, targetId: rival.user_id, target: rival.username,
       fish: fighter.item.name, ...((keeps || exact) && fighter.held ? { cm: fighter.held.cm } : {}), ...(exact ? { exact: true } : {}), stake, expiresAt: now + du.expirySeconds * 1000
-    }, now);
+    };
+    addChallenge(chan, challenge, now);
     lastChallenge.set(cdKey, now);
     console.log(`[FISH] ${me} challenged ${rival.username} to a duel in ${chan} with ${fighter.item.name} (${stake.kind}${stake.kind === 'wager' ? ` ${stake.amount}` : ''})`);
     const keepsNote = stake.kind === 'keeps'
@@ -2254,7 +2285,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     const text = `⚔️ ${me} challenges you to a fish duel with their ${describe(fighter.fighter)}. ${stakeLine(stake)}${keepsNote} Answer within ${span(du.expirySeconds * 1000)}: ${cmd} fish accept [fish] or ${cmd} fish deny.`;
     pushOverlay(db!, { username: me, kind: 'info', text: `⚔️ challenges ${rival.username} to a fish duel with their ${describe(fighter.fighter)}. ${stakeLine(stake)}` });
     alertUser(db!, rival.user_id, 'duel', text);
-    await announce(`@${rival.username} ${text}`);
+    await announceInvite(`@${rival.username} ${text}`, challenge.expiresAt, () => challengeSettled(challenge));
   }
 
   /** Fight the duel waiting for this viewer, with their strongest fish or the one they name. */

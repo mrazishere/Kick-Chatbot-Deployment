@@ -568,6 +568,9 @@ export interface Challenge {
 }
 
 const waiting = new Map<string, Challenge[]>();
+/** Challenges answered or taken back (dropped), unlike ones whose time ran out. */
+const settled = new WeakSet<Challenge>();
+export const challengeSettled = (c: Challenge): boolean => settled.has(c);
 
 function open(channel: string, now: number): Challenge[] {
   const list = (waiting.get(channel) ?? []).filter(c => c.expiresAt > now);
@@ -588,5 +591,6 @@ export function addChallenge(channel: string, c: Challenge, now = Date.now()): v
 }
 
 export function dropChallenge(channel: string, c: Challenge): void {
+  settled.add(c);
   waiting.set(channel, (waiting.get(channel) ?? []).filter(x => x !== c));
 }

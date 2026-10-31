@@ -877,6 +877,10 @@ export type VanishResult =
 
 export interface ClientWrapper {
   say(channel: string, msg: string): Promise<void>;
+  /** say(), resolving to the sent message's id (null when it wasn't sent), so it can be deleted later. */
+  sayForId?(channel: string, msg: string): Promise<string | null>;
+  /** Delete one chat message for everyone, the bot's own say. False when nothing here can. */
+  deleteMessage?(messageId: string): Promise<boolean>;
   /** Time a user out through Kick's API. Absent where the bot cannot moderate. */
   timeout?(request: TimeoutRequest): Promise<TimeoutResult>;
   /** Delete a chatter's own recent messages, for everyone. Absent where the bot cannot moderate. */

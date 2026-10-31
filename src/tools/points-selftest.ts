@@ -1061,6 +1061,40 @@ async function main(): Promise<void> {
         && shown.duel.winner === (row1.winner_id === 51 ? 0 : 1) && !shown.text.includes('@'), shown);
       check('a challenge is gone once fought', (await run('$don fish accept', gary)).includes('Nobody has challenged you'));
 
+      // An invite that runs out unanswered is deleted from chat; one answered isn't (owner, 2026-10-31).
+      {
+        const sentIds: string[] = [];
+        const deleted: string[] = [];
+        const due: Array<() => void> = [];
+        const realTimeout = global.setTimeout;
+        // The invite's timer is minutes long: catch it to run by hand, let short ones through.
+        (global as { setTimeout: unknown }).setTimeout = ((fn: () => void, ms?: number, ...rest: unknown[]) =>
+          (ms ?? 0) >= 60_000 ? (due.push(fn), { unref() {} }) : (realTimeout as (...a: unknown[]) => unknown)(fn, ms, ...rest)) as unknown as typeof setTimeout;
+        try {
+          const invite = async (msg: string, who: [string, number]) => {
+            shift += 6_000;
+            const t: KickTags = { username: who[0], 'display-name': who[0], badges: {}, isBroadcaster: false, isModUp: false, isVIPUp: false, rawBadges: [], senderId: who[1] };
+            await fishCommand({
+              say: async () => {},
+              sayForId: async () => { const id = `m${sentIds.length + 1}`; sentIds.push(id); return id; },
+              deleteMessage: async id => (deleted.push(id), true)
+            }, msg, `#${ch}`, t, { channelName: ch } as ChannelConfig);
+          };
+          await invite('$don fish duel @gary', ash);
+          shift += 121_000;
+          due.splice(0).forEach(f => f());
+          await new Promise(r => realTimeout(r, 10));
+          check('a duel challenge left unanswered is deleted from chat when its time runs out', sentIds.length === 1 && deleted.join() === 'm1', { sentIds, deleted });
+          await invite('$don fish duel @gary', ash);
+          await run('$don fish deny', gary);
+          due.splice(0).forEach(f => f());
+          await new Promise(r => realTimeout(r, 10));
+          check('one that was answered (turned down, here) stays', sentIds.length === 2 && deleted.join() === 'm1', { sentIds, deleted });
+        } finally {
+          global.setTimeout = realTimeout;
+        }
+      }
+
       check('a wager must be covered by both', (await run('$don fish duel @brock 100', ash)).includes('has no fish') && (await run('$don fish duel @gary 5000', ash)).includes('You only have 1,000')
         && (await run('$don fish duel @gary 200 300', ash)).includes('Usage:'));
       const wagered = await run('$don fish duel @gary 🐟 200', ash);

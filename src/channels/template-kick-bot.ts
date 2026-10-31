@@ -678,7 +678,13 @@ class KickChatBot {
       say: async (_channel: string, msg: string): Promise<void> => {
         console.log(`[COMMAND RESPONSE] ${msg}`);
         await this.sendMessage(msg).catch(() => {});
-      }
+      },
+      sayForId: async (_channel: string, msg: string): Promise<string | null> => {
+        console.log(`[COMMAND RESPONSE] ${msg}`);
+        const sent = (await this.sendMessage(msg).catch(() => null)) as { data?: { message_id?: unknown } } | null;
+        return typeof sent?.data?.message_id === 'string' ? sent.data.message_id : null;
+      },
+      deleteMessage: (id) => this.moderator.deleteMessage(id)
     };
     // As long as a chat message, the same as the bot's fishing-page check: a move that's longer is
     // refused whole, never cut short (a cut feeding used to eat only the first foods on the plate).
@@ -802,6 +808,12 @@ class KickChatBot {
         // Node exits on an unhandled rejection. sendMessage has already logged the failure.
         await this.sendMessage(msg).catch(() => {});
       },
+      sayForId: async (_channel: string, msg: string): Promise<string | null> => {
+        console.log(`[COMMAND RESPONSE] ${msg}`);
+        const sent = (await this.sendMessage(msg).catch(() => null)) as { data?: { message_id?: unknown } } | null;
+        return typeof sent?.data?.message_id === 'string' ? sent.data.message_id : null;
+      },
+      deleteMessage: (id) => this.moderator.deleteMessage(id),
       // Lets custom commands issue real timeouts instead of posting "/timeout" as text.
       timeout: (request) => this.moderator.timeout(request),
       vanish: (name) => this.moderator.vanish(name),

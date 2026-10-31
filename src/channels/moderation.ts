@@ -332,6 +332,26 @@ export class ChannelModerator {
     return { ok: true, target, seconds, actor: actor.name };
   }
 
+  /**
+   * Delete one message for everyone, such as the bot's own invite once it has run out. False
+   * when this channel has no token that can, or Kick refused; already gone counts as done.
+   */
+  async deleteMessage(messageId: string): Promise<boolean> {
+    const { token, isChannelToken } = await this.deps.getToken().catch(() => ({ token: '', isChannelToken: false }));
+    if (!isChannelToken || !token) return false;
+    const actors = await this.deleteActors(token);
+    if (actors.length === 0) return false;
+    const actor = await this.firstThatWorks(actors, 'Deleting a bot message', async t => {
+      try {
+        await axios.delete(`${API}/chat/${encodeURIComponent(messageId)}`, { headers: { Authorization: `Bearer ${t}` } });
+      } catch (err: unknown) {
+        if (axios.isAxiosError(err) && err.response?.status === 404) return;
+        throw err;
+      }
+    });
+    return actor !== null;
+  }
+
   /** Remember a chat message so its sender can delete it with !vanish. Seeing an id twice is harmless. */
   noteMessage(username: string, messageId: string | undefined): void {
     if (!messageId) return;
