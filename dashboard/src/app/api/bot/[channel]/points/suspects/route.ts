@@ -4,7 +4,7 @@ import { authorizeChannel, errorResponse, validChannel } from "@/lib/bot-auth";
 
 type Params = { params: Promise<{ channel: string }> };
 
-// Possible cheaters in the offline fishing games, for the owner and managers to judge.
+// Possible cheaters (offline fishing, alts, and winnings moved between accounts, gambling included), for the owner and managers to judge.
 // ?days=1–30 (default 7).
 export async function GET(req: Request, { params }: Params): Promise<NextResponse> {
   const { channel: raw } = await params;

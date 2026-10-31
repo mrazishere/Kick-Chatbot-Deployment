@@ -46,7 +46,7 @@ import { changeWheel, readWheel, validateWheel } from '../community/wheel';
 import { funnels, linkedAccounts, linkedGroups, recordSignal, suspects } from '../community/cheat-signals';
 import { resetWheelBusy, wheelBusy } from '../community/wheel-state';
 import { recentSpins } from '../community/wheel-history';
-import { alertsFor } from '../community/fish-alerts';
+import { alertsFor, scheduleTrapAlert } from '../community/fish-alerts';
 import { wheel as wheelCommand } from '../bot-commands/wheel';
 import { streamstatus } from '../bot-commands/streamstatus';
 import { LISTED_FILES, NOT_LISTED } from '../points/public-bot-commands';
@@ -3183,7 +3183,7 @@ async function main(): Promise<void> {
       const adb = openPointsDb('altch', { create: true })!;
       const T0 = 1_800_000_000_000;
       const H = 3600_000;
-      const users: Array<[number, string]> = [[20, 'mainacct'], [21, 'altacct'], [31, 'lender'], [32, 'borrower'], [33, 'feeder'], [34, 'sink'], [35, 'fishfeeder'], [36, 'santa'], [37, 'elf1'], [38, 'elf2'], [39, 'elf3']];
+      const users: Array<[number, string]> = [[20, 'mainacct'], [21, 'altacct'], [31, 'lender'], [32, 'borrower'], [33, 'feeder'], [34, 'sink'], [35, 'fishfeeder'], [36, 'santa'], [37, 'elf1'], [38, 'elf2'], [39, 'elf3'], [40, 'highroller'], [41, 'pal'], [42, 'loser'], [43, 'friend']];
       for (let i = 0; i < 12; i++) users.push([50 + i, `crowd${i}`]);
       const act = (id: number, at: number, reason = 'game:gamble') =>
         adb.prepare('INSERT INTO ledger (ts, user_id, delta, balance_after, reason) VALUES (?, ?, ?, ?, ?)').run(at, id, -10, 0, reason);
@@ -3216,6 +3216,16 @@ async function main(): Promise<void> {
         // Handing it round to three people is generosity.
         adb.prepare('INSERT INTO ledger (ts, user_id, delta, balance_after, reason) VALUES (?, ?, ?, ?, ?)').run(T0 + H, 36, 1_000, 1_000, 'game:fish_sell');
         for (const to of [37, 38, 39]) give(36, to, 2_000, 1_000, T0 + 4 * H);
+        // Gambling counts on balance: bet 5 million, paid out 5,056,000, so 56,000 won, and 30,000 of it sent on is a funnel.
+        const bet = (id: number, reason: string, delta: number) =>
+          adb.prepare('INSERT INTO ledger (ts, user_id, delta, balance_after, reason) VALUES (?, ?, ?, ?, ?)').run(T0 + 5 * H, id, delta, 0, reason);
+        bet(40, 'game:gamble', -5_000_000);
+        bet(40, 'game:gamble_win', 5_056_000);
+        give(40, 41, 30_000, 26_000, T0 + 6 * H);
+        // One who lost on balance won nothing, however big the payouts: a give isn't their winnings.
+        bet(42, 'game:gamble', -100_000);
+        bet(42, 'game:gamble_win', 60_000);
+        give(42, 43, 5_000, 1_000, T0 + 6 * H);
       });
       const now = T0 + 100 * H;
       const list = suspects(adb, now, 7);
@@ -3229,8 +3239,42 @@ async function main(): Promise<void> {
       check('sending your winnings to one account is a funnel', !!fed && fed.evidence.includes('sink') && fed.evidence.includes('2,500 $DON in gives') && fed.evidence.includes('3,000 won'), fed);
       check('so are fish gifts, at their price', flagsOf('fishfeeder').some(f => f.code === 'funnel' && f.evidence.includes('2 fish and junk worth 1,500')), flagsOf('fishfeeder'));
       check('giving to several people isn\'t', !flagsOf('santa').some(f => f.code === 'funnel'), flagsOf('santa'));
+      const roll = flagsOf('highroller').find(f => f.code === 'funnel');
+      check('gambling winnings count on balance, not payouts: sending them on is a funnel', !!roll && roll.evidence.includes('pal') && roll.evidence.includes('56,000 won') && roll.evidence.includes('56,000 of it up on gambling'), flagsOf('highroller'));
+      check('a gambler down on balance won nothing to funnel', !flagsOf('loser').some(f => f.code === 'funnel'), flagsOf('loser'));
       const groups = linkedGroups(adb, [...linkedAccounts(adb, now, 7), ...funnels(adb, now, 7).map(f => ({ userId: f.userId, otherId: f.toId }))]).map(g => g.members.map(m => m.username).sort().join(','));
-      check('linked and funnelling accounts are grouped', groups.includes('altacct,mainacct') && groups.includes('feeder,fishfeeder,sink'), groups);
+      check('linked and funnelling accounts are grouped', groups.includes('altacct,mainacct') && groups.includes('feeder,fishfeeder,sink') && groups.includes('highroller,pal'), groups);
+    }
+
+    // "Your traps are full" waits until they fill, then shows as a new alert, past the page's cursor.
+    {
+      const tdb = openPointsDb('trapalertch', { create: true })!;
+      const T0 = 1_800_000_000_000;
+      const laidTill = (end: number | null) => runWrite(tdb, () => {
+        ensureUserTx(tdb, 70, 'trapper70', T0);
+        const d = initialData();
+        d.trap = end === null ? { active: false, start: 0, end: 0, duration: 0 } : { active: true, start: T0, end, duration: end - T0 };
+        saveFish(tdb, 70, d, T0);
+      });
+      laidTill(T0 + 120_000);
+      scheduleTrapAlert(tdb, 70, T0 + 60_000, 'early');
+      scheduleTrapAlert(tdb, 70, T0 + 120_000, '🪤 full');
+      tdb.prepare("INSERT INTO fish_alerts (ts, user_id, kind, text) VALUES (?, 70, 'gift', 'a gift')").run(T0 + 30_000);
+      const cursor = alertsFor(tdb, 70, 0, 30, T0 + 90_000);
+      check('a trap alert waits for the traps to fill, and laying them again moves it', cursor.length === 1 && cursor[0].kind === 'gift', cursor);
+      const later = alertsFor(tdb, 70, cursor[0].id, 30, T0 + 130_000);
+      check('once full it shows, after the page\'s last alert, at the time they filled', later.length === 1 && later[0].kind === 'trap' && later[0].text === '🪤 full' && later[0].ts === T0 + 120_000 && later[0].id > cursor[0].id, later);
+      check('and only once', alertsFor(tdb, 70, later[0].id, 30, T0 + 140_000).length === 0);
+      laidTill(T0 + 200_000);
+      scheduleTrapAlert(tdb, 70, T0 + 200_000, 'again');
+      scheduleTrapAlert(tdb, 70, null, '');
+      check('collecting or cancelling first drops it', alertsFor(tdb, 70, later[0].id, 30, T0 + 300_000).length === 0);
+      // Collected, but a poll lands before the bot drops the row (or it crashed in between): no alert, and the row goes.
+      laidTill(T0 + 400_000);
+      scheduleTrapAlert(tdb, 70, T0 + 400_000, 'stale');
+      laidTill(null);
+      check('traps already collected are never announced, whatever row is left', alertsFor(tdb, 70, later[0].id, 30, T0 + 500_000).length === 0
+        && !(tdb.prepare("SELECT 1 FROM fish_alerts WHERE user_id = 70 AND kind = 'trap_due'").get()));
     }
 
     // The timer ends a window nobody answered, in real time.
@@ -3284,9 +3328,14 @@ async function main(): Promise<void> {
       check('so is one under 31 minutes', (await run('$don fish t 20m')).includes('31m up to 4h') && !loadFish(tdb, 51)?.trap.active);
       const laid = await run('$don fish trap 3h');
       check('trap 3h lays them for 3 hours', laid.includes('You have laid') && laid.includes('about 3h') && mins() === 180, laid);
+      const due = () => tdb.prepare("SELECT ts, text FROM fish_alerts WHERE user_id = 51 AND kind = 'trap_due'").all() as Array<{ ts: number; text: string }>;
+      check('laying traps books the "traps are full" alert for when they fill', due().length === 1 && due()[0].ts === loadFish(tdb, 51)!.trap.end && due()[0].text.includes('$don fish trap'), due());
+      check('it doesn\'t show before then', !alertsFor(tdb, 51).some(a => a.kind === 'trap'));
       shift += 181 * 60_000;
+      const full = alertsFor(tdb, 51).filter(a => a.kind === 'trap');
       const reset = await run('$don fish trap reset');
       check('a reset without a time lays them again for as long as before', reset.includes('drag the traps') && reset.includes('about 3h') && mins() === 180, reset);
+      check('once full the alert shows on the page, and the traps laid again book the next one', full.length === 1 && alertsFor(tdb, 51).filter(a => a.kind === 'trap').length === 1 && due().length === 1 && due()[0].ts === loadFish(tdb, 51)!.trap.end, [full, due()]);
       shift += 181 * 60_000;
       check('a reset with a time uses it', (await run('$don fish t r 45m')).includes('about 45m') && mins() === 45);
       shift += 46 * 60_000;

@@ -7,7 +7,7 @@ import { notFound, redirect } from "next/navigation";
 import BotManager from "@/components/BotManager";
 import { overlayLinks } from "@/lib/fish-overlay";
 import { videoOverlayLinks } from "@/lib/video-overlay";
-import { parseBotPath } from "@/lib/bot-sections";
+import { botPath, parseBotPath } from "@/lib/bot-sections";
 
 export const dynamic = "force-dynamic";
 
@@ -22,6 +22,8 @@ export default async function BotPage({
   // Which menu page: /<channel>/bot is the overview, /<channel>/bot/fishing/steals a fishing tab.
   const at = parseBotPath(segments);
   if (!at) notFound();
+  // The old Fishing > Cheaters address: the card is on Loyalty now.
+  if (segments?.[0] === "fishing" && at.section === "loyalty") redirect(botPath(slug, "loyalty"));
 
   const session = await getSession();
   if (!session.userId || !session.username) redirect("/login");

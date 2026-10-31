@@ -1081,7 +1081,7 @@ export function getBigBite(channel: string, userId?: number): Promise<BigBiteFee
 export interface FishAlert {
   id: number;
   ts: number;
-  kind: "steal" | "gift" | "trade" | "duel" | "bite";
+  kind: "steal" | "gift" | "trade" | "duel" | "bite" | "trap";
   text: string;
 }
 

@@ -57,7 +57,7 @@ import { makeCooldown, parseUsername, span } from '../community/format';
 import { gameInvocation } from '../community/stakes';
 import { addReminder, cancelSelfRemindersStartingWith, openCommunityDb } from '../community/store';
 import { bestEmote, broadcasterIdFor, emoteImages, withKickEmotes } from '../community/emotes';
-import { alertUser } from '../community/fish-alerts';
+import { alertUser, scheduleTrapAlert } from '../community/fish-alerts';
 import { OverlayKind, overlayHealth, overlayOff, overlayShowing, pushOverlay, requestOverlayReload, setOverlayOff } from '../community/fish-overlay';
 import { addChallenge, challengeBy, challengeFor, closeInValue, describe, fighterOf, describeTeam, dropChallenge, fight, findTeam, fishSpecs, fishNamed, heldFish, TYPE_EMOJI, isLength, specText, splitLengths, fishValue, keepsRange, overlayDuel, overlayTeamDuel, pickByValue, pickFighter, pickForKeeps, pickTeam, sameFish, playMs, randomFish, switchesIn, teamFight, teamSizeOf, teamValue, wantsRandom, type Challenge, type DuelStake, type OverlayDuel, type Picked } from '../community/fish-duel';
 import { parseBet } from './points';
@@ -796,7 +796,8 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
   /**
    * The reminder that pings a viewer when their traps are full, posted through
    * !remind's timer so it survives a restart. It needs !remind on to be delivered.
-   * Collecting, cancelling or re-laying the traps first clears the old one.
+   * Collecting, cancelling or re-laying the traps first clears the old one. The same goes
+   * for the "traps are full" alert on the fishing page, which needs no !remind.
    */
   const TRAP_REMINDER = 'your fishing traps are ready';
   // Kick chat drops anything in angle brackets: "<x>" came out as nothing.
@@ -809,7 +810,8 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
   const newCheck = (reset: boolean, now: number, seconds: number, onCast = false): TrapCheck =>
     (web ? makeTapCheck : makeTrapCheck)(reset, now, seconds, onCast);
   const remindsOn = !((config as ChannelConfig).excludedCommands as string[] | undefined ?? []).some(c => String(c).toLowerCase() === 'remind');
-  function syncTrapReminder(trapEnd: number | null): void {
+  function syncTrapReminder(uid: number, trapEnd: number | null): void {
+    scheduleTrapAlert(db!, uid, trapEnd, `🪤 Your traps are full! Collect them here or with ${cmd} fish trap.`);
     const cdb = openCommunityDb(channel);
     if (!cdb) return;
     try {
@@ -1018,7 +1020,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     // After the transaction, so a replayed or refused message leaves reminders alone.
     // "reset" collects then lays again, which leaves `after` holding the new traps.
     const settled = after as { laidUntil: number | null } | null;
-    if (text && settled) syncTrapReminder(settled.laidUntil);
+    if (text && settled) syncTrapReminder(uid, settled.laidUntil);
     if (text) say(text, collected ? { kind: 'trap' } : {});
     const asked = askedCheck as TrapCheck | null;
     if (text && asked) timeCheck(uid, asked);
@@ -1066,7 +1068,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
           return reply;
         });
         if (!text) return;
-        syncTrapReminder(null);
+        syncTrapReminder(uid, null);
         void say(text);
       } catch (err) {
         console.error(`[FISH] Ending ${me}'s trap check in ${chan} failed: ${err instanceof Error ? err.message : String(err)}`);

@@ -111,7 +111,7 @@ export default function FishAlerts({ channel, viewer }: { channel: string; viewe
                 ))}
               </ul>
             ) : (
-              <p className="px-3 py-4 text-sm text-neutral-500">Nothing yet. Steals on your fish, gifts, trades, duels and big bites show up here.</p>
+              <p className="px-3 py-4 text-sm text-neutral-500">Nothing yet. Steals on your fish, gifts, trades, duels, big bites and full traps show up here.</p>
             )}
           </div>
         ) : null}

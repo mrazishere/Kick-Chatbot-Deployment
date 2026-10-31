@@ -2852,7 +2852,7 @@ app.get('/internal/bot/:channel/points', internalGuard(false), (req, res) => {
 });
 
 // Prefix search by username; no q lists the top balances. ?q=&limit=1-50
-// Possible cheaters: players whose offline fishing looks scripted (community/cheat-signals.ts).
+// Possible cheaters: offline fishing that looks scripted, alts, and winnings (gambling included) moved to another account (community/cheat-signals.ts).
 // ?days=1–30, default 7. Evidence for the owner to judge; nothing acts on it.
 app.get('/internal/bot/:channel/points/suspects', internalGuard(false), (req, res) => {
   const channelRaw = req.params['channel'];

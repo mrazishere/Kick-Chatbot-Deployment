@@ -24,7 +24,6 @@ export const FISHING_TABS = [
   { key: "duels", label: "Duels" },
   { key: "trades", label: "Trades" },
   { key: "overlay", label: "Overlay" },
-  { key: "cheaters", label: "Cheaters" },
 ] as const;
 
 export type FishingTab = (typeof FISHING_TABS)[number]["key"];
@@ -38,6 +37,8 @@ export function parseBotPath(segments: string[] | undefined): { section: BotSect
   if (!section || section === "overview") return null;
   if (section !== "fishing") return t ? null : { section, tab: null };
   if (!t) return { section, tab: "general" };
+  // Possible cheaters moved to Loyalty (2026-10-31): it covers gambling too. Old links still land.
+  if (t === "cheaters") return { section: "loyalty", tab: null };
   const tab = FISHING_TABS.find((x) => x.key === t)?.key;
   return tab ? { section, tab } : null;
 }

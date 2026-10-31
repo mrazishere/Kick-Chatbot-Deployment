@@ -13,6 +13,11 @@
  * to the same account, in $DON or fish (funnel). The bot sees no IPs, so this is
  * timing and money only.
  *
+ * Gambling (2026-10-31): the gamble and duels can't be rigged, so their cheat is the same
+ * as everywhere else, moving what was won to another account. The money checks count
+ * what a stake game made on balance, not its payouts: a gambler who bet 5 million to
+ * end 56,000 up won 56,000, and judging gives against the 5 million hid a 260,000 funnel.
+ *
  * Evidence for the streamer to judge, not a verdict: nothing here acts on its own.
  * The dashboard lists the flags with their numbers (Possible cheaters).
  *
@@ -212,8 +217,33 @@ export function linkedAccounts(db: PointsDb, now: number, days = 7): Link[] {
   return out.sort((x, y) => x.chance - y.chance);
 }
 
-/** Value one account sent another in the window: $DON gives and fish gifts. */
-export interface Funnel { userId: number; toId: number; don: number; fishWorth: number; fishCount: number; won: number }
+/** Stake games: a payout gives back the stake, so they count on balance, never their payouts. */
+const STAKE_GAMES = {
+  gambling: ['game:gamble', 'game:gamble_win'],
+  duels: ['game:duel_hold', 'game:duel_stake', 'game:duel_win', 'game:duel_refund', 'game:fish_duel', 'game:fish_duel_win']
+};
+/** Credits that aren't winnings: currency a trade brought in, a refund. */
+const NOT_WON = ['game:fish_trade_in', 'game:fish_feed_refund'];
+
+/**
+ * What someone won from games since `sinceMs`: every other game's payouts (fish sold, raffles,
+ * wordle), plus what gambling and duels made on balance, each counted only when it is up.
+ */
+export function gameWinnings(db: PointsDb, userId: number, sinceMs: number): { total: number; gambling: number } {
+  const stake = [...STAKE_GAMES.gambling, ...STAKE_GAMES.duels];
+  const ph = (xs: string[]) => xs.map(() => '?').join(', ');
+  const r = db.prepare(
+    `SELECT COALESCE(SUM(CASE WHEN reason IN (${ph(STAKE_GAMES.gambling)}) THEN delta END), 0) AS gambling,
+       COALESCE(SUM(CASE WHEN reason IN (${ph(STAKE_GAMES.duels)}) THEN delta END), 0) AS duels,
+       COALESCE(SUM(CASE WHEN reason NOT IN (${ph(stake)}) AND reason NOT IN (${ph(NOT_WON)}) AND delta > 0 THEN delta END), 0) AS other
+     FROM ledger WHERE user_id = ? AND reason LIKE 'game:%' AND ts >= ?`
+  ).get(...STAKE_GAMES.gambling, ...STAKE_GAMES.duels, ...stake, ...NOT_WON, userId, sinceMs) as { gambling: number; duels: number; other: number };
+  const gambling = Math.max(0, r.gambling) + Math.max(0, r.duels);
+  return { total: r.other + gambling, gambling };
+}
+
+/** Value one account sent another in the window: $DON gives and fish gifts. `won` is the sender's game winnings, `gambled` the part from gambling and duels. */
+export interface Funnel { userId: number; toId: number; don: number; fishWorth: number; fishCount: number; won: number; gambled: number }
 
 /** Who sends what they win to one account (RULES.funnel). */
 export function funnels(db: PointsDb, now: number, days = 7): Funnel[] {
@@ -224,7 +254,7 @@ export function funnels(db: PointsDb, now: number, days = 7): Funnel[] {
   const at = (userId: number, toId: number): Funnel => {
     const k = `${userId}>${toId}`;
     let f = sent.get(k);
-    if (!f) sent.set(k, f = { userId, toId, don: 0, fishWorth: 0, fishCount: 0, won: 0 });
+    if (!f) sent.set(k, f = { userId, toId, don: 0, fishWorth: 0, fishCount: 0, won: 0, gambled: 0 });
     return f;
   };
   try {
@@ -257,8 +287,6 @@ export function funnels(db: PointsDb, now: number, days = 7): Funnel[] {
   } catch {
     return [];
   }
-  // Winnings: not currency a trade brought in, nor a refund.
-  const won = db.prepare("SELECT COALESCE(SUM(delta), 0) AS w FROM ledger WHERE user_id = ? AND reason LIKE 'game:%' AND reason NOT IN ('game:fish_trade_in', 'game:fish_feed_refund') AND delta > 0 AND ts >= ?");
   const info = db.prepare('SELECT watch_seconds, first_seen_at FROM users WHERE user_id = ?');
   const sentBy = new Map<number, number>();
   for (const f of sent.values()) sentBy.set(f.userId, (sentBy.get(f.userId) ?? 0) + f.don + f.fishWorth);
@@ -266,7 +294,9 @@ export function funnels(db: PointsDb, now: number, days = 7): Funnel[] {
   for (const f of sent.values()) {
     const total = f.don + f.fishWorth;
     if (total < fu.minWorth || total < sentBy.get(f.userId)! * fu.minShareOfSent) continue;
-    f.won = (won.get(f.userId, since) as { w: number }).w;
+    const w = gameWinnings(db, f.userId, since);
+    f.won = w.total;
+    f.gambled = w.gambling;
     const u = info.get(f.userId) as { watch_seconds: number; first_seen_at: number } | undefined;
     const alt = !!u && (now - u.first_seen_at < lk.newDays * 24 * 3600_000 || u.watch_seconds < lk.idleWatchHours * 3600);
     // An established account funnels only what it won.
@@ -349,17 +379,17 @@ export function suspects(db: PointsDb, now: number, days = 7): Suspect[] {
     const parts = [f.don > 0 ? `${f.don.toLocaleString('en-US')} $DON in gives` : '', f.fishCount > 0 ? `${f.fishCount} fish and junk worth ${f.fishWorth.toLocaleString('en-US')}` : ''].filter(Boolean).join(' and ');
     addFlag(f.userId, {
       code: 'funnel', label: 'Funnels to one account',
-      evidence: `sent ${to} ${parts}, against ${f.won.toLocaleString('en-US')} won from games in the same days`
+      evidence: `sent ${to} ${parts}, against ${f.won.toLocaleString('en-US')} won from games in the same days` +
+        (f.gambled > 0 ? ` (${f.gambled.toLocaleString('en-US')} of it up on gambling and duels)` : '')
     });
   }
   const go = RULES.gamesOnly;
   try {
     const rowsGo = db.prepare(
-      `SELECT u.user_id, u.watch_seconds, u.first_seen_at,
-         (SELECT COALESCE(SUM(delta), 0) FROM ledger l WHERE l.user_id = u.user_id AND l.reason LIKE 'game:%' AND l.delta > 0) AS won
-       FROM users u WHERE u.first_seen_at >= ? AND u.watch_seconds < ?`
-    ).all(now - go.newDays * 24 * 3600_000, go.maxWatchMinutes * 60) as Array<{ user_id: number; watch_seconds: number; first_seen_at: number; won: number }>;
-    for (const u of rowsGo) {
+      'SELECT u.user_id, u.watch_seconds, u.first_seen_at FROM users u WHERE u.first_seen_at >= ? AND u.watch_seconds < ?'
+    ).all(now - go.newDays * 24 * 3600_000, go.maxWatchMinutes * 60) as Array<{ user_id: number; watch_seconds: number; first_seen_at: number }>;
+    for (const r of rowsGo) {
+      const u = { ...r, won: gameWinnings(db, r.user_id, 0).total };
       if (u.won < go.minWon) continue;
       addFlag(u.user_id, {
         code: 'games_only', label: 'New, games only',

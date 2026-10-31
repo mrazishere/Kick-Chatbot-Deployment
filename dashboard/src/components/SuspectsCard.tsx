@@ -1,9 +1,9 @@
 "use client";
 
-// Possible cheaters in the offline fishing games: players whose timing looks like a
-// script or an AI agent, and accounts that look like someone's alt (the bot's
-// community/cheat-signals.ts). Evidence for the owner
-// to judge; nothing happens to anyone automatically.
+// Possible cheaters, on the Loyalty page: offline fishing whose timing looks like a
+// script or an AI agent, and accounts that look like someone's alt or move what they
+// won, gambling included, to another account (the bot's community/cheat-signals.ts).
+// Evidence for the owner to judge; nothing happens to anyone automatically.
 
 import { useCallback, useEffect, useState } from "react";
 import { Loader2, ShieldAlert } from "lucide-react";
@@ -80,17 +80,21 @@ export default function SuspectsCard({ channel }: { channel: string }) {
     >
       <div className="space-y-4">
         <p className="text-xs leading-relaxed text-neutral-500">
-          Offline fishing that looks scripted. <b className="text-neutral-400">Fast, flawless answers</b>: trap or cast checks passed in a median under 7 seconds with
+          <b className="text-neutral-300">Offline fishing that looks scripted.</b> <b className="text-neutral-400">Fast, flawless answers</b>: trap or cast checks passed in a median under 7 seconds with
           hardly a wrong try (people take 10–60s; an AI agent a few). <b className="text-neutral-400">Instant trap hauls</b>: traps collected a median under 30 seconds
           after they fill. <b className="text-neutral-400">No sleep</b>: offline play in 18+ hours of one day, never stopping 4 hours.{" "}
           <b className="text-neutral-400">Clockwork casting</b>: 11+ casts in a row whose gaps barely vary. <b className="text-neutral-400">Parked $DON</b>: gave
           away 80%+ of their balance (1,000+) and kept fishing offline within a day — a check&apos;s fine is a share of the balance, so an emptied account fails
-          checks for free; the evidence names who got it (often an alt); paying back a give from the day before doesn&apos;t count.{" "}
-          <b className="text-neutral-400">Plays in step with another account</b>: a new or barely watching account whose play sessions keep starting within
+          checks for free; the evidence names who got it (often an alt); paying back a give from the day before doesn&apos;t count.
+        </p>
+        <p className="text-xs leading-relaxed text-neutral-500">
+          <b className="text-neutral-300">Alts, and money moved between accounts, in every game.</b> Gambling and duels can&apos;t be rigged, so their cheat is
+          sending what was won on to another account; they count by what they made on balance, not their payouts (betting 5 million to end 56,000 up is 56,000
+          won). <b className="text-neutral-400">Plays in step with another account</b>: a new or barely watching account whose play sessions keep starting within
           10 minutes of the same other account, far more often than the chat&apos;s own rhythm explains — one person switching accounts.{" "}
           <b className="text-neutral-400">New, games only</b>: first seen in the last 14 days, under 30 minutes watched, yet 1,000+ won from games.{" "}
           <b className="text-neutral-400">Funnels to one account</b>: 1,000+ in $DON gives and fish gifts (at their price) sent to the same account, 70%+ of all they gave away and at least half
-          of what the sender won from games — or any such amount from a new or barely watching account. The bot sees no IPs, so alts are judged on timing and
+          of what the sender won from games, gambling included — or any such amount from a new or barely watching account. The bot sees no IPs, so alts are judged on timing and
           money alone. These are evidence, not proof: a dedicated player can trip
           one, so look for several together or a pattern that keeps coming back. Nothing happens automatically — a $DON reset is in the viewer search above.
         </p>

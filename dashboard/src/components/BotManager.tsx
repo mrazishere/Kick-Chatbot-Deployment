@@ -456,9 +456,8 @@ export default function BotManager({
   // The menu: Team is the broadcaster's own, Admin the bot owner's.
   const sections = BOT_SECTIONS.map((s) => s.key).filter((k) => (k !== "team" || canAdminister) && (k !== "admin" || isAdmin));
   const show = (s: BotSection) => section === s;
-  // The points card draws a page's share of the settings; Fishing's Cheaters tab is a card of its own.
-  const pointsSection =
-    section === "loyalty" || section === "games" || section === "overlays" || (section === "fishing" && fishingTab !== "cheaters");
+  // The points card draws a page's share of the settings.
+  const pointsSection = section === "loyalty" || section === "games" || section === "overlays" || section === "fishing";
   const [busy, setBusy] = useState<string | null>(null);
 
   // Command toggles are staged locally so a channel can flip several at once
@@ -2150,8 +2149,8 @@ export default function BotManager({
 
           </>) : null}
           {/* ------------------------------------------------- possible cheaters */}
-          {section === "fishing" && fishingTab === "cheaters" ? (<>
-          {bot.points?.enabled && bot.points?.games?.enabled ? <SuspectsCard channel={channel} /> : null}
+          {show("loyalty") ? (<>
+          {bot.points?.enabled ? <SuspectsCard channel={channel} /> : null}
 
           </>) : null}
           {/* ---------------------------------------------------- prize wheel */}
