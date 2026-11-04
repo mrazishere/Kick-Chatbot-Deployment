@@ -155,7 +155,7 @@ export function publicCommands(cfg: PointsConfig, opts: { channel?: BotCommandCh
     // Duels are live only by a rule of their own, the same way.
     const duelRule = g.duel.enabled && g.duel.onlyWhileLive && !g.onlyWhileLive;
     const when = [
-      g.onlyWhileOffline ? `${acts} only work while the stream is offline.` : g.onlyWhileLive ? `${acts} only work while the stream is live.` : '',
+      g.onlyWhileOffline ? `${acts} only work while the stream is offline${g.webPlay && g.webPlayWhileLive ? `, except ${steal && !ownRule ? 'casting, traps and stealing' : 'casting and traps'} on the Fishing tab` : ''}.` : g.onlyWhileLive ? `${acts} only work while the stream is live.` : '',
       ownRule && duelRule ? 'Stealing and duels only work while the stream is live.' : ownRule ? 'Stealing only works while the stream is live.' : duelRule ? 'Duels only work while the stream is live.' : ''
     ].filter(Boolean).join(' ');
     sections.push({

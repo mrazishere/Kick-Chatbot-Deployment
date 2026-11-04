@@ -435,9 +435,16 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       : { applied: true, result: runWrite(db, () => fn(Date.now())) };
     return run.applied ? run.result : undefined;
   };
-  /** `liveOnly` is a rule of the caller's own (games.steal.onlyWhileLive) that replaces the two for casting. */
-  const liveOk = async (liveOnly = false): Promise<boolean> => {
-    if (!liveOnly && !g.onlyWhileLive && !g.onlyWhileOffline) return true;
+  /** A move from the fishing page in a channel that lets the page play while live (games.webPlayWhileLive). */
+  const pageLive = !!web && g.webPlay && g.webPlayWhileLive;
+  /**
+   * `liveOnly` is a rule of the caller's own (games.steal.onlyWhileLive) that replaces the two for casting.
+   * `fishing` marks casting, traps and stealing, which the fishing page may play live (games.webPlayWhileLive):
+   * casting and traps answer on the page only, so chat isn't flooded; a steal is told in chat, as it's rare.
+   */
+  const liveOk = async (liveOnly = false, fishing = false): Promise<boolean> => {
+    const offlineOnly = g.onlyWhileOffline && !(fishing && pageLive);
+    if (!liveOnly && !g.onlyWhileLive && !offlineOnly) return true;
     const live = await svc.isLiveNow();
     // Both on can't be saved; a hand-edited file with both keeps the live rule.
     const want = liveOnly || g.onlyWhileLive;
@@ -649,7 +656,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
 
   // ── cast ──
   async function cast(baitWord: string | undefined, uid: number): Promise<void> {
-    if (!tester && !(await liveOk())) return;
+    if (!tester && !(await liveOk(false, true))) return;
     const bait = findBait(baitWord);
     // Cast checks (games.trapCheck.castChancePercent): offline only, like trap checks.
     const tc = g.trapCheck;
@@ -809,7 +816,9 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
   /** A new check: a picture for a move made on the fishing page, a typed question in chat. */
   const newCheck = (reset: boolean, now: number, seconds: number, onCast = false): TrapCheck =>
     (web ? makeTapCheck : makeTrapCheck)(reset, now, seconds, onCast);
-  const remindsOn = !((config as ChannelConfig).excludedCommands as string[] | undefined ?? []).some(c => String(c).toLowerCase() === 'remind');
+  // A page player in a channel that lets the page fish live (games.webPlayWhileLive) gets the page's alert only:
+  // a chat reminder would land in live chat.
+  const remindsOn = !pageLive && !((config as ChannelConfig).excludedCommands as string[] | undefined ?? []).some(c => String(c).toLowerCase() === 'remind');
   function syncTrapReminder(uid: number, trapEnd: number | null): void {
     scheduleTrapAlert(db!, uid, trapEnd, `🪤 Your traps are full! Collect them here or with ${cmd} fish trap.`);
     const cdb = openCommunityDb(channel);
@@ -857,7 +866,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       ? before.trapCheck!.reset
       : operation !== 'cancel' && operation !== 'lift' && (!before.trap.active || operation === 'reset');
     const ruled = operation !== 'cancel' && operation !== 'answer';
-    const mayLay = (ruled || laysTraps) && (await liveOk());
+    const mayLay = (ruled || laysTraps) && (await liveOk(false, true));
     if (ruled && !mayLay) return;
     // Checks only ask offline; an unknown live state counts as offline.
     const liveNow = (await svc!.isLiveNow()) === true;
@@ -1624,7 +1633,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
   /** Steals are open now (games.steal.onlyWhileLive, else the casting rule)? Unlike liveOk, says nothing. */
   const stealHours = async (): Promise<string | null> => {
     const st = g.steal;
-    if (tester || (!st.onlyWhileLive && !g.onlyWhileLive && !g.onlyWhileOffline)) return null;
+    if (tester || (!st.onlyWhileLive && !g.onlyWhileLive && (!g.onlyWhileOffline || pageLive))) return null;
     const want = st.onlyWhileLive || g.onlyWhileLive;
     return (await svc.isLiveNow()) === want ? null : `stealing is only open while the stream is ${want ? 'live' : 'offline'}`;
   };
@@ -1725,7 +1734,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
   async function steal(targetRaw: string | undefined, uid: number, aimWords: string[] = []): Promise<void> {
     const st = g.steal;
     if (!st.enabled && !tester) return void say("Nobody steals fish here. Go catch your own!");
-    if (!tester && !(await liveOk(st.onlyWhileLive))) return;
+    if (!tester && !(await liveOk(st.onlyWhileLive, true))) return;
     const name = parseUsername(targetRaw);
     if (!name) return void say(`Steal from whom? ${cmd} fish steal @user`);
     const nameLc = name.toLowerCase();

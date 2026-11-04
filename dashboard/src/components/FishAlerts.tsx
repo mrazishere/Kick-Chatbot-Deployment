@@ -23,12 +23,14 @@ const ago = (ts: number): string => {
 /**
  * The signed-in viewer's fishing alerts: a 🔔 with how many are unread, pop-ups as new ones come
  * in (and for the latest few from while they were away), and a list of the recent ones. What was
- * read is kept in this browser (localStorage), per channel and viewer.
+ * read, and which have popped up already, is kept in this browser (localStorage), per channel and viewer.
  */
 export default function FishAlerts({ channel, viewer }: { channel: string; viewer: string }) {
   const api = `${BASE_PATH}/api/public/${encodeURIComponent(channel)}/alerts`;
   // Per viewer too: two people signing in on one browser each keep their own.
   const readKey = `fish-alerts-read:${channel}:${viewer.toLowerCase()}`;
+  // The newest alert that has popped up: a reload doesn't pop it again, read in the bell or not.
+  const shownKey = `fish-alerts-shown:${channel}:${viewer.toLowerCase()}`;
   const [alerts, setAlerts] = useState<FishAlert[]>([]);
   const [readId, setReadId] = useState(0);
   const [open, setOpen] = useState(false);
@@ -39,10 +41,12 @@ export default function FishAlerts({ channel, viewer }: { channel: string; viewe
 
   const toast = useCallback((list: FishAlert[]) => {
     if (!list.length) return;
+    const top = list[list.length - 1].id;
+    if (top > (Number(localStorage.getItem(shownKey) ?? 0) || 0)) localStorage.setItem(shownKey, String(top));
     setToasts((t) => [...t, ...list].slice(-AWAY_TOASTS));
     const ids = new Set(list.map((a) => a.id));
     setTimeout(() => setToasts((t) => t.filter((a) => !ids.has(a.id))), TOAST_MS);
-  }, []);
+  }, [shownKey]);
 
   const load = useCallback(async () => {
     // One check at a time: a slow one overlapping the next would fetch the same alerts twice
@@ -60,13 +64,14 @@ export default function FishAlerts({ channel, viewer }: { channel: string; viewe
       setAlerts((a) => (first ? got : [...a, ...got]).slice(-30));
       const read = Number(localStorage.getItem(readKey) ?? 0) || 0;
       setReadId(read);
-      toast(first ? got.filter((a) => a.id > read).slice(-AWAY_TOASTS) : got);
+      const shown = Number(localStorage.getItem(shownKey) ?? 0) || 0;
+      toast(got.filter((a) => a.id > Math.max(read, shown)).slice(first ? -AWAY_TOASTS : undefined));
     } catch {
       // The next poll tries again.
     } finally {
       loading.current = false;
     }
-  }, [api, readKey, toast]);
+  }, [api, readKey, shownKey, toast]);
 
   useEffect(() => {
     void load();

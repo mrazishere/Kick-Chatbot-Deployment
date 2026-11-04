@@ -3657,7 +3657,7 @@ function fishPageState(db: PointsDb, r: FishPageRequest, now: number): Record<st
     balance: (db.prepare('SELECT balance FROM users WHERE user_id = ?').get(r.userId) as { balance: number } | undefined)?.balance ?? 0,
     currency: r.cfg.currencyName,
     live: !!liveSince?.value,
-    rule: g.onlyWhileOffline ? 'offline' : g.onlyWhileLive ? 'live' : 'any',
+    rule: g.onlyWhileOffline && !g.webPlayWhileLive ? 'offline' : g.onlyWhileLive ? 'live' : 'any',
     readyAt: d.readyTimestamp > now ? d.readyTimestamp : null,
     trap: d.trap.active ? { start: d.trap.start, end: d.trap.end } : null,
     trapMinutes: { usual: g.trapMinutes, min: TRAP_MIN_MINUTES, max: g.trapMaxMinutes },
@@ -4048,7 +4048,7 @@ function publicFishing(channel: string, cfg: ReturnType<typeof effectivePointsCo
         odds: { Common: g.steal.oddsCommon, Uncommon: g.steal.oddsUncommon, Rare: g.steal.oddsRare, Epic: g.steal.oddsEpic, Legendary: g.steal.oddsLegendary },
         graceMinutes: g.steal.graceMinutes, protectMinutes: g.steal.protectMinutes,
         guardPercent: g.steal.guardPercent, guardMinimum: g.steal.guardMinimum, guardHours: g.steal.guardHours,
-        onlyWhileLive: g.steal.onlyWhileLive, offlineOnly: g.onlyWhileOffline, cooldownMinutes: g.catchCooldownMinutes
+        onlyWhileLive: g.steal.onlyWhileLive, offlineOnly: g.onlyWhileOffline, pageWhileLive: g.webPlay && g.webPlayWhileLive, cooldownMinutes: g.catchCooldownMinutes
       }
     } : {}), heists: heistBoard(channel, cfg, broadcasterUserId), duel: g.duel.enabled, duels: duelBoard(channel, cfg, broadcasterUserId),
     trophies, bigBite: g.bigBite.enabled ? { everyMinutes: g.bigBite.everyMinutes, ...(g.bigBite.onLeaderboard ? { onLeaderboard: true } : {}) } : null

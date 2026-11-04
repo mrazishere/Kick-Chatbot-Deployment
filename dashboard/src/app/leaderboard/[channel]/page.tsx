@@ -151,7 +151,7 @@ function StealGuide({ rules: r, currency, command, fish, emotes }: { rules: Publ
   const mins = (m: number) => (m >= 60 && m % 60 === 0 ? `${m / 60} hour${m === 60 ? "" : "s"}` : `${m} minutes`);
   const luck = (p: number) => Math.min(100, Math.round(p * (100 + r.luckPercent)) / 100);
   const code = (t: string) => <code className="rounded bg-neutral-900 px-1 py-0.5 text-[0.8em] text-neutral-200">{t}</code>;
-  const when = r.onlyWhileLive ? "only while the stream is live" : r.offlineOnly ? "only while the stream is offline" : "any time";
+  const when = r.onlyWhileLive ? "only while the stream is live" : r.offlineOnly ? (r.pageWhileLive ? "only while the stream is offline in chat (from this page, any time)" : "only while the stream is offline") : "any time";
   return (
     <section className="overflow-hidden rounded-xl border border-neutral-800 bg-neutral-950/60">
       <h2 className="border-b border-neutral-800 px-5 py-2 text-xs text-neutral-500">
@@ -219,7 +219,7 @@ function StealGuide({ rules: r, currency, command, fish, emotes }: { rules: Publ
           <h3 className="pt-1 font-medium text-neutral-100">💂 Guard</h3>
           <p>
             {code(`${command} fish buy guard`)} protects all your fish for <b>{r.guardHours} hours</b>. It costs {r.guardPercent}% of what your fish are worth when you buy it (at least {n(r.guardMinimum)} {currency});
-            buying again adds more time.{r.offlineOnly && !r.onlyWhileLive ? " Its clock stops while the stream is live, when nobody can steal, so its hours are only spent offline." : ""} A guard catches every thief: they pay the fee and the fine as if caught, no roll. How long your guard has left is never shown in chat, so thieves can&apos;t time it.
+            buying again adds more time.{r.offlineOnly && !r.onlyWhileLive && !r.pageWhileLive ? " Its clock stops while the stream is live, when nobody can steal, so its hours are only spent offline." : ""} A guard catches every thief: they pay the fee and the fine as if caught, no roll. How long your guard has left is never shown in chat, so thieves can&apos;t time it.
           </p>
         </div>
       </div>

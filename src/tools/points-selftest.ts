@@ -760,6 +760,42 @@ async function main(): Promise<void> {
     const swap = validatePointsPatch({}, { games: { onlyWhileLive: false, onlyWhileOffline: true } });
     check('onlyWhileOffline can\'t be on together with onlyWhileLive',
       both.errors.length === 1 && swap.errors.length === 0 && effectivePointsConfig(swap.next).games.onlyWhileOffline, { both: both.errors, swap: swap.errors });
+    // games.webPlayWhileLive: the fishing page still casts and lays traps live; chat doesn't, and hears nothing of the page's moves
+    {
+      const fromPage = async (chn: string, msg: string, name: string, senderId: number) => {
+        const page: string[] = [], chat: string[] = [];
+        const tags: KickTags = { username: name, 'display-name': name, badges: {}, isBroadcaster: false, isModUp: false, isVIPUp: false, rawBadges: [], senderId,
+          messageId: `web:00000000-0000-4000-8000-0000000${senderId}00`, web: { reply: (text) => { page.push(text); } } };
+        await fishCommand({ say: async (_c, m) => { chat.push(m); } }, msg, `#${chn}`, tags, { channelName: chn } as ChannelConfig);
+        return { page, chat };
+      };
+      const shut = await fromPage(ch, '$don fish trap', 'brook', 38);
+      check('onlyWhileOffline without webPlayWhileLive: the page is told fishing waits for the stream to end',
+        shut.chat.length === 0 && shut.page.length === 1 && shut.page[0].includes('offline'), shut);
+      const ch3 = 'fishofflineweb';
+      writeConfig(root, ch3, { enabled: true, currencyName: '$DON', games: { enabled: true, onlyWhileLive: false, onlyWhileOffline: true, webPlayWhileLive: true } });
+      makeService(ch3, { broadcaster: 999, live: async () => ({ isLive: true, startedAt: null }) });
+      const open = await fromPage(ch3, '$don fish trap', 'rill', 39);
+      const chatOut: string[] = [];
+      const ct: KickTags = { username: 'creek', 'display-name': 'creek', badges: {}, isBroadcaster: false, isModUp: false, isVIPUp: false, rawBadges: [], senderId: 40 };
+      await fishCommand({ say: async (_c, m) => { chatOut.push(m); } }, '$don fish trap', `#${ch3}`, ct, { channelName: ch3 } as ChannelConfig);
+      check('webPlayWhileLive: the page lays traps live, answered on the page only, no chat reminder; chat stays shut',
+        open.chat.length === 0 && open.page.some(m => m.includes('laid your fishing traps') && !m.includes('ping you')) && chatOut.length === 0, { open, chatOut });
+      // Stealing from the page opens live too (told in chat as usual); chat stealing stays shut, and guards keep running
+      const ch4 = 'fishofflineweb2';
+      const stealCfg = { enabled: true, onlyWhileLive: false, onlyWhileOffline: true, webPlayWhileLive: true, steal: { enabled: true } };
+      writeConfig(root, ch4, { enabled: true, currencyName: '$DON', games: stealCfg });
+      makeService(ch4, { broadcaster: 999, live: async () => ({ isLive: true, startedAt: null }) });
+      const pageSteal = await fromPage(ch4, '$don fish steal @nobody', 'fen', 46);
+      const chatSteal: string[] = [];
+      const st4: KickTags = { username: 'marsh', 'display-name': 'marsh', badges: {}, isBroadcaster: false, isModUp: false, isVIPUp: false, rawBadges: [], senderId: 47 };
+      await fishCommand({ say: async (_c, m) => { chatSteal.push(m); } }, '$don fish steal @nobody', `#${ch4}`, st4, { channelName: ch4 } as ChannelConfig);
+      check('webPlayWhileLive: the page can steal live, chat stealing stays shut',
+        pageSteal.page.length === 1 && !pageSteal.page[0].includes('offline') && chatSteal.length === 0, { pageSteal, chatSteal });
+      check('webPlayWhileLive: guards keep running while live',
+        !guardsPauseWhileLive(effectivePointsConfig({ games: stealCfg }).games)
+        && guardsPauseWhileLive(effectivePointsConfig({ games: { ...stealCfg, webPlayWhileLive: false } }).games));
+    }
     // steal.onlyWhileLive: stealing keeps to live streams while casting stays offline-only
     for (const [ch3, isLive] of [['fishsteallive', true], ['fishsteallive2', false]] as const) {
       writeConfig(root, ch3, { enabled: true, currencyName: '$DON', games: { enabled: true, onlyWhileLive: false, onlyWhileOffline: true, steal: { enabled: true, onlyWhileLive: true } } });

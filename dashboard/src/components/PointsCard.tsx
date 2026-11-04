@@ -145,6 +145,7 @@ export interface PointsGames {
   chatReplies?: boolean;
   /** Casting and traps on the public leaderboard's Fishing tab. Absent from an older bot service. */
   webPlay?: boolean;
+  webPlayWhileLive?: boolean;
   /** The fishing overlay's &demo=1 may play; off, overlays ignore it. Absent from an older bot service. */
   overlayDemo?: boolean;
   /** How big the fishing overlay draws, as a percentage (50–300). Absent from an older bot service. */
@@ -560,6 +561,7 @@ interface SettingsForm {
   fishFeedFail: string;
   fishChatReplies: boolean;
   fishWebPlay: boolean;
+  fishWebPlayWhileLive: boolean;
   fishOverlayDemo: boolean;
   fishOverlaySize: string;
   fishOverlayClearW: string;
@@ -666,6 +668,7 @@ function formFromConfig(c: PointsConfig): SettingsForm {
     fishFeedFail: String(c.games?.feedFailPercent ?? 10),
     fishChatReplies: (c.games ?? GAMES_DEFAULTS).chatReplies !== false,
     fishWebPlay: (c.games ?? GAMES_DEFAULTS).webPlay !== false,
+    fishWebPlayWhileLive: (c.games ?? GAMES_DEFAULTS).webPlayWhileLive === true,
     fishOverlayDemo: (c.games ?? GAMES_DEFAULTS).overlayDemo !== false,
     fishOverlaySize: String((c.games ?? GAMES_DEFAULTS).overlaySizePercent ?? 100),
     fishOverlayClearW: String(c.games?.overlayClearWidthPercent ?? 0),
@@ -940,6 +943,7 @@ function buildPatch(f: SettingsForm): { patch: PointsSettingsPatch } | { error: 
     feedFailPercent: whole(f.fishFeedFail, "Feeding fail chance", 0, 100),
     chatReplies: f.fishChatReplies,
     webPlay: f.fishWebPlay,
+    webPlayWhileLive: f.fishWebPlayWhileLive,
     overlayDemo: f.fishOverlayDemo,
     overlaySizePercent: whole(f.fishOverlaySize, "Overlay size", 50, 300),
     overlayClearWidthPercent: whole(f.fishOverlayClearW, "Clear corner width", 0, 80),
@@ -2768,6 +2772,17 @@ export default function PointsCard({
                       {form.fishBigBite?.enabled ? `Big bites still come while the stream is live; only casting${form.fishSteal?.enabled && form.fishSteal.onlyWhileLive ? " and traps" : ", traps and stealing"} wait for it to end. ` : ""}
                       While the stream is live with a fishing overlay open, fishing replies show on the overlay only; chat gets them once it&apos;s offline.
                     </p>
+                  ) : null}
+                  {form.gamesOfflineOnly && form.fishWebPlay ? (
+                    <div className="pl-6">
+                      <Checkbox
+                        label={`Still allow casting, traps${form.fishSteal?.enabled && !form.fishSteal.onlyWhileLive ? " and stealing" : ""} from the leaderboard's Fishing tab while live`}
+                        checked={form.fishWebPlayWhileLive}
+                        disabled={readOnly || !!busy}
+                        onChange={(v) => set("fishWebPlayWhileLive", v)}
+                      />
+                      <p className="pl-6 text-xs text-neutral-500">Replies to casts and traps from the page show on the page only, so live chat stays quiet; a steal is still told in chat. Guards keep running while live. Fishing and stealing in chat still wait for the stream to end.</p>
+                    </div>
                   ) : null}
                   <Checkbox
                     label="AI story on 1 in 3 catches"

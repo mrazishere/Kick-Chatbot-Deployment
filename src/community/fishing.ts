@@ -673,9 +673,11 @@ export const GUARD_PAUSE_KEY = 'guards_paused_at';
 
 /**
  * Guards stand still while live: stealing only opens offline (games.onlyWhileOffline, no live-only
- * steal rule of its own), so a guard's hours aren't spent on a stream nobody can steal in.
+ * steal rule of its own, and the fishing page not open live by games.webPlayWhileLive), so a guard's hours
+ * aren't spent on a stream nobody can steal in.
  */
-export const guardsPauseWhileLive = (g: PointsGamesConfig): boolean => g.steal.enabled && g.onlyWhileOffline && !g.onlyWhileLive && !g.steal.onlyWhileLive;
+export const guardsPauseWhileLive = (g: PointsGamesConfig): boolean =>
+  g.steal.enabled && g.onlyWhileOffline && !g.onlyWhileLive && !g.steal.onlyWhileLive && !(g.webPlay && g.webPlayWhileLive);
 
 /** When guards stopped running, or null while they run. */
 export function guardPausedAt(db: PointsDb): number | null {

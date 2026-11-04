@@ -458,6 +458,8 @@ export interface PublicStealRules {
   guardHours: number;
   onlyWhileLive: boolean;
   offlineOnly: boolean;
+  /** Offline only in chat, but the leaderboard's Fishing tab can steal while live (games.webPlayWhileLive). Absent from an older bot service. */
+  pageWhileLive?: boolean;
   cooldownMinutes: number;
 }
 

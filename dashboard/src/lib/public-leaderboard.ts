@@ -184,10 +184,11 @@ function stealRules(raw: unknown): { stealRules?: PublicStealRules } {
   if (Object.values(odds).some((v) => v === null)) return {};
   return {
     stealRules: {
-      ...(out as Omit<PublicStealRules, "odds" | "onlyWhileLive" | "offlineOnly">),
+      ...(out as Omit<PublicStealRules, "odds" | "onlyWhileLive" | "offlineOnly" | "pageWhileLive">),
       odds: odds as PublicStealRules["odds"],
       onlyWhileLive: r.onlyWhileLive === true,
       offlineOnly: r.offlineOnly === true,
+      pageWhileLive: r.pageWhileLive === true,
     },
   };
 }

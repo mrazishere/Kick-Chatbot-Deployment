@@ -389,6 +389,12 @@ export interface PointsGamesConfig {
    * chat fishing is unaffected.
    */
   webPlay: boolean;
+  /**
+   * With onlyWhileOffline on, still let viewers cast and work traps from the fishing page while
+   * the stream is live: its replies go to the page only, so live chat stays quiet. Stealing and
+   * chat fishing keep the offline rule.
+   */
+  webPlayWhileLive: boolean;
   /** Let the fishing overlay's &demo=1 play. Off, an overlay ignores the flag, even one already open on stream. */
   overlayDemo: boolean;
   /** How big the fishing overlay draws, as a percentage of its own size (50–300). It reaches an overlay already open on stream, on top of any &scale= on its link. */
