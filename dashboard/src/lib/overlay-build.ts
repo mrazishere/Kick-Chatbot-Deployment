@@ -24,9 +24,34 @@ function store(): Storage | null {
 /** The URL the page was opened with, before a page takes its key out of the address bar. */
 let openedAt: string | null = null;
 
-/** Call before changing the address bar: a reload goes back to this URL, key and all. */
+const OPENED_AT = "overlay-opened-at:";
+
+/**
+ * Call before changing the address bar: a reload goes back to this URL, key and all. Kept in the
+ * tab's storage too, which outlives a refresh by hand (F5, OBS's "Refresh cache of current page"):
+ * that reloads the address bar's keyless URL, and savedUrl takes the page back to this one.
+ */
 export function rememberUrl(): void {
-  if (openedAt === null && typeof window !== "undefined") openedAt = window.location.href;
+  if (openedAt !== null || typeof window === "undefined") return;
+  openedAt = window.location.href;
+  try {
+    // Not a page opened without its key (from the cookie): that would forget the link with it.
+    if (new URL(openedAt).searchParams.get("key")) store()?.setItem(OPENED_AT + window.location.pathname, openedAt);
+  } catch {
+    // storage full or blocked: only a refresh by hand loses the key
+  }
+}
+
+/** The URL this tab first opened the page at (rememberUrl), if it's this page's: null where there's none. */
+export function savedUrl(): string | null {
+  const kept = store()?.getItem(OPENED_AT + window.location.pathname);
+  if (!kept) return null;
+  try {
+    const u = new URL(kept);
+    return u.origin === window.location.origin && u.pathname === window.location.pathname && u.searchParams.get("key") ? kept : null;
+  } catch {
+    return null;
+  }
 }
 
 /** Which build a reload was last made for: in storage, or (where a browser source has none) on the URL. */

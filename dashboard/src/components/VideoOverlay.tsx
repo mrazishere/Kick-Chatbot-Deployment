@@ -11,6 +11,8 @@ import type { FishOverlayEvent } from "@/lib/bot-api";
 
 const BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
 const POLL_MS = 1000;
+/** Holds the overlay key across a refresh by hand; the page reads it (overlay/video/page.tsx, same name). */
+const VIDEO_KEY_COOKIE = "vo-key";
 /** The bot's slot for a video includes this long for the player to load (LOAD_PAD_MS in the bot). */
 const LOAD_PAD_S = 4;
 
@@ -131,8 +133,11 @@ export default function VideoOverlay({ channel, overlayKey, embedded = false }: 
     // Inside the fishing overlay the address is the fishing page's, which keeps its own query.
     // A reload into a new build goes back to the URL as opened, key and all.
     if (!embedded) rememberUrl();
+    // A refresh by hand reloads the keyless address: the page finds the key in this cookie (for
+    // this page's path only, never sent to YouTube), where a browser source has no storage too.
+    if (!embedded) document.cookie = `${VIDEO_KEY_COOKIE}=${encodeURIComponent(overlayKey)}; path=${window.location.pathname}; max-age=${30 * 86_400}; samesite=lax; secure`;
     if (!embedded && window.location.search) window.history.replaceState(null, "", window.location.pathname);
-  }, [embedded]);
+  }, [embedded, overlayKey]);
 
   // Follow the bot: what's on, every second.
   useEffect(() => {
