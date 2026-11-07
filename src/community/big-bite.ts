@@ -11,7 +11,8 @@
  *
  * Sniping: for about the last `snipeSeconds` of the first code (give or take up to
  * SNIPE_JITTER_MS, drawn per bite), anyone else chatting can take it with the snipe code:
- * two digits of its own, said only in the SNIPE OPEN chat line, so nobody can type it in
+ * two digits of its own, said only in the SNIPE OPEN chat line (as words or a sum, never bare
+ * digits, see snipeCodeText), so nobody can type it in
  * advance off the overlay. The first right answer takes the bite off the chatter it was
  * for and carries on from the next pull as theirs. Each sniper gets one try per bite.
  *
@@ -54,6 +55,8 @@ export interface Bite {
    * won, the same fast few every time (asked for 2026-10-18).
    */
   snipeCode?: string;
+  /** How the SNIPE OPEN line showed snipeCode (snipeCodeText), for the wrong-answer log. */
+  snipeShown?: string;
   /** Who has used their one snipe try on this bite, lowercase. */
   tried: Set<string>;
   timer: NodeJS.Timeout;
@@ -234,11 +237,13 @@ export function snipeBite(ctx: BiteContext, bite: Bite, name: string, userId: nu
   bite.snipedFrom ??= from;
   bite.username = name;
   bite.userId = userId;
+  const afterMs = bite.snipeAt !== undefined && bite.snipeAt !== SNIPE_PENDING ? Date.now() - bite.snipeAt : null;
   delete bite.snipeAt;
   delete bite.snipeCode;
+  delete bite.snipeShown;
   bites.set(key(ctx.channel, name), bite);
   mirrorBite(ctx.channel);
-  console.log(`[FISH] ${name} sniped ${from}'s big bite in ${ctx.channel}`);
+  console.log(`[FISH] ${name} sniped ${from}'s big bite in ${ctx.channel}${afterMs === null ? '' : ` ${afterMs}ms after the line`}`);
   alertUser(ctx.db, fromId, 'bite', `🪝 ${name} sniped your big bite!`);
   pushOverlay(ctx.db, { username: from, kind: 'miss', text: `🪝 ${name} sniped your big bite!` });
   void ctx.sendMessage(`@${from} too slow! 🪝 @${name} sniped your big bite and is reeling it in!`).catch(() => {});
@@ -333,7 +338,50 @@ export function openSnipes(ctx: BiteContext, bite: Bite): void {
     bite.snipeAt = Date.now();
     console.log(`[FISH] snipes open on ${bite.username}'s big bite in ${ctx.channel}`);
   };
-  ctx.sendMessage(`🪝 SNIPE OPEN! @${bite.username}'s big bite is up for grabs: first to type $${ctx.command} fish reel ${snipeCode} takes it!`).then(open, open);
+  const line = snipeLine(bite.username, ctx.command, snipeCode);
+  bite.snipeShown = line.shown;
+  ctx.sendMessage(line.text).then(open, open);
+}
+
+const DIGIT_WORDS = ['ZERO', 'ONE', 'TWO', 'THREE', 'FOUR', 'FIVE', 'SIX', 'SEVEN', 'EIGHT', 'NINE'];
+const pickOne = <T>(list: readonly T[]): T => list[crypto.randomInt(0, list.length)];
+
+/**
+ * The snipe code as chat shows it: never the bare two digits, so a script lifting the number
+ * after "reel" gets it wrong (asked for 2026-11-06: hashbrownsg had 101 snipes, a quarter of
+ * them within a second of the line). Each way reads at a glance for a person; the answer is
+ * always the two digits.
+ */
+export function snipeCodeText(code: string): string {
+  const n = Number(code);
+  const tens = Math.floor(n / 10);
+  const units = n % 10;
+  const ways: Array<() => string> = [
+    () => `${DIGIT_WORDS[tens]} ${DIGIT_WORDS[units]} (as a number)`,
+    () => {
+      const a = units > 0 && crypto.randomInt(0, 2) === 0 ? tens * 10 : crypto.randomInt(1, n);
+      return `${a} + ${n - a} (type the answer)`;
+    },
+    () => {
+      const k = crypto.randomInt(1, 10);
+      return `${n + k} - ${k} (type the answer)`;
+    },
+    () => `${tens} then ${units} (as one number)`
+  ];
+  return pickOne(ways)();
+}
+
+/** The SNIPE OPEN line: one of a few wordings, with the code shown by snipeCodeText. */
+export function snipeLine(username: string, command: string, code: string): { text: string; shown: string } {
+  const c = snipeCodeText(code);
+  const cmd = `$${command} fish reel`;
+  const lines = [
+    `🪝 SNIPE OPEN! @${username}'s big bite is up for grabs. Code: ${c}. First to type ${cmd} and the code takes it!`,
+    `🪝 SNIPE OPEN! Steal @${username}'s big bite with ${cmd} and the code ${c}. First one wins!`,
+    `🪝 SNIPE OPEN! The code is ${c}. Type ${cmd} and that code first to take @${username}'s big bite!`,
+    `🪝 SNIPE OPEN! @${username} was too slow: ${cmd} and the code ${c} takes the big bite. Go!`
+  ];
+  return { text: pickOne(lines), shown: c };
 }
 
 /** A fresh code for this pull: armed to get away if it isn't answered in time, and shown only on the overlay. */

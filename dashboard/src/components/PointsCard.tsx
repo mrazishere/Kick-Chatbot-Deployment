@@ -273,6 +273,8 @@ export interface FishReel {
   oddsMultiplier: number;
   rarityMultiplier: number;
   valueMultiplier: number;
+  /** Absent from an older bot service: no change. */
+  cooldownMultiplier?: number;
 }
 
 export interface CustomFish {
@@ -574,7 +576,7 @@ interface SettingsForm {
   fishBigBite: { enabled: boolean; everyMinutes: string; activeMinutes: string; windowSeconds: string; pulls: string; pullSeconds: string; flashSeconds: string; snipeSeconds: string; kicksMin: string; onSub: boolean; onGift: boolean; onLeaderboard: boolean } | null;
   fishTrapCheck: { enabled: boolean; chancePercent: string; castChancePercent: string; finePercent: string; answerSeconds: string; tries: string } | null;
   /** null when the bot service doesn't report reels. */
-  fishReels: { name: string; price: string; odds: string; rarity: string; value: string }[] | null;
+  fishReels: { name: string; price: string; odds: string; rarity: string; value: string; cooldown: string }[] | null;
   /** null when the bot service doesn't report stealing. */
   fishSteal: ({ enabled: boolean; onlyWhileLive: boolean } & Record<StealNumber, string>) | null;
   /** null when the bot service doesn't report duels. */
@@ -709,6 +711,7 @@ function formFromConfig(c: PointsConfig): SettingsForm {
           odds: String(r.oddsMultiplier),
           rarity: String(r.rarityMultiplier),
           value: String(r.valueMultiplier),
+          cooldown: String(r.cooldownMultiplier ?? 1),
         }))
       : null,
     fishSteal: c.games?.steal
@@ -1000,6 +1003,8 @@ function buildPatch(f: SettingsForm): { patch: PointsSettingsPatch } | { error: 
         oddsMultiplier: mult(r.odds, "odds ×"),
         rarityMultiplier: mult(r.rarity, "rarity ×"),
         valueMultiplier: mult(r.value, "value ×"),
+        // A reel only shortens the waits.
+        cooldownMultiplier: Math.round(decimal(r.cooldown, `${label} cooldown ×`, 0.1, 1) * 100) / 100,
       };
     });
     if (f.fishReels.length > 10) errors.push("There can be at most 10 reels");
@@ -1449,7 +1454,7 @@ function ReelTable({ rows, currency, command, disabled, onChange }: {
   const edit = (i: number, key: keyof ReelRow, value: string) =>
     onChange(rows.map((r, j) => (j === i ? { ...r, [key]: value } : r)));
   const remove = (i: number) => onChange(rows.filter((_, j) => j !== i));
-  const add = () => onChange([...rows, { name: "", price: "0", odds: "1", rarity: "1", value: "1" }]);
+  const add = () => onChange([...rows, { name: "", price: "0", odds: "1", rarity: "1", value: "1", cooldown: "1" }]);
   const cell = (i: number, key: keyof ReelRow, label: string, mode: "numeric" | "decimal" | "text") => (
     <input
       aria-label={`Reel ${i + 1} ${label}`}
@@ -1470,7 +1475,7 @@ function ReelTable({ rows, currency, command, disabled, onChange }: {
       <div className="border-t border-neutral-800 p-3">
         {rows.length > 0 ? (
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[34rem] text-sm">
+            <table className="w-full min-w-[39rem] text-sm">
               <thead>
                 <tr className="text-xs text-neutral-500">
                   <th className="w-6 pb-1 text-left font-normal">#</th>
@@ -1479,6 +1484,7 @@ function ReelTable({ rows, currency, command, disabled, onChange }: {
                   <th className="w-20 pb-1 text-right font-normal">Odds ×</th>
                   <th className="w-20 pb-1 text-right font-normal">Rarity ×</th>
                   <th className="w-20 pb-1 text-right font-normal">Value ×</th>
+                  <th className="w-20 pb-1 text-right font-normal">Cooldown ×</th>
                   <th className="w-8 pb-1" />
                 </tr>
               </thead>
@@ -1491,6 +1497,7 @@ function ReelTable({ rows, currency, command, disabled, onChange }: {
                     <td className="py-0.5 pl-2">{cell(i, "odds", "odds multiplier", "decimal")}</td>
                     <td className="py-0.5 pl-2">{cell(i, "rarity", "rarity multiplier", "decimal")}</td>
                     <td className="py-0.5 pl-2">{cell(i, "value", "value multiplier", "decimal")}</td>
+                    <td className="py-0.5 pl-2">{cell(i, "cooldown", "cooldown multiplier", "decimal")}</td>
                     <td className="py-0.5 pl-2 text-right">
                       <button
                         type="button"
@@ -1510,7 +1517,7 @@ function ReelTable({ rows, currency, command, disabled, onChange }: {
         ) : null}
         <div className="mt-3 flex flex-wrap items-start justify-between gap-3">
           <p className="max-w-xl text-xs text-neutral-500">
-            {`Viewers buy reels in this order with $${command} fish buy reel; $${command} fish buy shows the next one and its price first. Prices are in ${currency}. Odds × multiplies how often casts and traps land a fish, Rarity × multiplies every fish except the commonest, and Value × multiplies what fish sell for (junk is unaffected). 1 means no change. Removing a reel from the end takes it away from anyone who bought it.`}
+            {`Viewers buy reels in this order with $${command} fish buy reel; $${command} fish buy shows the next one and its price first. Prices are in ${currency}. Odds × multiplies how often casts and traps land a fish, Rarity × boosts rarer fish more (a fish 10× rarer than the commonest gets ×Rarity, 100× rarer ×Rarity², so ×2 makes 🐳 and 🐋 four times as likely; custom fish keep their odds), Value × multiplies what fish sell for (junk is unaffected), and Cooldown × (0.1 to 1) shortens the cooldown after a catch, the wait after a miss, and the cooldown traps count between fish, so traps catch more in the same time (the steal cooldown stays as it is). 1 means no change. Removing a reel from the end takes it away from anyone who bought it.`}
           </p>
           <button
             type="button"

@@ -20,7 +20,7 @@ import { SYSTEM_BOTS } from '../system-bots';
 import { getBotIdentity } from '../bot-identity';
 import { readLivePointsConfig } from './config';
 import { PointsDb, driverAvailable, openPointsDb, pointsDir, reportDbError, runWrite } from './db';
-import { guardEnd, guardPausedAt } from '../community/fishing';
+import { ITEMS, guardEnd, guardPausedAt, sellPrice } from '../community/fishing';
 
 export interface UserRecord {
   user_id: number;
@@ -1153,6 +1153,69 @@ export function duelBoard(channel: string, cfg: PointsConfig, broadcasterUserId?
         stake: r.stake === 'wager' || r.stake === 'keeps' ? r.stake : 'friendly',
         amount: r.stake === 'wager' ? r.amount : null,
         at: new Date(r.ts).toISOString()
+      }))
+    };
+  });
+}
+
+export interface SnipeBoard {
+  totals: { snipes: number; landed: number; snipers: number };
+  /** rate: landed as a percent of their snipes that could land (a sniped reward bite only spits the hook); null with none. */
+  snipers: Array<{ name: string; snipes: number; landed: number; snapped: number; gotAway: number; rate: number | null; best: { fish: string; cm: number | null; worth: number } | null }>;
+  recent: Array<{ sniper: string; victim: string; outcome: 'landed' | 'snapped' | 'got-away' | 'spat'; fish: string | null; cm: number | null; at: string }>;
+}
+
+/**
+ * The Fishing tab's big bite snipers: who has taken the most bites off someone else's line,
+ * how many they landed, and the most valuable trophy each landed from one. null before the first snipe.
+ */
+export function snipeBoard(channel: string, cfg: PointsConfig, broadcasterUserId?: number | null): SnipeBoard | null {
+  return withReadDb(channel, null as SnipeBoard | null, db => {
+    const ex = exclusionsFor(channel, cfg, broadcasterUserId);
+    const clause = exclusionClause(ex);
+    type Row = { ts: number; username: string; for_name: string; victim_id: number | null; outcome: string; trophy: string | null; cm: number | null };
+    let rows: Row[];
+    try {
+      rows = db.prepare(
+        `SELECT b.ts, u.username, b.for_name, v.user_id AS victim_id, b.outcome, b.trophy, b.cm FROM big_bites b
+         JOIN (SELECT user_id, username FROM users WHERE ${clause.sql}) u ON u.user_id = b.user_id
+         LEFT JOIN users v ON v.username_lc = lower(b.for_name)
+         WHERE b.sniped = 1 ORDER BY b.ts, b.id`
+      ).all(...clause.params) as Row[];
+    } catch {
+      return null; // a database from before v15
+    }
+    // The victim is a name as it was then: excluded accounts are left out on both sides, as in heists.
+    rows = rows.filter(r => !isExcluded(ex, r.victim_id, r.for_name));
+    if (!rows.length) return null;
+    // Priced as a fresh catch of that length would sell: no record bonus, no feeding levels.
+    const worthOf = (trophy: string, cm: number | null): number => {
+      const item = ITEMS.find(i => i.name === trophy);
+      return item ? sellPrice(item, cfg.games, cm === null ? undefined : { cm, record: false }) : 0;
+    };
+    type Sniper = SnipeBoard['snipers'][number] & { spat: number };
+    const record = new Map<string, Sniper>();
+    for (const r of rows) {
+      const s = record.get(r.username) ?? record.set(r.username, { name: r.username, snipes: 0, landed: 0, snapped: 0, gotAway: 0, spat: 0, rate: null, best: null }).get(r.username)!;
+      s.snipes++;
+      if (r.outcome === 'landed') {
+        s.landed++;
+        if (r.trophy) {
+          const worth = worthOf(r.trophy, r.cm);
+          if (!s.best || worth > s.best.worth) s.best = { fish: r.trophy, cm: r.cm, worth };
+        }
+      } else if (r.outcome === 'snapped') s.snapped++;
+      else if (r.outcome === 'spat') s.spat++;
+      else s.gotAway++;
+    }
+    const snipers = [...record.values()].map(({ spat, ...s }) => ({ ...s, rate: s.snipes > spat ? Math.round(s.landed / (s.snipes - spat) * 100) : null }));
+    return {
+      totals: { snipes: rows.length, landed: snipers.reduce((n, s) => n + s.landed, 0), snipers: snipers.length },
+      snipers: snipers.sort((a, b) => b.snipes - a.snipes || b.landed - a.landed || (b.best?.worth ?? 0) - (a.best?.worth ?? 0)).slice(0, 10),
+      recent: rows.slice(-5).reverse().map(r => ({
+        sniper: r.username, victim: r.for_name,
+        outcome: r.outcome === 'landed' || r.outcome === 'snapped' || r.outcome === 'spat' ? r.outcome : 'got-away',
+        fish: r.trophy, cm: r.cm, at: new Date(r.ts).toISOString()
       }))
     };
   });

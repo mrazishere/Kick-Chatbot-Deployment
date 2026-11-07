@@ -18,6 +18,7 @@ import TradeBuilder, { type TradeFish } from "@/components/TradeBuilder";
 import { viewerLoginEnabled } from "@/lib/viewer-login";
 import Heists from "@/components/Heists";
 import Duels from "@/components/Duels";
+import Snipers from "@/components/Snipers";
 import type { PublicCatch, PublicCommands, PublicFishing, PublicHolder, PublicStealRules, PublicTopFish } from "@/lib/bot-api";
 
 export const dynamic = "force-dynamic";
@@ -505,7 +506,7 @@ function hasBigBiteVideo(channel: string): boolean {
   return /^[a-z0-9_]+$/.test(channel) && fs.existsSync(path.join(process.cwd(), "public", "videos", `big-bite-${channel}.mp4`));
 }
 
-type FishSection = "play" | "top" | "stealing" | "duels" | "odds";
+type FishSection = "play" | "top" | "stealing" | "duels" | "snipers" | "odds";
 
 /** The Fishing tab's sections that have something here, in order. "play" only with the game on. */
 function fishSections(fishing: PublicFishing, playable: boolean): Array<{ id: FishSection; label: string }> {
@@ -514,6 +515,7 @@ function fishSections(fishing: PublicFishing, playable: boolean): Array<{ id: Fi
     { id: "top" as const, label: "Top fish" },
     ...(fishing.stealRules || fishing.steal || fishing.heists ? [{ id: "stealing" as const, label: "Stealing" }] : []),
     ...(fishing.duel || fishing.duels ? [{ id: "duels" as const, label: "Duels" }] : []),
+    ...(fishing.bigBite || fishing.snipes ? [{ id: "snipers" as const, label: "Snipers" }] : []),
     { id: "odds" as const, label: "Odds & prices" },
   ];
 }
@@ -614,6 +616,8 @@ function FishingTab({
       ) : null}
 
       {section === "duels" ? <Duels duels={fishing.duels ?? null} currency={currency} channel={channel} /> : null}
+
+      {section === "snipers" ? <Snipers snipes={fishing.snipes ?? null} currency={currency} channel={channel} /> : null}
 
       {section === "odds" ? (
         <>

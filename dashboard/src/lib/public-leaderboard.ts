@@ -1,5 +1,5 @@
 import "server-only";
-import { BotApiError, getPointsLeaderboard, getPublicHistory, getPublicViewers, type PublicHistory, type PublicViewer, type PointsLeaderboard, type PublicCommands, type PublicCommandRow, type PublicCommandSection, type PointsLeaderboardEntry, type PublicCatch, type PublicDuels, type PublicFishing, type PublicHeists, type PublicHeldFish, type PublicHolder, type PublicStealRules, type PublicTopFish } from "./bot-api";
+import { BotApiError, getPointsLeaderboard, getPublicHistory, getPublicViewers, type PublicHistory, type PublicViewer, type PointsLeaderboard, type PublicCommands, type PublicCommandRow, type PublicCommandSection, type PointsLeaderboardEntry, type PublicCatch, type PublicDuels, type PublicFishing, type PublicSnipes, type PublicHeists, type PublicHeldFish, type PublicHolder, type PublicStealRules, type PublicTopFish } from "./bot-api";
 
 /**
  * The public leaderboard page is the one page anyone can open signed out, so it
@@ -219,11 +219,47 @@ export function publicHolder(row: unknown): PublicHolder | null {
   return fish.length || junk.length ? { name: r.name, fish, count: fish.reduce((sum, f) => sum + f.n, 0), worth: n(r.worth), ...reel, ...(junk.length ? { junk } : {}) } : null;
 }
 
+/** The big bite snipers, keeping only well-formed rows. */
+function publicSnipes(raw: unknown): PublicSnipes | null {
+  const d = raw as Partial<PublicSnipes> | null | undefined;
+  if (!d || typeof d !== "object" || !d.totals) return null;
+  const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+  const cm = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : null);
+  const name = (v: unknown) => typeof v === "string" && USERNAME.test(v);
+  const fish = (v: unknown) => typeof v === "string" && v.length > 0 && v.length <= 80;
+  const rows = <T,>(list: unknown, max: number, keep: (r: Record<string, unknown>) => T | null): T[] =>
+    (Array.isArray(list) ? list : []).slice(0, max).flatMap((r) => {
+      const out = r && typeof r === "object" ? keep(r as Record<string, unknown>) : null;
+      return out ? [out] : [];
+    });
+  const OUTCOMES = ["landed", "snapped", "got-away", "spat"] as const;
+  return {
+    totals: { snipes: n(d.totals.snipes), landed: n(d.totals.landed), snipers: n(d.totals.snipers) },
+    snipers: rows(d.snipers, 10, (r) => {
+      if (!name(r.name)) return null;
+      const b = r.best as Record<string, unknown> | null | undefined;
+      return {
+        name: r.name as string, snipes: n(r.snipes), landed: n(r.landed), snapped: n(r.snapped), gotAway: n(r.gotAway),
+        rate: typeof r.rate === "number" && r.rate >= 0 && r.rate <= 100 ? r.rate : null,
+        best: b && typeof b === "object" && fish(b.fish) ? { fish: b.fish as string, cm: cm(b.cm), worth: n(b.worth) } : null,
+      };
+    }),
+    recent: rows(d.recent, 5, (r) =>
+      name(r.sniper) && name(r.victim) && OUTCOMES.includes(r.outcome as (typeof OUTCOMES)[number])
+        ? {
+            sniper: r.sniper as string, victim: r.victim as string, outcome: r.outcome as (typeof OUTCOMES)[number],
+            fish: fish(r.fish) ? (r.fish as string) : null, cm: cm(r.cm), at: typeof r.at === "string" ? r.at.slice(0, 40) : "",
+          }
+        : null,
+    ),
+  };
+}
+
 function publicFishing(raw: unknown): PublicFishing | null {
   const f = raw as Partial<PublicFishing> | null | undefined;
   if (!f || typeof f.catchOdds !== "number") return null;
   const fish = publicCatches(f.fish);
-  return fish.length ? { catchOdds: f.catchOdds, webPlay: f.webPlay === true, trade: f.trade === true, fish, junk: publicCatches(f.junk), topFish: publicTopFish(f.topFish), holders: publicHolders(f.holders), steal: f.steal === true, ...stealRules(f.stealRules), ...fishEmotes(f.emotes), heists: publicHeists(f.heists), duel: f.duel === true, duels: publicDuels(f.duels),
+  return fish.length ? { catchOdds: f.catchOdds, webPlay: f.webPlay === true, trade: f.trade === true, fish, junk: publicCatches(f.junk), topFish: publicTopFish(f.topFish), holders: publicHolders(f.holders), steal: f.steal === true, ...stealRules(f.stealRules), ...fishEmotes(f.emotes), heists: publicHeists(f.heists), duel: f.duel === true, duels: publicDuels(f.duels), snipes: publicSnipes(f.snipes),
     trophies: publicCatches(f.trophies),
     bigBite: f.bigBite && typeof f.bigBite.everyMinutes === "number" ? { everyMinutes: f.bigBite.everyMinutes, ...(f.bigBite.onLeaderboard === true ? { onLeaderboard: true } : {}) } : null } : null;
 }

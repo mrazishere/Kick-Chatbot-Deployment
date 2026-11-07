@@ -36,10 +36,10 @@ import { buyGuard, shopView, syncGuardPause } from '../community/fish-shop';
 import { guardEnd, guardPausedAt, guardsPauseWhileLive } from '../community/fishing';
 import { openCommunityDb } from '../community/store';
 import { markOverlaySeen, noteOverlayHealth, overlayHealth, overlayOff, overlayReloadToken, overlayShowing, readOverlay, requestOverlayReload, watchOverlay } from '../community/fish-overlay';
-import { biteFor, drawSnipeMs, LIVE_BITE_KEY, openSnipes, resetBites, rewardBitesWaiting, snipeOpen, SNIPE_PENDING, startBite, takeBite as takeBiteForTest } from '../community/big-bite';
+import { biteFor, drawSnipeMs, LIVE_BITE_KEY, openSnipes, resetBites, rewardBitesWaiting, snipeCodeText, snipeLine, snipeOpen, SNIPE_PENDING, startBite, takeBite as takeBiteForTest } from '../community/big-bite';
 import { fish as fishCommand, parseTrapMinutes, SUBCOMMANDS as FISH_SUBCOMMANDS, BOARDS as FISH_BOARD_MAP, BOARD_SHORT as FISH_BOARD_SHORT } from '../bot-commands/fish';
 import { publicCommands, FISH_BOARDS, feedingGuide } from '../points/public-commands';
-import { duelBoard, publicLedgerText, publicUserHistory, setMetaTx } from '../points/store';
+import { duelBoard, publicLedgerText, publicUserHistory, setMetaTx, snipeBoard } from '../points/store';
 import { mediaShareHeld, setMediaShareHeld } from '../community/mediashare';
 import { answerMatches, makeTrapCheck, normalizeAnswer } from '../community/trap-check';
 import { changeWheel, readWheel, validateWheel } from '../community/wheel';
@@ -712,7 +712,7 @@ async function main(): Promise<void> {
     check('snipes open only once the SNIPE OPEN line is posted: not while it is being sent', pending && opened, { pending, opened, snipeAt: slow.snipeAt });
     const opens = said.filter(m => m.includes('SNIPE OPEN'));
     check('chat says the moment snipes open, and stays quiet for a bite settled first',
-      opens.length === 1 && opens[0].includes("@opened's big bite") && /\$don fish reel \d{2} takes it/.test(opens[0]) && said.some(m => m.includes("I'll post a snipe code in chat")), said);
+      opens.length === 1 && opens[0].includes('@opened') && opens[0].includes('$don fish reel') && !/reel \d{2}\b/.test(opens[0]) && said.some(m => m.includes("I'll post a snipe code in chat")), said);
   }
 
   // onlyWhileOffline: casting and trapping are shut while live, open offline; never on with onlyWhileLive
@@ -874,7 +874,7 @@ async function main(): Promise<void> {
     check('the public command list only shows short forms that work', listed.command === '$points' && wrong.length === 0
       && listed.sections.map(s => s.title).join(',') === 'Points,Games,Fishing,Streamer' && listed.sections[2].note!.includes('offline'), { wrong, t: listed.sections.map(s => s.title) });
     // Every named fishing board (the emoji ones aside) is on the Commands tab, with the short form `fish top` takes.
-    const named = [...FISH_BOARD_MAP.keys()].filter(k => /^[a-z-]+$/.test(k));
+    const named = [...[...FISH_BOARD_MAP.keys()].filter(k => /^[a-z-]+$/.test(k)), 'snipers'];
     check('the Commands tab names every fishing board and its short form',
       named.length === FISH_BOARDS.length && named.every(k => FISH_BOARDS.some(b => b.board === k && FISH_BOARD_SHORT[b.short] === k))
       && Object.keys(FISH_BOARD_SHORT).length === FISH_BOARDS.length
@@ -1189,6 +1189,28 @@ async function main(): Promise<void> {
       const top = await run('$don fish top duelists', ash);
       const stats = await run('$don fish stats', ash);
       check('duel wins have a board and a stats line', top.includes('fish duelists') && /fish duels won: \d, lost: \d/.test(stats), { top, stats });
+
+      // Big bite snipers: ash landed one of three snipes (a spat reward bite doesn't count against them), misty none.
+      runWrite(ddb, () => {
+        const bite = ddb.prepare(`INSERT INTO big_bites (ts, user_id, username, for_name, sniped, reward, outcome, pull, trophy, cm, land_percent)
+          VALUES (?, ?, ?, ?, ?, 0, ?, 3, ?, ?, 20)`);
+        bite.run(10, 51, 'ash', 'misty', 1, 'landed', '🐉', 80);
+        bite.run(11, 51, 'ash', 'misty', 1, 'snapped', '🦄', null);
+        bite.run(12, 51, 'ash', 'gary', 1, 'spat', null, null);
+        bite.run(13, 54, 'misty', 'ash', 1, 'got-away', null, null);
+        bite.run(14, 52, 'gary', 'gary', 0, 'landed', '🦖', 99); // their own bite: not a snipe
+        bite.run(15, 51, 'ash', ch, 1, 'landed', '🐉', 100); // the excluded broadcaster's bite: left out
+      });
+      const snipes = snipeBoard(ch, effectivePointsConfig({ enabled: true, games: { enabled: true } }), 999)!;
+      const ashSnipes = snipes.snipers[0];
+      check('the snipers board counts snipes, the land rate without reward bites, and the best trophy',
+        snipes.totals.snipes === 4 && snipes.totals.landed === 1 && snipes.totals.snipers === 2
+        && ashSnipes.name === 'ash' && ashSnipes.snipes === 3 && ashSnipes.landed === 1 && ashSnipes.snapped === 1 && ashSnipes.rate === 50
+        && ashSnipes.best?.fish === '🐉' && ashSnipes.best.cm === 80 && ashSnipes.best.worth === 20_000
+        && snipes.snipers[1].name === 'misty' && snipes.snipers[1].rate === 0 && snipes.snipers[1].best === null
+        && snipes.recent[0].sniper === 'misty' && snipes.recent.length === 4, snipes);
+      const snipeTop = await run('$don fish top sn', ash);
+      check('fish top snipers lists them in chat', snipeTop.includes('#1 ash (3 sniped, 1 landed = 50%, best 🐉 80cm worth 20,000') && snipeTop.includes('#2 misty'), snipeTop);
 
       // Team battles: 2v2 / 3v3, each side's fish one after another.
       check('team sizes: 2v2 and 3v3, not 4v4 or 2v3', teamSizeOf('3v3') === 3 && teamSizeOf('2V2') === 2 && teamSizeOf('4v4') === null && teamSizeOf('2v3') === null && teamSizeOf('300') === null);
@@ -2156,7 +2178,25 @@ async function main(): Promise<void> {
       await new Promise(r => setImmediate(r));
       const snipeCode = s1bite.snipeCode!;
       check('the SNIPE OPEN line gives snipers a 2-digit code of their own, not the overlay\'s', /^\d{2}$/.test(snipeCode) && snipeCode !== s1.code
-        && openSaid[0]?.includes(`$don fish reel ${snipeCode} takes it`) && !openSaid[0]?.includes(s1.code!) && snipeOpen(s1bite, Date.now()), { snipeCode, openSaid, code: s1.code });
+        && !!openSaid[0]?.startsWith('🪝 SNIPE OPEN!') && openSaid[0].includes('$don fish reel') && openSaid[0].includes(s1bite.snipeShown!)
+        && !openSaid[0].includes(snipeCode) && snipeOpen(s1bite, Date.now()), { snipeCode, openSaid, code: s1.code });
+      // Every way the line shows the code works out to it, and none shows it as bare digits.
+      const WORDS = ['ZERO', 'ONE', 'TWO', 'THREE', 'FOUR', 'FIVE', 'SIX', 'SEVEN', 'EIGHT', 'NINE'];
+      const solve = (t: string): string | null => {
+        let m = /^([A-Z]+) ([A-Z]+) \(as a number\)$/.exec(t);
+        if (m) return `${WORDS.indexOf(m[1])}${WORDS.indexOf(m[2])}`;
+        if ((m = /^(\d+) \+ (\d+) \(type the answer\)$/.exec(t))) return String(Number(m[1]) + Number(m[2]));
+        if ((m = /^(\d+) - (\d+) \(type the answer\)$/.exec(t))) return String(Number(m[1]) - Number(m[2]));
+        if ((m = /^(\d) then (\d) \(as one number\)$/.exec(t))) return m[1] + m[2];
+        return null;
+      };
+      const badShown: string[] = [];
+      for (let n = 10; n < 100; n++) for (let i = 0; i < 40; i++) {
+        const t = snipeCodeText(String(n));
+        if (solve(t) !== String(n) || t.includes(String(n))) badShown.push(`${n}: ${t}`);
+      }
+      const lineTexts = new Set(Array.from({ length: 200 }, () => { const l = snipeLine('who', 'don', '73'); return l.text.replace(l.shown, ''); }));
+      check('the snipe code always reads back to itself, never as its bare digits, and the line\'s wording varies', badShown.length === 0 && lineTexts.size >= 3, { badShown: badShown.slice(0, 5), wordings: lineTexts.size });
       const wrongSnipe = await run(`$don fish reel ${s1.code}`, ['third', 47], 0);
       check('a sniper typing the overlay code gets it wrong, uses up their one try, and leaves the bite alone', wrongSnipe.includes('Wrong code') && wrongSnipe.includes('SNIPE OPEN line')
         && (await run(`$don fish reel ${snipeCode}`, ['third', 47], 500)) === '' && lastBite()?.username === 'biter' && lastBite()!.pull === 1, wrongSnipe);
@@ -2472,6 +2512,8 @@ async function main(): Promise<void> {
     const rolls = Array.from({ length: 50 }, () => weightedCatch('fish', gk).name);
     check('a custom fish joins the catches: sized, its odds and price, its rarity and duel type', !!kek?.custom && kek.size && gk.catches.some(c => c.name === 'KEKLEO' && c.custom && c.price === 500)
       && rolls.filter(n => n === 'KEKLEO').length > 45 && rarityOf(gk, 'KEKLEO') === 'Common' && typeOf('KEKLEO') === 'Predator' && sellPrice(kek!, gk, { cm: 50, record: false }) === 500, rolls.slice(0, 5));
+    const boosted = Array.from({ length: 50 }, () => weightedCatch('fish', gk, 5).name);
+    check('a reel\'s rarity leaves a custom fish\'s odds alone, and a huge custom weight doesn\'t inflate the boost', boosted.filter(n => n === 'KEKLEO').length > 45, boosted.slice(0, 5));
     const other = effectivePointsConfig({ games: { enabled: true } }).games;
     check('another channel never catches it', Array.from({ length: 3000 }, () => weightedCatch('fish', other).name).every(n => n !== 'KEKLEO' && n !== '🦩') && !other.catches.some(c => c.custom));
     const sl = parseSellList(['kekleo', '2', '[emote:37225:KEKLEO]', '🦩']);
@@ -3569,35 +3611,49 @@ async function main(): Promise<void> {
       // Reels
       const defaults = effectivePointsConfig({}).games.reels;
       check('four default reels, cheapest first', defaults.map(r => `${r.name}:${r.price}`).join(',') === 'Bamboo:5000,Fiberglass:25000,Carbon:100000,Golden:500000', defaults);
-      const customReels = [{ name: 'Twig', price: 10, oddsMultiplier: 2, rarityMultiplier: 1, valueMultiplier: 1.5 }];
+      const customReels = [{ name: 'Twig', price: 10, oddsMultiplier: 2, rarityMultiplier: 1, valueMultiplier: 1.5, cooldownMultiplier: 0.5 }];
       const setReels = validatePointsPatch({}, { games: { reels: customReels } });
       check('custom reels stored', setReels.errors.length === 0 && JSON.stringify(setReels.next?.games?.reels) === JSON.stringify(customReels), setReels);
       check('default reels are not stored', validatePointsPatch({}, { games: { reels: defaults } }).next?.games?.reels === undefined);
       const badReels = validatePointsPatch({}, { games: { reels: [{ name: '', price: -1, oddsMultiplier: 20, rarityMultiplier: 1, valueMultiplier: 1 }, { name: 'A', price: 1, oddsMultiplier: 1, rarityMultiplier: 1, valueMultiplier: 1 }, { name: 'a', price: 1, oddsMultiplier: 1, rarityMultiplier: 1, valueMultiplier: 1 }] } });
       check('bad reels refused', !badReels.next && badReels.errors.length === 4, badReels.errors);
+      const slowReel = validatePointsPatch({}, { games: { reels: [{ name: 'Slow', price: 1, oddsMultiplier: 1, rarityMultiplier: 1, valueMultiplier: 1, cooldownMultiplier: 1.5 }] } });
+      check('a reel can\'t lengthen cooldowns', !slowReel.next && slowReel.errors.some(e => e.includes('cooldown multiplier')), slowReel.errors);
+      const oldReel = validatePointsPatch({}, { games: { reels: [{ name: 'Old', price: 1, oddsMultiplier: 1, rarityMultiplier: 1, valueMultiplier: 1 }] } });
+      check('a reel without a cooldown multiplier gets 1', oldReel.next?.games?.reels?.[0]?.cooldownMultiplier === 1
+        && effectivePointsConfig({ games: { reels: [{ name: 'Old', price: 1, oddsMultiplier: 1, rarityMultiplier: 1, valueMultiplier: 1 }] } }).games.reels[0].cooldownMultiplier === 1, oldReel);
+      const oldDash = validatePointsPatch({}, { games: { reels: defaults.map(({ cooldownMultiplier: _c, ...r }) => r) } });
+      check('default reels saved by an older dashboard (no cooldown multiplier) stay the defaults', oldDash.errors.length === 0 && oldDash.next?.games?.reels === undefined, oldDash);
+      check('default reels shorten cooldowns, the dearer the more', defaults.map(r => r.cooldownMultiplier).join(',') === '0.95,0.9,0.8,0.65', defaults);
       check('no reels at all is allowed', validatePointsPatch({}, { games: { reels: [] } }).next?.games?.reels?.length === 0);
       let lands = 0;
-      for (let i = 0; i < 40_000; i++) if (landsFish(20, { name: 'x', price: 0, oddsMultiplier: 2, rarityMultiplier: 1, valueMultiplier: 1 })) lands++;
+      for (let i = 0; i < 40_000; i++) if (landsFish(20, { name: 'x', price: 0, oddsMultiplier: 2, rarityMultiplier: 1, valueMultiplier: 1, cooldownMultiplier: 1 })) lands++;
       check('odds multiplier doubles the catch rate', Math.abs(lands / 40_000 - 0.1) < 0.008, lands / 40_000);
       const gd2 = effectivePointsConfig({}).games;
       let commons = 0;
       const commonSet = new Set(['🐟', '🦐', '🦀', '🐸', '🐚']);
-      for (let i = 0; i < 40_000; i++) if (commonSet.has(weightedCatch('fish', gd2, 2).name)) commons++;
-      check('rarity ×2 doubles every non-common fish', Math.abs(commons / 40_000 - 50 / 96.4) < 0.015, commons / 40_000);
+      let whales = 0;
+      for (let i = 0; i < 40_000; i++) {
+        const n = weightedCatch('fish', gd2, 2).name;
+        if (commonSet.has(n)) commons++;
+        if (n === '🐳' || n === '🐋') whales++;
+      }
+      // Default weights boosted by 2^log10(10 / w) total 84.97, of which the commons are 50 and the whales 0.8.
+      check('rarity ×2 boosts rarer fish more', Math.abs(commons / 40_000 - 50 / 84.97) < 0.015 && Math.abs(whales / 40_000 - 0.8 / 84.97) < 0.003, [commons / 40_000, whales / 40_000]);
       check('value multiplier is fish only', sellPrice(ITEMS.find(i => i.name === '🐟')!, gd2, undefined, 2) === 50 && sellPrice(ITEMS.find(i => i.name === '🥫')!, gd2, undefined, 2) === 8);
 
       runWrite(pdb, () => creditTx(pdb, { userId: 14, username: 'buyer', amount: 6000, reason: 'mod_add', now: 1 }));
       const buyer = (msg: string) => run(msg, on, ['buyer', 14]);
       const peek = await buyer('$don fish buy');
-      check('buy shows the next reel without buying', peek[0] === '@buyer Next up: the Bamboo reel for 5,000 $DON (fish odds ×1.1). Buy it with $don fish buy reel' && balance(ch, 14) === 6000, peek);
+      check('buy shows the next reel without buying', peek[0] === '@buyer Next up: the Bamboo reel for 5,000 $DON (fish odds ×1.1, cooldowns ×0.95). Buy it with $don fish buy reel' && balance(ch, 14) === 6000, peek);
       const bought = await buyer('$don fish buy reel');
-      check('buy reel buys it', bought[0] === '@buyer You bought the Bamboo reel for 5,000 $DON! fish odds ×1.1. You have 1,000 $DON left.' && balance(ch, 14) === 1000, bought);
+      check('buy reel buys it', bought[0] === '@buyer You bought the Bamboo reel for 5,000 $DON! fish odds ×1.1, cooldowns ×0.95. You have 1,000 $DON left.' && balance(ch, 14) === 1000, bought);
       const poorer = await buyer('$don fish buy reel');
       check('the next reel needs the money', poorer[0] === '@buyer The Fiberglass reel costs 25,000 $DON and you have 1,000 $DON.' && balance(ch, 14) === 1000, poorer);
       const owned = await buyer('$don fish buy');
-      check('buy mentions the reel held', owned[0]?.startsWith('@buyer You fish with the Bamboo reel (fish odds ×1.1). Next up: the Fiberglass reel'), owned);
+      check('buy mentions the reel held', owned[0]?.startsWith('@buyer You fish with the Bamboo reel (fish odds ×1.1, cooldowns ×0.95). Next up: the Fiberglass reel'), owned);
 
-      writeConfig(root, ch, { enabled: true, currencyName: '$DON', games: { enabled: true, onlyWhileLive: false, trapMinutes: 60, reels: [{ name: 'Twig', price: 0, oddsMultiplier: 1, rarityMultiplier: 1, valueMultiplier: 2 }] } });
+      writeConfig(root, ch, { enabled: true, currencyName: '$DON', games: { enabled: true, onlyWhileLive: false, trapMinutes: 60, reels: [{ name: 'Twig', price: 0, oddsMultiplier: 1, rarityMultiplier: 1, valueMultiplier: 2, cooldownMultiplier: 1 }] } });
       runWrite(pdb, () => {
         ensureUserTx(pdb, 15, 'valued', 1);
         const d = initialData();
@@ -3611,6 +3667,43 @@ async function main(): Promise<void> {
       check('a reel with value ×2 doubles a sale', worth[0] === '@valued Sold your 🐟 for 50 $DON - now you have 50 $DON', worth);
       const best = await valued('$don fish buy');
       check('the last reel is the best', best[0] === "@valued You fish with the Twig reel (fish value ×2). That's the best reel in the shop!", best);
+      // A reel's cooldown multiplier: the catch cooldown, a miss's wait, and the cooldown a trap counts between fish.
+      {
+        const quick = (odds: number, cooldownMultiplier: number) => writeConfig(root, ch, { enabled: true, currencyName: '$DON', games: {
+          enabled: true, onlyWhileLive: false, catchOdds: odds, catchCooldownMinutes: 30, trapMinutes: 60, trapCheck: { enabled: false },
+          reels: [{ name: 'Swift', price: 0, oddsMultiplier: 1, rarityMultiplier: 1, valueMultiplier: 1, cooldownMultiplier }] } });
+        const fresh = (id: number, name: string, edit?: (d: FishData) => void) => runWrite(pdb, () => {
+          ensureUserTx(pdb, id, name, 1);
+          const d = initialData();
+          d.reel = 1;
+          edit?.(d);
+          saveFish(pdb, id, d, 1);
+        });
+        quick(1, 0.5);
+        fresh(16, 'swift');
+        const t0 = Date.now();
+        const caught = await run('$don fish', on, ['swift', 16]);
+        const ready = loadFish(pdb, 16)!.readyTimestamp - t0;
+        check('a reel at cooldowns ×0.5 halves the catch cooldown, and says so', ready > 14 * 60_000 && ready <= 15 * 60_000 + 10_000 && caught.some(m => m.includes('15m')), { ready, caught });
+        quick(1000, 0.5);
+        fresh(17, 'missy');
+        const m0 = Date.now();
+        await run('$don fish', on, ['missy', 17]);
+        const missWait = loadFish(pdb, 17)!.readyTimestamp - m0;
+        // 15-45s, plus the 1s every miss adds and the 6s run() moves the clock on; a plain miss would be 37s-97s.
+        check('...and a miss\'s wait (30-90s becomes 15-45s)', missWait >= 21_000 && missWait <= 53_000, missWait);
+        const trapReplies: string[][] = [];
+        const trapHaul = async (id: number, name: string, cooldownMultiplier: number): Promise<number> => {
+          quick(1, cooldownMultiplier);
+          const now = Date.now();
+          fresh(id, name, d => { d.trap = { active: true, start: now - 60 * 60_000, end: now - 1_000, duration: 60 * 60_000 }; });
+          trapReplies.push(await run('$don fish trap', on, [name, id]));
+          return loadFish(pdb, id)!.lifetime.fish;
+        };
+        const plainHaul = await trapHaul(18, 'plaintrap', 1);
+        const swiftHaul = await trapHaul(19, 'swifttrap', 0.5);
+        check('...and the cooldown a trap counts between fish: a trap that always bites catches more', plainHaul === 1 && swiftHaul >= 2, { plainHaul, swiftHaul, trapReplies });
+      }
       writeConfig(root, ch, { enabled: true, currencyName: '$DON', games: { enabled: true, onlyWhileLive: false, trapMinutes: 60, reels: [] } });
       const shut = await valued('$don fish buy');
       check('no reels means an empty shop', shut[0] === "@valued There isn't anything you can buy at the fishing gear shop... yet.", shut);

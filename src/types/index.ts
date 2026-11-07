@@ -585,10 +585,16 @@ export interface FishReelSetting {
   price: number;
   /** Multiplies the chance a cast or a trap roll lands a fish. */
   oddsMultiplier: number;
-  /** Multiplies the odds of every fish rarer than the most common ones. */
+  /** Boosts rarer fish more: ×this for a fish 10× rarer than the commonest, ×this² for 100× rarer (weightedCatch). */
   rarityMultiplier: number;
   /** Multiplies what fish sell for. Junk is unaffected. */
   valueMultiplier: number;
+  /**
+   * Multiplies the waits between casts: the catch cooldown, the wait after a miss, and the
+   * catch cooldown a trap counts between its fish (so a trap of the same length catches more).
+   * 1 is no change; at most 1. The steal cooldown is its own.
+   */
+  cooldownMultiplier: number;
 }
 
 export interface FishCatchSetting {

@@ -52,7 +52,7 @@ import { SYSTEM_BOTS } from '../system-bots';
 import { getPointsService } from '../points/service';
 import { runWrite } from '../points/db';
 import type { PointsDb } from '../points/db';
-import { applyOnce, creditTx, debitTx, ensureUserTx, findUserByName, getUser, isApplied, isExcluded } from '../points/store';
+import { applyOnce, creditTx, debitTx, ensureUserTx, findUserByName, getUser, isApplied, isExcluded, snipeBoard, type SnipeBoard } from '../points/store';
 import { makeCooldown, parseUsername, span } from '../community/format';
 import { gameInvocation } from '../community/stakes';
 import { addReminder, cancelSelfRemindersStartingWith, openCommunityDb } from '../community/store';
@@ -69,7 +69,7 @@ import { addTrade, dropTrade, mirrorTrades, sideText, tradeBy, tradeFor, tradeSe
 import { BITE_TOO_FAST_MS, BITE_TOO_FAST_PAGE_MS, STREAM_GRACE_MS, biteFor, canBite, channelBite, channelHasBite, codeMatches, getAway, nextPull, pickChatter, recordBite, rewardSnipeFails, snipeBite, snipeOpen, startBite, takeBite, type BiteContext } from '../community/big-bite';
 import {
   addItem, itemByWord, giveItems, guardEnd, guardPausedAt, baitPrice, baitRoll, currentReel, freshCatches, landsFish, moveFish, pickHeld, stealableFish, stealCharges, stealRollChance, worstStealCharges, parseSellList, takeSized, addXp, levelCost, levelOf, MAX_LEVEL, capOf, emoteWord, isWordName, nearCap, overflow, CatchItem, CatchType, FAILURE_EMOTES, FishData, findBait, hasFishedBefore, initialData, rarityOf, recordCatch,
-  ITEMS, JUNK_MESSAGES, loadFish, MISS_DELAY_MS, TRAP_MIN_MINUTES, pick, randomInt, rollCatch, saveFish, sellPrice, STORY_STYLES, SUCCESS_EMOTES,
+  catchCooldownMs, ITEMS, JUNK_MESSAGES, loadFish, MISS_DELAY_MS, reelWait, TRAP_MIN_MINUTES, pick, randomInt, rollCatch, saveFish, sellPrice, STORY_STYLES, SUCCESS_EMOTES,
   takeItems, TYPE_DESCRIPTIONS, weightedCatch, type HeldFish
 } from '../community/fishing';
 
@@ -243,7 +243,7 @@ const BAIT_SHORT: Record<string, string> = { w: 'worm', f: 'fly', c: 'cricket' }
 const SELL_SHORT: Record<string, string> = { a: 'all', d: 'duplicate' };
 const STATS_SHORT: Record<string, string> = { g: 'global' };
 export const BOARD_SHORT: Record<string, string> = {
-  f: 'fish', c: 'coins', j: 'junk', l: 'lucky', u: 'unlucky', t: 'traps', a: 'attempts', th: 'thieves', ca: 'caught', r: 'robbed', d: 'duelists',
+  f: 'fish', c: 'coins', j: 'junk', l: 'lucky', u: 'unlucky', t: 'traps', a: 'attempts', th: 'thieves', ca: 'caught', r: 'robbed', d: 'duelists', sn: 'snipers',
   tf: 'total-fish', tc: 'total-coins', tj: 'total-junk', tl: 'total-lucky', tu: 'total-unlucky'
 };
 /** `word` spelled out when it's one of `short`'s, else as typed. */
@@ -465,7 +465,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     if (d.catch.luckyStreak > d.lifetime.luckyStreak) d.lifetime.luckyStreak = d.catch.luckyStreak;
     // A big bite isn't a cast, so it leaves casting alone.
     if (cooldown) {
-      d.readyTimestamp = now + g.catchCooldownMinutes * 60_000;
+      d.readyTimestamp = now + catchCooldownMs(g, reel);
     }
     if (!item.size) {
       recordCatch(db!, uid, item.name, 'cast', null, now);
@@ -569,7 +569,11 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       if (other.tried.has(meLc)) return ignore('snipe already tried');
       other.tried.add(meLc);
       // Snipers answer with the code from the SNIPE OPEN line, not the overlay's.
-      if (!codeMatches(codeRaw, other.snipeCode!)) return void say(`Wrong code! You missed your one shot at sniping ${other.username}'s big bite.${codeMatches(codeRaw, other.code) ? ' Snipes take the code from the SNIPE OPEN line in chat.' : ''}`);
+      if (!codeMatches(codeRaw, other.snipeCode!)) {
+        // A script lifting a number off the line types one of the line's numbers, not the answer.
+        console.log(`[FISH] wrong snipe in ${chan}: ${me} typed "${(codeRaw ?? '').slice(0, 20)}" for ${other.snipeCode} (shown as "${other.snipeShown ?? '?'}") ${other.snipeAt !== undefined ? at - other.snipeAt : '?'}ms after the line`);
+        return void say(`Wrong code! You missed your one shot at sniping ${other.username}'s big bite.${codeMatches(codeRaw, other.code) ? ' Snipes take the code from the SNIPE OPEN line in chat.' : ''}`);
+      }
       if (other.reward) return rewardSnipeFails(biteCtx(), other, me);
       snipeBite(biteCtx(), other, me, uid);
       bite = other;
@@ -666,7 +670,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     type Outcome =
       | { kind: 'reply'; text: string }
       | { kind: 'miss'; text: string; delay: number; appendix: string; streak: string }
-      | { kind: 'catch'; item: CatchItem; sizeString: string; appendix: string; bucket: string };
+      | { kind: 'catch'; item: CatchItem; sizeString: string; appendix: string; bucket: string; wait: number };
 
     const out = once<Outcome>(now => {
       ensureUserTx(db!, uid, me, now);
@@ -721,7 +725,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       const reel = currentReel(d, g);
 
       if (!landsFish(rollMaximum, reel)) {
-        const delay = Math.round(randomInt(MISS_DELAY_MS[0], MISS_DELAY_MS[1]) / 1000) * 1000;
+        const delay = Math.round(reelWait(randomInt(MISS_DELAY_MS[0], MISS_DELAY_MS[1]), reel) / 1000) * 1000;
         d.catch.dryStreak++;
         d.catch.luckyStreak = 0;
         d.readyTimestamp = now + delay + 1000;
@@ -745,7 +749,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       const sizeString = land(d, uid, item, reel, now);
       const bucket = fitCatch(d, uid, item, reel?.valueMultiplier ?? 1, now);
       saveFish(db!, uid, d, now);
-      return { kind: 'catch', item, sizeString, appendix, bucket };
+      return { kind: 'catch', item, sizeString, appendix, bucket, wait: catchCooldownMs(g, reel) };
     });
     if (!out) return;
     const asked = askedCheck as TrapCheck | null;
@@ -758,18 +762,18 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
     }
 
     console.log(`[FISH] ${me} caught ${out.item.name} in ${chan}`);
-    const minutes = g.catchCooldownMinutes;
+    const wait = span(out.wait);
     if (g.stories && !skipStory && randomInt(1, 3) === 1) {
       try {
         const text = await story(me, out.item.name, out.sizeString);
-        if (text) return void say(`${sparkle(out.item.name)} ${text} (${minutes}m cooldown${out.appendix})${out.bucket}`, { kind: 'catch', item: out.item.name });
+        if (text) return void say(`${sparkle(out.item.name)} ${text} (${wait} cooldown${out.appendix})${out.bucket}`, { kind: 'catch', item: out.item.name });
       } catch (err) {
         console.error(`[FISH] Story for ${me} failed: ${err instanceof Error ? err.message : String(err)}`);
       }
     }
     const emote = await emotesFor(SUCCESS_EMOTES, '😃');
     const size = out.sizeString ? ` ${out.sizeString}` : '';
-    return void say(`You caught a ${sparkle(out.item.name)}${size} ${emote} Now, go do something productive! (${minutes} minute fishing cooldown after a successful catch)${out.bucket}`, { kind: 'catch', item: out.item.name });
+    return void say(`You caught a ${sparkle(out.item.name)}${size} ${emote} Now, go do something productive! (${wait} fishing cooldown after a successful catch)${out.bucket}`, { kind: 'catch', item: out.item.name });
   }
 
   /**
@@ -910,10 +914,11 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
         // A lift has no wait to measure: it would read as an instant haul.
         recordSignal(db!, { userId: uid, kind: 'trap_collect', now, delayMs: lifting ? null : now - d.trap.end, live: liveNow, ...(lifting ? { detail: 'lift' } : {}) });
         const rolls = Math.floor(d.trap.duration / 60_000 * randomInt(75, 90) / 100);
-        const skip = g.catchCooldownMinutes;
+        const reel = currentReel(d, g);
+        // The reel's cooldown multiplier counts here too: a shorter cooldown between fish, so more fit in.
+        const skip = Math.max(1, Math.round(catchCooldownMs(g, reel) / 60_000));
         let fishAmount = 0;
         const results: string[] = [];
-        const reel = currentReel(d, g);
         let soldFor = 0;
         let dumped = 0;
         for (let i = 0; i < rolls; i++) {
@@ -2635,8 +2640,9 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
 
   // ── top ──
   function top(type: string = 'fish'): void {
+    if (type === 'snipers') return snipers();
     const board = BOARDS.get(type);
-    if (!board) return void say(`Invalid leaderboard type provided! Use one of: ${[...BOARDS.keys()].join(', ')}`);
+    if (!board) return void say(`Invalid leaderboard type provided! Use one of: ${[...BOARDS.keys()].join(', ')}, snipers`);
     const rows = topRows(db!, board);
     const groups = new Map<number, { rank: number; names: string[] }>();
     rows.forEach((r, i) => {
@@ -2653,6 +2659,21 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       }
     }
     say(parts.join(' '));
+  }
+
+  // Big bite snipers, from big_bites rather than fish data: the top 5 fit one chat line.
+  function snipers(): void {
+    const board = snipeBoard(chan, cfg, broadcasterIdFor(config as ChannelConfig));
+    if (!board?.snipers.length) return void say('Nobody has sniped a big bite yet.');
+    const line = (s: SnipeBoard['snipers'][number], i: number) =>
+      `#${i + 1} ${s.name} (${s.snipes} sniped, ${s.landed} landed${s.rate === null ? '' : ` = ${s.rate}%`}${s.best ? `, best ${s.best.fish}${s.best.cm === null ? '' : ` ${s.best.cm}cm`} worth ${groupDigits(s.best.worth)} ${cur}` : ''})`;
+    const mine = board.snipers.findIndex(s => s.name.toLowerCase() === meLc);
+    const you = mine >= 5 ? [`You: ${line(board.snipers[mine], mine)}`] : [];
+    // Kick cuts at 500: fewer rows rather than losing the asker's own, with room for the @mention.
+    const rows = board.snipers.slice(0, 5).map(line);
+    const text = () => ['Top big bite snipers:', ...rows, ...you].join(' ');
+    while (rows.length > 1 && text().length > 470) rows.pop();
+    say(text());
   }
 
   try {

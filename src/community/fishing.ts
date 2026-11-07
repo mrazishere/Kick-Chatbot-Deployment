@@ -297,6 +297,14 @@ export function currentReel(d: FishData | null | undefined, g: PointsGamesConfig
   return level > 0 ? g.reels[level - 1] : null;
 }
 
+/** A wait between casts (catch cooldown, a miss's wait), shortened by the reel's cooldown multiplier. */
+export function reelWait(ms: number, reel: FishReelSetting | null): number {
+  return Math.round(ms * (reel?.cooldownMultiplier ?? 1));
+}
+
+/** The catch cooldown after a fish with this reel, in ms. */
+export const catchCooldownMs = (g: PointsGamesConfig, reel: FishReelSetting | null): number => reelWait(g.catchCooldownMinutes * 60_000, reel);
+
 /** Whether a cast or trap roll lands a fish: 1 in `rollMaximum`, times the reel's odds. */
 export function landsFish(rollMaximum: number, reel: FishReelSetting | null): boolean {
   const chance = Math.min(1, (reel?.oddsMultiplier ?? 1) / Math.max(1, rollMaximum));
@@ -304,15 +312,21 @@ export function landsFish(rollMaximum: number, reel: FishReelSetting | null): bo
 }
 
 /**
- * Pick an item of `type` by the channel's weights. `rarity` multiplies the weight
- * of every fish rarer than the commonest, so a reel's rarity ×2 makes each of them
- * twice as likely against the common ones.
+ * Pick an item of `type` by the channel's weights. `rarity` boosts fish by how rare
+ * they are: a fish 10× rarer than the commonest gets ×rarity, 100× rarer ×rarity².
+ * With rarity ×2 that's 🐠 ×1.3, 🦑 ×1.8, 🦈 ×2.5, 🐋 ×4 (the owner, 2026-11-07: until
+ * then every non-common fish got the same ×rarity, so a reel's extra rare catches were
+ * mostly cheap uncommon ones). A channel's custom fish keep their odds with any reel,
+ * and rarity is measured against the commonest built-in fish, so a custom fish with a
+ * huge weight doesn't inflate it. The boost stops at ×rarity³ (1000× rarer).
  */
 export function weightedCatch(type: CatchType | 'trophy', g: PointsGamesConfig, rarity = 1): CatchItem {
   const items = type === 'trophy' ? ITEMS.filter(i => i.trophy) : ITEMS.filter(i => i.type === type && !i.trophy);
   const base = items.map(i => weightOf(i, g));
-  const commonest = Math.max(...base);
-  const weights = type === 'fish' && rarity !== 1 ? base.map(w => (w < commonest ? w * rarity : w)) : base;
+  const commonest = Math.max(...base.filter((_, i) => !items[i].custom));
+  const boost = (w: number, i: number): number =>
+    (w > 0 && w < commonest && !items[i].custom ? w * rarity ** Math.min(3, Math.log10(commonest / w)) : w);
+  const weights = type === 'fish' && rarity !== 1 ? base.map(boost) : base;
   const total = weights.reduce((s, w) => s + w, 0);
   // The config keeps at least one weight per type above 0; this is a last guard.
   if (total <= 0) return items[randomInt(0, items.length - 1)];

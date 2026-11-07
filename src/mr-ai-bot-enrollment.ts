@@ -28,7 +28,7 @@ import { BAITS, baitPrice, baitRoll, capOf, currentReel, FAILURE_EMOTES, initial
 import { mirroredTrades, sideText } from './community/fish-trade';
 import { fighterOf } from './community/fish-duel';
 import { channelEmotes } from './community/emotes';
-import { adjustPoints, applyOnce, backupPoints, exclusionsFor, isExcluded, duelBoard, heistBoard, heldCatches, type HeldCatch, getPointsUserDetail, pointsLeaderboard, pointsSummary, resetAllPoints, searchPointsUsers } from './points/store';
+import { adjustPoints, applyOnce, backupPoints, exclusionsFor, isExcluded, duelBoard, heistBoard, snipeBoard, heldCatches, type HeldCatch, getPointsUserDetail, pointsLeaderboard, pointsSummary, resetAllPoints, searchPointsUsers } from './points/store';
 import { funnels as cheatFunnels, RULES as CHEAT_RULES, linkedAccounts, linkedGroups, suspects as cheatSuspects } from './community/cheat-signals';
 import { recentSpins } from './community/wheel-history';
 import { changeWheel, MAX_ITEMS as WHEEL_MAX_ITEMS, MAX_LABEL as WHEEL_MAX_LABEL, readWheel, SPIN_SECONDS as WHEEL_SPIN_SECONDS, validateWheel } from './community/wheel';
@@ -4051,6 +4051,8 @@ function publicFishing(channel: string, cfg: ReturnType<typeof effectivePointsCo
         onlyWhileLive: g.steal.onlyWhileLive, offlineOnly: g.onlyWhileOffline, pageWhileLive: g.webPlay && g.webPlayWhileLive, cooldownMinutes: g.catchCooldownMinutes
       }
     } : {}), heists: heistBoard(channel, cfg, broadcasterUserId), duel: g.duel.enabled, duels: duelBoard(channel, cfg, broadcasterUserId),
+    // Big bite snipers: who took bites off others' lines, landed how many, and their best trophy from one.
+    snipes: snipeBoard(channel, cfg, broadcasterUserId),
     trophies, bigBite: g.bigBite.enabled ? { everyMinutes: g.bigBite.everyMinutes, ...(g.bigBite.onLeaderboard ? { onLeaderboard: true } : {}) } : null
   };
 }

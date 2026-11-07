@@ -549,11 +549,12 @@ function channelRules(ctx: StatToolContext, raw: unknown): unknown {
   if (!g.enabled) return off('Fishing');
   if (topic === 'fishing') {
     return {
-      castOdds: `a cast without bait lands a fish 1 in ${g.catchOdds} (a reel multiplies it); a missed cast pulls up junk 25% of the time, and waits 30-90s before the next cast`,
-      trapRolls: `collecting full traps rolls about 0.75-0.9 rolls per minute they were laid (${Math.floor(g.trapMinutes * 0.75)}-${Math.floor(g.trapMinutes * 0.9)} rolls for ${g.trapMinutes} min); each roll is like a cast without bait (1 in ${g.catchOdds} a fish, times the reel), and each fish caught uses up the next ${g.catchCooldownMinutes} rolls. Collecting late changes nothing`,
+      castOdds: `a cast without bait lands a fish 1 in ${g.catchOdds} (a reel multiplies it); a missed cast pulls up junk 25% of the time, and waits 30-90s before the next cast (times the reel's cooldownX)`,
+      trapRolls: `collecting full traps rolls about 0.75-0.9 rolls per minute they were laid (${Math.floor(g.trapMinutes * 0.75)}-${Math.floor(g.trapMinutes * 0.9)} rolls for ${g.trapMinutes} min); each roll is like a cast without bait (1 in ${g.catchOdds} a fish, times the reel), and each fish caught uses up the next ${g.catchCooldownMinutes} rolls (times the reel's cooldownX, so a reel with a shorter cooldown fits more fish in). Collecting late changes nothing`,
       cooldownAfterAFishMinutes: g.catchCooldownMinutes,
+      cooldownNote: 'the cooldown after a fish and the wait after a miss are times the reel\'s cooldownX (fish-shop topic); the steal cooldown is not',
       trapMinutes: g.trapMinutes,
-      trapTimes: `a plain $<cmd> fish trap lays them for ${g.trapMinutes} min; a chatter can name a time from 31 min to ${g.trapMaxMinutes} min ($<cmd> fish trap 2h, 90m, 1h30m), and trap reset lays them again for as long as before or the time named. trap lift pulls them up early with a haul for the minutes they were out (as if laid that long; under about ${g.catchCooldownMinutes + 5} min it can only be junk); trap cancel pulls them up with nothing. A longer trap catches more, and a little more per minute, since each fish uses up the next rolls`,
+      trapTimes: `a plain $<cmd> fish trap lays them for ${g.trapMinutes} min; a chatter can name a time from 31 min to ${g.trapMaxMinutes} min ($<cmd> fish trap 2h, 90m, 1h30m), and trap reset lays them again for as long as before or the time named. trap lift pulls them up early with a haul for the minutes they were out (as if laid that long; under about ${g.catchCooldownMinutes + 5} min it can only be junk, less with a reel: the catch cooldown times its cooldownX, plus about 5); trap cancel pulls them up with nothing. A longer trap catches more, and a little more per minute, since each fish uses up the next rolls`,
       when: g.onlyWhileOffline ? `casting and traps only while the stream is offline${g.webPlay && g.webPlayWhileLive ? ' in chat (any time from the leaderboard\'s Fishing tab)' : ''}` : g.onlyWhileLive ? 'casting and traps only while live' : 'any time',
       sellPricePercent: g.sellPricePercent,
       sizes: `fish are 1-100 cm: 1 cm sells for half the base price, 50 cm for the base price, 100 cm for double; a size record sells for 1.5x for good: a fish cast or landed from a big bite longer than every fish of any kind its owner had cast or landed before, traps not counting (the reply said "This is a new record!"; their own record, not the channel's; a tie doesn't count, so once they have cast or landed a 100 cm fish no later fish can be one; a first-ever catch and trap fish never count, and a fish given, traded or stolen loses it). viewer_stats lists them under sizeRecordFish; chat and the leaderboard mark one with 🏅 after its length and level. A held fish's price = list price x size x 1.5 if a size record x (1 + ${LEVEL_VALUE} per feeding level) x the owner's reel sellValueX (a stolen fish never gets the reel bonus). So two fish of the same kind, length and level can differ: one is a size record, or one was stolen`,
@@ -585,7 +586,7 @@ function channelRules(ctx: StatToolContext, raw: unknown): unknown {
   }
   if (topic === 'fish-shop') {
     return {
-      reels: g.reels.map((r, i) => ({ level: i + 1, name: r.name, price: r.price, catchOddsX: r.oddsMultiplier, rarerFishX: r.rarityMultiplier, sellValueX: r.valueMultiplier })),
+      reels: g.reels.map((r, i) => ({ level: i + 1, name: r.name, price: r.price, catchOddsX: r.oddsMultiplier, rarerFishX: r.rarityMultiplier, sellValueX: r.valueMultiplier, cooldownX: r.cooldownMultiplier })),
       reelsNote: `bought in order with ${c} fish buy reel, once each, kept for good; they apply to casts and traps`,
       bait: BAITS.map(b => ({ bait: `${b.emoji} ${b.name}`, pricePerCast: baitPrice(b, g), castOdds: `1 in ${baitRoll(b, g)} instead of 1 in ${g.catchOdds}` })),
       ...(g.steal.enabled ? {

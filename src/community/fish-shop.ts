@@ -29,12 +29,13 @@ export interface ShopResult { ok: boolean; text: string }
 const groupDigits = (n: number): string => Math.round(n).toLocaleString('en-US');
 const tries = (n: number) => `${n} ${n === 1 ? 'try' : 'tries'}`;
 
-/** What a reel does, e.g. "fish odds ×1.25, rarer fish ×2, fish value ×1.25". */
+/** What a reel does, e.g. "fish odds ×1.25, rarer fish ×2, fish value ×1.25, cooldowns ×0.65". */
 export function reelEffects(r: FishReelSetting): string {
   const parts: string[] = [];
   if (r.oddsMultiplier !== 1) parts.push(`fish odds ×${r.oddsMultiplier}`);
   if (r.rarityMultiplier !== 1) parts.push(`rarer fish ×${r.rarityMultiplier}`);
   if (r.valueMultiplier !== 1) parts.push(`fish value ×${r.valueMultiplier}`);
+  if (r.cooldownMultiplier !== 1) parts.push(`cooldowns ×${r.cooldownMultiplier}`);
   return parts.join(', ') || 'no bonus';
 }
 

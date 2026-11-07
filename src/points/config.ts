@@ -267,15 +267,31 @@ export function effectiveFishDuel(stored: unknown): FishDuelSetting {
  * jackpot buys them one at a time.
  */
 export const DEFAULT_REELS: readonly FishReelSetting[] = [
-  { name: 'Bamboo', price: 5_000, oddsMultiplier: 1.1, rarityMultiplier: 1, valueMultiplier: 1 },
-  { name: 'Fiberglass', price: 25_000, oddsMultiplier: 1.25, rarityMultiplier: 1, valueMultiplier: 1 },
-  { name: 'Carbon', price: 100_000, oddsMultiplier: 1.4, rarityMultiplier: 1.5, valueMultiplier: 1 },
-  { name: 'Golden', price: 500_000, oddsMultiplier: 1.65, rarityMultiplier: 2, valueMultiplier: 1.25 }
+  // 2026-11-05: cooldowns too. The catch cooldown is most of the time between fish, so odds
+  // alone made Golden only ~1.35x the fish an hour of no reel.
+  { name: 'Bamboo', price: 5_000, oddsMultiplier: 1.1, rarityMultiplier: 1, valueMultiplier: 1, cooldownMultiplier: 0.95 },
+  { name: 'Fiberglass', price: 25_000, oddsMultiplier: 1.25, rarityMultiplier: 1, valueMultiplier: 1, cooldownMultiplier: 0.9 },
+  { name: 'Carbon', price: 100_000, oddsMultiplier: 1.4, rarityMultiplier: 1.5, valueMultiplier: 1, cooldownMultiplier: 0.8 },
+  { name: 'Golden', price: 500_000, oddsMultiplier: 1.65, rarityMultiplier: 2, valueMultiplier: 1.25, cooldownMultiplier: 0.65 }
 ];
 const MAX_REELS = 10;
 const REEL_PRICE_MAX = 1_000_000_000;
 const REEL_MULTIPLIER = { min: 0.1, max: 10 };
+/** A reel only shortens the waits: 1 is none. */
+const REEL_COOLDOWN = { min: 0.1, max: 1 };
 const REEL_NAME_RE = /^[^\u0000-\u001f<>@]{1,24}$/u;
+
+/**
+ * A reel saved without a cooldown multiplier (a dashboard from before 2026-11-05, or a tab left open on
+ * it, sends every reel on any save): 1, unless it's a default reel as it stands, which keeps the
+ * default's, so such a save doesn't store the defaults at ×1 for good.
+ */
+function unsetCooldown(i: number, name: string, r: Record<string, unknown>): number {
+  const d = DEFAULT_REELS[i];
+  const same = d && d.name === name && d.price === r.price && d.oddsMultiplier === r.oddsMultiplier
+    && d.rarityMultiplier === r.rarityMultiplier && d.valueMultiplier === r.valueMultiplier;
+  return same ? d.cooldownMultiplier : 1;
+}
 const round2 = (n: number): number => Math.round(n * 100) / 100;
 
 /** The stored steal settings with values clamped; anything not stored keeps its default. */
@@ -301,7 +317,9 @@ export function effectiveReels(stored: unknown): FishReelSetting[] {
       price: num(r.price, 0, 0, REEL_PRICE_MAX, true),
       oddsMultiplier: mult(r.oddsMultiplier),
       rarityMultiplier: mult(r.rarityMultiplier),
-      valueMultiplier: mult(r.valueMultiplier)
+      valueMultiplier: mult(r.valueMultiplier),
+      // Not stored (a reel from before 2026-11-05): no change.
+      cooldownMultiplier: round2(num(r.cooldownMultiplier, 1, REEL_COOLDOWN.min, REEL_COOLDOWN.max, false))
     }];
   });
 }
@@ -835,7 +853,9 @@ function validateReels(raw: unknown, errors: string[]): FishReelSetting[] | unde
       price: price ?? 0,
       oddsMultiplier: mult('oddsMultiplier', 'odds multiplier'),
       rarityMultiplier: mult('rarityMultiplier', 'rarity multiplier'),
-      valueMultiplier: mult('valueMultiplier', 'value multiplier')
+      valueMultiplier: mult('valueMultiplier', 'value multiplier'),
+      cooldownMultiplier: r.cooldownMultiplier === undefined ? unsetCooldown(out.length, name, r)
+        : round2(checkNumber(`${label} cooldown multiplier`, r.cooldownMultiplier, { ...REEL_COOLDOWN, integer: false }, errors) ?? 1)
     });
   });
   return out;

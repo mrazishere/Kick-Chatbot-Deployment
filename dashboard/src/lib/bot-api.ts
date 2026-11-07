@@ -405,6 +405,13 @@ export interface PublicDuels {
   recent: Array<{ winner: string; loser: string; winnerFish: string; loserFish: string; stake: "friendly" | "wager" | "keeps"; amount: number | null; at: string }>;
 }
 
+export interface PublicSnipes {
+  totals: { snipes: number; landed: number; snipers: number };
+  /** rate: landed as a percent of their snipes that could land; null with none. best: the most valuable trophy landed from a snipe. */
+  snipers: Array<{ name: string; snipes: number; landed: number; snapped: number; gotAway: number; rate: number | null; best: { fish: string; cm: number | null; worth: number } | null }>;
+  recent: Array<{ sniper: string; victim: string; outcome: "landed" | "snapped" | "got-away" | "spat"; fish: string | null; cm: number | null; at: string }>;
+}
+
 export interface PublicFishing {
   /** 1 in this many plain casts lands a fish. */
   catchOdds: number;
@@ -430,6 +437,8 @@ export interface PublicFishing {
   duel?: boolean;
   /** Fish duels fought; null before the first one. Absent from a bot service older than them. */
   duels?: PublicDuels | null;
+  /** Big bite snipers ranked; null before the first snipe. Absent from a bot service older than it. */
+  snipes?: PublicSnipes | null;
   /** Big bite trophies, chances as shares of big bites. Absent from a bot service older than them. */
   trophies?: PublicCatch[];
   /** About one big bite every this many live minutes; null where they're off. */
