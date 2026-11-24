@@ -1884,7 +1884,17 @@ async function main(): Promise<void> {
     const ch20 = stealCharges(bal, 3000, 20);
     check('the fine is set from the odds so thieves lose the edge on average', ch20.fee === 90 && ch20.fine === 788
       && Math.abs((0.2 * 3000 - ch20.fee - 0.8 * ch20.fine) / (0.2 * 3000) + 0.2) < 0.01, ch20);
-    const lucky = effectivePointsConfig({ games: { enabled: true, steal: { luckPercent: 25 } } }).games;
+    // A dear, rare fish: the fee alone covers the edge, so the fine fell to fineMinimum (25 for a 124K whale, 2026-11-11).
+    const dear = stealCharges(bal, 123_750, 1.63);
+    const noFloor = stealCharges({ ...bal, steal: { ...bal.steal, finePercent: 0 } }, 123_750, 1.63);
+    check('a caught try on a dear fish is fined at least finePercent of it', bal.steal.finePercent === 5 && dear.fee === 3713 && dear.fine === 6188
+      && noFloor.fine === bal.steal.fineMinimum, { dear, noFloor });
+    // A guard's catch has the smaller floor (guardFinePercent), and keeps the balanced fine where that's higher.
+    const guarded = stealCharges(bal, 123_750, 1.63, bal.steal.guardFinePercent);
+    check('a guard\'s catch fines on its own, smaller floor', bal.steal.guardFinePercent === 1 && guarded.fee === 3713 && guarded.fine === 1238
+      && stealCharges(bal, 3000, 20, bal.steal.guardFinePercent).fine === 788, guarded);
+    // No fine floor: it would take a whale try past the edge on purpose, and this is about luck.
+    const lucky = effectivePointsConfig({ games: { enabled: true, steal: { luckPercent: 25, finePercent: 0 } } }).games;
     const luckier = effectivePointsConfig({ games: { enabled: true, steal: { luckPercent: 25, oddsCommon: 90 } } }).games;
     const common = ITEMS.find(i => i.type === 'fish' && rarityOf(bal, i.name) === 'Common')!.name;
     // Steal odds follow rarity with no steps: each tier's standard fish at its odds, the rest between, the rarest far below.
@@ -2384,12 +2394,14 @@ async function main(): Promise<void> {
     };
     resetWheelBusy();
     check('an empty wheel says so', (await say('!wheel')).includes('The wheel is empty'));
-    check('no spins yet, no history', (await say('!wheel history')).includes("hasn't been spun yet") && (await say('!wheel h', as('viewer', false))) === '');
+    check('no spins yet, no history', (await say('!wheel history')).includes("hasn't been spun yet") && (await say('!wheel h', as('viewer', false))).includes("hasn't been spun yet"));
     const added = await say('!wheel add Sing a song | Do 10 pushups | sing a song');
     check('mods add items, several at once, without duplicates', added.includes('added "Sing a song", "Do 10 pushups"') && added.includes('skipped "sing a song"')
       && readWheel(ch).items.length === 2, added);
-    check('viewers get no answer to any of it', (await say('!wheel add Nope', as('viewer', false))) === '' && (await say('!spin', as('viewer', false))) === ''
-      && (await say('!wheel', as('viewer', false))) === '' && (await say('!wheel list', as('viewer', false))) === '' && readWheel(ch).items.length === 2);
+    check('viewers can list the wheel but not change or spin it', (await say('!wheel add Nope', as('viewer', false))) === '' && (await say('!spin', as('viewer', false))) === ''
+      && (await say('!wheel spin', as('viewer', false))) === '' && (await say('!wheel rm 1', as('viewer', false))) === '' && (await say('!wheel nope', as('viewer', false))) === ''
+      && (await say('!wheel', as('viewer', false))).includes('Wheel (2)') && (await say('!wheel list', as('viewer', false))).includes('Sing a song')
+      && readWheel(ch).items.length === 2);
     await say('!wheel add Pick a game');
     check('the list is numbered', (await say('!wheel list')).includes('1. Sing a song · 2. Do 10 pushups · 3. Pick a game'));
     check('remove by number or label', (await say('!wheel rm 2')).includes('removed "Do 10 pushups"') && (await say('!wheel remove pick A GAME')).includes('removed "Pick a game"')

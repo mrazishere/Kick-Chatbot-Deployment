@@ -231,6 +231,8 @@ export interface FishSteal {
   feeMinimum: number;
   edgePercent: number;
   fineMinimum: number;
+  finePercent: number;
+  guardFinePercent: number;
   oddsCommon: number;
   oddsUncommon: number;
   oddsRare: number;
@@ -254,6 +256,8 @@ const STEAL_FIELDS: Array<{ key: StealNumber; label: string; hint: string; min: 
   { key: "feeMinimum", label: "Smallest fee", hint: "default 10", min: 0, max: 1_000_000_000 },
   { key: "edgePercent", label: "Thief's edge (%)", hint: "average loss, sets the fine, default 20", min: 0, max: 1000 },
   { key: "fineMinimum", label: "Smallest fine", hint: "default 25", min: 0, max: 1_000_000_000 },
+  { key: "finePercent", label: "Smallest fine (% of the fish)", hint: "caught by the owner; half to them, default 5", min: 0, max: 1000 },
+  { key: "guardFinePercent", label: "Smallest guard fine (% of the fish)", hint: "caught by a guard; half to the owner, default 1", min: 0, max: 1000 },
   { key: "oddsCommon", label: "Common (%)", hint: "chance it works at the tier's list price, default 40", min: 0, max: 100 },
   { key: "oddsUncommon", label: "Uncommon (%)", hint: "default 30", min: 0, max: 100 },
   { key: "oddsRare", label: "Rare (%)", hint: "default 20", min: 0, max: 100 },

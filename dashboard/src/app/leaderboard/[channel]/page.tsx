@@ -208,7 +208,7 @@ function StealGuide({ rules: r, currency, command, fish, emotes }: { rules: Publ
           <h3 className="font-medium text-neutral-100">💸 Fees and fines</h3>
           <p>
             Every try that goes ahead costs a fee of <b>{r.feePercent}%</b> of the grabbed fish&apos;s value (at least {n(r.feeMinimum)} {currency}), win or lose. Get caught and you
-            also pay a fine (at least {n(r.fineMinimum)} {currency}).{" "}
+            also pay a fine (at least {n(r.fineMinimum)} {currency}{r.finePercent ? <>, and at least <b>{r.finePercent}%</b> of the fish&apos;s value</> : null}).{" "}
             {r.luckPercent > 0
               ? `Every chance here gets a +${r.luckPercent}% boost (already in the table), and fines are priced from the boosted chance, so thieves still lose about ${r.edgePercent}% of what they'd hope to win, on average.`
               : `Fines are priced so that thieves lose about ${r.edgePercent}% of what they'd hope to win, on average.`}{" "}
@@ -220,7 +220,7 @@ function StealGuide({ rules: r, currency, command, fish, emotes }: { rules: Publ
           <h3 className="pt-1 font-medium text-neutral-100">💂 Guard</h3>
           <p>
             {code(`${command} fish buy guard`)} protects all your fish for <b>{r.guardHours} hours</b>. It costs {r.guardPercent}% of what your fish are worth when you buy it (at least {n(r.guardMinimum)} {currency});
-            buying again adds more time.{r.offlineOnly && !r.onlyWhileLive && !r.pageWhileLive ? " Its clock stops while the stream is live, when nobody can steal, so its hours are only spent offline." : ""} A guard catches every thief: they pay the fee and the fine as if caught, no roll. How long your guard has left is never shown in chat, so thieves can&apos;t time it.
+            buying again adds more time.{r.offlineOnly && !r.onlyWhileLive && !r.pageWhileLive ? " Its clock stops while the stream is live, when nobody can steal, so its hours are only spent offline." : ""} A guard catches every thief, no roll: they pay the fee and a fine{r.guardFinePercent !== undefined ? <> of at least <b>{r.guardFinePercent}%</b> of the fish</> : " as if caught"}, half of it to you. How long your guard has left is never shown in chat, so thieves can&apos;t time it.
           </p>
         </div>
       </div>

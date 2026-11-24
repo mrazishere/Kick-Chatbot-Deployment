@@ -591,7 +591,7 @@ function channelRules(ctx: StatToolContext, raw: unknown): unknown {
       bait: BAITS.map(b => ({ bait: `${b.emoji} ${b.name}`, pricePerCast: baitPrice(b, g), castOdds: `1 in ${baitRoll(b, g)} instead of 1 in ${g.catchOdds}` })),
       ...(g.steal.enabled ? {
         hook: { price: g.steal.hookPrice, tries: g.steal.hookUses, use: 'needed to steal' },
-        guard: { price: `${g.steal.guardPercent}% of the fish value you hold, at least ${g.steal.guardMinimum}`, hours: g.steal.guardHours, ...(guardsPauseWhileLive(g) ? { paused: 'its clock stops while the stream is live (stealing is offline only), so the hours are only spent offline; one bought live starts when the stream ends' } : {}), use: 'catches every steal try on you: the thief pays the fee and fine as if caught' }
+        guard: { price: `${g.steal.guardPercent}% of the fish value you hold, at least ${g.steal.guardMinimum}`, hours: g.steal.guardHours, ...(guardsPauseWhileLive(g) ? { paused: 'its clock stops while the stream is live (stealing is offline only), so the hours are only spent offline; one bought live starts when the stream ends' } : {}), use: `catches every steal try on you: the thief pays the fee and a fine (at least ${g.steal.guardFinePercent}% of the fish, less than an owner's catch at ${g.steal.finePercent}%), half of it to you` }
       } : {})
     };
   }
@@ -620,10 +620,10 @@ function channelRules(ctx: StatToolContext, raw: unknown): unknown {
       successPercentByFishWithLuckAtListPrice: Object.fromEntries(g.catches.filter(x => x.type === 'fish' && x.weight > 0).map(x => [x.name, Math.round(stealRollChance(g, x.name, x.price) * 100) / 100])),
       luck: st.luckPercent > 0 ? `every success chance by rarity above is raised by ${st.luckPercent}% of itself (so ${st.oddsCommon}% becomes ${Math.round(st.oddsCommon * (1 + st.luckPercent / 100) * 100) / 100}%, ${st.oddsLegendary}% becomes ${Math.round(st.oddsLegendary * (1 + st.luckPercent / 100) * 100) / 100}%), and fines are priced from the raised chance, so a try still loses the edge on average` : 'none: the odds above are the real ones',
       fee: `every try that goes ahead costs ${st.feePercent}% of the grabbed fish's value, at least ${st.feeMinimum}`,
-      fine: `a caught thief also pays a fine, at least ${st.fineMinimum}, priced from the chance with luck so the average try loses ${st.edgePercent}% of what it could win`,
+      fine: `a caught thief also pays a fine, at least ${st.fineMinimum} and at least ${st.finePercent}% of the fish's value (${st.guardFinePercent}% when a guard catches them), otherwise priced from the chance with luck so the average try loses ${st.edgePercent}% of what it could win`,
       graceMinutes: `a fish can't be stolen until held ${st.graceMinutes} min, trap hauls included, so a thief can't snipe a haul the moment it's posted; a steal aimed at such a fish (or at a length they don't hold) gets "has no <fish> you can get your hook into right now". viewer_stats lists a viewer's still-protected fish under stealProtected`,
       protectMinutes: `after a try, the target is safe ${st.protectMinutes} min`,
-      guard: `${st.guardPercent}% of the fish value held, at least ${st.guardMinimum}, lasts ${st.guardHours}h${guardsPauseWhileLive(g) ? ' of offline time (its clock stops while the stream is live, since stealing is offline only; one bought live starts when the stream ends)' : ''}; a guard catches every try on that viewer, no roll: the thief pays the fee and the fine as if caught, and it counts as their try that day and starts the cooldown (before 2026-10-24 it only cost a hook try)`,
+      guard: `${st.guardPercent}% of the fish value held, at least ${st.guardMinimum}, lasts ${st.guardHours}h${guardsPauseWhileLive(g) ? ' of offline time (its clock stops while the stream is live, since stealing is offline only; one bought live starts when the stream ends)' : ''}; a guard catches every try on that viewer, no roll: the thief pays the fee and a fine with the smaller ${st.guardFinePercent}% floor (since 2026-11-11), and it counts as their try that day and starts the cooldown (before 2026-10-24 it only cost a hook try)`,
       cooldown: `a try costs the fishing cooldown (${g.catchCooldownMinutes} min)`
     };
   }

@@ -182,9 +182,14 @@ function stealRules(raw: unknown): { stealRules?: PublicStealRules } {
   const o = r.odds as Record<string, unknown> | null | undefined;
   const odds = { Common: n(o?.Common), Uncommon: n(o?.Uncommon), Rare: n(o?.Rare), Epic: n(o?.Epic), Legendary: n(o?.Legendary) };
   if (Object.values(odds).some((v) => v === null)) return {};
+  // A bot service older than the fine's floor sends none.
+  const finePercent = n(r.finePercent);
+  const guardFinePercent = n(r.guardFinePercent);
   return {
     stealRules: {
-      ...(out as Omit<PublicStealRules, "odds" | "onlyWhileLive" | "offlineOnly" | "pageWhileLive">),
+      ...(out as Omit<PublicStealRules, "odds" | "onlyWhileLive" | "offlineOnly" | "pageWhileLive" | "finePercent" | "guardFinePercent">),
+      ...(finePercent !== null ? { finePercent } : {}),
+      ...(guardFinePercent !== null ? { guardFinePercent } : {}),
       odds: odds as PublicStealRules["odds"],
       onlyWhileLive: r.onlyWhileLive === true,
       offlineOnly: r.offlineOnly === true,

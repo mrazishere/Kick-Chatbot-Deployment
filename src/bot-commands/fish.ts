@@ -34,7 +34,7 @@
  *              Reaches for one random fish the target has held a while; succeeds by
  *              its rarity. Every try uses one hook try and a fee on that fish's value;
  *              caught, a fine too, set from the odds so thieves lose games.steal.
- *              edgePercent on average. Nobody receives either. A thief who can't cover
+ *              edgePercent on average, and never under finePercent of the fish's value. Nobody receives either. A thief who can't cover
  *              both for the target's costliest fish, or who meets a guard, loses one
  *              hook use and nothing else.
  *
@@ -78,6 +78,8 @@ const cooldown = makeCooldown(5000);
 const lastGive = new Map<string, number>();
 /** When each viewer last challenged someone to a fish duel, by channel and name. */
 const lastChallenge = new Map<string, number>();
+/** When each viewer last ran a steal check from the leaderboard, by "channel|name|target". */
+const webStealChecks = new Map<string, number>();
 const pointer = makeCooldown(60_000);
 /** The timer that ends each waiting trap check when its time runs out, by channel and user id. */
 const checkTimers = new Map<string, NodeJS.Timeout>();
@@ -361,7 +363,24 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
   // after a typo should count, and the tries are limited anyway. Without a question
   // waiting, the cooldown applies as usual (case 'answer').
   const checkAnswer = SUBCOMMANDS[String(call.args.find(a => !/^skipstory:/i.test(a)) ?? '').toLowerCase()] === 'answer';
-  if (!answering && !checkAnswer && cooldown(meLc)) return void web?.reply('Easy there: one move every few seconds.', { kind: 'info' });
+  // The leaderboard's steal button runs the free check, then the steal it confirms: one move,
+  // so that steal skips the cooldown the check started. Only once, and only within a minute.
+  let checkedSteal = false;
+  let stealCheckKey: string | null = null;
+  if (web) {
+    const words = call.args.filter(a => !/^skipstory:/i.test(a));
+    if (SUBCOMMANDS[String(words[0] ?? '').toLowerCase()] === 'steal' && words[1] !== undefined) {
+      const isCheck = /^(check|c)$/i.test(words[1]);
+      const key = `${chan}|${meLc}|${String((isCheck ? words[2] : words[1]) ?? '').replace(/^@+/, '').toLowerCase()}`;
+      const at = webStealChecks.get(key);
+      webStealChecks.delete(key);
+      if (isCheck) stealCheckKey = key;
+      else checkedSteal = at !== undefined && Date.now() - at < 60_000;
+      if (webStealChecks.size > 5000) for (const [k, t] of webStealChecks) if (Date.now() - t >= 60_000) webStealChecks.delete(k);
+    }
+  }
+  if (!answering && !checkAnswer && !checkedSteal && cooldown(meLc)) return void web?.reply('Easy there: one move every few seconds.', { kind: 'info' });
+  if (stealCheckKey) webStealChecks.set(stealCheckKey, Date.now());
 
   const svc = getPointsService(chan);
   const db = svc?.db();
@@ -1809,10 +1828,10 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       if (fee > 0) debitTx(db!, { userId: uid, amount: fee, reason: 'game:fish_steal', actor: `chat:${me}`, note: `${victim.username} ${item.name}`, now });
       const cooldown = `next steal in ${g.catchCooldownMinutes}m`;
       const hookLeft = d.hook > 0 ? `${tries(d.hook)} left on your 🪝 hook` : 'your 🪝 hook is used up';
-      // Caught, by the owner or their guard: half the fine goes to the one robbed (owner, 2026-10-31;
-      // a guard's catch too, so hiring one never pays less than having none), the rest is burned.
+      // Caught, by the owner or their guard: half the fine goes to the one robbed (owner, 2026-10-31), the rest is burned.
+      // A guard's fine has its own, smaller floor (guardFinePercent, 2026-11-11): the guard took the owner's risk.
       // Only what was actually paid is split. One ref ties the two rows, so each side's history names the other.
-      const payFine = (note: string): number => {
+      const payFine = (note: string, fine: number): number => {
         const ref = `steal:${uid}:${victim.user_id}:${now}`;
         const paid = fine > 0 && debitTx(db!, { userId: uid, amount: fine, reason: 'game:fish_steal_fine', ref, actor: `chat:${me}`, note, now }).ok;
         const share = paid ? Math.floor(fine * STEAL_FINE_TO_VICTIM) : 0;
@@ -1822,9 +1841,10 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
       const yours = (share: number) => (share > 0 ? `, and ${groupDigits(share)} ${cur} of it is yours` : '');
       const theirs = (share: number) => (share > 0 ? ` (${groupDigits(share)} ${cur} of it goes to @${victim.username})` : '');
 
-      // A guard catches every try, with no roll: the fine as if caught. A guard's time stays secret.
+      // A guard catches every try, with no roll, and fines on its own floor. A guard's time stays secret.
       if (guardEnd(v.guardUntil, guardPausedAt(db!), now) > now) {
-        const share = payFine(`${victim.username} (guard)`);
+        const { fine } = stealCharges(g, worth, chance, st.guardFinePercent);
+        const share = payFine(`${victim.username} (guard)`, fine);
         d.lifetime.steal.blocked++;
         saveFish(db!, uid, d, now);
         log('guarded', item.name, picked.held?.cm ?? null, { worth, fee, fine });
@@ -1848,7 +1868,7 @@ export const fish: CommandFn = async function fish(client, message, channel, tag
         return `🪝 You snuck up on @${victim.username} and made off with their ${sparkle(item.name)}${size}, worth ${groupDigits(worth)} ${cur}! (${groupDigits(fee)} ${cur} fee, ${left}, ${cooldown})`;
       }
 
-      const share = payFine(victim.username);
+      const share = payFine(victim.username, fine);
       d.lifetime.steal.caught++;
       saveFish(db!, uid, d, now);
       log('caught', item.name, picked.held?.cm ?? null, { worth, fee, fine });

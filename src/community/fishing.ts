@@ -898,13 +898,16 @@ export const stealRollChance = (g: PointsGamesConfig, name: string, worth?: numb
  * What a steal try on a fish costs: the fee every time, and the fine on top when
  * caught. The fine is set from the odds so that, on average, a try loses edgePercent
  * of what it could expect to win (chance x value), whether it's a frog or a whale.
+ * It is never under finePercent of the fish's value, so a caught try on a dear fish
+ * still hurts where the fee alone already covers the edge. A guard's catch passes
+ * guardFinePercent as `floorPercent`: no risk to the owner, so a smaller floor.
  */
-export function stealCharges(g: PointsGamesConfig, worth: number, chancePercent: number): { fee: number; fine: number } {
+export function stealCharges(g: PointsGamesConfig, worth: number, chancePercent: number, floorPercent = g.steal.finePercent): { fee: number; fine: number } {
   const st = g.steal;
   const p = Math.min(1, Math.max(0, chancePercent / 100));
   const fee = Math.max(st.feeMinimum, Math.round(worth * st.feePercent / 100));
   const balanced = p < 1 ? (p * worth * (1 + st.edgePercent / 100) - fee) / (1 - p) : 0;
-  return { fee, fine: Math.max(st.fineMinimum, Math.round(balanced)) };
+  return { fee, fine: Math.max(st.fineMinimum, Math.round(worth * floorPercent / 100), Math.round(balanced)) };
 }
 
 /** The most a single try on any of these fish could cost (fee and fine), by each one's own length and odds. */

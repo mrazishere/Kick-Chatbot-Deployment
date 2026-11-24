@@ -558,6 +558,17 @@ export interface FishStealSetting {
    */
   edgePercent: number;
   fineMinimum: number;
+  /**
+   * A caught thief's fine is never under this share of the fish's value, whatever the edge
+   * sets: on rare, dear fish the fee alone covers the edge and the fine fell to fineMinimum
+   * (25 for a 124K whale; owner, 2026-11-11). Past it, those steals lose more than the edge.
+   */
+  finePercent: number;
+  /**
+   * The same floor when a guard makes the catch: the guard takes the owner's risk, so less
+   * (owner, 2026-11-11: a guard costing under 3K shouldn't earn 3K a thief). The fine stays a balanced one at least.
+   */
+  guardFinePercent: number;
   /** Success chance in percent by the fish's rarity, as the channel's odds name it. */
   oddsCommon: number;
   oddsUncommon: number;

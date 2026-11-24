@@ -230,11 +230,11 @@ export function publicCommands(cfg: PointsConfig, opts: { channel?: BotCommandCh
       title: 'Wheel',
       note: 'The prize wheel spins on the stream overlay; chat gets the result.',
       rows: [
-        { usage: '!wheel', does: 'List the items on the wheel', who: 'mods' },
+        { usage: '!wheel', does: 'List the items on the wheel' },
         { usage: '!wheel spin', short: '!spin', does: 'Spin the wheel', who: 'mods' },
         { usage: '!wheel add <item> | <item>', does: 'Add one or more items, split with |', who: 'mods' },
         { usage: '!wheel remove <item or number>', short: '!wheel rm', does: 'Take an item off the wheel', who: 'mods' },
-        { usage: '!wheel history', short: '!wheel h', does: 'The last 5 spins: where it landed, who spun it and when', who: 'mods' }
+        { usage: '!wheel history', short: '!wheel h', does: 'The last 5 spins: where it landed, who spun it and when' }
       ]
     });
   }
