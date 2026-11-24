@@ -7,8 +7,9 @@
  *              spins and no big bite starts. Needs points with fishing on (the
  *              overlay is the fishing one) and an overlay showing.
  *
- * Permission required: the streamer, the bot owner and mods, for all of it (the
- *                      owner's call, 2026-10-14); viewers get no answer
+ * Permission required: everyone for list and history (the owner's call, 2026-11-10);
+ *                      the streamer, the bot owner and mods for the rest (2026-10-14).
+ *                      Viewers get no answer to those
  *
  * Usage:   !wheel [list]                   - the items, numbered
  *          !wheel spin                     - also !spin
@@ -65,7 +66,8 @@ export const wheel: CommandFn = async function wheel(client, message, channel, t
 
   const sub = first === '!spin' ? 'spin' : SUBS[(words[1] ?? 'list').toLowerCase()];
   const rest = message.trim().split(/\s+/).slice(first === '!spin' ? 1 : 2).join(' ').trim();
-  if (!(tags.isBroadcaster || tags.isModUp || isBotOwner(me))) return;
+  // Viewers can read the wheel (list, history); changing or spinning it is for mods.
+  if (!(tags.isBroadcaster || tags.isModUp || isBotOwner(me)) && sub !== 'list' && sub !== 'history') return;
 
   if (!sub) {
     // Kick chat drops anything in angle brackets, so placeholders are spelled out.
