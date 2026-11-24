@@ -456,6 +456,10 @@ export interface PublicStealRules {
   feePercent: number;
   feeMinimum: number;
   fineMinimum: number;
+  /** The fine's floor as a share of the fish's value. Absent from a bot service older than it. */
+  finePercent?: number;
+  /** The same floor when a guard makes the catch. Absent from a bot service older than it. */
+  guardFinePercent?: number;
   edgePercent: number;
   luckPercent: number;
   /** Success chance (%) by rarity; trophies go as Legendary. */
@@ -1402,4 +1406,28 @@ export async function getClipSession(): Promise<ClipSessionStatus> {
 
 export async function setClipToken(token: string): Promise<ClipSessionStatus & { ok: true }> {
   return request<ClipSessionStatus & { ok: true }>("/internal/clip-session", { method: "POST", body: { token } });
+}
+
+/**
+ * The Blerp login's health for !blerp. A pasted jwt is verified with Blerp and
+ * used to mint a refresh token, after which the bot renews it by itself. The
+ * token itself is never sent back to the browser.
+ */
+export interface BlerpSessionStatus {
+  healthy: boolean;
+  hasToken: boolean;
+  username: string | null;
+  expiresAt: number | null;
+  selfRenewing: boolean;
+  lastVerifyAt: number | null;
+  lastReason: string | null;
+  tokenSavedAt: number | null;
+}
+
+export async function getBlerpSession(): Promise<BlerpSessionStatus> {
+  return request<BlerpSessionStatus>("/internal/blerp-session");
+}
+
+export async function setBlerpToken(token: string): Promise<BlerpSessionStatus & { ok: true }> {
+  return request<BlerpSessionStatus & { ok: true }>("/internal/blerp-session", { method: "POST", body: { token } });
 }

@@ -28,6 +28,12 @@ function esc(value: unknown): string {
   return String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+/** The dashboard page holding the bot-account login cards (owner only). */
+function blerpCardUrl(): string {
+  const base = (process.env.BOT_DASHBOARD_URL || 'https://mr-ai.dev/kick').replace(/\/+$/, '');
+  return `${base}/mraiishere/bot/admin`;
+}
+
 function alertKey(kind: string, channel?: string): string {
   return channel ? `${kind}:${channel.toLowerCase()}` : kind;
 }
@@ -261,15 +267,12 @@ Everything else keeps running; only clipping is affected.
 
 ${clock}
 
-<b>Permanent fix (about a minute):</b>
-Put the bot's Blerp account into <code>.env</code> and the bot renews itself from then on:
-<code>BLERP_EMAIL=...</code>
-<code>BLERP_PASSWORD=...</code>
-
-<b>Stopgap:</b>
+<b>To fix (about a minute, all in the browser):</b>
 1. Log in to blerp.com as MrAIisHere
 2. F12 → Application → Cookies → blerp.com → copy <code>jwt</code>
-3. Put it in <code>.blerp-session.json</code> as the <code>jwt</code> field
+3. Paste it in the dashboard's Blerp login card: ${esc(blerpCardUrl())}
+
+The bot then renews it by itself from then on.
 
 Everything else keeps running; only <code>!blerp</code> is affected.
     `.trim();

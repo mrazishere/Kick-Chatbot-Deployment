@@ -94,6 +94,17 @@ export function writeSession(next: BlerpSession): void {
   try { fs.writeFileSync(sessionPath(), payload, { mode: 0o600 }); } catch { /* best effort */ }
 }
 
+/** When the stored session was last written, for the dashboard. */
+export function sessionSavedAt(): number | null {
+  const at = readSession().savedAt;
+  return typeof at === 'number' && at > 0 ? at : null;
+}
+
+/** The stored refresh token, so a caller replacing the session can keep it. */
+export function storedRefreshToken(): string | null {
+  return (readSession().refreshToken || '').trim() || null;
+}
+
 /** Whether a refresh token is stored, i.e. whether renewal can happen unattended. */
 export function hasRefreshToken(): boolean {
   return !!(readSession().refreshToken || '').trim();

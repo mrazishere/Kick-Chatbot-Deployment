@@ -13,6 +13,7 @@ import KickSessionAuth = require('./kick-session-auth');
 import TelegramNotifier = require('./telegram-notifier');
 import { chatroomResolver } from './channels/chatroom-resolver';
 import { clipSessionStatus, installClipToken } from './channels/clip-session';
+import { blerpSessionStatus, installBlerpToken } from './channels/blerp-session';
 import { resolveBotIdentity } from './bot-identity';
 import { SYSTEM_BOTS } from './system-bots';
 import { commandWordCollides, effectiveCommand, effectivePointsConfig, readSubscriptionStatus, validatePointsPatch } from './points/config';
@@ -2007,6 +2008,34 @@ app.post('/internal/clip-session', internalGuard(true), async (req, res) => {
     });
   }
   console.log('[CLIP] a new session token was installed from the dashboard');
+  return res.json({ ok: true, ...result.status });
+});
+
+// ── Blerp session ───────────────────────────────────────────────────────────
+// !blerp's login for the bot's Blerp account. Pasting a fresh jwt here also
+// mints a refresh token, after which the watchdog renews it unattended.
+// Like the clip token, it is write-only: never read back to the browser.
+
+app.get('/internal/blerp-session', internalGuard(false), (_req, res) => {
+  return res.json(blerpSessionStatus());
+});
+
+app.post('/internal/blerp-session', internalGuard(true), async (req, res) => {
+  const body = (req.body ?? {}) as { token?: unknown };
+  if (typeof body.token !== 'string' || !body.token.trim()) {
+    return res.status(400).json({ error: 'A Blerp jwt is required' });
+  }
+  const result = await installBlerpToken(body.token);
+  if (!result.ok) {
+    return res.status(400).json({
+      error: result.reason === 'malformed'
+        ? "That doesn't look like a Blerp jwt. Paste the cookie value, or the whole jwt:\"…\" line — either works."
+        : result.reason === 'expired'
+          ? 'That jwt has already expired. Log in to blerp.com again and copy the new one.'
+          : 'Blerp rejected that jwt. Log in to blerp.com again and copy a fresh one.',
+      reason: result.reason
+    });
+  }
   return res.json({ ok: true, ...result.status });
 });
 
@@ -4044,7 +4073,7 @@ function publicFishing(channel: string, cfg: ReturnType<typeof effectivePointsCo
     ...(g.steal.enabled ? {
       stealRules: {
         hookPrice: g.steal.hookPrice, hookUses: g.steal.hookUses, feePercent: g.steal.feePercent, feeMinimum: g.steal.feeMinimum,
-        fineMinimum: g.steal.fineMinimum, edgePercent: g.steal.edgePercent, luckPercent: g.steal.luckPercent,
+        fineMinimum: g.steal.fineMinimum, finePercent: g.steal.finePercent, guardFinePercent: g.steal.guardFinePercent, edgePercent: g.steal.edgePercent, luckPercent: g.steal.luckPercent,
         odds: { Common: g.steal.oddsCommon, Uncommon: g.steal.oddsUncommon, Rare: g.steal.oddsRare, Epic: g.steal.oddsEpic, Legendary: g.steal.oddsLegendary },
         graceMinutes: g.steal.graceMinutes, protectMinutes: g.steal.protectMinutes,
         guardPercent: g.steal.guardPercent, guardMinimum: g.steal.guardMinimum, guardHours: g.steal.guardHours,

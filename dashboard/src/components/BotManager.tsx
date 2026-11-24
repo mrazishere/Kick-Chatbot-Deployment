@@ -13,6 +13,7 @@ import SuspectsCard from "./SuspectsCard";
 import PointsCard, { type PointsConfig, type PointsSection } from "./PointsCard";
 import type { OverlayLink } from "@/lib/fish-overlay";
 import ClipSessionCard from "./ClipSessionCard";
+import BlerpSessionCard from "./BlerpSessionCard";
 import { Button, Card, Checkbox, Stat, Toggle } from "./ui";
 
 const BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
@@ -2131,6 +2132,7 @@ export default function BotManager({
           {/* The bot account's own credential, not the channel's, so it is the
               owner's to manage and shows for nobody else. */}
           {isAdmin ? <ClipSessionCard /> : null}
+          {isAdmin ? <BlerpSessionCard /> : null}
 
           </>) : null}
           {/* -------------------------------------------------- loyalty points */}
